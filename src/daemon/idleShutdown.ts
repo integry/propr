@@ -45,13 +45,9 @@ import { activitySince, readActivity, strandedWork } from './idleStopChecks.js';
 import { stopDaemonProcess, type IdleStopProcess } from './idleStopExit.js';
 import type { DaemonWorkProducers } from './workProducers.js';
 import { DrainAbort, connectAcceptsWakeHint, disconnectIntakeOwingReplay, hasExternalScheduledWake, persistStopHint, restoreAbortedDrain, scheduledWakeMissing, type IdleDrainProgress } from './idleDrainSteps.js';
+import { hintFileIo, recordAcceptedReplay, updateHint } from './idleReplayObligation.js';
 
 export { hasExternalScheduledWake, scheduledWakeMissing };
-import {
-    hintFileIo,
-    recordAcceptedReplay,
-    updateHint,
-} from './idleReplayObligation.js';
 
 /**
  * The daemon owns idle shutdown (issue #3770): it sees every shared signal,
@@ -194,21 +190,12 @@ export interface IdleDrainContext {
     isCancelled?: () => boolean;
 }
 
-export interface DaemonIdleShutdownDeps {
+export interface DaemonIdleShutdownDeps extends Pick<IdleDrainContext, 'producers' | 'close' | 'stopProcess' | 'timings' | 'externalScheduledWake'> {
     redis: Redis;
     intakeMode: string;
     getRoutingService: () => RoutingWebSocketIntakeService | null;
-    /** See {@link IdleDrainContext.producers}. */
-    producers?: Pick<DaemonWorkProducers, 'pause' | 'resume'>;
-    /** The daemon's normal graceful close (timers, routing, Redis, queues). */
-    close: () => Promise<void>;
     exit?: (code: number) => void;
-    /** See {@link IdleDrainContext.stopProcess}. Given, the daemon runs in the composed process. */
-    stopProcess?: IdleStopProcess;
     intervalMs?: number;
-    timings?: Partial<IdleDrainTimings>;
-    /** See {@link IdleDrainContext.externalScheduledWake}; defaults to {@link hasExternalScheduledWake}. */
-    externalScheduledWake?: boolean;
 }
 
 export interface DaemonIdleShutdown {
