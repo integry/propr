@@ -232,6 +232,8 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/goals/:goalId/wait', goalRoutes.wait],
     ['get', '/api/goals/:goalId/previews', goalRoutes.previews],
     ['delete', '/api/goals/:goalId', goalRoutes.remove],
+    ['patch', '/api/goals/:goalId/draft', goalRoutes.updateDraft],
+    ['post', '/api/goals/:goalId/start', goalRoutes.startDraft],
     ['post', '/api/goals/:goalId/pause', goalRoutes.pause],
     ['post', '/api/goals/:goalId/resume', goalRoutes.resume],
     ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel],

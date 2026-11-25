@@ -199,6 +199,81 @@ test('keeps the goal work queue within the available 1024px desktop content widt
   }
 });
 
+test('saves a goal draft, reopens it from the list, and starts the saved description', async ({ page }) => {
+  const initialObjective = 'Build a customer analytics dashboard with accessible filters.';
+  const revisedObjective = 'Build a customer analytics dashboard with accessible filters and CSV export.';
+  const draft = {
+    ...goal,
+    id: 'goal-draft', title: 'Customer analytics dashboard', objective: initialObjective, initialPrompt: '', launchStrategy: 'direct',
+    branchName: null, effectiveModel: null, sessionId: null, startedAt: null, desiredState: 'draft',
+    elapsedMs: 0, activeMs: 0, taskState: 'pending',
+    artifactStats: { issues: 0, openIssues: 0, pullRequests: 0, openPullRequests: 0 },
+    liveSummary: { currentTask: null, todos: [], tokenUsage: null, nativeGoal: null },
+  };
+  let stored: typeof draft | null = null;
+  let starts = 0;
+  await page.route('**/api/goals?*', route => new URL(route.request().url()).pathname === '/api/goals'
+    ? route.fulfill({ json: { goals: stored ? [stored] : [goal] } })
+    : route.fallback());
+  await page.route('**/api/goals', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    expect(route.request().postDataJSON()).toMatchObject({ draft: true, objective: initialObjective });
+    stored = draft;
+    await route.fulfill({ status: 201, json: { goal: stored } });
+  });
+  await page.route('**/api/goals/goal-draft', route => route.fulfill({ json: { goal: stored } }));
+  await page.route('**/api/goals/goal-draft/draft', async route => {
+    expect(route.request().method()).toBe('PATCH');
+    expect(route.request().postDataJSON()).toEqual({ objective: revisedObjective });
+    stored = { ...draft, objective: revisedObjective };
+    await route.fulfill({ json: { goal: stored } });
+  });
+  await page.route('**/api/goals/goal-draft/start', async route => {
+    expect(route.request().method()).toBe('POST');
+    expect(stored?.objective).toBe(revisedObjective);
+    starts += 1;
+    stored = { ...draft, objective: revisedObjective, desiredState: 'running' };
+    await route.fulfill({ json: { goal: stored } });
+  });
+
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.goto('/goals?new=1');
+  const dialog = page.getByRole('dialog', { name: 'New goal' });
+  const save = dialog.getByRole('button', { name: 'Save draft' });
+  const start = page.getByRole('button', { name: 'Start goal' });
+  await expect(save).toBeEnabled();
+  await expect(start).toBeDisabled();
+  await dialog.getByLabel('Prompt', { exact: true }).fill(initialObjective);
+  await expect(start).toBeEnabled();
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await mkdir('../.propr/previews', { recursive: true });
+    await dialog.screenshot({ path: '../.propr/previews/goal-save-draft.png', animations: 'disabled' });
+  }
+  await save.click();
+
+  await expect(page).toHaveURL(/\/goals\/goal-draft$/);
+  await expect(page.getByText(/^draft$/i)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Pause' })).toHaveCount(0);
+  expect(starts).toBe(0);
+  await page.getByRole('link', { name: 'All goals' }).click();
+  await page.getByRole('link', { name: /Customer analytics dashboard/ }).click();
+  const description = page.getByRole('textbox', { name: 'Goal description' });
+  await expect(description).toHaveValue(initialObjective);
+  await description.fill(revisedObjective);
+  await expect(start).toBeDisabled();
+  await page.getByRole('button', { name: 'Save draft' }).click();
+  await expect(start).toBeEnabled();
+  if (process.env.PROPR_CAPTURE_PREVIEWS) {
+    await page.screenshot({ path: '../.propr/previews/goal-saved-draft.png', animations: 'disabled' });
+  }
+
+  await page.reload();
+  await expect(description).toHaveValue(revisedObjective);
+  await start.click();
+  await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+  expect(starts).toBe(1);
+});
+
 test('dismisses the repository picker before the dirty goal creator on Escape', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 820 });
   await page.goto('/goals');

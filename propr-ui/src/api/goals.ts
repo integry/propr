@@ -67,7 +67,7 @@ export interface Goal {
   effectiveModel: string | null;
   maxParallelTasks: number | null;
   ultrafix: boolean | null;
-  desiredState: 'running' | 'paused' | 'cancelled';
+  desiredState: 'draft' | 'running' | 'paused' | 'cancelled';
   resultState: 'completed' | 'failed' | 'cancelled' | null;
   failureReason: string | null;
   pausePending: boolean;
@@ -203,8 +203,12 @@ export const deleteGoal = async (id: string): Promise<void> => {
   });
   await handleApiResponse(response);
 };
-export const createGoal = async (body: { repository: string; objective: string; launchStrategy: GoalLaunchStrategy; agentId: string; model: string; baseBranch?: string; maxParallelTasks?: number; ultrafix?: boolean; checkpointIntervalMinutes?: number }, files: readonly File[] = []) =>
+export const createGoal = async (body: { repository: string; objective: string; launchStrategy: GoalLaunchStrategy; agentId: string; model: string; baseBranch?: string; maxParallelTasks?: number; ultrafix?: boolean; checkpointIntervalMinutes?: number; draft?: boolean }, files: readonly File[] = []) =>
   request<{ goal: Goal }>('/api/goals', files.length > 0 ? multipartMutation(body, files) : idempotentMutation('POST', body));
+export const updateGoalDraft = async (id: string, objective: string) =>
+  request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/draft`, { method: 'PATCH', body: JSON.stringify({ objective }) });
+export const startGoalDraft = async (id: string) =>
+  request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/start`, { method: 'POST' });
 export const pauseGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/pause`, idempotentMutation('POST'));
 export const resumeGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/resume`, idempotentMutation('POST'));
 export const cancelGoal = async (id: string) => request<{ goal: Goal }>(`/api/goals/${encodeURIComponent(id)}/cancel`, idempotentMutation('POST'));

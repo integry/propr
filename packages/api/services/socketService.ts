@@ -329,7 +329,7 @@ export class SocketService {
       occurredAt: payload.occurredAt,
       desiredState: goal?.desired_state,
       resultState: goal?.result_state,
-      currentTaskId: payload.currentTaskId ?? goal?.current_task_id,
+      currentTaskId: goal?.desired_state === 'draft' ? null : payload.currentTaskId ?? goal?.current_task_id,
       ...(payload.revision === undefined ? {} : { revision: payload.revision }),
     };
     // Both the goal frame and its derived activity have the same private audience.

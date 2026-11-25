@@ -102,6 +102,7 @@ export interface ActivityUpdatePayload {
  * client can act on.
  */
 export const GOAL_ACTIVITY_STATES = [
+  'draft',
   'queued',
   'running',
   'paused',

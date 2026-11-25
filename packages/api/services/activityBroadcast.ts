@@ -71,6 +71,7 @@ const TASK_STATE_CHANGE: Record<string, ActivityChange> = {
 };
 
 const GOAL_STATE_CHANGE: Record<GoalActivityState, ActivityChange> = {
+  draft: 'created',
   queued: 'created',
   running: 'started',
   paused: 'progressed',
