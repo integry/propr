@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { SpriteInventory, spriteGone } from './spritesInventory.js';
 import path from 'node:path';
+import { calculateDelay } from '../../../utils/retryHandler.js';
 import logger from '../../../utils/logger.js';
 import type { NetworkPolicy, Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 import { sameSpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY } from './spritesNetwork.js';
@@ -75,13 +76,18 @@ export class SpritePool {
         // Never discover or adopt a machine by name. Another worker, including an earlier
         // incarnation of this worker, can still have a live run on one it created.
         const started = Date.now();
-        const creating = Promise.resolve().then(async () => {
+        try {
             signal.throwIfAborted();
             this.inventory?.checkCreate(name);
+        } catch (error) {
+            await this.inventory?.finish(name, 'gone');
+            throw error;
+        }
+        const creating = (async () => {
             const created = await this.client.createSprite(name);
             if (this.inventory && created.name !== name) throw new Error('Provider returned an unexpected Sprite name');
             return created;
-        });
+        })();
         let sprite: Sprite;
         try { sprite = await startupStep(signal, () => creating); }
         catch (error) {
@@ -165,14 +171,21 @@ export class SpritePool {
         }
     }
 
-    async acquire(signal: AbortSignal, onWaiting?: () => void): Promise<Slot> {
+    async acquire(signal: AbortSignal, onWaiting?: () => void): Promise<Slot & { queueMs: number }> {
         signal.throwIfAborted();
         if (this.closed) throw new Error('Sprite pool is closed');
         signal = AbortSignal.any([signal, this.shutdown.signal]);
-        let waiting = false;
+        const inventory = this.inventory;
+        const minutes = inventory?.queueMinutes ?? 10;
+        const timeout = () => new Error(`No Sprite available: cap ${inventory?.cap} reached after ${minutes}m`);
+        let queuedAt: number | undefined;
+        let deadline = Infinity;
+        let attempt = 0;
         for (;;) {
             signal.throwIfAborted();
+            if (performance.now() >= deadline) throw timeout();
             let slot = this.idle.pop();
+            let queueMs = queuedAt === undefined ? 0 : Date.now() - queuedAt;
             const replacement = !slot && this.replacements.shift();
             if (replacement) {
                 try { slot = await this.claim(replacement, signal); }
@@ -183,11 +196,34 @@ export class SpritePool {
             }
             if (!slot) {
                 const name = (this.inventory?.prefix ?? 'propr-') + randomUUID();
-                if (this.inventory && !await this.inventory.reserve(name)) {
-                    if (!waiting) onWaiting?.();
-                    waiting = true;
-                    await delay(1000, undefined, { signal });
-                    continue;
+                if (inventory) {
+                    const reserving = inventory.reserve(name);
+                    const admissionSignal = queuedAt === undefined ? signal : AbortSignal.any([
+                        signal, AbortSignal.timeout(Math.max(0, Math.ceil(deadline - performance.now()))),
+                    ]);
+                    let reserved: boolean;
+                    try { reserved = await startupStep(admissionSignal, () => reserving); }
+                    catch (error) {
+                        if (!admissionSignal.aborted) throw error;
+                        void reserving.then(ok => ok ? inventory.finish(name, 'gone') : undefined).catch(() => {});
+                        signal.throwIfAborted();
+                        throw timeout();
+                    }
+                    if (!reserved) {
+                        if (queuedAt === undefined) {
+                            queuedAt = Date.now();
+                            deadline = performance.now() + minutes * 60_000;
+                            onWaiting?.();
+                        }
+                        const backoff = calculateDelay(attempt++, { baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, jitter: true });
+                        await delay(Math.min(backoff, deadline - performance.now()), undefined, { signal });
+                        continue;
+                    }
+                    if (performance.now() >= deadline) {
+                        await inventory.finish(name, 'gone');
+                        throw timeout();
+                    }
+                    if (queuedAt !== undefined) queueMs = Date.now() - queuedAt;
                 }
                 if (signal.aborted) {
                     await this.inventory?.finish(name, 'gone'); // No create request was sent.
@@ -200,7 +236,7 @@ export class SpritePool {
                 await this.recycleClean(slot);
                 signal.throwIfAborted();
             }
-            return slot;
+            return { ...slot, queueMs };
         }
     }
 
@@ -279,12 +315,13 @@ export class SpritePool {
     private async reset(slot: Slot): Promise<void> {
         const { sprite, checkpoint, restricted } = slot;
         if (this.closed) return this.discard(sprite);
-        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(120_000), ...(slot.lease ? [slot.lease] : [])]);
+        let signal = AbortSignal.any([this.shutdown.signal, ...(slot.lease ? [slot.lease] : [])]);
         let step = 'restart';
         let restoreMs: number;
         try {
             // Stop descendants that outlived the launcher, including detached processes.
-            await restart(sprite, signal);
+            await restart(sprite, AbortSignal.any([signal, AbortSignal.timeout(240_000)]));
+            signal = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
             step = 'wipe /tmp';
             await startupStep(signal, () => sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', signal, timeout: 60_000 }));
             step = 'restore checkpoint';
@@ -308,27 +345,36 @@ export class SpritePool {
 }
 
 async function restart(sprite: Sprite, signal: AbortSignal) {
-    const bootId = async (attempt: AbortSignal) => {
-        const probe = await startupStep(attempt, () => sprite.execFile('cat', ['/proc/sys/kernel/random/boot_id'], { cwd: '/', signal: attempt, timeout: 5000 }));
-        const id = probe.stdout.toString().trim();
-        if (probe.exitCode !== 0 || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) throw new Error('Missing Sprite boot ID');
-        return id.toLowerCase();
+    const probe = async (file: string, parent: AbortSignal) => {
+        const attempt = AbortSignal.any([parent, AbortSignal.timeout(5000)]);
+        const result = await startupStep(attempt, () => sprite.execFile('cat', [file], { cwd: '/', signal: attempt, timeout: 5000 }));
+        if (result.exitCode !== 0) throw new Error('Sprite restart probe failed');
+        return result.stdout.toString().trim();
     };
-    const before = await bootId(signal);
-    const ambiguous = /restart[ _-]+outcome[ _-]+unknown/i;
-    try {
-        await startupStep(signal, () => sprite.restart());
-    } catch (error) {
-        if (!(error instanceof Error && ambiguous.test(error.message))) throw error;
-    }
-    const until = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
-    for (;;) {
-        try {
-            const attempt = AbortSignal.any([until, AbortSignal.timeout(5000)]);
-            if (await bootId(attempt) !== before) return;
-        } catch {
-            until.throwIfAborted();
+    const bootFile = '/proc/sys/kernel/random/boot_id';
+    const id = await probe(bootFile, signal).catch(() => '');
+    const validId = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+    const useBootId = validId.test(id);
+    const started = performance.now();
+    for (let request = 0; request < 2; request++) {
+        try { await startupStep(signal, () => sprite.restart()); }
+        catch (error) {
+            if (!(error instanceof Error && /restart[ _-]+outcome[ _-]+unknown/i.test(error.message))) throw error;
         }
-        await delay(1000, undefined, { signal: until });
+        const until = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+        while (!until.aborted) {
+            const elapsed = performance.now() - started;
+            const value = await probe(useBootId ? bootFile : '/proc/uptime', until).catch(() => '');
+            if (useBootId) {
+                if (validId.test(value) && value.toLowerCase() !== id.toLowerCase()) return;
+            } else {
+                // /proc/uptime truncates to hundredths. Require a boot after the first request.
+                const uptime = value.split(/\s+/)[0];
+                if (/^\d+(?:\.\d+)?$/.test(uptime) && Number(uptime) * 1000 + 10 < elapsed) return;
+            }
+            await delay(1000, undefined, { signal: until }).catch(error => { if (!until.aborted) throw error; });
+        }
+        signal.throwIfAborted();
     }
+    throw new Error('Could not verify Sprite restart after two attempts');
 }

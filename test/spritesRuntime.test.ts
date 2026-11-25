@@ -80,6 +80,7 @@ test('a run at the shared cap reports its wait and excludes it from compute usag
     const cold = await first.wait();
     assert.equal(cold.computeUsage!.provisioningMs, 200);
     assert.equal(cold.computeUsage!.restoreMs, 100);
+    assert.equal(cold.computeUsage!.queueMs, 0);
     assert.equal(cold.computeUsage!.wallTimeMs, 350);
     const next = runtime.start(builder.build(), { timeout: 500 });
     const message = await new Promise<string>(resolve => next.stderr.once('data', chunk => resolve(String(chunk))));
@@ -91,6 +92,7 @@ test('a run at the shared cap reports its wait and excludes it from compute usag
     assert.equal(warm.exitCode, 0);
     assert.equal(warm.computeUsage?.provisioningMs, 0);
     assert.equal(warm.computeUsage!.restoreMs, 100);
+    assert.equal(warm.computeUsage!.queueMs, 1300);
     assert.equal(warm.computeUsage!.wallTimeMs, 150);
     assert.equal(provider.created.length, 1);
     await next.release!();

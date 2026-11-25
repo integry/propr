@@ -11,6 +11,7 @@ export interface RetryConfig {
 
 export interface RetryOptions extends Partial<RetryConfig> {
     correlationId?: string;
+    shouldRetry?: (error: unknown) => boolean;
 }
 
 /**
@@ -124,7 +125,7 @@ function safeToString(record: Record<string, unknown>): string {
  * @param config - Retry configuration
  * @returns Delay in milliseconds
  */
-export function calculateDelay(attempt: number, config: RetryConfig): number {
+export function calculateDelay(attempt: number, config: Pick<RetryConfig, 'baseDelay' | 'maxDelay' | 'exponentialBase' | 'jitter'>): number {
     const exponentialDelay = config.baseDelay * Math.pow(config.exponentialBase, attempt);
     let delay = Math.min(exponentialDelay, config.maxDelay);
 
@@ -272,7 +273,7 @@ export async function withRetry<T>(
                 break;
             }
 
-            if (!isRetryableError(error, config)) {
+            if (!(options.shouldRetry?.(error) ?? isRetryableError(error, config))) {
                 logger.error({
                     correlationId,
                     context,

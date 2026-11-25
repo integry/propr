@@ -109,7 +109,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const launch = { spec, options, token, inputPath };
             const validated = validateSpriteRun(launch, envDefaults);
             const ready = await startupStep(signal, () => pool);
-            const { sprite, prepared, checkedOutAt, provisioningMs, restoreMs } = await startupStep(signal, async () => {
+            const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs } = await startupStep(signal, async () => {
                 const acquired = await ready.acquire(signal, () => {
                     diagnostics.push('Waiting for a Sprite');
                     output.write('stderr', 'Waiting for a Sprite\n');
@@ -137,7 +137,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => payload.upload(acquired.sprite));
                     signal.throwIfAborted();
                     slot = acquired;
-                    return { sprite: acquired.sprite, prepared: payload, checkedOutAt, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs };
+                    return { sprite: acquired.sprite, prepared: payload, checkedOutAt, queueMs: acquired.queueMs, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs };
                 } catch (error) {
                     // An interrupted policy change or upload can still write to the Sprite.
                     if (prepared || (networkPolicy && !acquired.restricted)) await ready.discard(acquired.sprite);
@@ -152,7 +152,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
                 });
                 return { ...executed, computeUsage: { runtime: 'sprites', wallTimeMs: Date.now() - checkedOutAt + provisioningMs + restoreMs,
-                    provisioningMs, restoreMs, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
+                    queueMs, provisioningMs, restoreMs, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
                     costUsd: null, costSource: null } };
             } finally {
                 if (!commit && slot) {

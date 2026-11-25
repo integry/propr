@@ -17,6 +17,7 @@ export interface AgentRunComputeUsage {
     runtime: string;
     /** From the sandbox starting to its exit. */
     wallTimeMs: number;
+    queueMs?: number;
     provisioningMs?: number;
     restoreMs?: number;
     /** CPU time the sandbox consumed; null when the runtime could not measure it. */
@@ -134,6 +135,7 @@ export function normalizeComputeUsage(value: unknown): AgentRunComputeUsage | nu
     return {
         runtime: record.runtime,
         wallTimeMs,
+        ...(finiteOrNull(record.queueMs) !== null && { queueMs: Number(record.queueMs) }),
         ...(finiteOrNull(record.provisioningMs) !== null && { provisioningMs: Number(record.provisioningMs) }),
         ...(finiteOrNull(record.restoreMs) !== null && { restoreMs: Number(record.restoreMs) }),
         cpuSeconds: finiteOrNull(record.cpuSeconds),
@@ -176,6 +178,7 @@ export function formatComputeCost(costUsd: number): string {
  */
 export function formatComputeUsage(usage: AgentRunComputeUsage): string {
     const parts = [usage.runtime, `${formatComputeDuration(usage.wallTimeMs)} wall`];
+    if (usage.queueMs) parts.push(`${formatComputeDuration(usage.queueMs)} queued`);
     if (usage.cpuSeconds !== null) parts.push(`${usage.cpuSeconds.toFixed(1)} CPU-s`);
     if (usage.peakMemoryBytes !== null) {
         const average = usage.avgMemoryBytes !== null ? ` (avg ${formatMemoryBytes(usage.avgMemoryBytes)})` : '';

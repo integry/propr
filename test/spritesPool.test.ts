@@ -17,9 +17,14 @@ function fixture() {
     const redis = new Redis({ port: port++ });
     const provider = new FakeSpriteOrganization();
     const dir = mkdtempSync(path.join(data, 'install-'));
-    const open = () => SpriteInventory.open(provider, { PROPR_SPRITES_MAX: '1', DATA_DIR: dir }, redis);
+    const start = (env = {}) => SpriteInventory.open(provider, { PROPR_SPRITES_MAX: '1', DATA_DIR: dir, ...env }, redis);
+    const open = async () => {
+        const inventory = await start();
+        await inventory.sweep();
+        return inventory;
+    };
     const status = async () => spritePoolStatus({ ...await redis.hgetall(spritePoolKey()), ...await redis.hgetall(spritePoolKey() + ':runners') })!;
-    return { redis, provider, open, status };
+    return { redis, provider, start, open, status };
 }
 
 test('two workers share one slot and the second checkout waits until the remote idle Sprite yields', { timeout: 12_000 }, async t => {
@@ -160,7 +165,7 @@ for (const recovers of [true, false]) {
             return exec(cmd, args, options);
         };
         await pool.release(slot);
-        assert.equal(probes, recovers ? 2 : 1);
+        assert.equal(probes, 2);
         assert.deepEqual(provider.deleted, recovers ? [] : [sprite.name]);
         assert.equal(sprite.events.includes('wipe'), recovers);
     });
@@ -201,6 +206,7 @@ test('an acknowledged delete that leaves the machine visible keeps its cap slot'
 test('different deployments in one provider organization and Redis database have separate inventories', async () => {
     const { redis, provider } = fixture();
     const first = await SpriteInventory.open(provider, { DATA_DIR: data, PROPR_INSTANCE_ID: 'one' }, redis);
+    await first.sweep();
     const foreign = await provider.createSprite(first.prefix + randomUUID());
     foreign.createdAt = new Date(1);
     const second = await SpriteInventory.open(provider, { DATA_DIR: data, PROPR_INSTANCE_ID: 'two' }, redis);
@@ -229,6 +235,7 @@ test('an open inventory rebuilds lost Redis state before admitting another machi
     t.mock.timers.enable({ apis: ['Date'], now: Date.now() + 175_000 });
     assert.equal(await inventory.reserve(next), false);
     assert.equal((await status()).awaitingCleanup, 1);
+    assert.equal(await redis.get(key + ':deployment'), inventory.prefix.slice(6, -1));
     await redis.hdel(key, 'cap', 'orphansDeleted');
     assert.equal(await inventory.reserve(next), false);
     assert.equal((await status()).cap, 1);
@@ -330,6 +337,7 @@ test('a legacy deployment retains its marker and reservations across migration a
     await redis.set(key + ':lease:' + name, 'legacy-owner');
     const sprite = await provider.createSprite(name);
     const before = await open();
+    await before.sweep();
     t.mock.timers.enable({ apis: ['Date'], now: Date.now() + 175_000 });
     await before.sweep();
     assert.equal(await redis.hget(key + ':runners', name), 'inUse');
@@ -399,6 +407,7 @@ test('lost reservation and phase replies retry the same Sprite at a cap of one',
     const lost = new Set<string>();
     t.mock.method(redis, 'eval', async (...args: Parameters<typeof evaluate>) => {
         const result = await evaluate(...args);
+        if (args[1] === 2) return result; // Snapshot publication.
         const operation = args[1] === 4 ? 'reserve' : String(args.at(-1));
         if (result === 1 && !lost.has(operation)) {
             lost.add(operation);
@@ -456,4 +465,143 @@ test('the holder timer subtracts Redis round-trip time from a successful renewal
     assert.equal(signal.aborted, false);
     advance(1);
     assert.ok(signal.aborted);
+});
+
+test('open returns during a blocked startup listing and tolerates reservations racing its publication', { timeout: 3000 }, async () => {
+    const { provider, start, open } = fixture();
+    const existing = await open();
+    const held = existing.prefix + randomUUID();
+    assert.ok(await existing.reserve(held));
+    const listing = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const list = provider.listAllSprites.bind(provider);
+    provider.listAllSprites = async () => {
+        const snapshot = await list();
+        listing.resolve();
+        await resume.promise;
+        return snapshot;
+    };
+    const opening = start();
+    await listing.promise;
+    const worker = await opening;
+    await existing.finish(held, 'gone');
+    resume.resolve();
+    await worker.sweep();
+    const next = worker.prefix + randomUUID();
+    assert.ok(await worker.reserve(next));
+    await worker.finish(next, 'gone');
+    await Promise.all([existing.close(), worker.close()]);
+});
+
+test('capacity deadline uses configured minutes and never sends a create', async t => {
+    const { start, provider } = fixture();
+    const inventory = await start({ PROPR_SPRITES_QUEUE_TIMEOUT: '1' });
+    await inventory.sweep();
+    const held = inventory.prefix + randomUUID();
+    assert.ok(await inventory.reserve(held));
+    const pool = new SpritePool(provider, inventory);
+    let now = performance.now();
+    t.mock.method(performance, 'now', () => now);
+    await assert.rejects(pool.acquire(new AbortController().signal, () => { now += 60_001; }),
+        /No Sprite available: cap 1 reached after 1m/);
+    assert.deepEqual(provider.created, []);
+    await inventory.finish(held, 'gone');
+    await pool.close();
+});
+
+test('a pre-dispatch failure immediately frees the reservation', async t => {
+    const { open, provider, status } = fixture();
+    const inventory = await open();
+    const pool = new SpritePool(provider, inventory);
+    t.after(() => pool.close());
+    t.mock.method(inventory, 'checkCreate', () => { throw new Error('expired before create'); });
+    await assert.rejects(pool.acquire(new AbortController().signal), /expired before create/);
+    assert.deepEqual(provider.created, []);
+    assert.equal((await status()).provisioning, 0);
+    const next = inventory.prefix + randomUUID();
+    assert.ok(await inventory.reserve(next));
+    await inventory.finish(next, 'gone');
+});
+
+test('a second restart can recover a reachable Sprite when the first request had no effect', async t => {
+    const { open, provider } = fixture();
+    const pool = new SpritePool(provider, await open());
+    t.after(() => pool.close());
+    const slot = await pool.acquire(new AbortController().signal);
+    const sprite = provider.created[0];
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    t.mock.method(AbortSignal, 'timeout', (ms: number) => timeout(ms === 60_000 ? 50 : ms));
+    let requests = 0;
+    sprite.restart = async () => {
+        if (++requests === 2) sprite.bootId = randomUUID();
+        throw new Error('restart outcome unknown');
+    };
+    await pool.release(slot);
+    assert.equal(requests, 2);
+    assert.deepEqual(provider.deleted, []);
+    assert.ok(sprite.events.includes('wipe'));
+});
+
+test('a stalled initial boot ID probe falls back to post-restart uptime', async t => {
+    const { open, provider } = fixture();
+    const pool = new SpritePool(provider, await open());
+    t.after(() => pool.close());
+    const slot = await pool.acquire(new AbortController().signal);
+    const sprite = provider.created[0];
+    const exec = sprite.execFile.bind(sprite);
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    t.mock.method(AbortSignal, 'timeout', (ms: number) => timeout(ms === 5000 ? 35 : ms));
+    let now = performance.now();
+    t.mock.method(performance, 'now', () => now);
+    sprite.restart = async () => { now += 10_000; throw new Error('restart outcome unknown'); };
+    sprite.execFile = async (cmd, args, options) => {
+        if (args[0] === '/proc/sys/kernel/random/boot_id') {
+            await new Promise(resolve => setTimeout(resolve, 150));
+            throw new Error('probe timed out');
+        }
+        if (args[0] === '/proc/uptime') return { exitCode: 0, stdout: '3.50 2.00', stderr: '' };
+        return exec(cmd, args, options);
+    };
+    await pool.release(slot);
+    assert.deepEqual(provider.deleted, []);
+    assert.ok(sprite.events.includes('wipe'));
+});
+
+test('a new marker file cannot bypass the flush fence when the provider still has marked Sprites', async t => {
+    const { provider, start, redis } = fixture();
+    const env = { PROPR_INSTANCE_ID: 'reinstalled' };
+    const first = await start(env);
+    await first.sweep();
+    await provider.createSprite(first.prefix + randomUUID());
+    await first.close();
+    await redis.flushdb();
+    const second = await start({ ...env, DATA_DIR: mkdtempSync(path.join(data, 'new-')) });
+    await second.sweep();
+    assert.equal(second.prefix, first.prefix);
+    const key = spritePoolKey(env.PROPR_INSTANCE_ID);
+    assert.ok(Number(await redis.hget(key, 'recoverAfter')) * 1000 > Date.now() + 170_000);
+    assert.equal(await second.reserve(second.prefix + randomUUID()), false);
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() + 175_000 });
+    await second.sweep();
+    assert.equal(await redis.hlen(key + ':runners'), 1);
+    await second.close();
+});
+
+test('aborted inventory calls are attempted only once', async t => {
+    const { open, redis } = fixture();
+    const inventory = await open();
+    const name = inventory.prefix + randomUUID();
+    assert.ok(await inventory.reserve(name));
+    const original = redis.eval.bind(redis);
+    let calls = 0;
+    t.mock.method(redis, 'eval', async (...args: Parameters<typeof original>) => {
+        if (args.at(-1) === 'inUse') {
+            calls++;
+            throw new DOMException('cancelled', 'AbortError');
+        }
+        return original(...args);
+    });
+    await assert.rejects(inventory.phase(name, 'inUse'), { name: 'AbortError' });
+    assert.equal(calls, 1);
+    await inventory.finish(name, 'gone');
 });

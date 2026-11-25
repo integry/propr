@@ -259,6 +259,7 @@ export interface LiveDetails {
 
 /** Compute usage of one agent run; unmeasured figures are null. */
 export interface ComputeUsage {
+  queueMs?: number;
   provisioningMs?: number;
   restoreMs?: number;
   runtime: string;
