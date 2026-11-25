@@ -145,10 +145,28 @@ function launchCloneRun(root: string, agentScript: string, env: Record<string, s
     write(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n', 0o755);
     const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
     write(path.join(bin, 'git'), `#!/bin/bash\n${slow('push')}case " $* " in *" push "*) [ "\${PUSH_FAILS:-}" = 1 ] && exit 1 ;; esac\nexec ${realGit} "$@"\n`, 0o755);
+    if (env.PHASE_TRACE) {
+        const realSync = execFileSync('/bin/sh', ['-c', 'command -v sync'], { encoding: 'utf8' }).trim();
+        write(path.join(bin, 'sync'), `#!/bin/bash
+[ "$#" -eq 1 ] && [ "$1" = "$PHASE_FILE.tmp" ] || exit 1
+phase=$(cat "$1")
+if mkdir "$PHASE_TRACE.$phase" 2>/dev/null; then
+  echo "fail $phase" >> "$PHASE_TRACE"
+  exit 1
+fi
+${realSync} "$@" || exit 1
+printf 'synced ' >> "$PHASE_TRACE"
+cat "$1" >> "$PHASE_TRACE"
+`, 0o755);
+    }
     // With PHASE_MV_PAUSE set, the wrapper's first rename that publishes that phase creates PHASE_MV_MARKER and
     // holds until PHASE_MV_MARKER/release exists (or it is killed), leaving the publication half done.
     const realMv = execFileSync('/bin/sh', ['-c', 'command -v mv'], { encoding: 'utf8' }).trim();
     write(path.join(bin, 'mv'), `#!/bin/bash
+if [ -n "\${PHASE_TRACE:-}" ] && [ "\${@: -1}" = "$PHASE_FILE" ]; then
+  printf 'rename ' >> "$PHASE_TRACE"
+  cat "\${@: -2:1}" >> "$PHASE_TRACE"
+fi
 if [ -n "\${PHASE_MV_PAUSE:-}" ] && [ "\${@: -1}" = "\${PHASE_FILE:-}" ] && [ "$(cat "\${@: -2:1}")" = "$PHASE_MV_PAUSE" ] \\
     && mkdir "$PHASE_MV_MARKER" 2>/dev/null; then
   while [ ! -e "$PHASE_MV_MARKER/release" ]; do sleep 0.05; done
@@ -272,6 +290,19 @@ test('a termination signal reaches the agent but never ends the clone wrapper, a
             if (launcher?.pid) try { process.kill(-launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
             fs.rmSync(root, { recursive: true, force: true });
         }
+    }
+});
+
+test('both phase renames wait for a successful sync of the complete temporary file', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-phase-sync-'));
+    try {
+        const trace = path.join(root, 'phase-trace');
+        const run = launchCloneRun(root, CHANGING_AGENT_SCRIPT, { PHASE_TRACE: trace, FINISH: 'exit' });
+        assert.equal(await run.launcherExit, 0);
+        assert.equal(fs.readFileSync(trace, 'utf8'),
+            'fail agent\nsynced agent\nrename agent\nfail finalizing\nsynced finalizing\nrename finalizing\n');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
     }
 });
 

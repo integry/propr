@@ -172,10 +172,11 @@ record() {
 # or the new one. The mv is a process in the agent's session, which a forced stop or a forwarded signal
 # kills while the phase still reads \`agent\`; the wrapper then retries it.
 publish_phase() {
-    local attempt
+    local attempt phase_tmp="$result_dir/${WORKSPACE_RESULT_PHASE_FILE}.tmp"
     for attempt in 1 2 3; do
-        printf '%s\\n' "$1" > "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}.tmp" \\
-            && mv -f "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}.tmp" "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}" && return 0
+        printf '%s\\n' "$1" > "$phase_tmp" \\
+            && sync "$phase_tmp" \\
+            && mv -f "$phase_tmp" "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}" && return 0
     done
     echo "ProPR workspace transport: cannot record the $1 phase" >&2
     return 1
