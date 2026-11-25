@@ -108,6 +108,11 @@ function stageCredentials(store: CredentialStoreBundle | undefined, storePath: s
     return { owned, secrets };
 }
 
+function providerArgv(spec: AgentRunSpec, provider: 'claude' | 'codex') {
+    if (!spec.args.length) throw new Error('Fly Machines needs a provider command');
+    return [spec.repoSetup?.providerEntrypoint ?? spec.entrypoint ?? `/home/node/${provider}-entrypoint.sh`, ...spec.args];
+}
+
 export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig) {
     const { clone, containerPath, provider } = validateLaunch(spec, options);
     const files: MachineLaunch['config']['files'] = [];
@@ -141,9 +146,7 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
         [E.baseCommit]: clone.baseCommit, [E.resultRef]: clone.resultRef ?? '', [E.resultDir]: RUN + '/workspace',
         [WORKSPACE_TRANSPORT_TOKEN_ENV]: transportToken };
     const setup = spec.repoSetup;
-    const argv = [setup?.providerEntrypoint ?? spec.entrypoint ?? `/home/node/${provider}-entrypoint.sh`, ...spec.args];
-    if (!spec.args.length) throw new Error('Fly Machines needs a provider command');
-    add(AGENT, JSON.stringify({ env: environment, argv }));
+    add(AGENT, JSON.stringify({ env: environment, argv: providerArgv(spec, provider) }));
     add(WRAPPER, wrapper, 0o644);
     add(shim, '#!/bin/sh\nexec /usr/local/bin/su-exec node /usr/bin/python3 -I ' + WRAPPER + ' agent\n', 0o755);
     const command = ['/bin/bash', '-c', clone.script, ...(setup ? [setup.script, shim, ...spec.args] : [WORKSPACE_DIRECT_AGENT_LAUNCH, ...helper, 'agent'])];

@@ -52,6 +52,16 @@ async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { 
     if (last) return last[2] === undefined ? 'running' : Number(last[2]);
 }
 
+function applyOutputDiagnostics(result: ExecutionResult, truncated: string[], missing: string[], failures: string[]) {
+    if (truncated.length) result.stderr += '\nFly captured ' + truncated.join(' and ') + ' exceeded the returned output limit; older output was truncated.';
+    if (missing.length) failures.unshift('Fly Machine output unavailable: ' + missing.join(', '));
+    if (failures.length) {
+        result.outputIncomplete = failures.join('. ');
+        result.stderr += '\n' + result.outputIncomplete;
+        result.exitCode = -1;
+    }
+}
+
 export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'fly-machines';
     static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: false,
@@ -263,13 +273,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             }
             if (callbackError) throw callbackError;
             const result: ExecutionResult = pipeline.result(exitCode);
-            if (truncated.length) result.stderr += '\nFly captured ' + truncated.join(' and ') + ' exceeded the returned output limit; older output was truncated.';
-            if (missing.length) failures.unshift('Fly Machine output unavailable: ' + missing.join(', '));
-            if (failures.length) {
-                result.outputIncomplete = failures.join('. ');
-                result.stderr += '\n' + result.outputIncomplete;
-                result.exitCode = -1;
-            }
+            applyOutputDiagnostics(result, truncated, missing, failures);
             return new Promise((resolve, reject) => {
                 if (costMessage) settleCostCapStop(costMessage, result, { preserveOutput: preserve, resolve, reject });
                 else if (pipeline.watchdog.trip) settleWatchdogStop(pipeline.watchdog.trip, result, preserve, { resolve, reject });
