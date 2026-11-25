@@ -77,6 +77,7 @@ export class SpritePool {
         const started = Date.now();
         const creating = Promise.resolve().then(async () => {
             signal.throwIfAborted();
+            this.inventory?.checkCreate(name);
             const created = await this.client.createSprite(name);
             if (this.inventory && created.name !== name) throw new Error('Provider returned an unexpected Sprite name');
             return created;

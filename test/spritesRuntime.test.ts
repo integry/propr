@@ -19,6 +19,7 @@ import { spritePoolKey } from '@propr/shared';
 import { FakeSprites, FakeSpriteOrganization } from './helpers/fakeSprites.ts';
 
 const markerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-runtime-'));
+const installationDir = () => fs.mkdtempSync(path.join(markerDir, 'install-'));
 after(() => fs.rmSync(markerDir, { recursive: true, force: true }));
 const token = 'test-org-secret';
 function fixture() {
@@ -58,7 +59,7 @@ test('a lease lasts through result retrieval and release wipes the separate tmp 
 test('a run at the shared cap reports its wait and excludes it from compute usage', { timeout: 5000 }, async t => {
     const { builder } = fixture();
     const provider = new FakeSpriteOrganization();
-    const runtime = new SpritesRuntime(provider, { DATA_DIR: markerDir, PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: '1' }, new Redis());
+    const runtime = new SpritesRuntime(provider, { DATA_DIR: installationDir(), PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: '1' }, new Redis());
     t.after(() => runtime.close());
     let now = Date.now();
     t.mock.method(Date, 'now', () => now);
@@ -108,7 +109,7 @@ test('lease loss stops the holder while a concurrent sweep preserves its running
         void sprite.launched.promise.then(launched.resolve);
     };
     const redis = new Redis({ port: 9001 });
-    const environment = { DATA_DIR: markerDir, PROPR_SPRITES_TOKEN: token };
+    const environment = { DATA_DIR: installationDir(), PROPR_SPRITES_TOKEN: token };
     const holder = new SpritesRuntime(provider, environment, redis);
     const cleaner = new SpritesRuntime(provider, environment, redis);
     t.after(() => Promise.all([holder.close(), cleaner.close()]));
@@ -745,7 +746,7 @@ test('a result read completing after the local lease deadline returns no data', 
     const { builder } = fixture();
     const provider = new FakeSpriteOrganization();
     const redis = new Redis({ port: 9010 });
-    const runtime = new SpritesRuntime(provider, { DATA_DIR: markerDir, PROPR_SPRITES_TOKEN: token }, redis);
+    const runtime = new SpritesRuntime(provider, { DATA_DIR: installationDir(), PROPR_SPRITES_TOKEN: token }, redis);
     t.after(() => runtime.close());
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const run = runtime.start(builder.build());

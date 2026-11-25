@@ -15,21 +15,50 @@ type Phase = 'idle' | 'inUse' | 'provisioning';
 // not immediately turn a transient 404 into another worker's free slot.
 const leaseMs = 3 * 60_000;
 const localLeaseMs = leaseMs - 10_000;
+// A delayed reservation acknowledgement can still dispatch a create until its original
+// local deadline. Then allow the SDK's full two-minute request before listing.
+const createRequestMs = 120_000;
+const dispatchMs = localLeaseMs - createRequestMs;
+// Redis TIME is truncated to seconds, so round the fence past the final millisecond.
+const recoverySeconds = Math.ceil(localLeaseMs / 1000) + 1;
+const redisSeconds = "tonumber(redis.call('TIME')[1])";
+const sizeMatches = "tonumber(redis.call('HGET', meta, 'size')) == redis.call('HLEN', runners)";
+const beginSnapshot = `
+local meta, runners = KEYS[1], KEYS[2]
+local generation = redis.call('HGET', meta, 'generation')
+if generation and ${sizeMatches} then return {generation, ${redisSeconds}} end
+local now = ${redisSeconds}
+local untilTime = tonumber(redis.call('HGET', meta, 'recoverAfter'))
+if not untilTime or not generation then
+    redis.call('HSET', meta, 'generation', ARGV[1], 'recoverAfter', now + tonumber(ARGV[2]))
+    redis.call('HDEL', meta, 'size')
+    return false
+end
+if now < untilTime then return false end
+return {generation, now}`;
 const reserve = `
 local meta, runners, lease, waiting = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 if ARGV[6] ~= '' then
     if redis.call('HGET', meta, 'generation') ~= ARGV[6] then return -1 end
+    local recoverAfter = tonumber(redis.call('HGET', meta, 'recoverAfter'))
+    if recoverAfter then
+        if tonumber(ARGV[7]) < recoverAfter then return -1 end
+    elseif not (${sizeMatches}) then return -1 end
     -- Publish a complete listing in one operation. Include surviving reservations
     -- (create can be in flight) and migrate phase fields from the original hash.
-    for i = 7, #ARGV do redis.call('HSETNX', runners, ARGV[i], 'orphan') end
+    for i = 8, #ARGV do redis.call('HSETNX', runners, ARGV[i], 'orphan') end
     local old = redis.call('HKEYS', meta)
     for _, name in ipairs(old) do
         if string.sub(name, 1, 6) == 'propr-' then
             redis.call('HSET', runners, name, redis.call('HGET', meta, name))
             redis.call('HDEL', meta, name)
+        elseif string.sub(name, 1, 7) == 'create:' and redis.call('HEXISTS', runners, string.sub(name, 8)) == 0 then
+            redis.call('HDEL', meta, name)
         end
     end
-elseif redis.call('EXISTS', runners) == 0 or not redis.call('HGET', meta, 'cap') then
+    redis.call('HSET', meta, 'size', redis.call('HLEN', runners))
+    redis.call('HDEL', meta, 'recoverAfter')
+elseif not (${sizeMatches}) or redis.call('EXISTS', runners) == 0 or not redis.call('HGET', meta, 'cap') then
     return -1
 end
 redis.call('HSETNX', meta, 'orphansDeleted', '0')
@@ -37,6 +66,7 @@ redis.call('HSETNX', meta, 'cap', ARGV[5])
 if ARGV[1] == '' then return 0 end
 if redis.call('GET', lease) == ARGV[2] then
     redis.call('PEXPIRE', lease, ARGV[3])
+    redis.call('HSET', meta, 'create:' .. ARGV[1], ${redisSeconds} + ${recoverySeconds})
     redis.call('HSET', runners, ARGV[1], 'provisioning')
     return 1
 end
@@ -48,15 +78,20 @@ if redis.call('HLEN', runners) >= tonumber(redis.call('HGET', meta, 'cap')) then
 end
 if redis.call('HEXISTS', runners, ARGV[1]) == 1 or not redis.call('SET', lease, ARGV[2], 'PX', ARGV[3], 'NX') then return 0 end
 redis.call('HSET', runners, ARGV[1], 'provisioning')
-redis.call('HSET', meta, 'generation', ARGV[1])
+redis.call('HSET', meta, 'generation', ARGV[1], 'create:' .. ARGV[1], ${redisSeconds} + ${recoverySeconds}, 'size', redis.call('HLEN', runners))
 return 1`;
 
 // An operator can delete a checked-out or idle machine. Its name is never reused.
 // Never free a live provisioning reservation on a 404: create may still be in flight.
+const removeRunner = `if redis.call('HDEL', KEYS[1], ARGV[1]) == 1 then
+        redis.call('HSET', KEYS[3], 'generation', ARGV[1] .. ':gone')
+        if redis.call('HEXISTS', KEYS[3], 'size') == 1 then redis.call('HINCRBY', KEYS[3], 'size', -1) end
+    end
+    redis.call('HDEL', KEYS[3], 'create:' .. ARGV[1])`;
 const missing = `
 local phase = redis.call('HGET', KEYS[1], ARGV[1])
 if phase == 'idle' or phase == 'inUse' then
-    if redis.call('HDEL', KEYS[1], ARGV[1]) == 1 then redis.call('HSET', KEYS[3], 'generation', ARGV[1] .. ':gone') end
+    ${removeRunner}
     redis.call('DEL', KEYS[2])
 end
 return 1`;
@@ -66,7 +101,7 @@ const update = `
 if redis.call('GET', KEYS[2]) ~= ARGV[2] then return 0 end
 local action = ARGV[4]
 if action == 'gone' or action == 'deleted' then
-    if redis.call('HDEL', KEYS[1], ARGV[1]) == 1 then redis.call('HSET', KEYS[3], 'generation', ARGV[1] .. ':gone') end
+    ${removeRunner}
     redis.call('DEL', KEYS[2])
     if action == 'deleted' then redis.call('HINCRBY', KEYS[3], 'orphansDeleted', 1) end
 elseif action == 'abandon' then
@@ -74,7 +109,8 @@ elseif action == 'abandon' then
     redis.call('DEL', KEYS[2])
 else
     if action ~= 'renew' then
-        if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 then return -1 end
+        if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 0 then redis.call('HDEL', KEYS[3], 'size') end
+        if action ~= 'provisioning' then redis.call('HDEL', KEYS[3], 'create:' .. ARGV[1]) end
         redis.call('HSET', KEYS[1], ARGV[1], action)
     end
     redis.call('PEXPIRE', KEYS[2], ARGV[3])
@@ -95,15 +131,24 @@ async function deploymentMarker(redis: SpritePoolRedis, env: NodeJS.ProcessEnv, 
     const digest = createHash('sha256').update(key).digest('hex').slice(0, 16);
     const dir = env.DATA_DIR || path.join(process.cwd(), 'data');
     const file = path.join(dir, 'sprites-deployment-' + digest);
+    // Bind first-install initialization to the Redis generation observed before publishing
+    // the durable marker. A delayed opener cannot bless a replacement inventory.
+    await redis.hsetnx(key, 'generation', randomUUID());
+    const generation = await redis.hget(key, 'generation');
     let saved: string | undefined;
     try { saved = await readFile(file, 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     const candidate = saved ?? (env.PROPR_INSTANCE_ID?.trim() ? digest : randomUUID().replaceAll('-', '').slice(0, 16));
     if (!/^[0-9a-f]{16}$/.test(candidate)) throw new Error('Invalid persisted Sprite deployment marker');
     const markerKey = key + ':deployment';
-    await redis.set(markerKey, candidate, 'NX');
-    const marker = await redis.get(markerKey);
-    if (!marker || !/^[0-9a-f]{16}$/.test(marker) || (saved && saved !== marker)) throw new Error('Invalid or conflicting Sprite deployment marker');
+    const marker = await redis.eval(`
+        if redis.call('SET', KEYS[2], ARGV[1], 'NX') and redis.call('HGET', KEYS[1], 'generation') == ARGV[2]
+            and not redis.call('HGET', KEYS[1], 'recoverAfter') then
+            redis.call('HSETNX', KEYS[1], 'size', '0')
+        end
+        return redis.call('GET', KEYS[2])
+    `, 2, key, markerKey, candidate, saved ? '' : generation ?? '');
+    if (typeof marker !== 'string' || !/^[0-9a-f]{16}$/.test(marker) || (saved && saved !== marker)) throw new Error('Invalid or conflicting Sprite deployment marker');
     if (saved) return saved;
     await mkdir(dir, { recursive: true });
     const temp = file + '.' + randomUUID();
@@ -128,7 +173,7 @@ async function retry<T>(operation: () => Promise<T>) {
 
 export class SpriteInventory {
     private readonly owner = randomUUID();
-    private readonly owned = new Map<string, { lost: AbortController; expiry?: NodeJS.Timeout; deadline: number }>();
+    private readonly owned = new Map<string, { lost: AbortController; expiry?: NodeJS.Timeout; deadline: number; createDeadline: number }>();
     private cleanup?: Promise<void>;
     private closing = false;
     private timers: NodeJS.Timeout[] = [];
@@ -212,15 +257,15 @@ export class SpriteInventory {
 
     private get runners() { return this.key + ':runners'; }
 
-    private admission(name: string, speculative: boolean, snapshot?: { generation: string; names: string[] }) {
+    private admission(name: string, speculative: boolean, snapshot?: { generation: string; listedAt: number; names: string[] }) {
         return this.redis.eval(reserve, 4, this.key, this.runners, this.lease(name), this.key + ':waiting',
-            name, this.owner, leaseMs, speculative ? '1' : '0', this.cap, snapshot?.generation ?? '', ...(snapshot?.names ?? []));
+            name, this.owner, leaseMs, speculative ? '1' : '0', this.cap, snapshot?.generation ?? '', snapshot?.listedAt ?? 0, ...(snapshot?.names ?? []));
     }
 
     private async snapshot() {
-        await this.redis.hsetnx(this.key, 'generation', randomUUID());
-        const generation = await this.redis.hget(this.key, 'generation');
-        if (!generation) throw new Error('Sprite inventory lost during recovery');
+        const start = await this.redis.eval(beginSnapshot, 2, this.key, this.runners, randomUUID(), recoverySeconds);
+        if (!Array.isArray(start)) return;
+        const [generation, listedAt] = start as [string, number];
         const listed = await this.provider.listAllSprites(this.prefix);
         const present = listed.map(sprite => sprite.name).filter(name => this.matches(name));
         const names = new Set(present);
@@ -234,7 +279,7 @@ export class SpriteInventory {
                 if (this.matches(name)) names.add(name);
             }
         } while (cursor !== '0');
-        return { generation, present, names: [...names] };
+        return { generation, listedAt, present, names: [...names] };
     }
 
     async reserve(name: string, speculative = false) {
@@ -244,12 +289,13 @@ export class SpriteInventory {
                 let result = await this.admission(name, speculative);
                 if (result === -1) {
                     const snapshot = await this.snapshot();
+                    if (!snapshot) return false;
                     sent = performance.now();
                     result = await this.admission(name, speculative, snapshot);
                     if (result === -1) throw new Error('Sprite inventory changed during recovery');
                 }
                 if (result !== 1) return false;
-                this.owned.set(name, { lost: new AbortController(), deadline: 0 });
+                this.owned.set(name, { lost: new AbortController(), deadline: 0, createDeadline: sent + dispatchMs });
                 if (!this.arm(name, sent)) {
                     await this.change(name, 'gone'); // No create can have started.
                     throw new Error('Sprite reservation expired before acknowledgement');
@@ -280,6 +326,12 @@ export class SpriteInventory {
         return true;
     }
 
+    checkCreate(name: string) {
+        this.signal(name).throwIfAborted();
+        const lease = this.owned.get(name);
+        if (!lease || performance.now() >= lease.createDeadline) throw new Error('Sprite reservation expired before create');
+    }
+
     signal(name: string) {
         const lease = this.owned.get(name);
         if (lease && performance.now() >= lease.deadline) this.stopRenewing(name);
@@ -301,10 +353,6 @@ export class SpriteInventory {
         if (extendsLease && owner === this.owner && this.signal(name).aborted) return false;
         const sent = performance.now();
         const changed = await this.redis.eval(update, 3, this.runners, this.lease(name), this.key, name, owner, leaseMs, action);
-        if (changed === -1) {
-            await this.sweep();
-            throw new Error('Retry Sprite phase after inventory recovery');
-        }
         if (owner === this.owner && !changed) this.dropLease(name);
         if (extendsLease) {
             return !!changed && (owner === this.owner ? this.arm(name, sent) : performance.now() < sent + localLeaseMs);
@@ -357,11 +405,14 @@ export class SpriteInventory {
     }
 
     private async reconcile() {
-        const present = await retry(async () => {
+        const listing = await retry(async () => {
             const snapshot = await this.snapshot();
+            if (!snapshot) return;
             if (await this.admission('', false, snapshot) === -1) throw new Error('Sprite inventory changed during sweep');
-            return new Set(snapshot.present);
+            return { present: new Set(snapshot.present), listedAt: snapshot.listedAt };
         });
+        if (!listing) return;
+        const { present, listedAt } = listing;
         const tracked = await this.redis.hgetall(this.runners);
         // Confirm absent slots first. A paginated listing can miss a concurrently created machine.
         for (const [name, phase] of Object.entries(tracked)) {
@@ -371,18 +422,23 @@ export class SpriteInventory {
                 catch (error) {
                     if (spriteGone(error)) await this.redis.eval(missing, 3, this.runners, this.lease(name), this.key, name);
                 }
-            } else await this.inspect(name, false);
+            } else await this.inspect(name, listedAt);
         }
-        for (const name of present) await this.inspect(name, true);
+        for (const name of present) await this.inspect(name);
     }
 
     private matches(name: string) {
         return name.startsWith(this.prefix) && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(name.slice(this.prefix.length));
     }
 
-    private async inspect(name: string, listed: boolean) {
+    private async inspect(name: string, absentAt?: number) {
         const cleaner = randomUUID();
-        if (!await this.redis.set(this.lease(name), cleaner, 'PX', leaseMs, 'NX')) return;
+        // Only a listing begun after the outstanding create window can establish absence.
+        if (!await this.redis.eval(`
+            local untilTime = redis.call('HGET', KEYS[1], 'create:' .. ARGV[1])
+            if ARGV[4] ~= '' and untilTime and tonumber(untilTime) > tonumber(ARGV[4]) then return false end
+            return redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3], 'NX')
+        `, 2, this.key, this.lease(name), name, cleaner, leaseMs, absentAt ?? '')) return;
         try {
             let sprite;
             try {
@@ -393,7 +449,7 @@ export class SpriteInventory {
                 return;
             }
             const created = sprite.createdAt?.getTime();
-            if (listed && sprite.name === name && created !== undefined && Number.isFinite(created) && Date.now() - created > this.orphanAgeMs
+            if (absentAt === undefined && sprite.name === name && created !== undefined && Number.isFinite(created) && Date.now() - created > this.orphanAgeMs
                 && (await sprite.listSessions()).length === 0
                 && await this.change(name, 'renew', cleaner)) {
                 const deleted = await this.deleteConfirmed(name);
