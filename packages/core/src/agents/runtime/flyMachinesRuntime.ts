@@ -11,7 +11,7 @@ import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.j
 import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.js';
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
-import { MachinesClient, type MachinesApi } from './fly/api.js';
+import { MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
 import { flyConfig } from './fly/config.js';
 import { OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
 import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
@@ -19,12 +19,13 @@ import { RUN } from './fly/wrapper.js';
 import { startRunPipeline } from './runPipeline.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
-const BOOT_TIMEOUT = 120_000;
+const POLL_FAILURE_TOLERANCE = 15_000;
 
 interface ExitPollCallbacks {
-    start(machine: string): Promise<void>;
+    bootDeadline: number;
+    start(machine: string): Promise<boolean>;
     activity(): void;
-    readUsage(id: string): Promise<void>;
+    readUsage(id: string): Promise<boolean>;
 }
 
 async function probe(api: MachinesApi, id: string, signal: AbortSignal) {
@@ -34,22 +35,32 @@ async function probe(api: MachinesApi, id: string, signal: AbortSignal) {
 
 /** Poll the atomic status and consume new usage when a cap is active.
  * Changing byte counts are activity for the stall watchdog. */
-async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { start, activity, readUsage }: ExitPollCallbacks) {
-    let deadline = Date.now() + BOOT_TIMEOUT;
+async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { bootDeadline, start, activity, readUsage }: ExitPollCallbacks) {
+    let deadline = bootDeadline;
+    let failures = 0;
+    let retryUsage = false;
     let previousSize = -1;
     while (!forced.aborted) {
-        const status = await probe(api, id, forced);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return;
+        const status = await probe(api, id, AbortSignal.any([forced, AbortSignal.timeout(remaining)]));
+        let retry = !status;
         if (status && status[1] === 'ready') {
             if (Date.now() >= deadline) return;
-            await start(id);
+            retry = !await start(id);
         } else if (status) {
             if (status[2] !== undefined) return Number(status[2]);
             const bytes = Number(status[3]);
-            if (bytes !== previousSize) { previousSize = bytes; activity(); }
-            if (!forced.aborted) await readUsage(id);
-            deadline = Date.now() + 15_000;
+            const changed = bytes !== previousSize;
+            if (changed) activity();
+            previousSize = bytes;
+            if ((changed || retryUsage) && !forced.aborted) retryUsage = !await readUsage(id);
+            retry = retryUsage;
+            deadline = Date.now() + POLL_FAILURE_TOLERANCE;
         } else if (!forced.aborted && Date.now() >= deadline) return;
-        await delay(500, undefined, { signal: forced }).catch(() => {});
+        if (!retry) failures = 0;
+        const interval = retry ? pollBackoff(failures++) : 500;
+        await delay(Math.min(interval, Math.max(0, deadline - Date.now())), undefined, { signal: forced }).catch(() => {});
     }
     // The grace period may expire between polls, after the clone transport
     // has finished publishing its bundle. Check before forcing deletion.
@@ -136,7 +147,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             stopping = credentialsPending && signal === 'SIGKILL' ? 'SIGTERM' : signal;
             if (!mayHaveStarted) { forced.abort(); return true; }
             if (id) void api.signal(id, stopping).catch(() => {});
-            graceTimer = setTimeout(() => forced.abort(), stopping !== signal ? 0 : Math.max(0, grace));
+            graceTimer = setTimeout(() => forced.abort(), Math.max(stopping !== signal ? 5000 : 0, grace));
             return true;
         };
         const abort = () => { requestStop(); };
@@ -167,13 +178,13 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             if (started.refusal) return started.refusal;
             const { pipeline } = started;
             const live = startLiveOutputStreaming({ ...options, streamExtraOutput: undefined, onOverflow: () => {} }, () => '', () => '');
+            const scrub = new ExtensionStreamRedactor(prepared.secrets);
             const display = (message: string) => {
                 const match = /^propr-(stdout|stderr) (.*)$/.exec(message);
                 if (!match) return;
                 let line: unknown;
                 try { line = JSON.parse(match[2]); } catch { return; }
                 if (typeof line !== 'string') return;
-                const scrub = new ExtensionStreamRedactor(prepared.secrets);
                 const clean = scrub.push(line) + scrub.finish() + '\n';
                 const stream = match[1] as 'stdout' | 'stderr';
                 output.write(stream, clean);
@@ -251,15 +262,18 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             };
             let exitCode = -1;
             try {
-                id = await api.create(prepared.launch);
+                let bootStart = Date.now();
+                id = await api.create(prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); });
                 void api.logs(id, display, logs.signal).catch(() => {});
-                let usageReadFailed = false;
+                let usageFailureSince: number | undefined;
                 const code = stopping ? undefined : await waitForExit(api, id, forced.signal, {
+                    bootDeadline: bootStart + config.bootTimeout,
                     async start(machine) {
-                        if (stopping) return;
+                        if (stopping) return false;
                         // A lost exec response can still have opened the guest gate.
                         mayHaveStarted = true;
-                        await api.exec(machine, ['/usr/bin/touch', RUN + '/start'], forced.signal).catch(() => {});
+                        const response = await api.exec(machine, ['/usr/bin/touch', RUN + '/start'], forced.signal).catch(() => undefined);
+                        return response?.exit_code === 0;
                     },
                     activity() {
                         mayHaveStarted = true;
@@ -267,18 +281,20 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                         if (!timeoutTimer) timeoutTimer = setTimeout(() => { timedOut = requestStop(); }, timeout);
                     },
                     async readUsage(machine) {
-                        if (!pipeline.hasCaptureCost) return;
+                        if (!pipeline.hasCaptureCost) return true;
                         try {
                             if (await scanCostOutput(machine, forced.signal) === null) throw new Error('Missing stdout');
-                            usageReadFailed = false;
+                            usageFailureSince = undefined;
+                            return true;
                         } catch {
                             // Retry from the committed cursor. If capture stays unreadable,
                             // end the chargeable execution while it can still be signalled.
-                            if (usageReadFailed && !stopping) {
+                            usageFailureSince ??= Date.now();
+                            if (Date.now() - usageFailureSince >= POLL_FAILURE_TOLERANCE && !stopping) {
                                 failures.push('Fly stdout unavailable for live cost accounting');
                                 requestStop();
                             }
-                            usageReadFailed = true;
+                            return false;
                         }
                     },
                 });

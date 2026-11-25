@@ -75,7 +75,7 @@ def launch():
         signal.signal(sig, forward)
     credential_pending = bool(data.get('credentialPath'))
     status('ready')
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + data['bootTimeout'] / 1000
     while not (run / 'start').exists():
         if pending or time.monotonic() >= deadline:
             return

@@ -1,3 +1,4 @@
+import { calculateDelay } from '../../../utils/retryHandler.js';
 import { constants } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { FlyConfig } from './config.js';
@@ -18,8 +19,18 @@ export interface MachineLaunch {
     };
 }
 
+export const pollBackoff = (attempt: number) => calculateDelay(attempt, {
+    baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, jitter: true, maxAttempts: Infinity, retryableErrors: [],
+});
+
+interface MachineRecord {
+    id: string;
+    name: string;
+    events?: { timestamp: number; type: string }[];
+}
+
 export interface MachinesApi {
-    create(launch: MachineLaunch): Promise<string>;
+    create(launch: MachineLaunch, onBootStart?: (timestamp: number) => void): Promise<string>;
     exec(id: string, args: string[], signal?: AbortSignal): Promise<{ stdout: string; exit_code: number }>;
     signal(id: string, signal: NodeJS.Signals): Promise<void>;
     destroy(id: string): Promise<void>;
@@ -54,17 +65,24 @@ export class MachinesClient implements MachinesApi {
             signal: signal ? AbortSignal.any([deadline, signal]) : deadline });
         // A create or exec error body may echo the submitted configuration.
         if (!response.ok && !(method === 'DELETE' && response.status === 404)) {
+            await response.body?.cancel();
             throw new MachinesHttpError(method, response.status);
         }
         return response;
     }
 
-    async create(launch: MachineLaunch) {
+    async create(launch: MachineLaunch, onBootStart?: (timestamp: number) => void) {
+        const identify = (machine: MachineRecord) => {
+            if (!machine.id || !/^[a-zA-Z0-9-]+$/.test(machine.id)) throw new Error('Fly create returned no Machine ID');
+            for (const event of machine.events ?? []) {
+                if (['launch', 'create', 'pull'].includes(event.type) && Number.isSafeInteger(event.timestamp) && event.timestamp > 0)
+                    onBootStart?.(event.timestamp);
+            }
+            return machine.id;
+        };
         try {
-            const response = await this.request('POST', this.url, { body: launch, timeout: 120_000 });
-            const { id } = await response.json() as { id?: string };
-            if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Fly create returned no Machine ID');
-            return id;
+            const response = await this.request('POST', this.url, { body: launch, timeout: this.config.bootTimeout });
+            return identify(await response.json() as MachineRecord);
         } catch (error) {
             if (error instanceof MachinesHttpError && error.status < 500) throw error;
             // A lost create response can still have launched the agent. Adopt
@@ -72,9 +90,9 @@ export class MachinesClient implements MachinesApi {
             for (let attempt = 0; attempt < 3; attempt++) {
                 if (attempt) await delay(1000);
                 const response = await this.request('GET', this.url + '?metadata.propr_run_id=' + encodeURIComponent(launch.name));
-                const machines = await response.json() as Array<{ name: string; id: string }>;
+                const machines = await response.json() as MachineRecord[];
                 const found = machines.find(m => m.name === launch.name && /^[a-zA-Z0-9-]+$/.test(m.id));
-                if (found) return found.id;
+                if (found) return identify(found);
             }
             throw error;
         }
@@ -100,29 +118,32 @@ export class MachinesClient implements MachinesApi {
     }
 
     async destroy(id: string) {
-        for (let attempt = 0; ; attempt++) {
-            try {
-                await this.request('DELETE', this.url + '/' + id + '?force=true&kill=true');
-                return;
-            } catch (error) {
-                if (attempt >= 2) throw error;
-                await delay(500 * (attempt + 1));
-            }
-        }
+        await this.request('DELETE', this.url + '/' + id + '?force=true&kill=true');
     }
 
     async logs(id: string, publish: (message: string) => void, signal: AbortSignal) {
         const query = new URLSearchParams({ instance: id });
+        let failures = 0;
+        let previousPage = new Set<string>();
         while (!signal.aborted) {
-            const url = 'https://api.fly.io/api/v1/apps/' + this.config.app + '/logs?' + query;
-            const response = await this.request('GET', url, { signal });
-            const page = await response.json() as { data: { attributes: { message: string; instance: string } }[]; meta?: { next_token?: string } };
-            for (const { attributes } of page.data) {
-                if (attributes.instance === id) publish(attributes.message);
+            let interval = 1500;
+            try {
+                const url = 'https://api.fly.io/api/v1/apps/' + this.config.app + '/logs?' + query;
+                const response = await this.request('GET', url, { signal });
+                const page = await response.json() as { data: { id?: string; attributes: { message: string; instance: string } }[]; meta?: { next_token?: string } };
+                const seen = new Set<string>();
+                for (const entry of page.data) {
+                    const key = entry.id ?? JSON.stringify(entry.attributes);
+                    if (entry.attributes.instance === id && !previousPage.has(key)) publish(entry.attributes.message);
+                    seen.add(key);
+                }
+                previousPage = seen;
+                if (page.meta?.next_token) query.set('next_token', page.meta.next_token);
+                failures = 0;
+            } catch {
+                interval = pollBackoff(failures++);
             }
-            if (page.meta?.next_token) query.set('next_token', page.meta.next_token);
-            else if (page.data.length) return;
-            await delay(1500, undefined, { signal });
+            await delay(interval, undefined, { signal }).catch(() => {});
         }
     }
 }

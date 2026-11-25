@@ -117,7 +117,8 @@ test('boot timeout and cancellation during create or readiness destroy an unstar
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-boot-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     for (const boundary of ['create', 'ready', 'timeout']) {
-        const { runtime, api, builder } = fixture();
+        const { api, builder } = fixture();
+        const runtime = new FlyMachinesRuntime(api, { ...env, PROPR_FLY_BOOT_TIMEOUT: '1' });
         const controller = new AbortController();
         const pending = Promise.withResolvers<void>();
         const resume = Promise.withResolvers<void>();
@@ -130,7 +131,6 @@ test('boot timeout and cancellation during create or readiness destroy an unstar
         api.exec = async (id, args) => {
             if (args[3] === 'probe') {
                 if (boundary === 'timeout') {
-                    t.mock.method(Date, 'now', () => Number.MAX_SAFE_INTEGER);
                     throw new Error('still booting');
                 }
                 pending.resolve();
@@ -141,7 +141,6 @@ test('boot timeout and cancellation during create or readiness destroy an unstar
         const run = runtime.start(builder.build(), { signal: controller.signal });
         if (boundary === 'timeout') {
             assert.match((await run.wait()).outputIncomplete!, /status/);
-            t.mock.restoreAll();
         } else {
             await pending.promise;
             controller.abort();
@@ -260,7 +259,8 @@ test('Fly selection skips Docker preparation, refuses extensions and restricted 
     builder.spec.network.policy = { mode: 'restricted', allow: [], privateAddressAllow: [] };
     assert.throws(() => runtime.start(builder.build()), /open networking/);
     const plan = (env: NodeJS.ProcessEnv) => agentRunMcpTransportFor({ runtime: runtime.kind }, env);
-    assert.match(JSON.stringify(plan({ FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1' })), /control\.internal:4000/);
+    assert.match(JSON.stringify(plan({ FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1' })), /api\.process\.control\.internal:4000/);
+    assert.match(JSON.stringify(plan({ PROPR_FLY_MCP_URL: 'https://fly-mcp.example/api/mcp', FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1' })), /fly-mcp\.example/);
     assert.match(JSON.stringify(plan({ API_PUBLIC_URL: 'https://mcp.example' })), /https:\/\/mcp.example\/api\/mcp/);
 });
 
@@ -296,7 +296,7 @@ test('the shared cost guard observes each captured record once and ignores live 
     });
 });
 
-test('per-run provider files round-trip through the credential broker', async t => {
+test('SIGKILL allows a provider to exit and write refreshed files back through the credential broker', async t => {
     const { runtime, builder, api } = fixture();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-credential-test-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -321,7 +321,15 @@ test('per-run provider files round-trip through the credential broker', async t 
         assert.equal(args.at(-1), '/home/node/.claude/' + name);
         return { exit_code: 0, stdout: JSON.stringify([Date.now(), Buffer.from(updated).toString('base64')]) };
     };
+    api.status = 'running';
+    api.signal = async (_id, signal) => {
+        api.signals.push(signal);
+        setTimeout(() => { api.status = 'exited 143'; }, 100);
+    };
     const run = runtime.start(builder.build());
+    await api.probing.promise;
+    await run.stop('SIGKILL', 0);
+    assert.deepEqual(api.signals, ['SIGTERM']);
     assert.equal((await run.wait()).stdout, '[REDACTED] subscription-label');
     assert.ok(acknowledged);
     const files = api.launch!.config.files;
@@ -551,7 +559,7 @@ test('Machines API adopts a lost create response, uses argv exec and accepts a p
             creates++;
             throw new Error('lost response');
         }
-        if (url.includes('?metadata.propr_run_id=')) return Response.json([{ name: launch.name, id: 'm-1' }]);
+        if (url.includes('?metadata.propr_run_id=')) return Response.json([{ name: launch.name, id: 'm-1', events: [{ type: 'launch', timestamp: 1000 }] }]);
         if (url.endsWith('/exec')) {
             assert.deepEqual(body.command, ['printf', '%s', 'hello world']);
             return Response.json({ stdout: 'hello world', exit_code: 0 });
@@ -565,12 +573,34 @@ test('Machines API adopts a lost create response, uses argv exec and accepts a p
         return new Response(null, { status: 404 });
     });
     const api = new MachinesClient(config);
-    const id = await api.create(launch);
+    const starts: number[] = [];
+    const id = await api.create(launch, timestamp => starts.push(timestamp));
+    assert.deepEqual(starts, [1000]);
     assert.equal(creates, 1);
     assert.equal(id, 'm-1');
     assert.equal((await api.exec(id, ['printf', '%s', 'hello world'])).stdout, 'hello world');
     await api.signal(id, 'SIGTERM');
     await api.destroy(id);
+});
+
+test('live logs resume after HTTP and timeout errors and keep tailing a page without a cursor', async t => {
+    const { MachinesClient } = await import('../packages/core/src/agents/runtime/fly/api.ts');
+    const { flyConfig } = await import('../packages/core/src/agents/runtime/fly/config.ts');
+    const controller = new AbortController();
+    const messages: string[] = [];
+    let calls = 0;
+    const entry = (id: string) => ({ id, attributes: { instance: 'machine', message: id } });
+    t.mock.method(globalThis, 'fetch', async () => {
+        calls++;
+        if (calls === 1) return new Response(null, { status: 429 });
+        if (calls === 2) throw new DOMException('timed out', 'TimeoutError');
+        return Response.json({ data: calls === 3 ? [entry('first')] : [entry('first'), entry('last')] });
+    });
+    await new MachinesClient(flyConfig(env)).logs('machine', line => {
+        messages.push(line);
+        if (line === 'last') controller.abort();
+    }, AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]));
+    assert.deepEqual(messages, ['first', 'last']);
 });
 
 test('a Machine lost during retrieval reports unavailable output even when the workspace read also fails', async () => {
@@ -686,7 +716,7 @@ test('a running cost guard resumes after a failed chunk and stops on a split usa
     api.exec = (id, args) => {
         if (args[3] === 'chunk' && args[4] === stdout) {
             offsets.push(Number(args[5]));
-            if (offsets.length === 2) throw new Error('temporary read failure');
+            if ([2, 3].includes(offsets.length)) throw new Error('temporary read failure');
         }
         return exec(id, args);
     };
@@ -705,13 +735,35 @@ test('a running cost guard resumes after a failed chunk and stops on a split usa
             finish: async () => null,
         }),
     }, async () => {
-        const run = runtime.start(builder.build(), { preserveOutputOnTimeout: true, timeout: 5000 });
+        const run = runtime.start(builder.build(), { preserveOutputOnTimeout: true, timeout: 15_000 });
         const result = await run.wait();
         assert.equal(result.costCapExceeded, true);
         assert.equal(result.exitCode, 143);
         assert.deepEqual(api.signals, ['SIGTERM']);
         assert.deepEqual(observed, [first, usage, 'final']);
-        assert.deepEqual(offsets, [0, chunkSize, chunkSize, first.length + usage.length + 2]);
+        assert.deepEqual(offsets, [0, chunkSize, chunkSize, chunkSize, first.length + usage.length + 2]);
+        await run.release!();
+    });
+});
+
+test('unchanged probe sizes skip stdout scans until final collection', async () => {
+    const { runtime, api, builder } = fixture();
+    const exec = api.exec.bind(api);
+    let probes = 0;
+    let scans = 0;
+    api.status = 'running';
+    api.exec = async (id, args) => {
+        if (api.started && args[3] === 'probe' && ++probes === 4) api.status = 'exited 0';
+        if (args[3] === 'size' && args[4] === RUN + '/stdout') scans++;
+        return exec(id, args);
+    };
+    await runWithActiveRunCostCap({
+        taskId: 'task', exceeded: false, admit: async () => {},
+        beginExecution: () => ({ observeLine() {}, finish: async () => null }),
+    }, async () => {
+        const run = runtime.start(builder.build());
+        assert.equal((await run.wait()).exitCode, 0);
+        assert.equal(scans, 2);
         await run.release!();
     });
 });
@@ -724,7 +776,7 @@ test('a capped run stops when authoritative usage stays unreadable', async () =>
         taskId: 'task', exceeded: false, admit: async () => {},
         beginExecution: () => ({ observeLine: () => assert.fail('no complete record'), finish: async () => null }),
     }, async () => {
-        const run = runtime.start(builder.build(), { timeout: 5000, preserveOutputOnTimeout: true });
+        const run = runtime.start(builder.build(), { timeout: 40_000, preserveOutputOnTimeout: true });
         assert.match((await run.wait()).outputIncomplete!, /unavailable for live cost accounting/);
         assert.deepEqual(api.signals, ['SIGTERM']);
         await run.release!();

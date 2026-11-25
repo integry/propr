@@ -28,7 +28,8 @@ test('real Machines run a task as node and snapshot a stopped task before destru
     const seed = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-live-'));
     t.after(() => fs.rmSync(seed, { recursive: true, force: true }));
     const git = (...args: string[]) => execFileSync('git', ['-C', seed, ...args], { encoding: 'utf8' });
-    git('init', '-q', '-b', 'base');
+    git('init', '-q');
+    git('symbolic-ref', 'HEAD', 'refs/heads/base');
     git('-c', 'user.name=ProPR', '-c', 'user.email=test@propr.dev', 'commit', '-q', '--allow-empty', '-m', 'base');
     const baseCommit = git('rev-parse', 'HEAD').trim();
     const baseRef = 'refs/heads/base';

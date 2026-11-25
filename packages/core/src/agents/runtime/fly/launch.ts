@@ -141,7 +141,7 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     if (setup) add(hookBin + '/su-exec', '#!/bin/sh\nshift\nexec /usr/local/bin/su-exec node /usr/bin/python3 -I ' + WRAPPER + ' hook "$@"\n', 0o755);
     const command = ['/bin/bash', '-c', clone.script, ...(setup ? [`export PATH=${hookBin}:$PATH\n${setup.script}`, shim, ...spec.args] : [WORKSPACE_DIRECT_AGENT_LAUNCH, ...helper, 'agent'])];
     const credentialPath = store?.outputs.length ? storePath : undefined;
-    add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, credentialPath, credentialRetention: config.credentialRetention, timeout: options.timeout ?? 300_000, directories: [...directories], secrets }));
+    add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, credentialPath, bootTimeout: config.bootTimeout, credentialRetention: config.credentialRetention, timeout: options.timeout ?? 300_000, directories: [...directories], secrets }));
     add(RUN + '/stdin', options.stdinData ?? '');
     const name = 'propr-' + randomUUID();
     const launch: MachineLaunch = { name, skip_service_registration: true, skip_secrets: true, region: config.region, config: {
