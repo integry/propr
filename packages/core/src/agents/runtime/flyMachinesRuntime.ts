@@ -21,9 +21,14 @@ import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntim
 
 const BOOT_TIMEOUT = 120_000;
 
+interface ExitPollCallbacks {
+    activity(): void;
+    readUsage(id: string): Promise<void>;
+}
+
 /** Poll the atomic status and consume new usage when a cap is active.
  * Changing byte counts are activity for the stall watchdog. */
-async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, activity: () => void, readUsage: (id: string) => Promise<void>) {
+async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { activity, readUsage }: ExitPollCallbacks) {
     const probe = async (signal: AbortSignal) => {
         const res = await api.exec(id, [...helper, 'probe'], signal).catch(() => undefined);
         return res?.exit_code === 0 && /^(running|exited (\d{1,3}))\n(\d+)$/.exec(res.stdout.trim());
@@ -172,29 +177,47 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                     } catch { missing.push(stream); }
                 }
             };
+            const collectExitedMachine = async (machine: string) => {
+                await collectOutput(machine);
+                try {
+                    await workspace.collect(api, machine);
+                    mayDestroy = true;
+                } catch {
+                    const recovery = 'Fly workspace result retrieval failed. Recover from ' + machineLocation();
+                    failures.push(recovery);
+                    logger.warn({ run: spec.name }, recovery);
+                    await workspace.release();
+                }
+                try { await prepared.commit(api, machine); }
+                catch { failures.push('Fly credential write-back failed'); }
+                await destroy();
+            };
             let exitCode = -1;
             try {
                 id = await api.create(prepared.launch);
                 if (stopping) void api.signal(id, stopping).catch(() => {});
                 void api.logs(id, display, logs.signal).catch(() => {});
                 let usageReadFailed = false;
-                const code = await waitForExit(api, id, forced.signal, () => {
-                    pipeline.watchdog.recordActivity();
-                    if (!timeoutTimer) timeoutTimer = setTimeout(() => { timedOut = requestStop(); }, timeout);
-                }, async machine => {
-                    if (!pipeline.hasCaptureCost) return;
-                    try {
-                        if (await scanCostOutput(machine, forced.signal) === null) throw new Error('Missing stdout');
-                        usageReadFailed = false;
-                    } catch {
-                        // Retry from the committed cursor. If capture stays unreadable,
-                        // end the chargeable execution while it can still be signalled.
-                        if (usageReadFailed && !stopping) {
-                            failures.push('Fly stdout unavailable for live cost accounting');
-                            requestStop();
+                const code = await waitForExit(api, id, forced.signal, {
+                    activity() {
+                        pipeline.watchdog.recordActivity();
+                        if (!timeoutTimer) timeoutTimer = setTimeout(() => { timedOut = requestStop(); }, timeout);
+                    },
+                    async readUsage(machine) {
+                        if (!pipeline.hasCaptureCost) return;
+                        try {
+                            if (await scanCostOutput(machine, forced.signal) === null) throw new Error('Missing stdout');
+                            usageReadFailed = false;
+                        } catch {
+                            // Retry from the committed cursor. If capture stays unreadable,
+                            // end the chargeable execution while it can still be signalled.
+                            if (usageReadFailed && !stopping) {
+                                failures.push('Fly stdout unavailable for live cost accounting');
+                                requestStop();
+                            }
+                            usageReadFailed = true;
                         }
-                        usageReadFailed = true;
-                    }
+                    },
                 });
                 if (typeof code === 'number') {
                     exited = true;
@@ -216,19 +239,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                         failures.push('Check for a workspace result at ' + machineLocation());
                     }
                 } else {
-                    await collectOutput(id);
-                    try {
-                        await workspace.collect(api, id);
-                        mayDestroy = true;
-                    } catch {
-                        const recovery = 'Fly workspace result retrieval failed. Recover from ' + machineLocation();
-                        failures.push(recovery);
-                        logger.warn({ run: spec.name }, recovery);
-                        await workspace.release();
-                    }
-                    try { await prepared.commit(api, id); }
-                    catch { failures.push('Fly credential write-back failed'); }
-                    await destroy();
+                    await collectExitedMachine(id);
                 }
             } finally {
                 logs.abort();
