@@ -15,6 +15,7 @@ import { CloneWorkspaceTransport } from '../packages/core/src/git/workspaceClone
 import { SpritePool } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts';
 import { CLAUDE_JSON_SEED_CONTAINER_PATH } from '../packages/core/src/claude/docker/claudeConfigSeed.ts';
 import Redis from 'ioredis-mock';
+import { spritePoolKey } from '@propr/shared';
 import { FakeSprites, FakeSpriteOrganization } from './helpers/fakeSprites.ts';
 
 const token = 'test-org-secret';
@@ -57,21 +58,64 @@ test('a run at the shared cap reports its wait and then runs on the restored Spr
     const provider = new FakeSpriteOrganization();
     const runtime = new SpritesRuntime(provider, { PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: '1' }, new Redis());
     t.after(() => runtime.close());
+    let now = Date.now();
+    t.mock.method(Date, 'now', () => now);
+    provider.setup = sprite => {
+        const restore = sprite.restoreCheckpoint.bind(sprite);
+        sprite.restoreCheckpoint = async id => {
+            now += 100;
+            return restore(id);
+        };
+        now += 200;
+    };
     const first = runtime.start(builder.build());
     const cold = await first.wait();
-    assert.ok(cold.computeUsage!.provisioningMs! >= 0);
-    assert.ok(cold.computeUsage!.restoreMs! >= 0);
+    assert.equal(cold.computeUsage!.provisioningMs, 200);
+    assert.equal(cold.computeUsage!.restoreMs, 100);
+    assert.equal(cold.computeUsage!.wallTimeMs, 300);
     const next = runtime.start(builder.build(), { timeout: 500 });
     const message = await new Promise<string>(resolve => next.stderr.once('data', chunk => resolve(String(chunk))));
     assert.match(message, /Waiting for a Sprite/);
     assert.deepEqual((await next.inspect()).diagnostics, ['Waiting for a Sprite']);
+    now += 1200; // Capacity wait before the previous run begins its restore.
     await first.release!();
     const warm = await next.wait();
     assert.equal(warm.exitCode, 0);
     assert.equal(warm.computeUsage?.provisioningMs, 0);
-    assert.ok(warm.computeUsage!.restoreMs! >= 0);
+    assert.equal(warm.computeUsage!.restoreMs, 100);
+    assert.equal(warm.computeUsage!.wallTimeMs, 1300);
     assert.equal(provider.created.length, 1);
     await next.release!();
+    now += 10_000; // Idle time between runs is outside both checkout and preparation.
+    const idle = runtime.start(builder.build());
+    assert.equal((await idle.wait()).computeUsage!.wallTimeMs, 100);
+    await idle.release!();
+});
+
+test('lease loss stops the holder while a concurrent sweep preserves its running session', { timeout: 12_000 }, async t => {
+    const { builder } = fixture();
+    const provider = new FakeSpriteOrganization();
+    const launched = Promise.withResolvers<void>();
+    provider.setup = sprite => {
+        sprite.hold = true;
+        void sprite.launched.promise.then(launched.resolve);
+    };
+    const redis = new Redis({ port: 9001 });
+    const environment = { PROPR_SPRITES_TOKEN: token };
+    const holder = new SpritesRuntime(provider, environment, redis);
+    const cleaner = new SpritesRuntime(provider, environment, redis);
+    t.after(() => Promise.all([holder.close(), cleaner.close()]));
+    const run = holder.start(builder.build());
+    await launched.promise;
+    const sprite = provider.created[0];
+    (await provider.getSprite(sprite.name)).createdAt = new Date(1);
+    await redis.del(spritePoolKey() + ':lease:' + sprite.name);
+    await cleaner.initialize();
+    assert.deepEqual(provider.deleted, []);
+    assert.equal((await sprite.listSessions()).length, 1);
+    await assert.rejects(run.wait(), /lease expired/);
+    assert.deepEqual(await sprite.listSessions(), []);
+    assert.deepEqual(provider.deleted, []);
 });
 
 test('closing the runtime deletes idle Sprites once and leaves leased Sprites until release', async () => {

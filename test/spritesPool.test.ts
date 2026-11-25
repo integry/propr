@@ -89,6 +89,54 @@ test('cleanup checks marker, age and lease and counts only confirmed deletes', a
     assert.equal((await status()).provisioning, 1);
 });
 
+test('an orphan keeps its slot until its session list confirms inactivity under the cleaner lease', async () => {
+    const { open, provider, redis, status } = fixture();
+    const inventory = await open();
+    const sprite = await provider.createSprite(inventory.prefix + randomUUID());
+    sprite.createdAt = new Date(1);
+    const lease = spritePoolKey() + ':lease:' + sprite.name;
+    const idle = sprite.listSessions.bind(sprite);
+    sprite.listSessions = async () => [{ id: 'running' } as Awaited<ReturnType<typeof idle>>[number]];
+    await inventory.sweep();
+    assert.deepEqual(provider.deleted, []);
+    assert.equal(await inventory.reserve(inventory.prefix + randomUUID()), false);
+
+    sprite.listSessions = async () => { throw Object.assign(new Error('session endpoint missing'), { statusCode: 404 }); };
+    await inventory.sweep();
+    assert.equal((await status()).awaitingCleanup, 1);
+    assert.deepEqual(provider.deleted, []);
+
+    sprite.listSessions = async () => {
+        await redis.set(lease, 'other-cleaner');
+        return [];
+    };
+    await inventory.sweep();
+    assert.deepEqual(provider.deleted, []);
+    assert.equal(await redis.get(lease), 'other-cleaner');
+
+    await redis.del(lease);
+    sprite.listSessions = idle;
+    await inventory.sweep();
+    await inventory.sweep();
+    assert.deepEqual(provider.deleted, [sprite.name]);
+    assert.equal((await status()).orphansDeleted, 1);
+});
+
+test('release cannot discard a Sprite after losing ownership during restart', async t => {
+    const { open, provider, redis, status } = fixture();
+    const pool = new SpritePool(provider, await open());
+    t.after(() => pool.close());
+    const slot = await pool.acquire(new AbortController().signal);
+    provider.created[0].restart = async () => {
+        await redis.set(spritePoolKey() + ':lease:' + slot.sprite.name, 'cleaner');
+        throw new Error('restart failed');
+    };
+    await assert.rejects(pool.release(slot), /lease expired/);
+    assert.equal(slot.lease?.aborted, true);
+    assert.deepEqual(provider.deleted, []);
+    assert.equal((await status()).inUse, 1);
+});
+
 for (const recovers of [true, false]) {
     test(`ambiguous restart ${recovers ? 'waits for exec then restores' : 'destroys after the probe deadline'}`, async t => {
         const { open, provider } = fixture();

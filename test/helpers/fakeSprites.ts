@@ -16,6 +16,7 @@ export class FakeSprite {
     exitCode = 0;
     hold = false;
     pendingSpawn = false;
+    private sessionRunning = false;
     exitBeforeOutputEnds = false;
     launched = Promise.withResolvers<void>();
     output = 'agent output';
@@ -67,7 +68,9 @@ export class FakeSprite {
         this.files = new Map([...this.baseline, ...[...this.files].filter(([file]) => file.startsWith('/tmp/'))]);
         return completed();
     }
-    async listSessions() { return [{ id: 'test-session', workdir: '/opt/propr/inbox', tty: false }]; }
+    async listSessions() {
+        return this.sessionRunning ? [{ id: 'test-session', workdir: '/opt/propr/inbox', tty: false }] : [];
+    }
     spawn(_cmd: string, args: string[], options?: { sessionId?: string }) {
         const cmd = Object.assign(new EventEmitter(), {
             stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(),
@@ -78,6 +81,8 @@ export class FakeSprite {
             this.launches.push(this.files.get(args.at(-1)!)!.toString());
             this.events.push('launch');
         }
+        this.sessionRunning = true;
+        cmd.once('exit', (code: number) => { if (code >= 0) this.sessionRunning = false; });
         this.launched.resolve();
         setImmediate(() => {
             if (this.pendingSpawn) {

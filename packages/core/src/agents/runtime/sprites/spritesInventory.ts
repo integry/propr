@@ -189,7 +189,15 @@ export class SpriteInventory {
         this.disconnectWhenReleased();
     }
 
-    async deleteConfirmed(name: string) {
+    async deleteOwned(name: string) {
+        const lease = this.signal(name);
+        lease.throwIfAborted();
+        await this.change(name, 'renew');
+        lease.throwIfAborted();
+        await this.deleteConfirmed(name);
+    }
+
+    private async deleteConfirmed(name: string) {
         try {
             await this.provider.deleteSprite(name);
         } catch (error) {
@@ -243,19 +251,23 @@ export class SpriteInventory {
         const cleaner = randomUUID();
         if (!await this.redis.set(this.lease(name), cleaner, 'PX', leaseMs, 'NX')) return;
         try {
-            const sprite = await this.provider.getSprite(name);
+            let sprite;
+            try {
+                sprite = await this.provider.getSprite(name);
+            } catch (error) {
+                if (!spriteGone(error)) throw error;
+                await this.change(name, 'gone', cleaner);
+                return;
+            }
             const created = sprite.createdAt?.getTime();
             if (listed && sprite.name === name && created !== undefined && Number.isFinite(created) && Date.now() - created > this.orphanAgeMs
+                && (await sprite.listSessions()).length === 0
                 && await this.change(name, 'renew', cleaner)) {
                 const deleted = await this.deleteConfirmed(name);
                 await this.change(name, deleted ? 'deleted' : 'gone', cleaner);
                 return;
             }
         } catch (error) {
-            if (spriteGone(error)) {
-                await this.change(name, 'gone', cleaner);
-                return;
-            }
             logger.warn({ sprite: name }, 'Could not verify or delete orphan Sprite');
         }
         await this.change(name, 'abandon', cleaner);
