@@ -1,6 +1,9 @@
+import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
+import { BoundedDiagnosticTail, BoundedProviderRecordBuffer } from '../impl/utils/boundedProviderOutput.js';
+import type { RunPipeline } from './runPipeline.js';
 import path from 'node:path';
 import { parseFlyStat, type FlyMachinesClient, type FlyRequestOptions } from './flyMachinesApi.js';
-import { flyClonePhaseFile } from './flyMachinesLaunch.js';
+import { flyClonePhaseFile, FLY_RUN_FILES } from './flyMachinesLaunch.js';
 import type { AgentRunFileRead, AgentRunSpec } from './types.js';
 
 /** Reading files from a lingering Fly Machine through the exec API (base64 over the exec stdout). */
@@ -62,6 +65,48 @@ export async function readMachineFile(client: FlyMachinesClient, id: string, fil
         chunks.push(chunk);
     }
     return { content: Buffer.concat(chunks), mtimeMs };
+}
+
+/**
+ * Read candidate workflow reports from the complete capture in one bounded exec.
+ * awk splits only on LF. Ignore the first line (no preceding LF) and keep each
+ * candidate intact for the shared collector to authenticate and parse.
+ */
+async function readFlyWorkflowReports(client: FlyMachinesClient, id: string, signal: AbortSignal): Promise<string> {
+    const filter = 'NR > 1 && /^PROPR_WORKFLOW_/ && length($0) <= 256 { if (++reports > 256) exit 1; print }';
+    const read = await client.exec(id, ['awk', filter, FLY_RUN_FILES.stderr], 60, { signal });
+    if (read.exit_code !== 0) throw new Error('Could not read the Fly Machine repository workflow reports');
+    return '\n' + read.stdout;
+}
+
+/** Collect the exact result tails without replaying the live log pages through the pipeline. */
+export async function collectFlyOutput(client: FlyMachinesClient, id: string | undefined, pipeline: RunPipeline, signal: AbortSignal) {
+    const captured: Partial<Pick<ExecutionResult, 'stdout' | 'stderr' | 'exitCode' | 'outputIncomplete'>> = {};
+    const bounds = { tail: 8 * 1024 * 1024, signal };
+    const [out, err, reports] = await Promise.all([
+        id ? readMachineFile(client, id, FLY_RUN_FILES.stdout, bounds).catch(() => null) : null,
+        id ? readMachineFile(client, id, FLY_RUN_FILES.stderr, bounds).catch(() => null) : null,
+        id && pipeline.captureWorkflowStderr ? readFlyWorkflowReports(client, id, signal).catch(() => undefined) : undefined,
+    ]);
+    if (pipeline.captureWorkflowStderr) {
+        if (reports !== undefined) pipeline.captureWorkflowStderr(reports);
+        else {
+            captured.exitCode = -1;
+            captured.outputIncomplete = 'Could not read the Fly Machine repository workflow reports';
+        }
+    }
+    if (out && out !== 'oversized') {
+        const buffer = new BoundedProviderRecordBuffer();
+        buffer.append(pipeline.redactCapture(out.content.toString('utf8')));
+        captured.stdout = buffer.output;
+        pipeline.recoverCapturedRecords(captured.stdout);
+    }
+    if (err && err !== 'oversized') {
+        const tail = new BoundedDiagnosticTail();
+        tail.append(pipeline.redactCapture(err.content.toString('utf8')));
+        captured.stderr = tail.value;
+    }
+    return captured;
 }
 
 /** The clone transport wrapper's phase file holds one short word. */

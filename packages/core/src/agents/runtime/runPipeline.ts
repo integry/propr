@@ -36,6 +36,7 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
     const stderr = new BoundedDiagnosticTail();
     const markers = captureWorkflowMarkers(launch.markerArgs);
     const secrets = [...(currentExtensionLaunch()?.secrets ?? []), ...(launch.secrets ?? [])];
+    const secretsSpanLines = secrets.some(secret => secret.includes('\n'));
     const decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
     const redactors = { stdout: new ExtensionStreamRedactor(secrets), stderr: new ExtensionStreamRedactor(secrets) };
     const diagnostics = options.diagnostics && { ...options.diagnostics, attribution: { task: options.taskId, attempt: launch.attempt } };
@@ -53,17 +54,17 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
     const session = { state: { sessionIdDetected: false }, messageTimestamps, onSessionId: options.onSessionId,
         invokeExecutionCallback: launch.invokeExecutionCallback };
     let pending = '';
+    let liveLogBytes = 0;
     function inspect(line: string, timestamp: string) {
         inspectSessionMessageLine(line, timestamp, session);
         execution?.observeLine(line);
         watchdog.observeLine(line);
     }
-    function publish(stream: Stream, chunk: string) {
+    function publish(stream: Stream, chunk: string, timestamp = new Date().toISOString()) {
         if (stream === 'stdout') {
             stdout.append(chunk);
             const lines = boundedProviderOutput(pending + chunk).split('\n');
             pending = lines.pop() ?? '';
-            const timestamp = new Date().toISOString();
             for (const line of lines) inspect(line, timestamp);
         } else {
             stderr.append(chunk);
@@ -80,6 +81,45 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
             const decoded = decoders[stream].write(data);
             if (stream === 'stderr') markers?.append(decoded);
             publish(stream, redactors[stream].push(decoded));
+        },
+        // Line-oriented transport logs are for live observation. Only the original
+        // stderr bytes in the Machine's capture file are authoritative workflow evidence.
+        captureWorkflowStderr: markers?.append,
+        // The Fly logs API delivers complete lines with their original timestamps.
+        writeLogLine(stream: Stream, text: string, timestamp: string) {
+            watchdog.recordActivity();
+            const redactor = redactors[stream];
+            const chunk = redactor.push(text);
+            const safe = secretsSpanLines ? chunk : chunk + redactor.finish();
+            if (stream === 'stdout') liveLogBytes += Buffer.byteLength(safe);
+            publish(stream, safe, timestamp);
+        },
+        // Reconcile the Machine's exact output without publishing the live records twice.
+        redactCapture(text: string) {
+            const redactor = new ExtensionStreamRedactor(secrets);
+            return redactor.push(text) + redactor.finish();
+        },
+        recoverCapturedRecords(output: string) {
+            // Fly can observe exit before the last log page arrives. Match complete
+            // live records against the exact file in order before charging missing
+            // records. Never replay a retained tail as though it were the full log.
+            const liveOutput = stdout.output;
+            const liveLines = execution && !secretsSpanLines && Buffer.byteLength(liveOutput) === liveLogBytes
+                ? liveOutput.split('\n').slice(0, -1) : undefined;
+            const lines = output.split('\n');
+            if (liveLines) {
+                let next = 0;
+                const missed: string[] = [];
+                for (const line of lines) {
+                    if (next < liveLines.length && line === liveLines[next]) next++;
+                    else if (line) missed.push(line);
+                }
+                if (next === liveLines.length) for (const line of missed) execution!.observeLine(line);
+            }
+            const missing = { ...session, messageTimestamps: new Map<string, string>() };
+            const timestamp = new Date().toISOString();
+            for (const line of lines) inspectSessionMessageLine(line, timestamp, missing);
+            for (const [id, at] of missing.messageTimestamps) if (!messageTimestamps.has(id)) messageTimestamps.set(id, at);
         },
         finishOutput({ disconnected = false } = {}) {
             const workflow = markers && repositoryWorkflowExecution.getStore();

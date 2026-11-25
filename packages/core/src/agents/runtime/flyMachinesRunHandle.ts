@@ -1,20 +1,21 @@
 import { constants as osConstants } from 'node:os';
 import type { Readable } from 'node:stream';
-import { BoundedDiagnosticTail, BoundedProviderRecordBuffer } from '../impl/utils/boundedProviderOutput.js';
-import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
+import type { DockerCommandOptions, ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { getExecutionAbortError, getExecutionOwnershipContext } from '../../claude/docker/dockerExecutionOwnership.js';
-import { settleTimeoutStop } from '../../claude/docker/dockerExecutionSettlement.js';
-import { startLiveOutputStreaming } from '../../claude/docker/dockerLiveOutputStreaming.js';
-import { inspectSessionMessageLine, type SessionLineInspectionContext } from '../../claude/docker/dockerSessionOutput.js';
+import { settleTimeoutStop, settleWatchdogStop } from '../../claude/docker/dockerExecutionSettlement.js';
+import { admitCostExecution, refuseCostExecution, settleCostCapStop } from '../../claude/docker/dockerCostCap.js';
+import { startupStep } from './sprites/spritesProvisioning.js';
+import { startRunPipeline } from './runPipeline.js';
 import { resolveAgentRunNetworkPolicy } from '../../network/egressExecution.js';
+import { configuredDiagnosticSecrets } from '../../diagnostics/managedLogRuntime.js';
 import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
 import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient, type FlyRequestOptions } from './flyMachinesApi.js';
 import { FlyMachineCreation } from './flyMachinesCreation.js';
-import { confinedCredentialPath, flyCloneWrapperFinalizing, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
+import { collectFlyOutput, confinedCredentialPath, flyCloneWrapperFinalizing, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
 import type { FlyMachinesConfig } from './flyMachinesConfig.js';
 import { assertFlyNetworkUnrestricted, flyForcedStopCommand, FLY_RUN_FILES, renderFlyMachineRequest } from './flyMachinesLaunch.js';
-import { FlyLogStream, pause, pollInterrupt, settlesWithin, type PollInterrupt } from './flyMachinesLogStream.js';
+import { FlyLogStream, pause, pollInterrupt, settlesWithin } from './flyMachinesLogStream.js';
 import type { AgentRunHandle, AgentRunInspection, AgentRunSpec } from './types.js';
 
 /** How long a Machine create → `started` may take: image pull plus boot. */
@@ -34,8 +35,6 @@ const DESTROY_RETRY_MS = 30_000;
 const MAX_DESTROY_RETRY_MS = 10 * 60_000;
 /** The launcher writes the exit status as a short decimal line. */
 const MAX_EXIT_STATUS_BYTES = 64;
-/** A run's output is read back from the Machine at most this far from its end (the result keeps 1 MiB of records). */
-const MAX_CAPTURE_READ_BYTES = 8 * 1024 * 1024;
 /** Exit status / Machine state checks happen every this many log polls. */
 const STATUS_CHECK_EVERY_POLLS = 5;
 
@@ -91,16 +90,12 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
     private released?: Promise<void>;
     private releaseTimer?: NodeJS.Timeout;
     private retained = false;
-    private readonly logs: FlyLogStream;
+
     private readonly creation: FlyMachineCreation;
-    private readonly messageTimestamps = new Map<string, string>();
+
     readonly timing: FlyRunTiming = {};
 
     constructor(readonly spec: AgentRunSpec, options: AgentRunOptions, private readonly deps: FlyRunDependencies) {
-        this.logs = new FlyLogStream(deps.client, spec.name, {
-            output: (stream, text) => this.output.write(stream, text),
-            exit: code => { this.exitCode ??= code; },
-        });
         this.creation = new FlyMachineCreation(deps.client, spec.name, deps.now);
         const ownership = getExecutionOwnershipContext()?.signal;
         const signals = [this.cancellation.signal, options.signal, ownership].filter((signal): signal is AbortSignal => !!signal);
@@ -142,39 +137,101 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             config, launchEnvironment: { ...process.env, ...options.extraEnvVars }, stdinData: options.stdinData, creationId: this.creation.id,
         });
         this.throwIfAborted(signal);
-        // Never aborted: a create the API completes after an abort would leave a Machine no one destroys. One
-        // that fails without a definitive answer leaves an obligation to find and destroy its Machine.
-        const machine = await this.creation.create(request);
-        this.machineId = machine.id;
-        this.timing.createMs = now() - startedAt;
-        let live: ReturnType<typeof startLiveOutputStreaming> | undefined;
+        const runOptions = { ...options, agentRun: { spec: this.spec, onOutput: this.output.write.bind(this.output) } };
+        const preserveOutput = options.preserveOutputOnTimeout ?? false;
+        const interrupt = pollInterrupt(signal, deadline, now, this.deps.pollIntervalMs);
         try {
-            await this.discardIfAborted(signal);
-            live = startLiveOutputStreaming({
-                ...options, onOverflow: error => logger.warn({ run: this.spec.name, error: error.message }, 'Live output unavailable; continuing agent execution'),
-            }, () => this.logs.stdout.output, () => this.logs.stderr.value);
-            return await this.execute(machine, options, signal, { startedAt, deadline, timeoutMs, live });
+            const refusal = await startupStep(interrupt.signal, () => admitCostExecution('fly-machines', [], runOptions));
+            this.throwIfAborted(signal);
+            if (!interrupt.due()) {
+                if (refusal) return refuseCostExecution(refusal, preserveOutput);
+                return this.runAdmitted(request, runOptions, signal, startedAt);
+            }
         } catch (error) {
-            // Never settle while the agent may still be running: destroy a Machine whose agent was not seen to
-            // stop. One whose destroy already failed is retried by the cleanup timer the settlement schedules.
-            if (this.exitCode === undefined && !this.machineGone && !this.discarding) await this.discardMachine('failed');
-            throw error;
+            this.throwIfAborted(signal);
+            if (!interrupt.due()) throw error;
         } finally {
-            live?.close();
+            interrupt.dispose();
         }
+        const empty = { exitCode: null, stdout: '', stderr: '', messageTimestamps: new Map() };
+        return new Promise((resolve, reject) => settleTimeoutStop(timeoutMs, empty, preserveOutput, { resolve, reject }));
     }
 
-    private async execute(
-        machine: FlyMachine, options: AgentRunOptions, signal: AbortSignal,
-        run: { startedAt: number; deadline: number; timeoutMs: number; live: ReturnType<typeof startLiveOutputStreaming> },
+    private async runAdmitted(
+        request: ReturnType<typeof renderFlyMachineRequest>,
+        runOptions: DockerCommandOptions, signal: AbortSignal, startedAt: number,
     ): Promise<ExecutionResult> {
-        const { now } = this.deps;
-        const { startedAt, deadline, timeoutMs, live } = run;
-        const sessionContext: SessionLineInspectionContext = {
-            messageTimestamps: this.messageTimestamps, state: { sessionIdDetected: false }, onSessionId: options.onSessionId,
-            invokeExecutionCallback: callback => { void Promise.resolve().then(callback).catch(error => logger.warn({ run: this.spec.name, error: (error as Error).message }, 'Agent run callback failed')); },
+        const { config, now } = this.deps;
+        const timeoutMs = runOptions.timeout ?? 300_000;
+        const deadline = startedAt + timeoutMs;
+        const preserveOutput = runOptions.preserveOutputOnTimeout ?? false;
+        const args = request.config.init.cmd!;
+        const markerArgs = request.config.env.PROPR_REPO_SETUP === '0' ? [] : args;
+        const policyStop = new AbortController();
+        const running = AbortSignal.any([signal, policyStop.signal]);
+        let costMessage: string | undefined;
+        const invokeExecutionCallback = (callback: () => void | Promise<void>) => {
+            void Promise.resolve().then(callback).catch(error => logger.warn({ run: this.spec.name, error: (error as Error).message }, 'Agent run callback failed'));
         };
-        if (options.onContainerId) sessionContext.invokeExecutionCallback(() => options.onContainerId!(machine.id, this.spec.name));
+        const started = startRunPipeline(runOptions, {
+            command: 'fly-machines', markerArgs, diagnosticArgs: args, environment: request.config.env,
+            secrets: [config.token, ...configuredDiagnosticSecrets(request.config.env)],
+            attempt: getExecutionOwnershipContext()?.attemptGeneration, invokeExecutionCallback,
+            stopForCostCap: message => { costMessage = message; policyStop.abort(); },
+            stopForWatchdog: () => {
+                if (running.aborted || this.exitCode !== undefined) return false;
+                policyStop.abort();
+                return true;
+            },
+        });
+        if (!started.pipeline) return started.refusal;
+        const { pipeline } = started;
+        if (pipeline.captureWorkflowStderr) request.config.env.PROPR_EXECUTION_TIMEOUT_MS = String(timeoutMs);
+        const logs = new FlyLogStream(this.deps.client, this.spec.name, {
+            output: pipeline.writeLogLine,
+            exit: code => { this.exitCode ??= code; },
+        });
+        let captured: Awaited<ReturnType<typeof collectFlyOutput>> | undefined;
+        let timedOut = false;
+        try {
+            if (!policyStop.signal.aborted) {
+                // A create in flight must return its Machine id even if the run is stopped meanwhile.
+                const machine = await this.creation.create(request);
+                this.machineId = machine.id;
+                this.timing.createMs = now() - startedAt;
+                await this.discardIfAborted(signal);
+                if (runOptions.onContainerId) invokeExecutionCallback(() => runOptions.onContainerId!(machine.id, this.spec.name));
+                timedOut = await this.execute(machine, logs, running, { startedAt, deadline });
+                pipeline.watchdog.stop();
+                if ((timedOut || policyStop.signal.aborted) && !signal.aborted && this.exitCode === undefined) {
+                    await this.stopAfterTimeout(logs, signal);
+                }
+                await this.discardIfAborted(signal);
+                captured = await collectFlyOutput(this.deps.client, this.machineGone ? undefined : machine.id, pipeline, signal);
+                await this.discardIfAborted(signal);
+            }
+        } catch (error) {
+            if (this.machineId && this.exitCode === undefined && !this.machineGone && !this.discarding) await this.discardMachine('failed');
+            throw error;
+        } finally {
+            pipeline.finishOutput({ disconnected: !captured || !!captured.outputIncomplete });
+            const finalCost = await pipeline.finishCost();
+            costMessage ??= finalCost ?? undefined;
+            await pipeline.watchdog.settled();
+            await pipeline.closeLive();
+        }
+        await this.discardIfAborted(signal);
+        const result = { ...pipeline.result(this.exitCode ?? null), ...captured };
+        return new Promise((resolve, reject) => {
+            if (costMessage) settleCostCapStop(costMessage, result, { preserveOutput, resolve, reject });
+            else if (pipeline.watchdog.trip) settleWatchdogStop(pipeline.watchdog.trip, result, preserveOutput, { resolve, reject });
+            else if (timedOut) settleTimeoutStop(timeoutMs, result, preserveOutput, { resolve, reject });
+            else resolve(result);
+        });
+    }
+
+    private async execute(machine: FlyMachine, logs: FlyLogStream, signal: AbortSignal, { startedAt, deadline }: { startedAt: number; deadline: number }): Promise<boolean> {
+        const { now } = this.deps;
         await this.awaitStarted(machine, signal, Math.min(deadline, startedAt + START_TIMEOUT_MS));
         if (!signal.aborted) {
             this.timing.coldStartMs = now() - startedAt;
@@ -186,7 +243,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             if (now() >= deadline) { timedOut = true; break; }
             const interrupt = pollInterrupt(signal, deadline, now, this.deps.pollIntervalMs);
             try {
-                await this.pollLogs(sessionContext, live, interrupt);
+                await logs.poll(machine.id, interrupt);
                 // At the deadline too: the timeout stop checks the status again before it escalates.
                 if (this.exitCode === undefined && !interrupt.signal.aborted && poll % STATUS_CHECK_EVERY_POLLS === STATUS_CHECK_EVERY_POLLS - 1) await this.checkStatus(interrupt.signal);
             } finally {
@@ -194,14 +251,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             }
             if (this.exitCode === undefined) await pause(this.deps.pollIntervalMs, signal);
         }
-        if (timedOut && !signal.aborted) await this.stopAfterTimeout(sessionContext, live, signal);
-        // Cancelled while running, or while the timeout stop waited for the agent: the Machine is destroyed.
-        await this.discardIfAborted(signal);
-        const result = await this.collect(sessionContext, signal);
-        // Cancelled while the output was read back: no result is returned from a run the caller gave up.
-        await this.discardIfAborted(signal);
-        if (!timedOut) return result;
-        return await new Promise<ExecutionResult>((resolve, reject) => settleTimeoutStop(timeoutMs, result, options.preserveOutputOnTimeout ?? false, { resolve, reject }));
+        return timedOut;
     }
 
     private throwIfAborted(signal: AbortSignal): void {
@@ -268,10 +318,6 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         }
     }
 
-    private pollLogs(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>, interrupt: PollInterrupt): Promise<void> {
-        return this.machineId ? this.logs.poll(this.machineId, context, live, interrupt) : Promise.resolve();
-    }
-
     /**
      * The exit status file (the launcher writes it before lingering), else
      * whether the Machine ended. `signal` aborts the check: the run's
@@ -307,16 +353,16 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
      * its agent may still be running. Returns early when the run is cancelled
      * meanwhile: the caller then destroys the Machine.
      */
-    private async stopAfterTimeout(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>, signal: AbortSignal): Promise<void> {
+    private async stopAfterTimeout(logs: FlyLogStream, signal: AbortSignal): Promise<void> {
         await this.deps.client.signal(this.machineId!, signalNumber('SIGTERM'), { signal }).catch(() => undefined);
-        await this.awaitExit(context, live, DEFAULT_STOP_TIMEOUT_MS, signal);
+        await this.awaitExit(logs, DEFAULT_STOP_TIMEOUT_MS, signal);
         if (this.exitCode !== undefined || signal.aborted) return;
         const clone = Boolean(this.spec.workspace.clone?.resultDir);
         const killed = await this.deps.client.exec(this.machineId!, flyForcedStopCommand(this.spec), 30, { signal })
             .catch(error => ({ exit_code: -1, stdout: '', stderr: (error as Error).message }));
         if (signal.aborted) return;
         if (killed.exit_code !== 0) logger.warn({ run: this.spec.name, machine: this.machineId, error: killed.stderr.trim() || `exit ${killed.exit_code}` }, 'Could not kill the timed-out agent in its Fly Machine; destroying the Machine');
-        else await this.awaitExit(context, live, clone ? CLONE_FINALIZE_SETTLE_MS : FORCED_STOP_SETTLE_MS, signal);
+        else await this.awaitExit(logs, clone ? CLONE_FINALIZE_SETTLE_MS : FORCED_STOP_SETTLE_MS, signal);
         if (this.exitCode !== undefined || signal.aborted) return;
         await this.discardMachine('timed-out');
         if (!this.machineGone) throw new Error(`Agent run ${this.spec.name} timed out and its Fly Machine ${this.machineId} could not be stopped`);
@@ -329,52 +375,18 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
      * cancelled. Log polling ends with the window; the status check after it
      * still runs, so the exit status is looked for before the caller escalates.
      */
-    private async awaitExit(context: SessionLineInspectionContext, live: ReturnType<typeof startLiveOutputStreaming>, windowMs: number, signal: AbortSignal): Promise<void> {
+    private async awaitExit(logs: FlyLogStream, windowMs: number, signal: AbortSignal): Promise<void> {
         const until = this.deps.now() + windowMs;
         while (this.exitCode === undefined && !signal.aborted && this.deps.now() < until) {
             await pause(this.deps.pollIntervalMs, signal);
             const interrupt = pollInterrupt(signal, until, this.deps.now, this.deps.pollIntervalMs);
             try {
-                await this.pollLogs(context, live, interrupt);
+                await logs.poll(this.machineId!, interrupt);
             } finally {
                 interrupt.dispose();
             }
             if (this.exitCode === undefined && !signal.aborted) await this.checkStatus(signal);
         }
-    }
-
-    /**
-     * The exact output from the Machine's capture files, falling back to what
-     * the logs streamed. `signal` (the run's cancellation) aborts the reads;
-     * the caller then destroys the Machine instead of returning the result.
-     */
-    private async collect(context: SessionLineInspectionContext, signal: AbortSignal): Promise<ExecutionResult> {
-        let stdout = this.logs.stdout.output;
-        let stderr = this.logs.stderr.value;
-        if (!this.machineGone && this.machineId) {
-            const [capturedRead, capturedErrRead] = await Promise.all([
-                this.execRead(FLY_RUN_FILES.stdout, { tail: MAX_CAPTURE_READ_BYTES, signal }).catch(() => undefined),
-                this.execRead(FLY_RUN_FILES.stderr, { tail: MAX_CAPTURE_READ_BYTES, signal }).catch(() => undefined),
-            ]);
-            const captured = capturedRead && capturedRead !== 'oversized' ? capturedRead.content : undefined;
-            const capturedErr = capturedErrRead && capturedErrRead !== 'oversized' ? capturedErrRead.content : undefined;
-            if (captured) {
-                const buffer = new BoundedProviderRecordBuffer();
-                buffer.append(captured.toString('utf8'));
-                stdout = buffer.output;
-                const timestamp = new Date().toISOString();
-                // Records the logs missed still get a timestamp; streamed ones keep theirs.
-                const missing: SessionLineInspectionContext = { ...context, messageTimestamps: new Map() };
-                for (const line of stdout.split('\n')) inspectSessionMessageLine(line, timestamp, missing);
-                for (const [id, at] of missing.messageTimestamps) if (!this.messageTimestamps.has(id)) this.messageTimestamps.set(id, at);
-            }
-            if (capturedErr) {
-                const tail = new BoundedDiagnosticTail();
-                tail.append(capturedErr.toString('utf8'));
-                stderr = tail.value;
-            }
-        }
-        return { stdout, stderr, exitCode: this.exitCode ?? null, messageTimestamps: this.messageTimestamps };
     }
 
     private execRead(filePath: string, bounds: FlyRequestOptions & { tail?: number; limit?: number } = {}): Promise<ExecRead> {

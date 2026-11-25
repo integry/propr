@@ -1,4 +1,3 @@
-import { repositoryWorkflowExecution } from '../../workflow/workflowExecution.js';
 import { envFileValues } from '../credentials/hostCredentialStaging.js';
 import { WORKSPACE_AGENT_USER, WORKSPACE_RESULT_PHASE_FILE } from '../../git/workspaceTransportScript.js';
 import { AgentRuntimeCapabilityError, restrictedNetworkRefusal, specNetworkRestriction } from './agentRuntimeCapabilityError.js';
@@ -449,11 +448,6 @@ export function renderFlyMachineRequest(spec: AgentRunSpec, input: FlyMachineLau
     const { entrypoint, args } = renderAgentRunCommand(spec);
     if (!entrypoint) throw new Error(`Agent run ${spec.name} needs an explicit entrypoint or repository setup wrapper to run on Fly Machines`);
     const environment = flyMachineEnvironment(spec, input.launchEnvironment);
-    const workflow = repositoryWorkflowExecution.getStore();
-    const requiresMarkers = spec.repoSetup?.requiresWorkflowMarkers || (workflow && args.some(arg => arg.includes(workflow.marker)));
-    if (requiresMarkers && environment.PROPR_REPO_SETUP !== '0') {
-        throw new AgentRuntimeCapabilityError('Fly Machines cannot capture repository workflow markers. Choose a runtime that supports workflow markers (docker).', FLY_MACHINES_RUNTIME_KIND, 'workflow_markers');
-    }
     const noNewPrivileges = flyMachineNoNewPrivileges(spec);
     const { config } = input;
     const launcher = {

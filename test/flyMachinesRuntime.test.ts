@@ -248,6 +248,12 @@ class FakeFly {
                     this.pendingExecs--;
                 }
             }
+            if (body.command[0] === 'awk') {
+                const content = machine.files.get(body.command[2]);
+                if (!content) return json(200, { exit_code: 1 });
+                const read = spawnSync('awk', [body.command[1]], { input: content, encoding: 'utf8' });
+                return json(200, { exit_code: read.status, stdout: read.stdout });
+            }
             const [, , script, , file, offset, length] = body.command as string[];
             if (script.includes('pwd -P')) {
                 // The confined credential reader runs for real, against this host's filesystem.
@@ -346,20 +352,166 @@ test('Fly refuses extension launches at dispatch and direct start before provisi
     assert.equal(fly.requests.length, 0);
 });
 
-test('Fly refuses an active workflow wrapper before provisioning and allows a read-only run', async () => {
-    const { repositoryWorkflowExecution } = await import('../packages/core/src/workflow/workflowExecution.ts');
-    const workflow = { revision: 'a', baseBranch: 'main', fileRevision: 'b', timeoutMs: 60000, maxParallelTasks: 1, config: { validation: ['true'] } };
-    const marker = 'PROPR_WORKFLOW_test';
-    const run = spec();
+test('Fly runs repository workflow hooks and propagates failures even when the live logs miss the report', async t => {
+    const { executeWithRepositoryWorkflow, repositoryWorkflowExecution } = await import('../packages/core/src/workflow/workflowExecution.ts');
     const { buildAgentRunRepoSetup } = await import('../packages/core/src/claude/docker/repoSetupWrapper.ts');
-    run.repoSetup = repositoryWorkflowExecution.run({ workflow, marker }, () => buildAgentRunRepoSetup('claude'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-workflow-'));
+    t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+    fs.chmodSync(workspace, 0o755);
+    for (const code of [0, 7]) {
+        const workflow = { revision: 'a', baseBranch: 'main', fileRevision: 'b', timeoutMs: 60000, maxParallelTasks: 1,
+            config: { hooks: { before_run: `exit ${code}` } } };
+        const result = await executeWithRepositoryWorkflow(workflow, async () => {
+            const run = spec();
+            run.repoSetup = buildAgentRunRepoSetup('claude');
+            const context = repositoryWorkflowExecution.getStore()!;
+            const fly = new FakeFly();
+            fly.agent = machine => {
+                const script = machine.request.config.init.cmd.find((arg: string) => arg.includes(context.marker));
+                assert.equal(script, run.repoSetup!.script);
+                assert.equal(machine.request.config.env.PROPR_EXECUTION_TIMEOUT_MS, '300000');
+                // Run the actual submitted hook wrapper with an unprivileged test entrypoint.
+                const child = spawnSync('/bin/bash', ['-c', script, '/bin/echo', 'agent ran'], {
+                    encoding: 'utf8', env: { PATH: process.env.PATH, PROPR_WORKSPACE: workspace, PROPR_CACHE_DIR: workspace },
+                    ...(process.getuid?.() === 0 ? { uid: 65534, gid: 65534 } : {}),
+                });
+                fly.finish(machine, child.stdout, child.stderr, child.status!);
+                machine.pendingLogs = [];
+            };
+            const selected = runtime(fly);
+            const handle = selected.start(run);
+            const execution = await handle.wait();
+            assert.equal(execution.exitCode, code);
+            assert.equal(execution.stdout.trim(), code ? '' : 'agent ran');
+            assert.equal(context.observed?.hooks.get('before_run'), String(code));
+            await handle.release();
+
+            // A read-only execution in the same scope must preserve the hook observation.
+            run.repoSetup.env.push({ name: 'PROPR_REPO_SETUP', value: '0' });
+            fly.agent = machine => fly.finish(machine, 'read only', '', 0);
+            const readOnly = selected.start(run);
+            assert.equal((await readOnly.wait()).exitCode, 0);
+            await readOnly.release();
+            return { success: true, logs: '', modifiedFiles: [], modelUsed: 'test', executionTimeMs: 0 };
+        });
+        assert.equal(result.success, code === 0);
+        if (code) assert.match(result.error!, /before_run failed with exit code 7/);
+    }
+});
+
+test('Fly treats missing authoritative workflow stderr as incomplete output', async () => {
+    const { repositoryWorkflowExecution } = await import('../packages/core/src/workflow/workflowExecution.ts');
+    const { buildAgentRunRepoSetup } = await import('../packages/core/src/claude/docker/repoSetupWrapper.ts');
+    const workflow = { revision: 'a', baseBranch: 'main', fileRevision: 'b', timeoutMs: 60000, maxParallelTasks: 1,
+        config: { hooks: { before_run: 'true' } } };
+    await repositoryWorkflowExecution.run({ workflow, marker: 'PROPR_WORKFLOW_missing' }, async () => {
+        const run = spec();
+        run.repoSetup = buildAgentRunRepoSetup('claude');
+        const fly = new FakeFly();
+        fly.agent = machine => {
+            fly.finish(machine, '', '\nPROPR_WORKFLOW_missing:hook:before_run:0\n', 0);
+            machine.files.delete(FLY_RUN_FILES.stderr);
+        };
+        const handle = runtime(fly).start(run);
+        const result = await handle.wait();
+        assert.match(result.outputIncomplete!, /workflow reports/);
+        assert.equal(repositoryWorkflowExecution.getStore()?.observed, undefined);
+        await handle.release();
+    });
+});
+
+test('Fly redacts the deploy token in live streams and exact output', async () => {
+    const fly = new FakeFly();
+    const token = FLY_ENV.PROPR_FLY_API_TOKEN;
+    fly.agent = machine => {
+        fly.finish(machine, token, token, 0);
+        machine.files.set(FLY_RUN_FILES.stderr, Buffer.from(`exact ${Buffer.from(token).toString('base64')}`));
+    };
+    const handle = runtime(fly).start(spec());
+    const live: string[] = [];
+    for (const stream of [handle.stdout, handle.stderr]) stream.on('data', chunk => live.push(chunk.toString()));
+    const result = await handle.wait();
+    assert.equal(result.stdout, '[REDACTED]');
+    assert.equal(result.stderr, 'exact [REDACTED]');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(live.join(''), '[REDACTED]\n[REDACTED]\n');
+    await handle.release();
+});
+
+test('Fly enforces the cost cap before creation and on live usage', async () => {
+    const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.ts');
+    const { RunCostCapExceededError } = await import('../packages/core/src/budget/runCostCap.ts');
     const fly = new FakeFly();
     const selected = runtime(fly);
-    await assert.rejects(selected.start(run).wait(), { name: 'AgentRuntimeCapabilityError', capability: 'workflow_markers' });
+    const run = () => selected.start(spec(), { preserveOutputOnTimeout: true });
+    const guard = { taskId: 'test', exceeded: false, admit: async () => { throw new RunCostCapExceededError('no budget'); },
+        beginExecution: () => { throw new Error('unexpected registration'); } };
+    await runWithActiveRunCostCap(guard, async () => assert.equal((await run().wait()).costCapExceeded, true));
     assert.equal(fly.requests.length, 0);
-    run.repoSetup!.env.push({ name: 'PROPR_REPO_SETUP', value: '0' });
-    const handle = selected.start(run);
-    assert.equal((await handle.wait()).exitCode, 0);
+    let finished = 0;
+    fly.agent = machine => { machine.pendingLogs.push(FLY_LOG_MARKERS.stdout + '{"cost_usd":1}'); };
+    await runWithActiveRunCostCap({ ...guard, admit: async () => {}, beginExecution: stop => ({
+        observeLine: line => { if (line === '{"cost_usd":1}') stop('budget reached'); },
+        finish: async () => { finished++; return null; },
+    }) }, async () => {
+        const handle = run();
+        const result = await handle.wait();
+        assert.equal(result.costCapExceeded, true);
+        assert.match(result.stderr, /budget reached/);
+        assert.deepEqual(fly.machines.get('m1')!.signals, [15]);
+        assert.equal(finished, 1);
+        await handle.release();
+    });
+});
+
+test('Fly charges usage missed by live logs before final cost settlement, without charging streamed usage twice', async () => {
+    const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.ts');
+    const fly = new FakeFly();
+    const usage = '{"usage":{"input_tokens":1}}';
+    fly.agent = machine => {
+        fly.finish(machine, usage + '\n', '', 0);
+        machine.files.set(FLY_RUN_FILES.stdout, Buffer.from([usage, usage].join('\n')));
+    };
+    let charges = 0;
+    await runWithActiveRunCostCap({ taskId: 'test', exceeded: false, admit: async () => {}, beginExecution: () => ({
+        observeLine: line => { if (line === usage) charges++; },
+        finish: async () => charges >= 2 ? 'final usage reached cap' : null,
+    }) }, async () => {
+        const handle = runtime(fly).start(spec(), { preserveOutputOnTimeout: true });
+        assert.equal((await handle.wait()).costCapExceeded, true);
+        assert.equal(charges, 2);
+        await handle.release();
+    });
+});
+
+test('cancellation during Fly cost admission settles without creating a Machine', { timeout: 2000 }, async () => {
+    const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.ts');
+    const fly = new FakeFly();
+    const admitting = Promise.withResolvers<void>();
+    const admitted = Promise.withResolvers<void>();
+    await runWithActiveRunCostCap({ taskId: 'test', exceeded: false,
+        admit: () => { admitting.resolve(); return admitted.promise; },
+        beginExecution: () => { throw new Error('unexpected registration'); },
+    }, async () => {
+        const handle = runtime(fly).start(spec());
+        await admitting.promise;
+        await handle.stop();
+        await assert.rejects(handle.wait(), AgentRunStoppedError);
+        admitted.resolve();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(fly.requests.length, 0);
+    });
+});
+
+test('Fly watchdog interrupts an idle agent and preserves its partial output', async () => {
+    const fly = new FakeFly();
+    fly.agent = () => {};
+    const handle = runtime(fly).start(spec(), { timeout: 3000, preserveOutputOnTimeout: true,
+        watchdog: { stallTimeoutMs: 50, toolStallTimeoutMs: 0, degenerateOutputLimit: 0 } });
+    const result = await handle.wait();
+    assert.equal(result.watchdogTrip?.rule, 'inactivity');
+    assert.equal(result.stdout, 'partial\n');
+    assert.deepEqual(fly.machines.get('m1')!.signals, [15]);
     await handle.release();
 });
 
