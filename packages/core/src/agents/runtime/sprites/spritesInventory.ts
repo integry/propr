@@ -178,22 +178,14 @@ export class SpriteInventory {
     private closing = false;
     private timers: NodeJS.Timeout[] = [];
 
-    readonly prefix: string;
-    private readonly key: string;
-    private readonly orphanAgeMs: number;
-    private readonly cap: number;
-
     private constructor(
         private readonly redis: SpritePoolRedis,
         private readonly provider: Provider,
-        config: { key: string; prefix: string; orphanAgeMs: number; cap: number },
+        private readonly config: { key: string; prefix: string; orphanAgeMs: number; cap: number },
         private disconnect?: () => void,
-    ) {
-        this.cap = config.cap;
-        this.key = config.key;
-        this.prefix = config.prefix;
-        this.orphanAgeMs = config.orphanAgeMs;
-    }
+    ) {}
+
+    get prefix() { return this.config.prefix; }
 
     static async open(provider: Provider, env: NodeJS.ProcessEnv, store?: SpritePoolRedis) {
         const cap = positive(env.PROPR_SPRITES_MAX, 2, 'PROPR_SPRITES_MAX');
@@ -210,9 +202,8 @@ export class SpriteInventory {
             // Stable across worker restarts and token rotation, unique even for two installs in one Fly org.
             const key = spritePoolKey(env.PROPR_INSTANCE_ID);
             const marker = await deploymentMarker(redis, env, key);
-            const inventory = new SpriteInventory(redis, provider, {
-                key, cap, prefix: `propr-${marker}-`, orphanAgeMs: age,
-            }, () => owned?.disconnect());
+            const config = { key, cap, prefix: `propr-${marker}-`, orphanAgeMs: age };
+            const inventory = new SpriteInventory(redis, provider, config, () => owned?.disconnect());
             await inventory.sweep();
             await redis.hset(key, 'cap', cap);
             return inventory;
@@ -236,7 +227,7 @@ export class SpriteInventory {
         });
         every(5000, async () => {
             if (this.closing) return;
-            const waiting = await this.redis.get(this.key + ':waiting');
+            const waiting = await this.redis.get(this.config.key + ':waiting');
             if (waiting && waiting !== this.owner) await yieldIdle();
         });
         every(5 * 60_000, async () => { if (!this.closing) await this.sweep(); });
@@ -255,19 +246,19 @@ export class SpriteInventory {
         this.disconnect = undefined;
     }
 
-    private get runners() { return this.key + ':runners'; }
+    private get runners() { return this.config.key + ':runners'; }
 
     private admission(name: string, speculative: boolean, snapshot?: { generation: string; listedAt: number; names: string[] }) {
-        return this.redis.eval(reserve, 4, this.key, this.runners, this.lease(name), this.key + ':waiting',
-            name, this.owner, leaseMs, speculative ? '1' : '0', this.cap, snapshot?.generation ?? '', snapshot?.listedAt ?? 0, ...(snapshot?.names ?? []));
+        return this.redis.eval(reserve, 4, this.config.key, this.runners, this.lease(name), this.config.key + ':waiting',
+            name, this.owner, leaseMs, speculative ? '1' : '0', this.config.cap, snapshot?.generation ?? '', snapshot?.listedAt ?? 0, ...(snapshot?.names ?? []));
     }
 
     private async snapshot() {
-        const start = await this.redis.eval(beginSnapshot, 2, this.key, this.runners, randomUUID(), recoverySeconds);
+        const start = await this.redis.eval(beginSnapshot, 2, this.config.key, this.runners, randomUUID(), recoverySeconds);
         if (!Array.isArray(start)) return;
         const [generation, listedAt] = start as [string, number];
         const listed = await this.provider.listAllSprites(this.prefix);
-        const present = listed.map(sprite => sprite.name).filter(name => this.matches(name));
+        const present = new Set(listed.map(sprite => sprite.name).filter(name => this.matches(name)));
         const names = new Set(present);
         let cursor = '0';
         const prefix = this.lease('');
@@ -346,18 +337,16 @@ export class SpriteInventory {
         lease.lost.abort(new Error('Sprite lease expired'));
     }
 
-    private lease(name: string) { return this.key + ':lease:' + name; }
+    private lease(name: string) { return this.config.key + ':lease:' + name; }
 
     private async change(name: string, action: Phase | 'renew' | 'abandon' | 'gone' | 'deleted', owner: string = this.owner) {
         const extendsLease = action === 'renew' || action === 'inUse' || action === 'idle' || action === 'provisioning';
         if (extendsLease && owner === this.owner && this.signal(name).aborted) return false;
         const sent = performance.now();
-        const changed = await this.redis.eval(update, 3, this.runners, this.lease(name), this.key, name, owner, leaseMs, action);
+        const changed = await this.redis.eval(update, 3, this.runners, this.lease(name), this.config.key, name, owner, leaseMs, action);
         if (owner === this.owner && !changed) this.dropLease(name);
-        if (extendsLease) {
-            return !!changed && (owner === this.owner ? this.arm(name, sent) : performance.now() < sent + localLeaseMs);
-        }
-        return !!changed;
+        if (!changed || !extendsLease) return !!changed;
+        return owner === this.owner ? this.arm(name, sent) : performance.now() < sent + localLeaseMs;
     }
 
     async phase(name: string, phase: Phase) {
@@ -377,16 +366,13 @@ export class SpriteInventory {
     }
 
     private async deleteConfirmed(name: string) {
+        let deleted = false;
         try {
             await this.provider.deleteSprite(name);
-        } catch (error) {
-            if (spriteGone(error)) return false;
-            throw error;
-        }
-        try {
+            deleted = true;
             await this.provider.getSprite(name);
         } catch (error) {
-            if (spriteGone(error)) return true;
+            if (spriteGone(error)) return deleted;
             throw error;
         }
         throw new Error('Sprite still exists after deletion');
@@ -394,10 +380,7 @@ export class SpriteInventory {
 
     async finish(name: string, action: 'gone' | 'abandon') {
         try { await retry(() => this.change(name, action)); }
-        finally {
-            this.dropLease(name);
-            this.disconnectWhenReleased();
-        }
+        finally { this.stopRenewing(name); }
     }
 
     sweep(): Promise<void> {
@@ -409,22 +392,21 @@ export class SpriteInventory {
             const snapshot = await this.snapshot();
             if (!snapshot) return;
             if (await this.admission('', false, snapshot) === -1) throw new Error('Sprite inventory changed during sweep');
-            return { present: new Set(snapshot.present), listedAt: snapshot.listedAt };
+            return snapshot;
         });
         if (!listing) return;
-        const { present, listedAt } = listing;
         const tracked = await this.redis.hgetall(this.runners);
         // Confirm absent slots first. A paginated listing can miss a concurrently created machine.
         for (const [name, phase] of Object.entries(tracked)) {
-            if (!this.matches(name) || present.has(name)) continue;
+            if (!this.matches(name) || listing.present.has(name)) continue;
             if (phase === 'inUse' || phase === 'idle') {
                 try { await this.provider.getSprite(name); }
                 catch (error) {
-                    if (spriteGone(error)) await this.redis.eval(missing, 3, this.runners, this.lease(name), this.key, name);
+                    if (spriteGone(error)) await this.redis.eval(missing, 3, this.runners, this.lease(name), this.config.key, name);
                 }
-            } else await this.inspect(name, listedAt);
+            } else await this.inspect(name, listing.listedAt);
         }
-        for (const name of present) await this.inspect(name);
+        for (const name of listing.present) await this.inspect(name);
     }
 
     private matches(name: string) {
@@ -438,7 +420,7 @@ export class SpriteInventory {
             local untilTime = redis.call('HGET', KEYS[1], 'create:' .. ARGV[1])
             if ARGV[4] ~= '' and untilTime and tonumber(untilTime) > tonumber(ARGV[4]) then return false end
             return redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3], 'NX')
-        `, 2, this.key, this.lease(name), name, cleaner, leaseMs, absentAt ?? '')) return;
+        `, 2, this.config.key, this.lease(name), name, cleaner, leaseMs, absentAt ?? '')) return;
         try {
             let sprite;
             try {
@@ -449,7 +431,7 @@ export class SpriteInventory {
                 return;
             }
             const created = sprite.createdAt?.getTime();
-            if (absentAt === undefined && sprite.name === name && created !== undefined && Number.isFinite(created) && Date.now() - created > this.orphanAgeMs
+            if (absentAt === undefined && sprite.name === name && created !== undefined && Number.isFinite(created) && Date.now() - created > this.config.orphanAgeMs
                 && (await sprite.listSessions()).length === 0
                 && await this.change(name, 'renew', cleaner)) {
                 const deleted = await this.deleteConfirmed(name);
