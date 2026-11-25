@@ -76,8 +76,10 @@ return 1`;
 
 const reserve = `
 local meta, runners, lease, waiting = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
-if not (${sizeMatches}) or not redis.call('HGET', meta, 'cap') or
-    (redis.call('HLEN', runners) == 0 and redis.call('HGET', meta, 'generation') ~= ARGV[5]) then return -1 end
+local size = tonumber(redis.call('HGET', meta, 'size'))
+local cap = tonumber(redis.call('HGET', meta, 'cap'))
+if not size or not cap then return -1 end
+if size ~= redis.call('HLEN', runners) then return 0 end
 if redis.call('GET', lease) == ARGV[2] then
     redis.call('PEXPIRE', lease, ARGV[3])
     redis.call('HSET', meta, 'create:' .. ARGV[1], ${redisSeconds} + ${recoverySeconds})
@@ -86,7 +88,7 @@ if redis.call('GET', lease) == ARGV[2] then
 end
 local speculative = ARGV[4] == '1'
 if speculative and redis.call('EXISTS', waiting) == 1 then return 0 end
-if redis.call('HLEN', runners) >= tonumber(redis.call('HGET', meta, 'cap')) then
+if size >= cap then
     if not speculative then redis.call('SET', waiting, ARGV[2], 'PX', 10000) end
     return 0
 end
@@ -167,7 +169,11 @@ async function deploymentMarker(redis: SpritePoolRedis, env: NodeJS.ProcessEnv, 
     return marker;
 }
 
-const retryOptions = { baseDelay: 100, maxDelay: 1000, shouldRetry: (error: unknown) => (error as Error)?.name !== 'AbortError' };
+class SpriteLeaseExpired extends Error {
+    constructor(message = 'Sprite lease expired') { super(message); }
+}
+const retryOptions = { baseDelay: 100, maxDelay: 1000, shouldRetry: (error: unknown) =>
+    !(error instanceof SpriteLeaseExpired || ['AbortError', 'TimeoutError'].includes((error as Error)?.name)) };
 
 export class SpriteInventory {
     private readonly owner = randomUUID();
@@ -207,7 +213,7 @@ export class SpriteInventory {
             const config = { key, cap, marker, queueMinutes, prefix: `propr-${marker}-`, orphanAgeMs: age };
             const inventory = new SpriteInventory(redis, provider, config, () => owned?.disconnect());
             await redis.hset(key, 'cap', cap);
-            void inventory.sweep().catch(() => logger.warn('Sprite pool startup sweep failed'));
+            void inventory.sweep().catch(err => logger.warn({ err }, 'Sprite pool startup sweep failed'));
             return inventory;
         } catch (error) {
             owned?.disconnect();
@@ -250,9 +256,9 @@ export class SpriteInventory {
 
     private get runners() { return this.config.key + ':runners'; }
 
-    private admission(name: string, speculative: boolean, generation = '') {
+    private admission(name: string, speculative: boolean) {
         return this.redis.eval(reserve, 4, this.config.key, this.runners, this.lease(name), this.config.key + ':waiting',
-            name, this.owner, leaseMs, speculative ? '1' : '0', generation);
+            name, this.owner, leaseMs, speculative ? '1' : '0');
     }
 
     private async snapshot() {
@@ -264,7 +270,7 @@ export class SpriteInventory {
         const present = new Set(listed.map(sprite => sprite.name).filter(name => this.matches(name)));
         const hasPrefix = listed.some(sprite => sprite.name.startsWith(this.prefix));
         const result = await this.redis.eval(publish, 2, key, this.runners, generation, listedAt, cap, hasPrefix ? 1 : 0, ...present);
-        if (result !== 0) return { generation, listedAt, present, published: result === 1 };
+        if (result !== 0) return { listedAt, present };
     }
 
     async reserve(name: string, speculative = false) {
@@ -274,15 +280,15 @@ export class SpriteInventory {
                 let result = await this.admission(name, speculative);
                 if (result === -1) {
                     const snapshot = await this.snapshot();
-                    if (!snapshot?.published) return false;
+                    if (!snapshot) return false;
                     sent = performance.now();
-                    result = await this.admission(name, speculative, snapshot.generation);
+                    result = await this.admission(name, speculative);
                 }
                 if (result !== 1) return false;
                 this.owned.set(name, { lost: new AbortController(), deadline: 0, createDeadline: sent + dispatchMs });
                 if (!this.arm(name, sent)) {
                     await this.change(name, 'gone'); // No create can have started.
-                    throw new Error('Sprite reservation expired before acknowledgement');
+                    throw new SpriteLeaseExpired('Sprite reservation expired before acknowledgement');
                 }
                 return true;
             }, retryOptions, 'reserve Sprite');
@@ -319,7 +325,7 @@ export class SpriteInventory {
     signal(name: string) {
         const lease = this.owned.get(name);
         if (lease && performance.now() >= lease.deadline) this.stopRenewing(name);
-        return this.owned.get(name)?.lost.signal ?? AbortSignal.abort(new Error('Sprite lease expired'));
+        return this.owned.get(name)?.lost.signal ?? AbortSignal.abort(new SpriteLeaseExpired());
     }
 
     private dropLease(name: string) {
@@ -327,7 +333,7 @@ export class SpriteInventory {
         if (!lease) return;
         clearTimeout(lease.expiry);
         this.owned.delete(name);
-        lease.lost.abort(new Error('Sprite lease expired'));
+        lease.lost.abort(new SpriteLeaseExpired());
     }
 
     private lease(name: string) { return this.config.key + ':lease:' + name; }

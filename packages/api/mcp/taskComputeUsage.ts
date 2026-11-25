@@ -8,6 +8,7 @@ export interface TaskComputeUsage {
   /** Runtimes those runs used, e.g. `["docker"]`. */
   runtimes: string[];
   wallTimeMs: number;
+  queueMs: number | null;
   /** Null when no run measured CPU. */
   cpuSeconds: number | null;
   /** Highest peak memory of any run; null when none measured memory. */
@@ -20,6 +21,7 @@ export interface TaskComputeUsage {
 
 interface UsageRow {
   runs?: number | string;
+  queue?: number | string | null;
   wall?: number | string | null;
   cpu?: number | string | null;
   cpu_measured?: number | string;
@@ -39,11 +41,13 @@ const toNumber = (value: unknown): number => Number(value ?? 0) || 0;
  */
 export async function taskComputeUsage(db: Knex, taskId: string): Promise<TaskComputeUsage | null> {
   if (!await hasTable(db, 'llm_executions') || !await hasColumn(db, 'llm_executions', 'compute_wall_time_ms')) return null;
+  const hasQueue = await hasColumn(db, 'llm_executions', 'compute_queue_ms');
   const executions = () => db('llm_executions').where({ task_id: taskId });
   const [row, runtimes] = await Promise.all([
     executions()
       .count('compute_wall_time_ms as runs')
       .sum('compute_wall_time_ms as wall')
+      .select(db.raw(hasQueue ? 'sum(compute_queue_ms) as queue' : 'NULL as queue'))
       .sum('compute_cpu_seconds as cpu')
       .count('compute_cpu_seconds as cpu_measured')
       .max('compute_peak_memory_bytes as peak')
@@ -59,6 +63,7 @@ export async function taskComputeUsage(db: Knex, taskId: string): Promise<TaskCo
     runs: toNumber(row.runs),
     runtimes: [...runtimes].sort(),
     wallTimeMs: toNumber(row.wall),
+    queueMs: row.queue == null ? null : Number(row.queue),
     cpuSeconds: toNumber(row.cpu_measured) > 0 ? Number(toNumber(row.cpu).toFixed(3)) : null,
     peakMemoryBytes: row.peak === null || row.peak === undefined ? null : toNumber(row.peak),
     costUsd: toNumber(row.costed) > 0 ? Number(toNumber(row.cost).toFixed(6)) : null,

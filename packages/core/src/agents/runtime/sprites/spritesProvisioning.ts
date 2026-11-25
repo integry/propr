@@ -171,6 +171,13 @@ export class SpritePool {
         }
     }
 
+    private async checkOut(slot: Slot) {
+        if (await this.transition(slot, 'inUse') && !slot.lease?.aborted) return true;
+        if (slot.lease?.aborted) await this.inventory?.finish(slot.sprite.name, 'abandon');
+        else await this.discard(slot.sprite);
+        return false;
+    }
+
     async acquire(signal: AbortSignal, onWaiting?: () => void): Promise<Slot & { queueMs: number }> {
         signal.throwIfAborted();
         if (this.closed) throw new Error('Sprite pool is closed');
@@ -178,14 +185,14 @@ export class SpritePool {
         const inventory = this.inventory;
         const minutes = inventory?.queueMinutes ?? 10;
         const timeout = () => new Error(`No Sprite available: cap ${inventory?.cap} reached after ${minutes}m`);
-        let queuedAt: number | undefined;
-        const elapsedQueueMs = () => queuedAt === undefined ? 0 : Date.now() - queuedAt;
-        let deadline = Infinity;
+        const started = Date.now();
+        const deadline = performance.now() + minutes * 60_000;
         let attempt = 0;
+        const elapsedQueueMs = () => attempt ? Date.now() - started : 0;
         const reserveForRun = async (name: string) => {
             if (!inventory) return true;
             const reserving = inventory.reserve(name);
-            const admissionSignal = queuedAt === undefined ? signal : AbortSignal.any([
+            const admissionSignal = AbortSignal.any([
                 signal, AbortSignal.timeout(Math.max(0, Math.ceil(deadline - performance.now()))),
             ]);
             let reserved: boolean;
@@ -196,18 +203,8 @@ export class SpritePool {
                 signal.throwIfAborted();
                 throw timeout();
             }
-            if (reserved) {
-                if (performance.now() >= deadline) {
-                    await inventory.finish(name, 'gone');
-                    throw timeout();
-                }
-                return true;
-            }
-            if (queuedAt === undefined) {
-                queuedAt = Date.now();
-                deadline = performance.now() + minutes * 60_000;
-                onWaiting?.();
-            }
+            if (reserved) return true;
+            if (!attempt) onWaiting?.();
             const backoff = calculateDelay(attempt++, { baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, jitter: true });
             await delay(Math.min(backoff, deadline - performance.now()), undefined, { signal });
             return false;
@@ -236,7 +233,7 @@ export class SpritePool {
                 }
                 slot = await this.claim(this.provisionForPool(name), signal);
             }
-            if (!await this.transition(slot, 'inUse') || slot.lease?.aborted) continue;
+            if (!await this.checkOut(slot)) continue;
             if (signal.aborted) {
                 await this.recycleClean(slot);
                 signal.throwIfAborted();
@@ -325,7 +322,7 @@ export class SpritePool {
         let restoreMs: number;
         try {
             // Stop descendants that outlived the launcher, including detached processes.
-            await restart(sprite, AbortSignal.any([signal, AbortSignal.timeout(240_000)]));
+            await restart(sprite, signal);
             signal = AbortSignal.any([signal, AbortSignal.timeout(120_000)]);
             step = 'wipe /tmp';
             await startupStep(signal, () => sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', signal, timeout: 60_000 }));
@@ -362,10 +359,9 @@ async function restart(sprite: Sprite, signal: AbortSignal) {
     const useBootId = validId.test(id);
     const started = performance.now();
     for (let request = 0; request < 2; request++) {
-        try { await startupStep(signal, () => sprite.restart()); }
-        catch (error) {
-            if (!(error instanceof Error && /restart[ _-]+outcome[ _-]+unknown/i.test(error.message))) throw error;
-        }
+        const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+        try { await startupStep(requestSignal, () => sprite.restart()); }
+        catch { signal.throwIfAborted(); } // Even a failed response can accompany a successful restart.
         const until = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
         while (!until.aborted) {
             const elapsed = performance.now() - started;

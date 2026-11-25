@@ -221,17 +221,17 @@ test('CSV has a stable header, empty cells for unknowns, and escapes quotes, com
     rows: [
       { repository: 'acme/a', model: 'say "hi", ok', executions: 2, tasks: 1, input_tokens: 10, output_tokens: 1,
         cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cost_usd: 1.5,
-        compute_runs: 1, compute_wall_time_ms: 60000, compute_cpu_seconds: 12.5, compute_cost_usd: 0.02 },
+        compute_runs: 1, compute_wall_time_ms: 60000, compute_queue_ms: 1200, compute_cpu_seconds: 12.5, compute_cost_usd: 0.02 },
       { repository: null, model: '=HYPERLINK("x")', executions: 1, tasks: 0, input_tokens: 0, output_tokens: 0,
-        cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cost_usd: null, compute_runs: 0, compute_wall_time_ms: 0, compute_cpu_seconds: null, compute_cost_usd: null },
+        cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cost_usd: null, compute_runs: 0, compute_wall_time_ms: 0, compute_queue_ms: null, compute_cpu_seconds: null, compute_cost_usd: null },
     ],
     totals: { executions: 3, tasks: 1, input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cost_usd: 1.5,
-      compute_runs: 1, compute_wall_time_ms: 60000, compute_cpu_seconds: 12.5, compute_cost_usd: 0.02 },
+      compute_runs: 1, compute_wall_time_ms: 60000, compute_queue_ms: 1200, compute_cpu_seconds: 12.5, compute_cost_usd: 0.02 },
   };
   assert.equal(costExportCsv(costExport), [
-    'repository,model,executions,tasks,input_tokens,output_tokens,cache_creation_input_tokens,cache_read_input_tokens,cost_usd,compute_runs,compute_wall_time_ms,compute_cpu_seconds,compute_cost_usd',
-    'acme/a,"say ""hi"", ok",2,1,10,1,0,0,1.5,1,60000,12.5,0.02',
-    ',"\'=HYPERLINK(""x"")",1,0,0,0,0,0,,0,0,,',
+    'repository,model,executions,tasks,input_tokens,output_tokens,cache_creation_input_tokens,cache_read_input_tokens,cost_usd,compute_runs,compute_wall_time_ms,compute_cpu_seconds,compute_cost_usd,compute_queue_ms',
+    'acme/a,"say ""hi"", ok",2,1,10,1,0,0,1.5,1,60000,12.5,0.02,1200',
+    ',"\'=HYPERLINK(""x"")",1,0,0,0,0,0,,0,0,,,',
     '',
   ].join('\r\n'));
 });
@@ -263,7 +263,7 @@ test('the routes read the analytics window, repository filter and group_by, and 
   const csv = await call('getCostCsv', { period: '7d', group_by: 'outcome' });
   assert.equal(csv.headers['content-type'], 'text/csv; charset=utf-8');
   assert.match(csv.headers['content-disposition'], /filename="cost-7d\.csv"/);
-  assert.equal(String(csv.body).split('\r\n')[0], 'outcome,executions,tasks,input_tokens,output_tokens,cache_creation_input_tokens,cache_read_input_tokens,cost_usd,compute_runs,compute_wall_time_ms,compute_cpu_seconds,compute_cost_usd');
+  assert.equal(String(csv.body).split('\r\n')[0], 'outcome,executions,tasks,input_tokens,output_tokens,cache_creation_input_tokens,cache_read_input_tokens,cost_usd,compute_runs,compute_wall_time_ms,compute_cpu_seconds,compute_cost_usd,compute_queue_ms');
 
   assert.equal((await call('getCost', { group_by: 'model,price' })).statusCode, 400);
   assert.equal((await call('getCost', { period: '2w' })).statusCode, 400);
@@ -334,7 +334,7 @@ test('compute usage sits beside token cost, counted only over runs that reported
 
   // alpha-1's Opus run was measured and priced; alpha-2's run only reported wall time.
   await db('llm_executions').where({ task_id: 'alpha-1', model_name: 'opus', session_id: 's-impl' }).update({
-    compute_runtime: 'fly', compute_wall_time_ms: 120000, compute_cpu_seconds: 90.5, compute_peak_memory_bytes: 2 ** 30,
+    compute_runtime: 'fly', compute_wall_time_ms: 120000, compute_queue_ms: 1200, compute_cpu_seconds: 90.5, compute_peak_memory_bytes: 2 ** 30,
     compute_avg_memory_bytes: 2 ** 29, compute_cost_usd: 0.004, compute_cost_source: 'rate_table',
   });
   await db('llm_executions').where({ task_id: 'alpha-2' }).update({ compute_runtime: 'docker', compute_wall_time_ms: 30000 });
@@ -342,6 +342,8 @@ test('compute usage sits beside token cost, counted only over runs that reported
     const byRepository = await loadCostExport(db, window30d, ['repository']);
     const alpha = byRepository.rows.find(row => row.repository === 'acme/alpha')!;
     assert.deepEqual([alpha.compute_runs, alpha.compute_wall_time_ms, alpha.compute_cpu_seconds, alpha.compute_cost_usd], [2, 150000, 90.5, 0.004]);
+    assert.equal(alpha.compute_queue_ms, 1200);
+    assert.equal(byRepository.totals.compute_queue_ms, 1200);
     // Compute cost stays apart from the LLM cost it is reported beside.
     assert.equal(alpha.cost_usd, 2.5 + 0.5 + 1.25);
     const beta = byRepository.rows.find(row => row.repository === 'acme/beta')!;
@@ -349,7 +351,7 @@ test('compute usage sits beside token cost, counted only over runs that reported
     assert.equal(byRepository.totals.compute_wall_time_ms, 150000);
   } finally {
     await db('llm_executions').update({
-      compute_runtime: null, compute_wall_time_ms: null, compute_cpu_seconds: null, compute_peak_memory_bytes: null,
+      compute_runtime: null, compute_wall_time_ms: null, compute_queue_ms: null, compute_cpu_seconds: null, compute_peak_memory_bytes: null,
       compute_avg_memory_bytes: null, compute_cost_usd: null, compute_cost_source: null,
     });
   }

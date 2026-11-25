@@ -311,6 +311,7 @@ test('a delayed holder cannot dispatch a create after its original send budget',
 test('a listing started before Redis loss cannot publish stale capacity', async () => {
     const { open, provider, redis } = fixture();
     const inventory = await open();
+    await redis.hdel(spritePoolKey(), 'size'); // Force recovery to take a snapshot.
     const list = provider.listAllSprites.bind(provider);
     let first = true;
     provider.listAllSprites = async () => {
@@ -493,6 +494,61 @@ test('open returns during a blocked startup listing and tolerates reservations r
     await Promise.all([existing.close(), worker.close()]);
 });
 
+test('concurrent reservations fill an initialized empty pool without listing Sprites', async t => {
+    const { start, provider } = fixture();
+    const inventory = await start({ PROPR_SPRITES_MAX: '2' });
+    await inventory.sweep();
+    const list = t.mock.method(provider, 'listAllSprites');
+    const names = [inventory.prefix + randomUUID(), inventory.prefix + randomUUID()];
+    assert.deepEqual(await Promise.all(names.map(name => inventory.reserve(name))), [true, true]);
+    assert.equal(list.mock.callCount(), 0);
+    await Promise.all(names.map(name => inventory.finish(name, 'gone')));
+    await inventory.close();
+});
+
+test('a stalled first admission times out and releases a late reservation without creating', async t => {
+    const { open, provider, status } = fixture();
+    const inventory = await open();
+    const pool = new SpritePool(provider, inventory);
+    t.after(() => pool.close());
+    const resume = Promise.withResolvers<void>();
+    const reserve = inventory.reserve.bind(inventory);
+    t.mock.method(inventory, 'reserve', async (name: string) => { await resume.promise; return reserve(name); });
+    const deadline = new AbortController();
+    t.mock.method(AbortSignal, 'timeout', () => deadline.signal);
+    const checkout = pool.acquire(new AbortController().signal);
+    deadline.abort(new DOMException('expired', 'TimeoutError'));
+    await assert.rejects(checkout, /No Sprite available/);
+    resume.resolve();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await status()).provisioning, 0);
+    assert.deepEqual(provider.created, []);
+});
+
+test('an acknowledged reservation survives the deadline and a rejected checkout frees its slot', async t => {
+    const { open, provider } = fixture();
+    const inventory = await open();
+    const pool = new SpritePool(provider, inventory);
+    t.after(() => pool.close());
+    let now = performance.now();
+    t.mock.method(performance, 'now', () => now);
+    const reserve = inventory.reserve.bind(inventory);
+    const phase = inventory.phase.bind(inventory);
+    let rejectFirst = true;
+    t.mock.method(inventory, 'phase', async (...args: Parameters<typeof phase>) => {
+        if (rejectFirst) { rejectFirst = false; return false; }
+        return phase(...args);
+    });
+    t.mock.method(inventory, 'reserve', (name: string) => {
+        if (!rejectFirst) now += inventory.queueMinutes * 60_000 + 1;
+        return reserve(name);
+    });
+    const slot = await pool.acquire(new AbortController().signal);
+    assert.deepEqual(provider.deleted, [provider.created[0].name]);
+    assert.equal(slot.sprite.name, provider.created[1].name);
+    await pool.release(slot);
+});
+
 test('capacity deadline uses configured minutes and never sends a create', async t => {
     const { start, provider } = fixture();
     const inventory = await start({ PROPR_SPRITES_QUEUE_TIMEOUT: '1' });
@@ -533,8 +589,9 @@ test('a second restart can recover a reachable Sprite when the first request had
     t.mock.method(AbortSignal, 'timeout', (ms: number) => timeout(ms === 60_000 ? 50 : ms));
     let requests = 0;
     sprite.restart = async () => {
-        if (++requests === 2) sprite.bootId = randomUUID();
-        throw new Error('restart outcome unknown');
+        if (++requests === 1) return new Promise<void>(resolve => setTimeout(resolve, 300));
+        sprite.bootId = randomUUID();
+        throw Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
     };
     await pool.release(slot);
     assert.equal(requests, 2);
@@ -587,21 +644,22 @@ test('a new marker file cannot bypass the flush fence when the provider still ha
     await second.close();
 });
 
-test('aborted inventory calls are attempted only once', async t => {
+test('abort, timeout and lease expiry stop inventory retries', async t => {
     const { open, redis } = fixture();
     const inventory = await open();
     const name = inventory.prefix + randomUUID();
     assert.ok(await inventory.reserve(name));
     const original = redis.eval.bind(redis);
+    const errors = [new DOMException('cancelled', 'AbortError'), new DOMException('timed out', 'TimeoutError'),
+        inventory.signal('unowned').reason];
     let calls = 0;
     t.mock.method(redis, 'eval', async (...args: Parameters<typeof original>) => {
         if (args.at(-1) === 'inUse') {
-            calls++;
-            throw new DOMException('cancelled', 'AbortError');
+            throw errors[calls++];
         }
         return original(...args);
     });
-    await assert.rejects(inventory.phase(name, 'inUse'), { name: 'AbortError' });
-    assert.equal(calls, 1);
+    for (const error of errors) await assert.rejects(inventory.phase(name, 'inUse'), err => err === error);
+    assert.equal(calls, errors.length);
     await inventory.finish(name, 'gone');
 });

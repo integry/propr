@@ -18,7 +18,7 @@ before(async () => {
   });
   await db('llm_executions').insert([
     execution('measured', {
-      cost_usd: 1.5, compute_runtime: 'docker', compute_wall_time_ms: 60_000, compute_cpu_seconds: 20.25,
+      cost_usd: 1.5, compute_runtime: 'docker', compute_wall_time_ms: 60_000, compute_queue_ms: 800, compute_cpu_seconds: 20.25,
       compute_peak_memory_bytes: 512, compute_avg_memory_bytes: 256,
     }),
     execution('measured', {
@@ -35,7 +35,7 @@ after(async () => { await db.destroy(); });
 
 test('get_task compute usage sums measured runs beside the LLM cost of the same task', async () => {
   assert.deepEqual(await taskComputeUsage(db, 'measured'), {
-    runs: 2, runtimes: ['docker', 'fly'], wallTimeMs: 90_000, cpuSeconds: 20.25, peakMemoryBytes: 2048, costUsd: 0.004, llmCostUsd: 3,
+    runs: 2, runtimes: ['docker', 'fly'], wallTimeMs: 90_000, queueMs: 800, cpuSeconds: 20.25, peakMemoryBytes: 2048, costUsd: 0.004, llmCostUsd: 3,
   });
 });
 
