@@ -31,6 +31,7 @@ class FakeMachines implements MachinesApi {
         [RUN + '/workspace/result.bundle', Buffer.from([0, 255, 42])],
     ]);
     status = 'exited 0';
+    started = false;
     probing = Promise.withResolvers<void>();
     destroyed = 0;
     signals: NodeJS.Signals[] = [];
@@ -43,8 +44,14 @@ class FakeMachines implements MachinesApi {
     }
     async exec(_id: string, args: string[]) {
         assert.equal(this.destroyed, 0, 'all guest files must be collected before destroy');
+        if (args[0] === '/usr/bin/touch') {
+            assert.equal(args[1], RUN + '/start');
+            this.started = true;
+            return { stdout: '', exit_code: 0 };
+        }
         const [op, file, offset, length] = args.slice(3);
         if (op === 'probe') {
+            if (!this.started) return { stdout: 'ready\n0', exit_code: 0 };
             this.probing.resolve();
             return { stdout: this.status + '\n123\n', exit_code: 0 };
         }
@@ -93,6 +100,95 @@ test('only capture files feed the result, the Fly credential stays off the guest
     await Promise.all([run.release!(), run.release!()]);
     assert.equal(await run.readFile!(RESULT + '/status'), null);
     assert.equal(api.destroyed, 1);
+});
+
+test('returned provider JSON retains numeric usage and tuning values while masking credentials', async () => {
+    const { runtime, api, builder } = fixture();
+    builder.env('MAX_THINKING_TOKENS', '1024').env('CLAUDE_CODE_MAX_OUTPUT_TOKENS', '32000')
+        .env('TOKENIZER_MODEL', 'long-tuning-value').env('GH_TOKEN', 'synthetic-github-token').env('GITHUB_ACCESS_TOKEN', '123');
+    const usage = { input_tokens: 1024, output_tokens: 32000, cache_read_input_tokens: 123 };
+    api.files.set(RUN + '/stdout', Buffer.from(JSON.stringify({ usage, result: 'long-tuning-value synthetic-github-token' })));
+    const run = runtime.start(builder.build());
+    assert.deepEqual(JSON.parse((await run.wait()).stdout), { usage, result: 'long-tuning-value [REDACTED]' });
+    await run.release!();
+});
+
+test('boot timeout and cancellation during create or readiness destroy an unstarted credential-bearing Machine', async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-boot-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    for (const boundary of ['create', 'ready', 'timeout']) {
+        const { runtime, api, builder } = fixture();
+        const controller = new AbortController();
+        const pending = Promise.withResolvers<void>();
+        const resume = Promise.withResolvers<void>();
+        builder.credentialBind(root, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: true });
+        api.create = async () => {
+            if (boundary === 'create') { pending.resolve(); await resume.promise; }
+            return 'machine';
+        };
+        const exec = api.exec.bind(api);
+        api.exec = async (id, args) => {
+            if (args[3] === 'probe') {
+                if (boundary === 'timeout') {
+                    t.mock.method(Date, 'now', () => Number.MAX_SAFE_INTEGER);
+                    throw new Error('still booting');
+                }
+                pending.resolve();
+                await resume.promise;
+            }
+            return exec(id, args);
+        };
+        const run = runtime.start(builder.build(), { signal: controller.signal });
+        if (boundary === 'timeout') {
+            assert.match((await run.wait()).outputIncomplete!, /status/);
+            t.mock.restoreAll();
+        } else {
+            await pending.promise;
+            controller.abort();
+            resume.resolve();
+            await assert.rejects(run.wait(), /abort/i);
+        }
+        await run.release!();
+        assert.equal(api.started, false);
+        assert.equal(api.destroyed, 1);
+    }
+});
+
+test('stop during an uncertain start waits for a confirmed signal and preserves the possible workspace', async () => {
+    const { runtime, api, builder } = fixture();
+    const dispatched = Promise.withResolvers<void>();
+    const lost = Promise.withResolvers<void>();
+    const retrying = Promise.withResolvers<void>();
+    const confirmed = Promise.withResolvers<void>();
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => {
+        if (args[0] === '/usr/bin/touch') {
+            await exec(id, args);
+            dispatched.resolve();
+            await lost.promise;
+            throw new Error('start response lost');
+        }
+        if (api.started) throw new Error('status unavailable');
+        return exec(id, args);
+    };
+    api.signal = async (_id, signal) => {
+        api.signals.push(signal);
+        if (api.signals.length < 3) throw new Error('signal unavailable');
+        retrying.resolve();
+        await confirmed.promise;
+    };
+    const run = runtime.start(builder.build());
+    await dispatched.promise;
+    const stopped = run.stop('SIGTERM', 0);
+    lost.resolve();
+    await retrying.promise;
+    assert.ok(await run.isAlive());
+    confirmed.resolve();
+    await stopped;
+    assert.deepEqual(api.signals, ['SIGTERM', 'SIGALRM', 'SIGALRM']);
+    assert.match((await run.wait()).outputIncomplete!, /Machine machine/);
+    await run.release!();
+    assert.equal(api.destroyed, 0);
 });
 
 test('a failed authoritative stream read fails even after an exited 0', async () => {
@@ -205,20 +301,29 @@ test('per-run provider files round-trip through the credential broker', async t 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-credential-test-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const name = '.credentials.json';
-    const original = '{"accessToken":"synthetic-original"}';
+    const original = '{"accessToken":"synthetic-original","plan":"subscription-label"}';
+    api.files.set(RUN + '/stdout', Buffer.from('synthetic-original subscription-label'));
     const updated = '{"accessToken":"synthetic-refresh"}';
     fs.writeFileSync(path.join(root, name), original);
     fs.writeFileSync(path.join(root, 'unrelated'), 'private');
     builder.credentialBind(root, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: true });
     const exec = api.exec.bind(api);
+    let acknowledged = false;
     api.exec = async (id, args) => {
+        if (args[0] === '/bin/rm') {
+            assert.deepEqual(args.slice(1), ['-f', RUN + '/credential-pending']);
+            assert.equal(fs.readFileSync(path.join(root, name), 'utf8'), updated);
+            acknowledged = true;
+            return { stdout: '', exit_code: 0 };
+        }
         if (args[0] !== 'su-exec') return exec(id, args);
         assert.equal(args[1], 'node');
         assert.equal(args.at(-1), '/home/node/.claude/' + name);
         return { exit_code: 0, stdout: JSON.stringify([Date.now(), Buffer.from(updated).toString('base64')]) };
     };
     const run = runtime.start(builder.build());
-    await run.wait();
+    assert.equal((await run.wait()).stdout, '[REDACTED] subscription-label');
+    assert.ok(acknowledged);
     const files = api.launch!.config.files;
     assert.ok(!files.some(f => f.guest_path.endsWith('unrelated')));
     assert.equal(Buffer.from(files.find(f => f.guest_path.endsWith('/' + name))!.raw_value, 'base64').toString(), original);
@@ -228,38 +333,43 @@ test('per-run provider files round-trip through the credential broker', async t 
 });
 
 test('settlement rejection reports the collected bundle and preserves it through cleanup', async t => {
-    for (const failure of ['destroy', 'callback']) {
-        const { runtime, builder, api } = fixture();
-        const destroying = Promise.withResolvers<void>();
-        const proceed = Promise.withResolvers<void>();
-        let attempts = 0;
-        api.destroy = async () => {
-            if (++attempts === 1) {
-                destroying.resolve();
-                await proceed.promise;
-                if (failure === 'destroy') throw new Error('delete failed');
-            }
-            api.destroyed++;
-        };
-        api.files.set(RUN + '/stdout', Buffer.from('{"session_id":"id"}\n'));
-        const run = runtime.start(builder.build(), {
-            onSessionId: () => { if (failure === 'callback') throw new Error('callback failed'); },
-        });
-        await destroying.promise;
-        const cleanup = Promise.all([run.stop(), run.release!()]);
-        proceed.resolve();
-        await assert.rejects(run.wait(), (error: Error) => {
-            assert.match(error.message, failure === 'destroy' ? /delete failed/ : /callback failed/);
-            assert.ok(run.recoveryLocation);
-            assert.ok(error.message.includes(run.recoveryLocation));
-            return true;
-        });
-        await cleanup;
-        const directory = run.recoveryLocation!;
-        t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-        assert.deepEqual(fs.readFileSync(path.join(directory, 'result.bundle')), Buffer.from([0, 255, 42]));
-        assert.equal(api.destroyed, 1);
-    }
+    const { runtime, builder, api } = fixture();
+    api.files.set(RUN + '/stdout', Buffer.from('{"session_id":"id"}\n'));
+    const deleting = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    api.destroy = async () => { deleting.resolve(); await proceed.promise; api.destroyed++; };
+    const run = runtime.start(builder.build(), { onSessionId: () => { throw new Error('callback failed'); } });
+    await deleting.promise;
+    const cleanup = Promise.all([run.stop(), run.release!()]);
+    proceed.resolve();
+    await assert.rejects(run.wait(), (error: Error) => error.message.includes('callback failed') && error.message.includes(run.recoveryLocation!));
+    await cleanup;
+    const directory = run.recoveryLocation!;
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    assert.deepEqual(fs.readFileSync(path.join(directory, 'result.bundle')), Buffer.from([0, 255, 42]));
+    assert.equal(api.destroyed, 1);
+});
+
+test('a failed delete retries in the background and preserves the collected result', async () => {
+    const { runtime, builder, api } = fixture();
+    let attempts = 0;
+    const retried = Promise.withResolvers<void>();
+    const finishDelete = Promise.withResolvers<void>();
+    api.destroy = async () => {
+        if (++attempts === 1) throw new Error('delete failed');
+        retried.resolve();
+        await finishDelete.promise;
+        api.destroyed++;
+    };
+    const run = runtime.start(builder.build());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.deepEqual(await run.readFile!(RESULT + '/result.bundle'), Buffer.from([0, 255, 42]));
+    await Promise.all([run.stop(), run.release!()]);
+    await retried.promise;
+    finishDelete.resolve();
+    await Promise.resolve();
+    assert.equal(api.destroyed, 1);
+    assert.equal(attempts, 2);
 });
 
 test('cancellation between wait and workspace return keeps the collected bundle', async t => {
@@ -284,10 +394,12 @@ test('credential export and canonical write failures retain the Machine through 
         builder.credentialBind(root, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: true });
         api.files.set(RUN + '/workspace/status', Buffer.from('pushed commit'));
         api.files.delete(RUN + '/workspace/result.bundle');
+        let acknowledged = false;
         const exporting = Promise.withResolvers<void>();
         const proceed = Promise.withResolvers<void>();
         const exec = api.exec.bind(api);
         api.exec = async (id, args) => {
+            if (args[0] === '/bin/rm') acknowledged = true;
             if (args[0] !== 'su-exec') return exec(id, args);
             exporting.resolve();
             await proceed.promise;
@@ -303,6 +415,7 @@ test('credential export and canonical write failures retain the Machine through 
         proceed.resolve();
         assert.match((await run.wait()).outputIncomplete!, /credential write-back failed.*Fly app agents, Machine machine, \/home\/node\/\.claude/);
         await cleanup;
+        assert.equal(acknowledged, false);
         assert.equal(api.destroyed, 0);
     }
 });
@@ -377,6 +490,30 @@ test('the Claude Code and Codex task builders can launch their prepared clone sp
     }
 });
 
+test('the unprivileged hook loads the resolved setup and agent environment', async t => {
+    const { runtime, builder, api } = fixture();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-hook-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    builder.spec.repoSetup = buildAgentRunRepoSetup('claude');
+    builder.spec.repoSetup.env.push({ name: 'SETUP_VALUE', value: 'from-setup' });
+    builder.env('GH_TOKEN', 'synthetic-github-token').env('AGENT_VALUE', 'from-agent');
+    const run = runtime.start(builder.build(), { extraEnvVars: { EXTRA_VALUE: 'from-extra' } });
+    await run.wait();
+    const file = (name: string) => Buffer.from(api.launch!.config.files.find(f => f.guest_path.endsWith(name))!.raw_value, 'base64').toString();
+    const { command, transportEnv } = JSON.parse(file('/input'));
+    assert.equal(transportEnv.GH_TOKEN, undefined);
+    assert.equal(transportEnv.AGENT_VALUE, undefined);
+    assert.match(command[3], /export PATH=\/opt\/propr\/fly-hook:/);
+    assert.match(file('/fly-hook/su-exec'), /exec \/usr\/local\/bin\/su-exec node \/usr\/bin\/python3 -I .* hook "\$@"/);
+    const payload = path.join(root, 'agent.json');
+    const hook = path.join(root, 'setup.sh');
+    fs.writeFileSync(payload, file('fly-agent.json'));
+    fs.writeFileSync(hook, 'echo "$GH_TOKEN $AGENT_VALUE $EXTRA_VALUE $SETUP_VALUE"');
+    assert.equal(execFileSync('python3', ['-I', '-c', wrapper.replace('/opt/propr/fly-agent.json', payload),
+        'hook', '/bin/bash', hook], { encoding: 'utf8', env: transportEnv }).trim(), 'synthetic-github-token from-agent from-extra from-setup');
+    await run.release!();
+});
+
 test('extension admission refuses Fly before workspace preparation', async () => {
     const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
     const { runAgent } = await import('../packages/core/src/agents/runtime/registry.ts');
@@ -440,7 +577,7 @@ test('a Machine lost during retrieval reports unavailable output even when the w
     const { runtime, api, builder } = fixture();
     const exec = api.exec.bind(api);
     api.exec = (id, args) => {
-        if (args[3] !== 'probe') throw new Error('Machine disappeared');
+        if (args[0] !== '/usr/bin/touch' && args[3] !== 'probe') throw new Error('Machine disappeared');
         return exec(id, args);
     };
     const run = runtime.start(builder.build());
@@ -483,40 +620,55 @@ test('a failed bundle or status read preserves the remote bundle through stop an
     }
 });
 
-test('forced cleanup preserves the Machine when its final status cannot be read', async () => {
-    const { runtime, api, builder } = fixture();
-    api.status = 'running';
-    const exec = api.exec.bind(api);
-    api.exec = async (id, args) => {
-        if (args[3] === 'probe' && api.signals.length) throw new Error('probe failed');
-        return exec(id, args);
-    };
-    const run = runtime.start(builder.build());
-    await api.probing.promise;
-    await run.stop('SIGTERM', 0);
-    assert.deepEqual(api.signals, ['SIGTERM']);
-    assert.match((await run.wait()).outputIncomplete!, /Machine machine/);
-    await run.release!();
-    assert.equal(api.destroyed, 0);
+test('forced recovery collects a newly confirmed exit and keeps the remote copy while status remains uncertain', async () => {
+    for (const recovers of [true, false]) {
+        const { runtime, api, builder } = fixture();
+        api.status = 'running';
+        const exec = api.exec.bind(api);
+        api.exec = async (id, args) => {
+            if (args[3] === 'probe' && api.signals.length && !(recovers && api.signals.includes('SIGALRM')))
+                throw new Error('probe failed');
+            return exec(id, args);
+        };
+        const run = runtime.start(builder.build());
+        await api.probing.promise;
+        await run.stop('SIGTERM', 0);
+        const result = await run.wait();
+        assert.deepEqual(api.signals, ['SIGTERM', 'SIGALRM']);
+        if (recovers) {
+            assert.equal(result.exitCode, 143);
+            assert.deepEqual(await run.readFile!(RESULT + '/result.bundle'), Buffer.from([0, 255, 42]));
+        } else assert.match(result.outputIncomplete!, /Machine machine/);
+        await run.release!();
+        assert.equal(api.destroyed, recovers ? 1 : 0);
+    }
 });
 
-test('guests with a fallback bundle or pending credentials outlive the orphan expiry', t => {
+test('credential retention ends on timeout or acknowledgement while fallback bundles remain recoverable', t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-recovery-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     execFileSync('python3', ['-I', '-c', wrapper + `
 from unittest.mock import patch
 run = Path(sys.argv[2])
 (run / 'workspace').mkdir()
+marker = run / 'credential-pending'
+marker.touch()
+with patch('time.monotonic', side_effect=[0, 0, 31]), patch('time.sleep') as sleep:
+    wait_for_retrieval(True, 30)
+    sleep.assert_called_once()
+with patch('time.sleep', side_effect=lambda _: marker.unlink()) as sleep:
+    wait_for_retrieval(True, 900)
+    sleep.assert_called_once()
+workspace_marker = run / 'workspace-pending'
+workspace_marker.touch()
+with patch('time.time', side_effect=[run.stat().st_mtime, run.stat().st_mtime + 901]), patch('time.sleep') as sleep:
+    wait_for_retrieval(True, 0)
+    sleep.assert_called_once()
+workspace_marker.unlink()
 bundle = run / 'workspace/result.bundle'
 bundle.touch()
-with patch('time.time', return_value=run.stat().st_mtime + 1000), patch('time.sleep', side_effect=lambda _: bundle.unlink()) as sleep:
-    wait_for_retrieval()
-    sleep.assert_called_once()
-with patch('time.time', return_value=run.stat().st_mtime + 1000), patch('time.sleep', side_effect=InterruptedError) as sleep:
-    try:
-        wait_for_retrieval(credential_pending=True)
-    except InterruptedError:
-        pass
+with patch('time.sleep', side_effect=lambda _: bundle.unlink()) as sleep:
+    wait_for_retrieval(True, 0)
     sleep.assert_called_once()
 `, 'test', root]);
 });

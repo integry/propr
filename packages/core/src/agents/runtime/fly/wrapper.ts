@@ -64,21 +64,29 @@ def launch():
         if child is None:
             pending.append(sig)
         elif child.poll() is None:
-            child.send_signal(sig)
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGUSR1, signal.SIGUSR2):
+            if sig == signal.SIGALRM:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                child.send_signal(sig)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGUSR1, signal.SIGUSR2, signal.SIGALRM):
         signal.signal(sig, forward)
     credential_pending = bool(data.get('credentialPath'))
-    def kill_group(sig, frame):
-        if child is not None and child.poll() is None:
-            try:
-                os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+    status('ready')
+    deadline = time.monotonic() + 120
+    while not (run / 'start').exists():
+        if pending or time.monotonic() >= deadline:
+            return
+        time.sleep(.1)
+    if pending:
+        return
     if credential_pending:
-        signal.signal(signal.SIGALRM, kill_group)
+        (run / 'credential-pending').touch()
     done = threading.Event()
     with (run / 'stdin').open('rb') as stdin, (run / 'stdout').open('wb') as out, (run / 'stderr').open('wb') as err:
-        child = subprocess.Popen(data['command'], env=data['transportEnv'], stdin=stdin, stdout=out, stderr=err, start_new_session=credential_pending)
+        child = subprocess.Popen(data['command'], env=data['transportEnv'], stdin=stdin, stdout=out, stderr=err, start_new_session=True)
         status('running')
         for sig in pending:
             forward(sig, None)
@@ -86,7 +94,7 @@ def launch():
         for secret in data['secrets']:
             if secret:
                 raw = secret.encode()
-                secrets.update(raw.splitlines())
+                secrets.update(line for line in raw.splitlines() if len(line) >= 12)
                 secrets.update([base64.b64encode(raw), raw.hex().encode(), quote(secret, safe='').encode()])
         secrets = sorted(filter(None, secrets), key=len, reverse=True)
         for stream in ('stdout', 'stderr'):
@@ -102,17 +110,27 @@ def launch():
             except subprocess.TimeoutExpired:
                 if not credential_pending:
                     os._exit(1)
-                kill_group(None, None)
+                forward(signal.SIGALRM, None)
                 code = child.wait()
         done.set()
     status('exited ' + str(code if code >= 0 else 128 - code))
-    wait_for_retrieval(credential_pending)
+    wait_for_retrieval(credential_pending, data['credentialRetention'])
 
-def wait_for_retrieval(credential_pending=False):
-    # Refreshed credentials and fallback bundles may exist only on this guest.
-    # Other orphaned Machines expire after the ordinary retrieval window.
-    while credential_pending or (run / 'workspace' / 'result.bundle').exists() or time.time() - run.stat().st_mtime < 900:
-        time.sleep(30)
+def wait_for_retrieval(credential_pending, credential_retention):
+    deadline = time.monotonic() + credential_retention
+    while True:
+        if (run / 'workspace' / 'result.bundle').exists():
+            time.sleep(30)
+            continue
+        if credential_pending and (run / 'credential-pending').exists():
+            remaining = deadline - time.monotonic()
+        elif not credential_pending or (run / 'workspace-pending').exists():
+            remaining = 900 - (time.time() - run.stat().st_mtime)
+        else:
+            return
+        if remaining <= 0:
+            return
+        time.sleep(min(30, remaining))
 
 def export(path):
     # Called as node. No ancestor symlinks, no devices/FIFOs, size and bytes
@@ -144,9 +162,15 @@ if __name__ == '__main__':
     mode = sys.argv[1]
     if mode == 'launch':
         launch()
-    elif mode == 'agent':
+    elif mode in ('agent', 'hook'):
         data = json.loads(agent.read_bytes())
-        os.execvpe(data['argv'][0], data['argv'], data['env'])
+        argv = data['argv'] if mode == 'agent' else sys.argv[2:]
+        env = data['env']
+        if mode == 'hook':
+            for name in ('PROPR_WORKSPACE', 'PROPR_CACHE_DIR', 'PROPR_EXECUTION_TIMEOUT_MS', 'LANG'):
+                if name in os.environ:
+                    env.setdefault(name, os.environ[name])
+        os.execvpe(argv[0], argv, env)
     elif mode == 'export':
         export(sys.argv[2])
     elif mode == 'probe':

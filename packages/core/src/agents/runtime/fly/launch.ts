@@ -1,11 +1,13 @@
-import fs from 'node:fs';
+import { providerCredentialManifest } from '../../credentials/providerManifests.js';
+import { PROPR_MCP_BEARER_TOKEN_ENV } from '../../agentToolPolicy.js';
+import { resolveRunEnvironment } from '../sprites/spritesRun.js';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { CLAUDE_BACKUPS_CONTAINER_PATH, CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
 import { WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_RESULT_DIR,
     WORKSPACE_TRANSPORT_ENVIRONMENT as E, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../../../git/workspaceTransportScript.js';
 import { CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside, type CredentialStoreBundle, type CredentialStoreRequest, type ReturnedCredentialFile } from '../../credentials/broker.js';
-import { credentialRunRoot, envFileValues } from '../../credentials/hostCredentialStaging.js';
+import { credentialRunRoot } from '../../credentials/hostCredentialStaging.js';
 import type { AgentRunOptions } from '../dockerRuntime.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
 import type { MachineLaunch, MachinesApi } from './api.js';
@@ -23,24 +25,6 @@ export function unsupportedFlyMount(m: Bind) {
     if (m.target === SEED && m.readOnly && m.purpose === 'credential') return;
     if (['scratch', 'logs'].includes(m.purpose) && !m.readOnly && /^\/tmp\/[\w-]+(?:\/[\w-]+)*$/.test(m.target)) return;
     return `cannot provide the ${m.purpose} mount at ${m.target}`;
-}
-
-function runEnv(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig) {
-    const inherited = { ...process.env, ...options.extraEnvVars };
-    const env = new Map<string, string>();
-    for (const file of [...spec.envFiles].sort((a, b) => a.order - b.order)) {
-        fs.accessSync(file.path, fs.constants.R_OK);
-        for (const [k, v] of envFileValues(file.path, inherited)) env.set(k, v);
-    }
-    for (const { name, value } of [...spec.repoSetup?.env ?? [], ...[...spec.env].sort((a, b) => a.order - b.order)]) {
-        const resolved = value ?? inherited[name];
-        if (resolved === undefined) env.delete(name);
-        else env.set(name, resolved);
-    }
-    for (const [name, value] of env) {
-        if (/^(?:PROPR_)?FLY_(?:(?:API|LIVE)_)?TOKEN$/.test(name) || value.includes(config.token)) env.delete(name);
-    }
-    return env;
 }
 
 function validateLaunch(spec: AgentRunSpec, options: AgentRunOptions) {
@@ -98,8 +82,8 @@ function stageCredentials(store: CredentialStoreBundle | undefined, storePath: s
             directories.add(path.dirname(target));
             if (file.refresh) {
                 // Protect credential strings even when the CLI prints only one field.
-                try { JSON.parse(file.content.toString(), (_key, value) => {
-                    if (typeof value === 'string' && value.length >= 8) secrets.push(value);
+                try { JSON.parse(file.content.toString(), (key, value) => {
+                    if (typeof value === 'string' && /^(?:(?:access|refresh|id|auth)_?)?token$|^(?:openai_)?api_?key$/i.test(key)) secrets.push(value);
                     return value;
                 }); } catch { secrets.push(file.content.toString().trim()); }
             }
@@ -113,14 +97,6 @@ function providerArgv(spec: AgentRunSpec, provider: 'claude' | 'codex') {
     return [spec.repoSetup?.providerEntrypoint ?? spec.entrypoint ?? `/home/node/${provider}-entrypoint.sh`, ...spec.args];
 }
 
-function environmentSecrets(env: Map<string, string>) {
-    const secrets: string[] = [];
-    for (const [name, value] of env) {
-        if (/token|secret|password|api.?key|authorization/i.test(name)) secrets.push(value);
-    }
-    return secrets;
-}
-
 export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig) {
     const { clone, containerPath, provider } = validateLaunch(spec, options);
     const files: MachineLaunch['config']['files'] = [];
@@ -129,10 +105,10 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
         if (bytes.includes(config.token)) throw new Error('Refusing to upload the Fly API credential');
         files.push({ guest_path, mode, raw_value: bytes.toString('base64') });
     };
-    const env = runEnv(spec, options, config);
-    const transportToken = env.get(WORKSPACE_TRANSPORT_TOKEN_ENV) || '';
-    env.delete(WORKSPACE_TRANSPORT_TOKEN_ENV);
-    for (const key of Object.values(E)) env.delete(key);
+    const { env, transportToken } = resolveRunEnvironment({ spec, options });
+    for (const [name, value] of env) {
+        if (/^(?:PROPR_)?FLY_(?:(?:API|LIVE)_)?TOKEN$/.test(name) || value.includes(config.token)) env.delete(name);
+    }
     const { requests, directories, backupTmpfs } = prepareMounts(spec.mounts, provider, add);
     const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(), '.locks') } });
     const bundle = broker.materialize(requests, { definedEnv: [...env].filter(([, v]) => v).map(([k]) => k) });
@@ -140,7 +116,10 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     const storePath = '/home/node/.' + provider;
     const staged = stageCredentials(store, storePath, add, directories);
     const owned = staged.owned;
-    const secrets = [transportToken, ...Object.values(bundle.secretEnv), ...staged.secrets, ...environmentSecrets(env)];
+    const credentialNames = [...providerCredentialManifest(provider, 'config')?.apiKeyEnv ?? [], 'OPENAI_API_KEY',
+        'ANTHROPIC_AUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN', PROPR_MCP_BEARER_TOKEN_ENV];
+    const secrets = [transportToken, ...Object.values(bundle.secretEnv), ...staged.secrets, ...credentialNames.map(k => env.get(k))]
+        .filter((v): v is string => v !== undefined && v.length >= 12);
     const environment = { PATH, ...Object.fromEntries(env), ...bundle.secretEnv, HOME: '/home/node', USER: 'node', LOGNAME: 'node' };
     // Only trusted values enter the root shell. Provider settings such as
     // BASH_ENV, PATH and LD_PRELOAD take effect after dropping privileges.
@@ -156,9 +135,13 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     add(AGENT, JSON.stringify({ env: environment, argv: providerArgv(spec, provider) }));
     add(WRAPPER, wrapper, 0o644);
     add(shim, '#!/bin/sh\nexec /usr/local/bin/su-exec node /usr/bin/python3 -I ' + WRAPPER + ' agent\n', 0o755);
-    const command = ['/bin/bash', '-c', clone.script, ...(setup ? [setup.script, shim, ...spec.args] : [WORKSPACE_DIRECT_AGENT_LAUNCH, ...helper, 'agent'])];
+    // Both trusted setup wrappers invoke su-exec for hook commands. Apply the
+    // resolved environment on its node side while keeping workflow reports trusted.
+    const hookBin = '/opt/propr/fly-hook';
+    if (setup) add(hookBin + '/su-exec', '#!/bin/sh\nshift\nexec /usr/local/bin/su-exec node /usr/bin/python3 -I ' + WRAPPER + ' hook "$@"\n', 0o755);
+    const command = ['/bin/bash', '-c', clone.script, ...(setup ? [`export PATH=${hookBin}:$PATH\n${setup.script}`, shim, ...spec.args] : [WORKSPACE_DIRECT_AGENT_LAUNCH, ...helper, 'agent'])];
     const credentialPath = store?.outputs.length ? storePath : undefined;
-    add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, credentialPath, timeout: options.timeout ?? 300_000, directories: [...directories], secrets }));
+    add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, credentialPath, credentialRetention: config.credentialRetention, timeout: options.timeout ?? 300_000, directories: [...directories], secrets }));
     add(RUN + '/stdin', options.stdinData ?? '');
     const name = 'propr-' + randomUUID();
     const launch: MachineLaunch = { name, skip_service_registration: true, skip_secrets: true, region: config.region, config: {

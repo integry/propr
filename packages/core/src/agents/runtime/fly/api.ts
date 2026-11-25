@@ -92,6 +92,7 @@ export class MachinesClient implements MachinesApi {
         try {
             await this.request('POST', url, { body: { signal } });
         } catch (error) {
+            if (error instanceof MachinesHttpError && error.status === 404) return; // Already gone.
             if (!(error instanceof MachinesHttpError) || error.status !== 400) throw error;
             // Older Machines API hosts accept the POSIX number.
             await this.request('POST', url, { body: { signal: constants.signals[signal] } });

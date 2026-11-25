@@ -22,22 +22,27 @@ import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntim
 const BOOT_TIMEOUT = 120_000;
 
 interface ExitPollCallbacks {
+    start(machine: string): Promise<void>;
     activity(): void;
     readUsage(id: string): Promise<void>;
 }
 
+async function probe(api: MachinesApi, id: string, signal: AbortSignal) {
+    const res = await api.exec(id, [...helper, 'probe'], signal).catch(() => undefined);
+    return res?.exit_code === 0 && /^(ready|running|exited (\d{1,3}))\n(\d+)$/.exec(res.stdout.trim());
+}
+
 /** Poll the atomic status and consume new usage when a cap is active.
  * Changing byte counts are activity for the stall watchdog. */
-async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { activity, readUsage }: ExitPollCallbacks) {
-    const probe = async (signal: AbortSignal) => {
-        const res = await api.exec(id, [...helper, 'probe'], signal).catch(() => undefined);
-        return res?.exit_code === 0 && /^(running|exited (\d{1,3}))\n(\d+)$/.exec(res.stdout.trim());
-    };
+async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { start, activity, readUsage }: ExitPollCallbacks) {
     let deadline = Date.now() + BOOT_TIMEOUT;
     let previousSize = -1;
     while (!forced.aborted) {
-        const status = await probe(forced);
-        if (status) {
+        const status = await probe(api, id, forced);
+        if (status && status[1] === 'ready') {
+            if (Date.now() >= deadline) return;
+            await start(id);
+        } else if (status) {
             if (status[2] !== undefined) return Number(status[2]);
             const bytes = Number(status[3]);
             if (bytes !== previousSize) { previousSize = bytes; activity(); }
@@ -48,8 +53,8 @@ async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { 
     }
     // The grace period may expire between polls, after the clone transport
     // has finished publishing its bundle. Check before forcing deletion.
-    const last = await probe(AbortSignal.timeout(1500));
-    if (last) return last[2] === undefined ? 'running' : Number(last[2]);
+    const last = await probe(api, id, AbortSignal.timeout(1500));
+    if (last && last[1] !== 'ready') return last[2] === undefined ? 'running' : Number(last[2]);
 }
 
 function applyOutputDiagnostics(result: ExecutionResult, truncated: string[], missing: string[], failures: string[]) {
@@ -111,13 +116,25 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         const timeout = options.timeout ?? 300_000;
         const preserve = options.preserveOutputOnTimeout ?? false;
 
+        // Keep one cleanup owner across wait, stop and release, including after settlement.
+        const retryCleanup = async (machine: string, action: string, perform: () => Promise<void>) => {
+            try { await perform(); }
+            catch (error) {
+                logger.warn({ app: config.app, machine, action, err: error }, 'Fly Machine cleanup failed; retrying');
+                const retry = delay(5000, undefined, { ref: !exited }).then(() => retryCleanup(machine, action, perform));
+                if (!exited) await retry;
+            }
+        };
         const destroy = () => {
             const machine = id;
-            if (machine && workspaceSafeToDestroy && !credentialsPending) return destroyed ??= api.destroy(machine).catch(error => { destroyed = undefined; throw error; });
+            if (machine && workspaceSafeToDestroy && !credentialsPending)
+                return destroyed ??= retryCleanup(machine, 'destroy', () => api.destroy(machine));
         };
+        let mayHaveStarted = false;
         const requestStop = (signal: NodeJS.Signals = 'SIGTERM', grace = 10_000) => {
             if (exited || stopping || settled) return false;
             stopping = credentialsPending && signal === 'SIGKILL' ? 'SIGTERM' : signal;
+            if (!mayHaveStarted) { forced.abort(); return true; }
             if (id) void api.signal(id, stopping).catch(() => {});
             graceTimer = setTimeout(() => forced.abort(), stopping !== signal ? 0 : Math.max(0, grace));
             return true;
@@ -204,35 +221,48 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 try {
                     await prepared.commit(api, machine);
                     credentialsPending = false;
+                    if (prepared.credentialPath) {
+                        const marker = RUN + '/credential-pending';
+                        const command = workspaceSafeToDestroy ? ['/bin/rm', '-f', marker] : ['/bin/mv', marker, RUN + '/workspace-pending'];
+                        const ack = await api.exec(machine, command).catch(() => undefined);
+                        if (ack?.exit_code !== 0) logger.warn({ machine }, 'Fly credential acknowledgement failed after write-back');
+                    }
                 } catch {
                     failures.push('Fly credential write-back failed. ' + credentialRecovery());
                 }
                 await destroy();
             };
             const recoverUnconfirmedExit = async (machine: string, running: boolean) => {
-                missing.push('status');
-                if (running && !credentialsPending) {
+                const unstarted = !mayHaveStarted && !running;
+                if (unstarted || (running && !credentialsPending)) {
+                    if (unstarted) credentialsPending = false;
                     workspaceSafeToDestroy = true;
-                    void api.signal(machine, 'SIGKILL').catch(() => {});
+                    if (running) void api.signal(machine, 'SIGKILL').catch(() => {});
                     await destroy();
                 } else {
-                    // A failed probe can hide either an active agent or a finished
-                    // bundle. ALRM kills a confirmed running command group while
-                    // keeping the credential-bearing guest available for recovery.
-                    if (running) await api.signal(machine, 'SIGALRM').catch(() => {});
-                    else if (!stopping) await api.signal(machine, 'SIGTERM').catch(() => {});
+                    // ALRM stops the child group while leaving an exited guest's files intact.
+                    await retryCleanup(machine, 'stop command group', () => api.signal(machine, 'SIGALRM'));
+                    const last = await probe(api, machine, AbortSignal.timeout(1500));
+                    if (last && last[2] !== undefined) return Number(last[2]);
                     if (credentialsPending) failures.push(credentialRecovery());
                     failures.push('Check for a workspace result at ' + machineLocation());
                 }
+                missing.push('status');
             };
             let exitCode = -1;
             try {
                 id = await api.create(prepared.launch);
-                if (stopping) void api.signal(id, stopping).catch(() => {});
                 void api.logs(id, display, logs.signal).catch(() => {});
                 let usageReadFailed = false;
-                const code = await waitForExit(api, id, forced.signal, {
+                const code = stopping ? undefined : await waitForExit(api, id, forced.signal, {
+                    async start(machine) {
+                        if (stopping) return;
+                        // A lost exec response can still have opened the guest gate.
+                        mayHaveStarted = true;
+                        await api.exec(machine, ['/usr/bin/touch', RUN + '/start'], forced.signal).catch(() => {});
+                    },
                     activity() {
+                        mayHaveStarted = true;
                         pipeline.watchdog.recordActivity();
                         if (!timeoutTimer) timeoutTimer = setTimeout(() => { timedOut = requestStop(); }, timeout);
                     },
@@ -252,16 +282,13 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                         }
                     },
                 });
-                if (typeof code === 'number') {
-                    exited = true;
-                    exitCode = code;
-                }
                 clearTimeout(timeoutTimer);
                 clearTimeout(graceTimer);
                 logs.abort();
-                if (!exited) {
-                    await recoverUnconfirmedExit(id, code === 'running');
-                } else {
+                const confirmed = typeof code === 'number' ? code : await recoverUnconfirmedExit(id, code === 'running');
+                if (typeof confirmed === 'number') {
+                    exited = true;
+                    exitCode = confirmed;
                     await collectExitedMachine(id);
                 }
             } finally {
