@@ -21,11 +21,23 @@ jobs:
     steps:
       - id: check
         env:
-          ENABLED: ${{ secrets.FLY_E2E_TOKEN != '' && secrets.FLY_E2E_SPRITES_TOKEN != '' && secrets.FLY_E2E_APP_ENV != '' && secrets.FLY_E2E_GITHUB_TOKEN != '' }}
+          FLY_E2E_TOKEN: ${{ secrets.FLY_E2E_TOKEN != '' }}
+          FLY_E2E_SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN != '' }}
+          FLY_E2E_APP_ENV: ${{ secrets.FLY_E2E_APP_ENV != '' }}
+          FLY_E2E_GITHUB_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN != '' }}
+          FLY_E2E_GH_OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID != '' }}
+          FLY_E2E_GH_OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET != '' }}
         run: |
-          echo "enabled=$ENABLED" >> "$GITHUB_OUTPUT"
-          if [[ $ENABLED == false ]]; then
-            echo "Skipping live smoke because fixture secrets are missing." >> "$GITHUB_STEP_SUMMARY"
+          missing=()
+          for name in FLY_E2E_TOKEN FLY_E2E_SPRITES_TOKEN FLY_E2E_APP_ENV FLY_E2E_GITHUB_TOKEN \
+            FLY_E2E_GH_OAUTH_CLIENT_ID FLY_E2E_GH_OAUTH_CLIENT_SECRET; do
+            [[ ${!name} == true ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} )); then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping live smoke because fixture secrets are missing: ${missing[*]}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
   smoke:
@@ -74,14 +86,19 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
           APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
           SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+          OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET }}
         run: |
           umask 077
+          echo "::add-mask::$OAUTH_CLIENT_SECRET"
           printf '%s\n' "$APP_ENV" > "$ENV_FILE"
-          for key in PROPR_ADMIN_USERS GH_OAUTH_CLIENT_ID GH_OAUTH_CLIENT_SECRET GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 CLAUDE_SETTINGS_B64; do
+          for key in PROPR_ADMIN_USERS GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 CLAUDE_SETTINGS_B64; do
             grep -q "^${key}=." "$ENV_FILE" || { echo "Missing $key"; exit 1; }
           done
           openssl rand -hex 32 > "$OUT/hook-secret"
           {
+            echo "GH_OAUTH_CLIENT_ID=$OAUTH_CLIENT_ID"
+            echo "GH_OAUTH_CLIENT_SECRET=$OAUTH_CLIENT_SECRET"
             echo "GITHUB_REPOS_TO_MONITOR=$REPO"
             echo "WORKER_CONCURRENCY=1"
             echo "PROPR_SPRITES_MAX=1"
