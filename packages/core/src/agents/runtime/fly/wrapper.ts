@@ -119,10 +119,7 @@ def launch():
 def wait_for_retrieval(credential_pending, credential_retention):
     deadline = time.monotonic() + credential_retention
     while True:
-        if (run / 'workspace' / 'result.bundle').exists():
-            time.sleep(30)
-            continue
-        if credential_pending and (run / 'credential-pending').exists():
+        if (run / 'workspace' / 'result.bundle').exists() or (credential_pending and (run / 'credential-pending').exists()):
             remaining = deadline - time.monotonic()
         elif not credential_pending or (run / 'workspace-pending').exists():
             remaining = 900 - (time.time() - run.stat().st_mtime)

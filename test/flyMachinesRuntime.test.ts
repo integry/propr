@@ -674,7 +674,7 @@ test('forced recovery collects a newly confirmed exit and keeps the remote copy 
     }
 });
 
-test('credential retention ends on timeout or acknowledgement while fallback bundles remain recoverable', t => {
+test('credential and fallback bundle recovery share a bounded retention window', t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-recovery-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     execFileSync('python3', ['-I', '-c', wrapper + `
@@ -697,8 +697,12 @@ with patch('time.time', side_effect=[run.stat().st_mtime, run.stat().st_mtime + 
 workspace_marker.unlink()
 bundle = run / 'workspace/result.bundle'
 bundle.touch()
+for credential_pending in (False, True):
+    with patch('time.monotonic', side_effect=[0, 0, 7]), patch('time.sleep', side_effect=[None]) as sleep:
+        wait_for_retrieval(credential_pending, 7)
+        sleep.assert_called_once_with(7)
 with patch('time.sleep', side_effect=lambda _: bundle.unlink()) as sleep:
-    wait_for_retrieval(True, 0)
+    wait_for_retrieval(True, 900)
     sleep.assert_called_once()
 `, 'test', root]);
 });
