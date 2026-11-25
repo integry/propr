@@ -26,6 +26,12 @@ export interface MachinesApi {
     logs(id: string, publish: (message: string) => void, signal: AbortSignal): Promise<void>;
 }
 
+interface RequestOptions {
+    body?: unknown;
+    signal?: AbortSignal;
+    timeout?: number;
+}
+
 class MachinesHttpError extends Error {
     constructor(method: string, readonly status: number) {
         super(`Fly Machines API ${method} returned HTTP ${status}`);
@@ -40,7 +46,7 @@ export class MachinesClient implements MachinesApi {
         this.authorization = config.token.startsWith('FlyV1 ') ? config.token : 'Bearer ' + config.token;
     }
 
-    private async request(method: string, url: string, body?: unknown, signal?: AbortSignal, timeout = 30_000) {
+    private async request(method: string, url: string, { body, signal, timeout = 30_000 }: RequestOptions = {}) {
         const deadline = AbortSignal.timeout(timeout);
         const response = await fetch(url, { method, redirect: 'error',
             headers: { Authorization: this.authorization, 'Content-Type': 'application/json' },
@@ -55,7 +61,7 @@ export class MachinesClient implements MachinesApi {
 
     async create(launch: MachineLaunch) {
         try {
-            const response = await this.request('POST', this.url, launch, undefined, 120_000);
+            const response = await this.request('POST', this.url, { body: launch, timeout: 120_000 });
             const { id } = await response.json() as { id?: string };
             if (!id || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Fly create returned no Machine ID');
             return id;
@@ -75,7 +81,7 @@ export class MachinesClient implements MachinesApi {
     }
 
     async exec(id: string, command: string[], signal?: AbortSignal) {
-        const response = await this.request('POST', this.url + '/' + id + '/exec', { command, timeout: 20 }, signal);
+        const response = await this.request('POST', this.url + '/' + id + '/exec', { body: { command, timeout: 20 }, signal });
         const result = await response.json() as { stdout: string; exit_code: number; exit_signal?: number };
         if (typeof result.stdout !== 'string' || !Number.isInteger(result.exit_code) || result.exit_signal) throw new Error('Invalid Fly exec response');
         return result;
@@ -84,11 +90,11 @@ export class MachinesClient implements MachinesApi {
     async signal(id: string, signal: NodeJS.Signals) {
         const url = this.url + '/' + id + '/signal';
         try {
-            await this.request('POST', url, { signal });
+            await this.request('POST', url, { body: { signal } });
         } catch (error) {
             if (!(error instanceof MachinesHttpError) || error.status !== 400) throw error;
             // Older Machines API hosts accept the POSIX number.
-            await this.request('POST', url, { signal: constants.signals[signal] });
+            await this.request('POST', url, { body: { signal: constants.signals[signal] } });
         }
     }
 
@@ -108,7 +114,7 @@ export class MachinesClient implements MachinesApi {
         const query = new URLSearchParams({ instance: id });
         while (!signal.aborted) {
             const url = 'https://api.fly.io/api/v1/apps/' + this.config.app + '/logs?' + query;
-            const response = await this.request('GET', url, undefined, signal);
+            const response = await this.request('GET', url, { signal });
             const page = await response.json() as { data: { attributes: { message: string; instance: string } }[]; meta?: { next_token?: string } };
             for (const { attributes } of page.data) {
                 if (attributes.instance === id) publish(attributes.message);

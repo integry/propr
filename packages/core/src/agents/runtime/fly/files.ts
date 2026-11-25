@@ -10,10 +10,15 @@ import { RUN } from './wrapper.js';
 export const OUTPUT_READ_LIMIT = 16 * 1024 * 1024;
 const CHUNK = 256 * 1024;
 
+interface ScanOptions {
+    limit: number;
+    tail?: boolean;
+    consume: (chunk: Buffer) => void | Promise<void>;
+}
+
 /** Stat once, then scan fixed byte ranges. A short or missing read never
  * becomes an empty stream. The caller bounds retained output independently. */
-export async function scanFile(api: MachinesApi, id: string, file: string, consume: (chunk: Buffer) => void | Promise<void>,
-    limit: number, tail = false) {
+export async function scanFile(api: MachinesApi, id: string, file: string, { consume, limit, tail = false }: ScanOptions) {
     const stat = await api.exec(id, [...helper, 'size', file]);
     if (stat.exit_code === 44) return null;
     const size = Number(stat.stdout.trim());
@@ -44,7 +49,9 @@ export class WorkspaceFiles {
 
     async collect(api: MachinesApi, id: string) {
         const chunks: Buffer[] = [];
-        const size = await scanFile(api, id, RUN + '/workspace/status', chunk => { chunks.push(chunk); }, 4096);
+        const size = await scanFile(api, id, RUN + '/workspace/status', {
+            limit: 4096, consume: chunk => { chunks.push(chunk); },
+        });
         const status = Buffer.concat(chunks);
         this.location = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-fly-result-'));
         if (!/^(pushed|failed)\s/.test(status.toString())) {
@@ -52,8 +59,9 @@ export class WorkspaceFiles {
             const pending = target + '.part';
             const bundle = await fs.open(pending, 'wx', 0o600);
             try {
-                const bytes = await scanFile(api, id, RUN + '/workspace/result.bundle', chunk => bundle.writeFile(chunk),
-                    DOCKER_CONTAINER_FILE_LIMIT_BYTES);
+                const bytes = await scanFile(api, id, RUN + '/workspace/result.bundle', {
+                    limit: DOCKER_CONTAINER_FILE_LIMIT_BYTES, consume: chunk => bundle.writeFile(chunk),
+                });
                 if (bytes !== null) await fs.rename(pending, target);
                 else if (/^bundle\s/.test(status.toString())) throw new Error('Fly workspace bundle unavailable');
             } finally {

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { CLAUDE_BACKUPS_CONTAINER_PATH, CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
 import { WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_RESULT_DIR,
     WORKSPACE_TRANSPORT_ENVIRONMENT as E, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../../../git/workspaceTransportScript.js';
-import { CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside, type ReturnedCredentialFile } from '../../credentials/broker.js';
+import { CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside, type CredentialStoreBundle, type CredentialStoreRequest, type ReturnedCredentialFile } from '../../credentials/broker.js';
 import { credentialRunRoot, envFileValues } from '../../credentials/hostCredentialStaging.js';
 import type { AgentRunOptions } from '../dockerRuntime.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
@@ -43,7 +43,7 @@ function runEnv(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig)
     return env;
 }
 
-export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig) {
+function validateLaunch(spec: AgentRunSpec, options: AgentRunOptions) {
     const { clone, containerPath } = spec.workspace;
     if (options.extraMounts?.length || spec.security.readOnlyRootFilesystem || spec.security.capDrop.length ||
         spec.security.securityOpts.some(opt => !['no-new-privileges', 'seccomp=unconfined', 'apparmor=unconfined'].includes(opt))) {
@@ -54,21 +54,16 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
         throw new Error('Fly Machines requires a prepared writable clone workspace');
     const provider = spec.profile.agentType;
     if (provider !== 'claude' && provider !== 'codex') throw new Error('Fly Machines supports Claude Code and Codex');
-    const files: MachineLaunch['config']['files'] = [];
-    const owned: string[] = [];
+    return { clone, containerPath, provider } as const;
+}
+
+type AddFile = (target: string, content: string | Buffer, mode?: number) => void;
+
+function prepareMounts(mounts: readonly AgentRunMount[], provider: 'claude' | 'codex', add: AddFile) {
     const directories = new Set<string>();
-    const add = (guest_path: string, content: string | Buffer, mode = 0o600) => {
-        const bytes = Buffer.from(content);
-        if (bytes.includes(config.token)) throw new Error('Refusing to upload the Fly API credential');
-        files.push({ guest_path, mode, raw_value: bytes.toString('base64') });
-    };
-    const env = runEnv(spec, options, config);
-    const transportToken = env.get(WORKSPACE_TRANSPORT_TOKEN_ENV) || '';
-    env.delete(WORKSPACE_TRANSPORT_TOKEN_ENV);
-    for (const key of Object.values(E)) env.delete(key);
-    const requests = [];
+    const requests: CredentialStoreRequest[] = [];
     let backupTmpfs = false;
-    for (const m of spec.mounts) {
+    for (const m of mounts) {
         if (m.type === 'tmpfs') {
             if (m.target !== CLAUDE_BACKUPS_CONTAINER_PATH || m.options !== 'rw,nosuid,nodev,noexec,size=16m') throw new Error('Unsupported Fly tmpfs target');
             backupTmpfs = true;
@@ -86,11 +81,13 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
             add(SEED, file.content);
         } else directories.add(m.target);
     }
-    const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(), '.locks') } });
-    const bundle = broker.materialize(requests, { definedEnv: [...env].filter(([, v]) => v).map(([k]) => k) });
-    const store = bundle.stores[0];
-    const storePath = '/home/node/.' + provider;
-    const secrets = [transportToken, ...Object.values(bundle.secretEnv)];
+    return { requests, directories, backupTmpfs };
+}
+
+function stageCredentials(store: CredentialStoreBundle | undefined, storePath: string, add: AddFile,
+    directories: Set<string>) {
+    const owned: string[] = [];
+    const secrets: string[] = [];
     if (store) {
         directories.add(storePath);
         for (const directory of store.directories) directories.add(path.join(storePath, directory));
@@ -108,6 +105,29 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
             }
         }
     }
+    return { owned, secrets };
+}
+
+export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig) {
+    const { clone, containerPath, provider } = validateLaunch(spec, options);
+    const files: MachineLaunch['config']['files'] = [];
+    const add = (guest_path: string, content: string | Buffer, mode = 0o600) => {
+        const bytes = Buffer.from(content);
+        if (bytes.includes(config.token)) throw new Error('Refusing to upload the Fly API credential');
+        files.push({ guest_path, mode, raw_value: bytes.toString('base64') });
+    };
+    const env = runEnv(spec, options, config);
+    const transportToken = env.get(WORKSPACE_TRANSPORT_TOKEN_ENV) || '';
+    env.delete(WORKSPACE_TRANSPORT_TOKEN_ENV);
+    for (const key of Object.values(E)) env.delete(key);
+    const { requests, directories, backupTmpfs } = prepareMounts(spec.mounts, provider, add);
+    const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(), '.locks') } });
+    const bundle = broker.materialize(requests, { definedEnv: [...env].filter(([, v]) => v).map(([k]) => k) });
+    const store = bundle.stores[0];
+    const storePath = '/home/node/.' + provider;
+    const staged = stageCredentials(store, storePath, add, directories);
+    const owned = staged.owned;
+    const secrets = [transportToken, ...Object.values(bundle.secretEnv), ...staged.secrets];
     const environment = { PATH, ...Object.fromEntries(env), ...bundle.secretEnv, HOME: '/home/node', USER: 'node', LOGNAME: 'node' };
     for (const [k, v] of env) if (/token|secret|password|api.?key|authorization/i.test(k)) secrets.push(v);
     // Only trusted values enter the root shell. Provider settings such as

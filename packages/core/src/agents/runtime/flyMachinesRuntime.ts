@@ -135,6 +135,22 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             const missing: string[] = [];
             const truncated: string[] = [];
             const failures: string[] = [];
+            const collectOutput = async (machineId: string) => {
+                for (const stream of ['stdout', 'stderr'] as const) {
+                    try {
+                        const size = await scanFile(api, machineId, RUN + '/' + stream, {
+                            consume: data => pipeline.write(stream, data), limit: OUTPUT_READ_LIMIT, tail: true,
+                        });
+                        if (size === null) missing.push(stream);
+                        else if (size > MAX_PROVIDER_OUTPUT_BYTES) {
+                            truncated.push(stream);
+                            const needsHistory = stream === 'stdout' ? !options.costCapExempt && getActiveRunCostCap()
+                                : prepared.markerArgs.length && repositoryWorkflowExecution.getStore();
+                            if (size > OUTPUT_READ_LIMIT && needsHistory) missing.push(stream + ' prefix (16 MiB capture read limit)');
+                        }
+                    } catch { missing.push(stream); }
+                }
+            };
             let exitCode = -1;
             try {
                 id = await api.create(prepared.launch);
@@ -158,18 +174,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                         await destroy();
                     }
                 } else {
-                    for (const stream of ['stdout', 'stderr'] as const) {
-                        try {
-                            const size = await scanFile(api, id, RUN + '/' + stream, data => pipeline.write(stream, data), OUTPUT_READ_LIMIT, true);
-                            if (size === null) missing.push(stream);
-                            else if (size > MAX_PROVIDER_OUTPUT_BYTES) {
-                                truncated.push(stream);
-                                const needsHistory = stream === 'stdout' ? !options.costCapExempt && getActiveRunCostCap()
-                                    : prepared.markerArgs.length && repositoryWorkflowExecution.getStore();
-                                if (size > OUTPUT_READ_LIMIT && needsHistory) missing.push(stream + ' prefix (16 MiB capture read limit)');
-                            }
-                        } catch { missing.push(stream); }
-                    }
+                    await collectOutput(id);
                     try { await workspace.collect(api, id); }
                     catch { failures.push('Fly workspace result retrieval failed'); }
                     try { await prepared.commit(api, id); }
