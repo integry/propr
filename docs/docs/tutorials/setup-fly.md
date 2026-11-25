@@ -48,9 +48,16 @@ docker build --platform linux/amd64 -f docker/Dockerfile.app.prod -t "$IMAGE" .
 docker push "$IMAGE"
 ```
 
-Create the private environment file (mode 0600), one literal `NAME=value` per line. For your own GitHub App, supply `GH_APP_ID`, `GH_INSTALLATION_ID`, `PROPR_GH_PRIVATE_KEY_B64` (base64 PEM), `GH_WEBHOOK_SECRET` and a random `SESSION_SECRET`. For browser login add `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET`, with callback `https://<app>.fly.dev/api/auth/github/callback`. Install the App on the target repository with ProPR’s [GitHub permissions](../operations/github-auth.md#create-your-own-app). Set its signed JSON webhook to `https://<app>.fly.dev/webhook` and subscribe to issue and pull request events.
+Create the private environment file (mode 0600), one literal `NAME=value` per line. Include a random `SESSION_SECRET` and `PROPR_ADMIN_USERS=<your-github-login>`. Replace the placeholder with your GitHub login, or a comma-separated list of logins. On first boot the API requires an instance administrator before it can pass its health check.
 
-- **Sprites** needs `SPRITES_TOKEN` for your organization. Sign in to a supported agent in the Web UI after deploy.
+Choose how the instance receives GitHub events before rendering the configuration.
+
+- **Your own GitHub App** (default). Add `GH_APP_ID`, `GH_INSTALLATION_ID`, `PROPR_GH_PRIVATE_KEY_B64` (base64 PEM) and `GH_WEBHOOK_SECRET` to the private file. For browser login add `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET`, with callback `https://<app>.fly.dev/api/auth/github/callback`. Install the App on the target repository with [ProPR’s GitHub permissions](../operations/github-auth.md#create-your-own-app). Set its signed JSON webhook to `https://<app>.fly.dev/webhook` and subscribe to issue and pull request events.
+- **ProPR Connect relay**. Install the shared ProPR App on the repository and enroll with `propr relay enroll`. Run `export GH_AUTH_MODE=relay` in the shell that renders the config. Add `PROPR_GH_RELAY_URL=https://webhook.propr.dev/v1`, your `PROPR_GH_RELAY_TOKEN` and the shared App’s `GH_INSTALLATION_ID` to the private file. The recipe selects `routing_websocket` for event delivery. This path needs neither a private App key nor a public webhook.
+
+Supply the credentials for your chosen agent runtime.
+
+- **Sprites** needs `SPRITES_TOKEN` for your organization.
 - **Fly Machines** needs `RUNTIME=fly-machines`, a separate agent app in `PROPR_FLY_APP`, its app-scoped deploy token in `PROPR_FLY_API_TOKEN` and its published unified agent image digest in `PROPR_FLY_IMAGE`. See [image build and runtime capabilities](../architecture/agent-runtime.md#fly-machines).
 
 Idle shutdown is **off by default**. To opt in, export `IDLE_AFTER=15m` and add an app-scoped token from `fly tokens create deploy --app "$APP" --name "$APP-stop"` to the private file as `PROPR_FLY_MACHINE_STOP_TOKEN`. Fly proxy autostart wakes the Machine on the next webhook. Polling intake keeps the instance awake. With Connect intake, the relay must acknowledge the wake hint, ping the public `/wake` endpoint on delivery and replay the event after reconnect. Until the relay supports this handshake, the instance stays up. [Idle shutdown and wake](../operations/idle-shutdown.md#the-wake-hint)
@@ -63,23 +70,26 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { FLY_DEFAULTS, renderFlyToml, renderFlyMachineConfigJson } from './packages/cli/src/commands/deploy/flyMachineConfig.ts';
 const { APP, ORG, REGION, IMAGE, REPO, RUNTIME, OUT, ENV_FILE, IDLE_AFTER } = process.env;
+const relay = process.env.GH_AUTH_MODE === 'relay';
 const names = readFileSync(ENV_FILE, 'utf8').split(/\r?\n/)
   .map(line => /^([A-Z_][A-Z0-9_]*)=/.exec(line)?.[1]).filter(Boolean);
 const plan = {
   ...FLY_DEFAULTS, app: APP, org: ORG, region: REGION, agentRuntime: RUNTIME,
-  images: { app: IMAGE, redis: 'redis:7-alpine' }, githubAppKey: true,
+  images: { app: IMAGE, redis: 'redis:7-alpine' }, githubAppKey: !relay,
   legacyDocker: false, idleShutdownAfter: IDLE_AFTER, secretNames: names,
   extraEnv: {
-    GH_AUTH_MODE: 'app', GITHUB_EVENT_INTAKE_MODE: 'direct_webhook',
+    GH_AUTH_MODE: relay ? 'relay' : 'app',
+    GITHUB_EVENT_INTAKE_MODE: relay ? 'routing_websocket' : 'direct_webhook',
     GITHUB_REPOS_TO_MONITOR: REPO, PROPR_INSTANCE_ID: APP,
     WORKER_CONCURRENCY: '1', PROPR_SPRITES_MAX: '1',
-    CLAUDE_CONFIG_PATH: '/usr/src/app/data/claude',
+    PROPR_MANAGED_CREDENTIALS_DIR: '/usr/src/app/data/agent-credentials',
   },
 };
 const config = JSON.parse(renderFlyMachineConfigJson(plan));
 if (names.includes('CLAUDE_SETTINGS_B64')) {
-  config.containers.find(c => c.name === 'app').files.push({
-    guest_path: plan.extraEnv.CLAUDE_CONFIG_PATH + '/settings.json',
+  const app = config.containers.find(c => c.name === 'app');
+  (app.files ??= []).push({
+    guest_path: plan.extraEnv.PROPR_MANAGED_CREDENTIALS_DIR + '/claude/.claude/settings.json',
     secret_name: 'CLAUDE_SETTINGS_B64', mode: 0o600,
   });
 }
@@ -97,7 +107,13 @@ fly volumes create propr_data --size 1 --region "$REGION" --app "$APP" --yes
 fly deploy --app "$APP" --config "$OUT/fly.toml" --image "$IMAGE" --ha=false
 ```
 
-Verify `https://<app>.fly.dev/health`, then label a small issue `AI`. Check that its PR contains the requested edit and that the task’s compute usage names the selected runtime. To check idle wake, close the UI, wait until `fly machine list --app "$APP"` shows `stopped`, then label another issue. Use Fly’s Machine list to observe the transition to `started`. Visiting the instance yourself would also wake it.
+### Verify an issue run
+
+1. Confirm that `https://<app>.fly.dev/health` returns HTTP 200.
+2. Configure at least one agent. In **Settings → Agents**, add an agent, choose its alias and default model, sign in to the provider and enable the agent. For headless Claude setup with `CLAUDE_SETTINGS_B64`, use the MCP tool `create_agent_configuration` with agent ID `claude` so its managed credential directory matches the mounted settings file. Set an alias, supported models and a default model you can access. New MCP configurations start disabled, so call `update_agent_configuration` with `enabled: true`.
+3. Apply `llm-<alias>` to a small issue to select that agent’s default model (for example, `llm-claude` for alias `claude`), then add the `AI` trigger label. Check that its PR contains the requested edit and that the task’s compute usage names the selected runtime.
+
+To check idle wake, close the UI, wait until `fly machine list --app "$APP"` shows `stopped`, then apply the same labels to another issue. Use Fly’s Machine list to observe the transition to `started`. Visiting the instance yourself would also wake it.
 
 When tearing down an installation with idle shutdown enabled, find the ID of `$APP-stop` with `fly tokens list --app "$APP"` and run `fly tokens revoke <id>` before destroying the app. The deploy token stays active after app deletion.
 
@@ -107,13 +123,13 @@ You control the Fly organization, volume, GitHub installation and model credenti
 
 ## Nightly smoke fixture
 
-The **Fly end-to-end smoke** GitHub Actions workflow runs on manual dispatch by default. To enable the nightly run at 04:17 UTC, set the repository variable `FLY_E2E_NIGHTLY` to `true`. Each run consumes Fly and model usage and opens an issue and a PR in the fixture repository. On the Free plan, it shares the organization’s three Machine slots and three Sprite slots with other workloads. Use a dedicated Fly organization and a disposable, initialized GitHub repository with an `AI` label, no other ProPR worker and no unrelated traffic. Set repository variables `FLY_E2E_ORG` and `FLY_E2E_REPO` (owner/name). Configure these Actions secrets:
+The **Fly end-to-end smoke** GitHub Actions workflow runs on manual dispatch by default. To enable the nightly run at 04:17 UTC, set the repository variable `FLY_E2E_NIGHTLY` to `true`. Each run consumes Fly and model usage and opens an issue and a PR in the fixture repository. On the Free plan, it shares the organization’s three Machine slots and three Sprite slots with other workloads. Use a dedicated Fly organization and a disposable, initialized GitHub repository with `AI` and `llm-claude` labels, no other ProPR worker and no unrelated traffic. Set repository variables `FLY_E2E_ORG` and `FLY_E2E_REPO` (owner/name). Configure these Actions secrets:
 
 | Secret | Fixture access |
 | --- | --- |
 | `FLY_E2E_TOKEN` | Test org access to create and destroy apps, push a registry image, deploy, inspect Machines and mint and revoke an app stop token |
 | `FLY_E2E_SPRITES_TOKEN` | Test Sprites org access to create, run and delete Sprites |
 | `FLY_E2E_GITHUB_TOKEN` | Fixture repository access to manage webhooks, issues, PRs and test branches |
-| `FLY_E2E_APP_ENV` | Private environment file containing `GH_APP_ID`, `GH_INSTALLATION_ID`, `PROPR_GH_PRIVATE_KEY_B64` and `CLAUDE_SETTINGS_B64` containing the test account’s API-key settings described above |
+| `FLY_E2E_APP_ENV` | Private environment file containing `PROPR_ADMIN_USERS` (fixture administrator’s GitHub login), `GH_APP_ID`, `GH_INSTALLATION_ID`, `PROPR_GH_PRIVATE_KEY_B64` and `CLAUDE_SETTINGS_B64` containing the test account’s API-key settings described above |
 
 The test creates a signed repository webhook for its temporary URL. The installed test GitHub App needs access to read the issue and write the branch and PR. The workflow waits for natural idle shutdown, labels a fresh issue, observes wake and checks the linked PR and recorded execution runtime. Teardown removes the test hook, closes the issue and PR, revokes the stop token and deletes the temporary compute.

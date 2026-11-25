@@ -73,7 +73,7 @@ jobs:
         run: |
           umask 077
           printf '%s\n' "$APP_ENV" > "$ENV_FILE"
-          for key in GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 CLAUDE_SETTINGS_B64; do
+          for key in PROPR_ADMIN_USERS GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 CLAUDE_SETTINGS_B64; do
             grep -q "^${key}=." "$ENV_FILE" || { echo "Missing $key"; exit 1; }
           done
           openssl rand -hex 32 > "$OUT/hook-secret"
@@ -98,13 +98,30 @@ jobs:
           flyctl ips allocate-v6 --app "$APP"
           flyctl volumes create propr_data --size 1 --region "$REGION" --app "$APP" --yes
           flyctl deploy --app "$APP" --config "$OUT/fly.toml" --image "$IMAGE" --ha=false
-          curl --fail --retry 8 --retry-all-errors "https://$APP.fly.dev/health"
+          status=$(curl --fail --retry 8 --retry-all-errors -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/health")
+          [[ $status == 200 ]]
 
-      - name: Create unlabeled issue and signed issues webhook
+      - name: Configure the fixture Claude agent before idle shutdown
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          setup=$(base64 -w0 <<'JS'
+          const { saveAgents, closeConnection, AGENT_DEFAULTS } = await import('@propr/core');
+          const { getManagedAgentConfigPath } = await import('@propr/shared');
+          const { dockerImage, defaultModels } = AGENT_DEFAULTS.claude;
+          await saveAgents([{ id: 'claude', type: 'claude', alias: 'claude', enabled: true,
+            configPath: getManagedAgentConfigPath('claude', 'claude'), dockerImage,
+            supportedModels: defaultModels, defaultModel: 'claude-sonnet-5-5' }]);
+          await closeConnection();
+          JS
+          )
+          flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'"
+
+      - name: Create agent-labeled issue and signed issues webhook
         env:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
-          issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" \
+          issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" -F 'labels[]=llm-claude' \
             -f body="Create $APP.txt containing exactly the line $APP. Open a PR resolving this issue." --jq .number)
           echo "ISSUE=$issue" >> "$GITHUB_ENV"
           jq -n --rawfile secret "$OUT/hook-secret" --arg url "https://$APP.fly.dev/webhook" \
