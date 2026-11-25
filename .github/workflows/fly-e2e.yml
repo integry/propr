@@ -53,7 +53,7 @@ jobs:
           : "${ORG:?Set FLY_E2E_ORG}" "${REPO:?Set FLY_E2E_REPO}"
           [[ "$REPO" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ && "${REPO,,}" != "${GITHUB_REPOSITORY,,}" ]]
           npm ci
-          image="registry.fly.io/$APP/control-plane:$GITHUB_SHA"
+          image="registry.fly.io/$APP:control-plane-$GITHUB_SHA"
           docker build -f docker/Dockerfile.app.prod -t "$image" .
           echo "IMAGE=$image" >> "$GITHUB_ENV"
           echo "OUT=$RUNNER_TEMP" >> "$GITHUB_ENV"

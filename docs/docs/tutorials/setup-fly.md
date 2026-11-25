@@ -40,7 +40,7 @@ Use a checkout containing both the remote runtime and its control-plane image. T
 ```bash
 export APP=my-propr ORG=personal REGION=iad RUNTIME=sprites
 export REPO=your-org/your-repo
-export IMAGE=registry.fly.io/$APP/control-plane:remote-runtime
+export IMAGE=registry.fly.io/$APP:remote-runtime
 export ENV_FILE=/absolute/private/path/fly.env OUT=$(mktemp -d)
 fly apps create "$APP" --org "$ORG"
 fly auth docker
