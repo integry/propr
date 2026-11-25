@@ -89,8 +89,11 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         let timedOut = false;
         let costMessage: string | undefined;
         let callbackError: unknown;
-        let mayDestroy = false;
+        let workspaceSafeToDestroy = false;
+        let credentialsPending = !!prepared.credentialPath;
+        let keepLocalBundle = false;
         const machineLocation = () => `Fly app ${config.app}, Machine ${id}, ${RUN}/workspace`;
+        const credentialRecovery = () => `Recover credentials from Fly app ${config.app}, Machine ${id}, ${prepared.credentialPath}`;
         let destroyed: Promise<void> | undefined;
         let released: Promise<void> | undefined;
         const reads = new Set<Promise<Buffer | null>>();
@@ -100,13 +103,13 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
 
         const destroy = () => {
             const machine = id;
-            if (machine && mayDestroy) return destroyed ??= api.destroy(machine).catch(error => { destroyed = undefined; throw error; });
+            if (machine && workspaceSafeToDestroy && !credentialsPending) return destroyed ??= api.destroy(machine).catch(error => { destroyed = undefined; throw error; });
         };
         const requestStop = (signal: NodeJS.Signals = 'SIGTERM', grace = 10_000) => {
             if (exited || stopping || settled) return false;
-            stopping = signal;
-            if (id) void api.signal(id, signal).catch(() => {});
-            graceTimer = setTimeout(() => forced.abort(), Math.max(0, grace));
+            stopping = credentialsPending && signal === 'SIGKILL' ? 'SIGTERM' : signal;
+            if (id) void api.signal(id, stopping).catch(() => {});
+            graceTimer = setTimeout(() => forced.abort(), stopping !== signal ? 0 : Math.max(0, grace));
             return true;
         };
         const abort = () => { requestStop(); };
@@ -181,15 +184,19 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 await collectOutput(machine);
                 try {
                     await workspace.collect(api, machine);
-                    mayDestroy = true;
+                    workspaceSafeToDestroy = true;
                 } catch {
                     const recovery = 'Fly workspace result retrieval failed. Recover from ' + machineLocation();
                     failures.push(recovery);
                     logger.warn({ run: spec.name }, recovery);
                     await workspace.release();
                 }
-                try { await prepared.commit(api, machine); }
-                catch { failures.push('Fly credential write-back failed'); }
+                try {
+                    await prepared.commit(api, machine);
+                    credentialsPending = false;
+                } catch {
+                    failures.push('Fly credential write-back failed. ' + credentialRecovery());
+                }
                 await destroy();
             };
             let exitCode = -1;
@@ -228,14 +235,17 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 logs.abort();
                 if (!exited) {
                     missing.push('status');
-                    if (code === 'running') {
-                        mayDestroy = true;
+                    if (code === 'running' && !credentialsPending) {
+                        workspaceSafeToDestroy = true;
                         void api.signal(id, 'SIGKILL').catch(() => {});
                         await destroy();
                     } else {
                         // A failed probe can hide either an active agent or a finished
-                        // bundle. TERM forwards to a live child and leaves its result intact.
-                        if (!stopping) await api.signal(id, 'SIGTERM').catch(() => {});
+                        // bundle. ALRM kills a confirmed running command group while
+                        // keeping the credential-bearing guest available for recovery.
+                        if (code === 'running') await api.signal(id, 'SIGALRM').catch(() => {});
+                        else if (!stopping) await api.signal(id, 'SIGTERM').catch(() => {});
+                        if (credentialsPending) failures.push(credentialRecovery());
                         failures.push('Check for a workspace result at ' + machineLocation());
                     }
                 } else {
@@ -276,16 +286,32 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             logs.abort();
             output.end();
             await destroy();
+        }).catch(async error => {
+            // Transport cleanup calls release even when wait rejected before complete.
+            keepLocalBundle = workspace.hasBundle;
+            const recovery: string[] = [];
+            if (keepLocalBundle) recovery.push('Recover the workspace bundle from ' + workspace.location);
+            else {
+                if (id && !workspaceSafeToDestroy) recovery.push('Check for a workspace result at ' + machineLocation());
+                await workspace.release();
+            }
+            if (id && credentialsPending) recovery.push(credentialRecovery());
+            if (!recovery.length) throw error;
+            const instructions = recovery.join('. ');
+            logger.warn({ run: spec.name }, instructions);
+            throw new Error(`${error instanceof Error ? error.message : String(error)}. ${instructions}`, { cause: error });
         });
-        // No caller can apply a workspace when wait rejects.
-        void result.catch(() => workspace.release()).catch(() => {});
+        void result.catch(() => {});
         return {
             spec, get stdout() { return output.get('stdout'); }, get stderr() { return output.get('stderr'); },
             wait: () => result,
             stop: async (signal, grace) => { requestStop(signal, grace); await result.catch(() => {}); await destroy(); },
             isAlive: async () => !settled && !exited,
             inspect: async () => ({ name: spec.name, id, liveness: settled || exited ? 'stopped' : 'running' }),
-            get recoveryLocation() { return id && !mayDestroy ? machineLocation() : workspace.location; },
+            get recoveryLocation() {
+                if (id && (!workspaceSafeToDestroy || (credentialsPending && !workspace.location))) return machineLocation();
+                return workspace.location;
+            },
             readFile: async file => {
                 if (!settled || released) return null;
                 const read = workspace.read(file);
@@ -297,7 +323,13 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 await result.catch(() => {});
                 await destroy();
                 await Promise.allSettled(reads);
-                await workspace.release();
+                if (!keepLocalBundle && workspace.hasBundle && external.aborted) {
+                    // The clone transport can observe cancellation after wait resolves,
+                    // before it starts retrieving the snapshot.
+                    keepLocalBundle = true;
+                    logger.warn({ run: spec.name, location: workspace.location }, 'Cancelled Fly run kept its workspace bundle');
+                }
+                if (!keepLocalBundle) await workspace.release();
             })().catch(error => { released = undefined; throw error; }),
         };
     }

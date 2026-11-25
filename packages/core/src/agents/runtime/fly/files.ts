@@ -48,6 +48,7 @@ export async function scanFile(api: MachinesApi, id: string, file: string, { con
  * even when applying a bundle fails and the transport retains the result. */
 export class WorkspaceFiles {
     location?: string;
+    hasBundle = false;
 
     async collect(api: MachinesApi, id: string) {
         const chunks: Buffer[] = [];
@@ -64,8 +65,10 @@ export class WorkspaceFiles {
                 const bytes = await scanFile(api, id, RUN + '/workspace/result.bundle', {
                     limit: DOCKER_CONTAINER_FILE_LIMIT_BYTES, consume: chunk => bundle.writeFile(chunk),
                 });
-                if (bytes !== null) await fs.rename(pending, target);
-                else if (/^bundle\s/.test(status.toString())) throw new Error('Fly workspace bundle unavailable');
+                if (bytes !== null) {
+                    await fs.rename(pending, target);
+                    this.hasBundle = true;
+                } else if (/^bundle\s/.test(status.toString())) throw new Error('Fly workspace bundle unavailable');
             } finally {
                 await bundle.close();
                 await fs.rm(pending, { force: true });
@@ -84,5 +87,6 @@ export class WorkspaceFiles {
     async release() {
         if (this.location) await fs.rm(this.location, { recursive: true, force: true });
         this.location = undefined;
+        this.hasBundle = false;
     }
 }

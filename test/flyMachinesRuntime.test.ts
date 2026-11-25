@@ -223,7 +223,117 @@ test('per-run provider files round-trip through the credential broker', async t 
     assert.ok(!files.some(f => f.guest_path.endsWith('unrelated')));
     assert.equal(Buffer.from(files.find(f => f.guest_path.endsWith('/' + name))!.raw_value, 'base64').toString(), original);
     assert.equal(fs.readFileSync(path.join(root, name), 'utf8'), updated);
+    assert.equal(api.destroyed, 1);
     await run.release!();
+});
+
+test('settlement rejection reports the collected bundle and preserves it through cleanup', async t => {
+    for (const failure of ['destroy', 'callback']) {
+        const { runtime, builder, api } = fixture();
+        const destroying = Promise.withResolvers<void>();
+        const proceed = Promise.withResolvers<void>();
+        let attempts = 0;
+        api.destroy = async () => {
+            if (++attempts === 1) {
+                destroying.resolve();
+                await proceed.promise;
+                if (failure === 'destroy') throw new Error('delete failed');
+            }
+            api.destroyed++;
+        };
+        api.files.set(RUN + '/stdout', Buffer.from('{"session_id":"id"}\n'));
+        const run = runtime.start(builder.build(), {
+            onSessionId: () => { if (failure === 'callback') throw new Error('callback failed'); },
+        });
+        await destroying.promise;
+        const cleanup = Promise.all([run.stop(), run.release!()]);
+        proceed.resolve();
+        await assert.rejects(run.wait(), (error: Error) => {
+            assert.match(error.message, failure === 'destroy' ? /delete failed/ : /callback failed/);
+            assert.ok(run.recoveryLocation);
+            assert.ok(error.message.includes(run.recoveryLocation));
+            return true;
+        });
+        await cleanup;
+        const directory = run.recoveryLocation!;
+        t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+        assert.deepEqual(fs.readFileSync(path.join(directory, 'result.bundle')), Buffer.from([0, 255, 42]));
+        assert.equal(api.destroyed, 1);
+    }
+});
+
+test('cancellation between wait and workspace return keeps the collected bundle', async t => {
+    const { runtime, builder } = fixture();
+    const controller = new AbortController();
+    const run = runtime.start(builder.build(), { signal: controller.signal });
+    await run.wait();
+    controller.abort();
+    await run.release!();
+    const directory = run.recoveryLocation!;
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    assert.deepEqual(fs.readFileSync(path.join(directory, 'result.bundle')), Buffer.from([0, 255, 42]));
+});
+
+test('credential export and canonical write failures retain the Machine through concurrent cleanup', async t => {
+    for (const failure of ['export', 'invalid response', 'commit']) {
+        const { runtime, builder, api } = fixture();
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-credential-test-'));
+        t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+        const name = '.credentials.json';
+        fs.writeFileSync(path.join(root, name), 'original');
+        builder.credentialBind(root, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: true });
+        api.files.set(RUN + '/workspace/status', Buffer.from('pushed commit'));
+        api.files.delete(RUN + '/workspace/result.bundle');
+        const exporting = Promise.withResolvers<void>();
+        const proceed = Promise.withResolvers<void>();
+        const exec = api.exec.bind(api);
+        api.exec = async (id, args) => {
+            if (args[0] !== 'su-exec') return exec(id, args);
+            exporting.resolve();
+            await proceed.promise;
+            if (failure === 'export') throw new Error('API unavailable');
+            if (failure === 'invalid response') return { exit_code: 0, stdout: '' };
+            fs.rmSync(path.join(root, name));
+            fs.mkdirSync(path.join(root, name));
+            return { exit_code: 0, stdout: JSON.stringify([Date.now(), Buffer.from('updated').toString('base64')]) };
+        };
+        const run = runtime.start(builder.build());
+        await exporting.promise;
+        const cleanup = Promise.all([run.stop(), run.release!()]);
+        proceed.resolve();
+        assert.match((await run.wait()).outputIncomplete!, /credential write-back failed.*Fly app agents, Machine machine, \/home\/node\/\.claude/);
+        await cleanup;
+        assert.equal(api.destroyed, 0);
+    }
+});
+
+test('guest credential export distinguishes a missing file from a failed read', t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-export-test-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const file = path.join(root, 'credential');
+    const exportFile = () => execFileSync('python3', ['-I', '-c', wrapper, 'export', file],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    assert.equal(JSON.parse(exportFile()), null);
+    fs.writeFileSync(file, 'refresh');
+    assert.equal(JSON.parse(exportFile())[1], Buffer.from('refresh').toString('base64'));
+    fs.truncateSync(file, 1048577);
+    assert.throws(exportFile, /Invalid credential file/);
+});
+
+test('forced stop keeps a Machine with pending credential exports', async t => {
+    const { runtime, builder, api } = fixture();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-credential-test-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    builder.credentialBind(root, '/home/node/.claude', false, { provider: 'claude', store: 'config', perRun: true });
+    api.status = 'running';
+    api.ignoreStop = true;
+    const run = runtime.start(builder.build());
+    await api.probing.promise;
+    await run.stop('SIGTERM', 0);
+    assert.match((await run.wait()).outputIncomplete!, /Recover credentials from Fly app agents, Machine machine/);
+    await run.release!();
+    assert.deepEqual(api.signals, ['SIGTERM', 'SIGALRM']);
+    assert.equal(api.destroyed, 0);
 });
 
 test('a stream over the Machine read limit returns the bounded tail and reports truncation', async () => {
@@ -390,7 +500,7 @@ test('forced cleanup preserves the Machine when its final status cannot be read'
     assert.equal(api.destroyed, 0);
 });
 
-test('a guest with a fallback bundle outlives the orphan expiry', t => {
+test('guests with a fallback bundle or pending credentials outlive the orphan expiry', t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-recovery-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     execFileSync('python3', ['-I', '-c', wrapper + `
@@ -401,6 +511,12 @@ bundle = run / 'workspace/result.bundle'
 bundle.touch()
 with patch('time.time', return_value=run.stat().st_mtime + 1000), patch('time.sleep', side_effect=lambda _: bundle.unlink()) as sleep:
     wait_for_retrieval()
+    sleep.assert_called_once()
+with patch('time.time', return_value=run.stat().st_mtime + 1000), patch('time.sleep', side_effect=InterruptedError) as sleep:
+    try:
+        wait_for_retrieval(credential_pending=True)
+    except InterruptedError:
+        pass
     sleep.assert_called_once()
 `, 'test', root]);
 });

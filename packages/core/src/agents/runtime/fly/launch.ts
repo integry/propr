@@ -147,7 +147,8 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     add(WRAPPER, wrapper, 0o644);
     add(shim, '#!/bin/sh\nexec /usr/local/bin/su-exec node /usr/bin/python3 -I ' + WRAPPER + ' agent\n', 0o755);
     const command = ['/bin/bash', '-c', clone.script, ...(setup ? [setup.script, shim, ...spec.args] : [WORKSPACE_DIRECT_AGENT_LAUNCH, ...helper, 'agent'])];
-    add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, timeout: options.timeout ?? 300_000, directories: [...directories], secrets }));
+    const credentialPath = store?.outputs.length ? storePath : undefined;
+    add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, credentialPath, timeout: options.timeout ?? 300_000, directories: [...directories], secrets }));
     add(RUN + '/stdin', options.stdinData ?? '');
     const name = 'propr-' + randomUUID();
     const launch: MachineLaunch = { name, skip_service_registration: true, skip_secrets: true, region: config.region, config: {
@@ -155,7 +156,7 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
         processes: [{ user: 'root', ignore_app_secrets: true, entrypoint: ['/usr/bin/setpriv', '--no-new-privs', ...helper], cmd: ['launch'] }], files,
     } };
     if (JSON.stringify(launch).includes(config.token)) throw new Error('Fly API credential found in Machine configuration');
-    return { launch, secrets: [...new Set([config.token, ...secrets].filter(Boolean))],
+    return { launch, credentialPath, secrets: [...new Set([config.token, ...secrets].filter(Boolean))],
         markerArgs: transportEnv.PROPR_REPO_SETUP === '0' || !setup ? [] : [setup.script],
         async commit(api: MachinesApi, id: string) {
             if (!store) return;
@@ -163,10 +164,11 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
             for (const relative of store.outputs) {
                 const res = await api.exec(id, ['su-exec', 'node', ...helper, 'export', path.join(storePath, relative)]);
                 if (res.exit_code !== 0) throw new Error('Unable to export Fly Machine credentials');
-                if (!res.stdout.trim()) continue;
-                const [mtimeMs, encoded] = JSON.parse(res.stdout);
+                const exported = JSON.parse(res.stdout);
+                if (exported === null) continue;
+                const [mtimeMs, encoded] = exported;
                 const content = Buffer.from(encoded, 'base64');
-                if (!Number.isFinite(mtimeMs) || content.length > MAX_RETURNED_CREDENTIAL_BYTES) throw new Error('Invalid Fly credential export');
+                if (!Number.isFinite(mtimeMs) || content.length > MAX_RETURNED_CREDENTIAL_BYTES || content.toString('base64') !== encoded) throw new Error('Invalid Fly credential export');
                 returned.push({ storeId: store.id, path: relative, mtimeMs, content });
             }
             await broker.commit(bundle, returned);

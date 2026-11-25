@@ -67,9 +67,18 @@ def launch():
             child.send_signal(sig)
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGUSR1, signal.SIGUSR2):
         signal.signal(sig, forward)
+    credential_pending = bool(data.get('credentialPath'))
+    def kill_group(sig, frame):
+        if child is not None and child.poll() is None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    if credential_pending:
+        signal.signal(signal.SIGALRM, kill_group)
     done = threading.Event()
     with (run / 'stdin').open('rb') as stdin, (run / 'stdout').open('wb') as out, (run / 'stderr').open('wb') as err:
-        child = subprocess.Popen(data['command'], env=data['transportEnv'], stdin=stdin, stdout=out, stderr=err)
+        child = subprocess.Popen(data['command'], env=data['transportEnv'], stdin=stdin, stdout=out, stderr=err, start_new_session=credential_pending)
         status('running')
         for sig in pending:
             forward(sig, None)
@@ -91,15 +100,18 @@ def launch():
             try:
                 code = child.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                os._exit(1)
+                if not credential_pending:
+                    os._exit(1)
+                kill_group(None, None)
+                code = child.wait()
         done.set()
     status('exited ' + str(code if code >= 0 else 128 - code))
-    wait_for_retrieval()
+    wait_for_retrieval(credential_pending)
 
-def wait_for_retrieval():
-    # A fallback bundle can be the only copy, even after the worker goes away.
+def wait_for_retrieval(credential_pending=False):
+    # Refreshed credentials and fallback bundles may exist only on this guest.
     # Other orphaned Machines expire after the ordinary retrieval window.
-    while (run / 'workspace' / 'result.bundle').exists() or time.time() - run.stat().st_mtime < 900:
+    while credential_pending or (run / 'workspace' / 'result.bundle').exists() or time.time() - run.stat().st_mtime < 900:
         time.sleep(30)
 
 def export(path):
@@ -116,13 +128,15 @@ def export(path):
         with os.fdopen(fd, 'rb') as f:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode) or st.st_size > 1048576:
-                return
+                raise ValueError('Invalid credential file')
             content = f.read(1048577)
-            if len(content) <= 1048576:
-                print(json.dumps([st.st_mtime_ns / 1000000, base64.b64encode(content).decode()]))
+            if len(content) != st.st_size:
+                raise ValueError('Incomplete credential file')
+            print(json.dumps([st.st_mtime_ns / 1000000, base64.b64encode(content).decode()]))
     except OSError as error:
-        if error.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+        if error.errno != errno.ENOENT:
             raise
+        print('null')
     finally:
         os.close(directory)
 
