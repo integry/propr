@@ -306,6 +306,60 @@ function pool(client: FakeSprites, store: MemorySpritePoolStore, max = 1) {
     return new SpritePool(client, { scope, store, pollMs: 5, ttlMs: 1000, config: resolveSpritesPoolConfig({ PROPR_SPRITES_MAX: String(max) }) });
 }
 
+test('an ambiguous restart waits for running status and a successful exec before resetting', { timeout: 5000 }, async t => {
+    const client = new FakeSprites();
+    const runtime = pool(client, new MemorySpritePoolStore());
+    const signal = new AbortController().signal;
+    const slot = await runtime.acquire(signal);
+    const sprite = client.created[0];
+    t.mock.method(sprite, 'restart', async () => { throw new Error('restart outcome unknown'); });
+    let polls = 0;
+    t.mock.method(client, 'getSprite', async () => {
+        sprite.events.push('status');
+        return Object.assign(sprite, { status: ++polls === 1 ? 'starting' : 'running' });
+    });
+    const exec = sprite.execFile.bind(sprite);
+    let probes = 0;
+    t.mock.method(sprite, 'execFile', async (...args: Parameters<typeof exec>) => {
+        if (args[0] === '/bin/true') {
+            sprite.events.push('probe');
+            if (++probes === 1) throw new Error('exec unavailable');
+        }
+        return exec(...args);
+    });
+    sprite.events.length = 0;
+    await runtime.release(slot);
+    assert.deepEqual(sprite.events, ['status', 'status', 'probe', 'status', 'probe', 'wipe', 'restore']);
+    const next = await runtime.acquire(signal);
+    assert.equal(next.name, slot.name);
+    assert.deepEqual(client.deleted, []);
+    await runtime.discard(next);
+});
+
+test('ambiguous restart recovery replaces the runner if a status request hangs past the deadline', { timeout: 5000 }, async t => {
+    const client = new FakeSprites();
+    const runtime = pool(client, new MemorySpritePoolStore());
+    const slot = await runtime.acquire(new AbortController().signal);
+    const sprite = client.created[0];
+    t.mock.method(sprite, 'restart', async () => ({ message: 'restart outcome unknown' }));
+    const deadline = new AbortController();
+    const timeout = t.mock.method(AbortSignal, 'timeout', () => deadline.signal);
+    const polling = Promise.withResolvers<void>();
+    t.mock.method(client, 'getSprite', () => {
+        polling.resolve();
+        return new Promise(() => {});
+    });
+    const release = runtime.release(slot);
+    await polling.promise;
+    assert.deepEqual(timeout.mock.calls[0].arguments, [60_000]);
+    deadline.abort();
+    await release;
+    assert.deepEqual(client.deleted, [slot.name]);
+    assert.equal(client.created.length, 2);
+    assert.ok(!sprite.events.includes('wipe'));
+    await runtime.close();
+});
+
 for (const cancelled of [false, true]) {
     test(`failed surplus deletion stays counted after ${cancelled ? 'cancelled health check' : 'reset'}`, { timeout: 5000 }, async () => {
         const client = new FakeSprites();

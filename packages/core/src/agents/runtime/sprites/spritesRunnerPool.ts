@@ -431,9 +431,34 @@ export class SpritePool {
         }
     }
 
+    private async restartForReset(sprite: Sprite) {
+        const ambiguous = /restart outcome unknown/i;
+        try {
+            const result = await sprite.restart();
+            if (!ambiguous.test(result?.message ?? '')) return;
+        } catch (error) {
+            if (!(error instanceof Error && ambiguous.test(error.message))) throw error;
+        }
+
+        const signal = AbortSignal.timeout(60_000);
+        for (;;) {
+            try {
+                const current = await startupStep(signal, () => this.client.getSprite(sprite.name));
+                if (current.status === 'running') {
+                    const probe = await startupStep(signal, () => current.execFile('/bin/true', [], { cwd: '/', timeout: 5000, signal }));
+                    if (probe.exitCode === 0) return;
+                }
+            } catch {
+                // Status and exec can both fail transiently while the machine restarts.
+                signal.throwIfAborted();
+            }
+            await sleep(1000, signal);
+        }
+    }
+
     private async reset(slot: Slot, repo?: string) {
         // Stop descendants that outlived the launcher, including detached processes.
-        await slot.sprite.restart();
+        await this.restartForReset(slot.sprite);
         await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
         const carried = this.options.config.warmClones && repo ? await carryWarmClone(slot.sprite, repo) : false;
         const target = carried ? slot.checkpoint : slot.warm?.checkpoint ?? slot.checkpoint;
