@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { admitCostExecution, refuseCostExecution, settleCostCapStop } from '../../claude/docker/dockerCostCap.js';
-import { getActiveRunCostCap } from '../../budget/runCostGuardContext.js';
+import logger from '../../utils/logger.js';
 import { repositoryWorkflowExecution } from '../../workflow/workflowExecution.js';
 import { getExecutionOwnershipContext } from '../../claude/docker/dockerExecutionOwnership.js';
 import { settleTimeoutStop, settleWatchdogStop } from '../../claude/docker/dockerExecutionSettlement.js';
@@ -21,9 +21,9 @@ import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntim
 
 const BOOT_TIMEOUT = 120_000;
 
-/** Read only the atomic status and file sizes while the agent is running.
+/** Poll the atomic status and consume new usage when a cap is active.
  * Changing byte counts are activity for the stall watchdog. */
-async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, activity: () => void) {
+async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, activity: () => void, readUsage: (id: string) => Promise<void>) {
     const probe = async (signal: AbortSignal) => {
         const res = await api.exec(id, [...helper, 'probe'], signal).catch(() => undefined);
         return res?.exit_code === 0 && /^(running|exited (\d{1,3}))\n(\d+)$/.exec(res.stdout.trim());
@@ -34,16 +34,17 @@ async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, ac
         const status = await probe(forced);
         if (status) {
             if (status[2] !== undefined) return Number(status[2]);
-            deadline = Date.now() + 15_000;
             const bytes = Number(status[3]);
             if (bytes !== previousSize) { previousSize = bytes; activity(); }
-        } else if (Date.now() >= deadline) return;
+            if (!forced.aborted) await readUsage(id);
+            deadline = Date.now() + 15_000;
+        } else if (!forced.aborted && Date.now() >= deadline) return;
         await delay(500, undefined, { signal: forced }).catch(() => {});
     }
     // The grace period may expire between polls, after the clone transport
     // has finished publishing its bundle. Check before forcing deletion.
     const last = await probe(AbortSignal.timeout(1500));
-    if (last && last[2] !== undefined) return Number(last[2]);
+    if (last) return last[2] === undefined ? 'running' : Number(last[2]);
 }
 
 export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
@@ -83,6 +84,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         let timedOut = false;
         let costMessage: string | undefined;
         let callbackError: unknown;
+        let mayDestroy = false;
+        const machineLocation = () => `Fly app ${config.app}, Machine ${id}, ${RUN}/workspace`;
         let destroyed: Promise<void> | undefined;
         let released: Promise<void> | undefined;
         const reads = new Set<Promise<Buffer | null>>();
@@ -92,7 +95,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
 
         const destroy = () => {
             const machine = id;
-            if (machine) return destroyed ??= api.destroy(machine).catch(error => { destroyed = undefined; throw error; });
+            if (machine && mayDestroy) return destroyed ??= api.destroy(machine).catch(error => { destroyed = undefined; throw error; });
         };
         const requestStop = (signal: NodeJS.Signals = 'SIGTERM', grace = 10_000) => {
             if (exited || stopping || settled) return false;
@@ -110,8 +113,17 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             if (refusal) return refuseCostExecution(refusal, preserve);
             external.throwIfAborted();
             if (stopping) throw new Error('Fly run stopped before creation');
+            const failures: string[] = [];
             const started = startRunPipeline(runOptions, {
                 liveOutput: false,
+                incrementalCaptureCost: {
+                    maxRecordBytes: OUTPUT_READ_LIMIT,
+                    unreadable: () => {
+                        const message = 'Fly stdout record exceeds the 16 MiB cost accounting limit';
+                        if (!failures.includes(message)) failures.push(message);
+                        requestStop();
+                    },
+                },
                 command: this.kind, markerArgs: prepared.markerArgs, diagnosticArgs: [], secrets: prepared.secrets,
                 attempt: ownership?.attemptGeneration, stopForWatchdog: () => requestStop(),
                 stopForCostCap: message => { costMessage = message; requestStop(); },
@@ -134,18 +146,27 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             };
             const missing: string[] = [];
             const truncated: string[] = [];
-            const failures: string[] = [];
+            // stdout is append-only. Commit each validated chunk independently so
+            // a transient read failure resumes at the first unconsumed byte.
+            let stdoutOffset = 0;
+            const scanCostOutput = (machine: string, signal?: AbortSignal) =>
+                scanFile(api, machine, RUN + '/stdout', { offset: stdoutOffset, signal, limit: Infinity,
+                    consume: chunk => {
+                        pipeline.write('stdout', chunk);
+                        stdoutOffset += chunk.length;
+                    },
+                });
             const collectOutput = async (machineId: string) => {
                 for (const stream of ['stdout', 'stderr'] as const) {
                     try {
-                        const size = await scanFile(api, machineId, RUN + '/' + stream, {
-                            consume: data => pipeline.write(stream, data), limit: OUTPUT_READ_LIMIT, tail: true,
-                        });
+                        const size = stream === 'stdout' && pipeline.hasCaptureCost ? await scanCostOutput(machineId)
+                            : await scanFile(api, machineId, RUN + '/' + stream, {
+                                consume: data => pipeline.write(stream, data), limit: OUTPUT_READ_LIMIT, tail: true,
+                            });
                         if (size === null) missing.push(stream);
                         else if (size > MAX_PROVIDER_OUTPUT_BYTES) {
                             truncated.push(stream);
-                            const needsHistory = stream === 'stdout' ? !options.costCapExempt && getActiveRunCostCap()
-                                : prepared.markerArgs.length && repositoryWorkflowExecution.getStore();
+                            const needsHistory = stream === 'stderr' && prepared.markerArgs.length && repositoryWorkflowExecution.getStore();
                             if (size > OUTPUT_READ_LIMIT && needsHistory) missing.push(stream + ' prefix (16 MiB capture read limit)');
                         }
                     } catch { missing.push(stream); }
@@ -156,11 +177,26 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 id = await api.create(prepared.launch);
                 if (stopping) void api.signal(id, stopping).catch(() => {});
                 void api.logs(id, display, logs.signal).catch(() => {});
+                let usageReadFailed = false;
                 const code = await waitForExit(api, id, forced.signal, () => {
                     pipeline.watchdog.recordActivity();
                     if (!timeoutTimer) timeoutTimer = setTimeout(() => { timedOut = requestStop(); }, timeout);
+                }, async machine => {
+                    if (!pipeline.hasCaptureCost) return;
+                    try {
+                        if (await scanCostOutput(machine, forced.signal) === null) throw new Error('Missing stdout');
+                        usageReadFailed = false;
+                    } catch {
+                        // Retry from the committed cursor. If capture stays unreadable,
+                        // end the chargeable execution while it can still be signalled.
+                        if (usageReadFailed && !stopping) {
+                            failures.push('Fly stdout unavailable for live cost accounting');
+                            requestStop();
+                        }
+                        usageReadFailed = true;
+                    }
                 });
-                if (code !== undefined) {
+                if (typeof code === 'number') {
                     exited = true;
                     exitCode = code;
                 }
@@ -169,21 +205,34 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 logs.abort();
                 if (!exited) {
                     missing.push('status');
-                    if (forced.signal.aborted) {
+                    if (code === 'running') {
+                        mayDestroy = true;
                         void api.signal(id, 'SIGKILL').catch(() => {});
                         await destroy();
+                    } else {
+                        // A failed probe can hide either an active agent or a finished
+                        // bundle. TERM forwards to a live child and leaves its result intact.
+                        if (!stopping) await api.signal(id, 'SIGTERM').catch(() => {});
+                        failures.push('Check for a workspace result at ' + machineLocation());
                     }
                 } else {
                     await collectOutput(id);
-                    try { await workspace.collect(api, id); }
-                    catch { failures.push('Fly workspace result retrieval failed'); }
+                    try {
+                        await workspace.collect(api, id);
+                        mayDestroy = true;
+                    } catch {
+                        const recovery = 'Fly workspace result retrieval failed. Recover from ' + machineLocation();
+                        failures.push(recovery);
+                        logger.warn({ run: spec.name }, recovery);
+                        await workspace.release();
+                    }
                     try { await prepared.commit(api, id); }
                     catch { failures.push('Fly credential write-back failed'); }
                     await destroy();
                 }
             } finally {
                 logs.abort();
-                pipeline.finishOutput({ disconnected: !exited || missing.length > 0 });
+                pipeline.finishOutput({ disconnected: !exited || missing.length > 0, stdoutComplete: exited && !missing.includes('stdout') });
                 const finalCost = await pipeline.finishCost();
                 costMessage ??= finalCost ?? undefined;
                 await Promise.all(callbacks);
@@ -225,7 +274,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             stop: async (signal, grace) => { requestStop(signal, grace); await result.catch(() => {}); await destroy(); },
             isAlive: async () => !settled && !exited,
             inspect: async () => ({ name: spec.name, id, liveness: settled || exited ? 'stopped' : 'running' }),
-            get recoveryLocation() { return workspace.location; },
+            get recoveryLocation() { return id && !mayDestroy ? machineLocation() : workspace.location; },
             readFile: async file => {
                 if (!settled || released) return null;
                 const read = workspace.read(file);

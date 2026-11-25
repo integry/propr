@@ -15,6 +15,7 @@ import { RUN, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { buildAgentRunRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.ts';
 import { executeWithRepositoryWorkflow, repositoryWorkflowExecution } from '../packages/core/src/workflow/workflowExecution.ts';
+import { runWithActiveRunCostCap } from '../packages/core/src/budget/runCostGuardContext.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
 after(closeConnection);
 
@@ -184,7 +185,6 @@ test('a hook failure outside the retained stderr tail still fails the workflow',
 });
 
 test('the shared cost guard observes each captured record once and ignores live records', async () => {
-    const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.ts');
     const { runtime, builder, api } = fixture();
     const observed: string[] = [];
     api.files.set(RUN + '/stdout', Buffer.from('first\nlast'));
@@ -339,4 +339,141 @@ test('a Machine lost during retrieval reports unavailable output even when the w
     assert.match(result.outputIncomplete!, /output unavailable: stdout, stderr/);
     assert.match(result.stderr, /workspace result retrieval failed/);
     await run.release!();
+});
+
+test('a failed bundle or status read preserves the remote bundle through stop and release', async () => {
+    for (const file of ['result.bundle', 'status']) {
+        const { runtime, api, builder } = fixture();
+        const bundle = RUN + '/workspace/result.bundle';
+        api.files.set(bundle, Buffer.alloc(256 * 1024 + 1, 42));
+        const reading = Promise.withResolvers<void>();
+        const fail = Promise.withResolvers<void>();
+        const exec = api.exec.bind(api);
+        api.exec = async (id, args) => {
+            if (args[3] === 'chunk' && args[4] === RUN + '/workspace/' + file &&
+                (file === 'status' || Number(args[5]) > 0)) {
+                reading.resolve();
+                await fail.promise;
+                throw new Error('retrieval interrupted');
+            }
+            return exec(id, args);
+        };
+        const run = runtime.start(builder.build());
+        await reading.promise;
+        const cleanup = Promise.all([run.stop(), run.release!()]);
+        fail.resolve();
+        const result = await run.wait();
+        assert.equal(result.exitCode, -1);
+        assert.match(result.outputIncomplete!, /workspace result retrieval failed/);
+        assert.equal(run.recoveryLocation, 'Fly app agents, Machine machine, ' + RUN + '/workspace');
+        assert.ok(result.stderr.includes(run.recoveryLocation));
+        await cleanup;
+        assert.equal(api.destroyed, 0);
+        assert.equal(api.files.get(bundle)!.length, 256 * 1024 + 1);
+    }
+});
+
+test('forced cleanup preserves the Machine when its final status cannot be read', async () => {
+    const { runtime, api, builder } = fixture();
+    api.status = 'running';
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => {
+        if (args[3] === 'probe' && api.signals.length) throw new Error('probe failed');
+        return exec(id, args);
+    };
+    const run = runtime.start(builder.build());
+    await api.probing.promise;
+    await run.stop('SIGTERM', 0);
+    assert.deepEqual(api.signals, ['SIGTERM']);
+    assert.match((await run.wait()).outputIncomplete!, /Machine machine/);
+    await run.release!();
+    assert.equal(api.destroyed, 0);
+});
+
+test('a guest with a fallback bundle outlives the orphan expiry', t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-recovery-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    execFileSync('python3', ['-I', '-c', wrapper + `
+from unittest.mock import patch
+run = Path(sys.argv[2])
+(run / 'workspace').mkdir()
+bundle = run / 'workspace/result.bundle'
+bundle.touch()
+with patch('time.time', return_value=run.stat().st_mtime + 1000), patch('time.sleep', side_effect=lambda _: bundle.unlink()) as sleep:
+    wait_for_retrieval()
+    sleep.assert_called_once()
+`, 'test', root]);
+});
+
+test('a running cost guard resumes after a failed chunk and stops on a split usage record', async () => {
+    const { runtime, api, builder } = fixture();
+    api.status = 'running';
+    const stdout = RUN + '/stdout';
+    const chunkSize = 256 * 1024;
+    const usage = '{"total_cost_usd":2}';
+    const first = 'x'.repeat(chunkSize - 3);
+    api.files.set(stdout, Buffer.from(first + '\n' + usage + '\n'));
+    const exec = api.exec.bind(api);
+    const offsets: number[] = [];
+    api.exec = (id, args) => {
+        if (args[3] === 'chunk' && args[4] === stdout) {
+            offsets.push(Number(args[5]));
+            if (offsets.length === 2) throw new Error('temporary read failure');
+        }
+        return exec(id, args);
+    };
+    const observed: string[] = [];
+    await runWithActiveRunCostCap({
+        taskId: 'task', exceeded: false, admit: async () => {},
+        beginExecution: stop => ({
+            observeLine(line) {
+                observed.push(line);
+                if (line === usage) {
+                    assert.equal(api.status, 'running');
+                    api.files.set(stdout, Buffer.concat([api.files.get(stdout)!, Buffer.from('final')]));
+                    stop('cost cap exceeded');
+                }
+            },
+            finish: async () => null,
+        }),
+    }, async () => {
+        const run = runtime.start(builder.build(), { preserveOutputOnTimeout: true, timeout: 5000 });
+        const result = await run.wait();
+        assert.equal(result.costCapExceeded, true);
+        assert.equal(result.exitCode, 143);
+        assert.deepEqual(api.signals, ['SIGTERM']);
+        assert.deepEqual(observed, [first, usage, 'final']);
+        assert.deepEqual(offsets, [0, chunkSize, chunkSize, first.length + usage.length + 2]);
+        await run.release!();
+    });
+});
+
+test('a capped run stops when authoritative usage stays unreadable', async () => {
+    const { runtime, api, builder } = fixture();
+    api.status = 'running';
+    api.failedRead = RUN + '/stdout';
+    await runWithActiveRunCostCap({
+        taskId: 'task', exceeded: false, admit: async () => {},
+        beginExecution: () => ({ observeLine: () => assert.fail('no complete record'), finish: async () => null }),
+    }, async () => {
+        const run = runtime.start(builder.build(), { timeout: 5000, preserveOutputOnTimeout: true });
+        assert.match((await run.wait()).outputIncomplete!, /unavailable for live cost accounting/);
+        assert.deepEqual(api.signals, ['SIGTERM']);
+        await run.release!();
+    });
+});
+
+test('a capped run stops if an individual usage record cannot fit in the capture limit', async () => {
+    const { runtime, api, builder } = fixture();
+    api.status = 'running';
+    api.files.set(RUN + '/stdout', Buffer.alloc(16 * 1024 * 1024 + 1, 65));
+    await runWithActiveRunCostCap({
+        taskId: 'task', exceeded: false, admit: async () => {},
+        beginExecution: () => ({ observeLine: () => assert.fail('incomplete record'), finish: async () => null }),
+    }, async () => {
+        const run = runtime.start(builder.build(), { timeout: 5000, preserveOutputOnTimeout: true });
+        assert.match((await run.wait()).outputIncomplete!, /16 MiB cost accounting limit/);
+        assert.deepEqual(api.signals, ['SIGTERM']);
+        await run.release!();
+    });
 });

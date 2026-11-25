@@ -94,8 +94,12 @@ def launch():
                 os._exit(1)
         done.set()
     status('exited ' + str(code if code >= 0 else 128 - code))
-    # Usually deleted immediately. Bound the orphan lifetime if a worker dies.
-    while time.time() - run.stat().st_mtime < 900:
+    wait_for_retrieval()
+
+def wait_for_retrieval():
+    # A fallback bundle can be the only copy, even after the worker goes away.
+    # Other orphaned Machines expire after the ordinary retrieval window.
+    while (run / 'workspace' / 'result.bundle').exists() or time.time() - run.stat().st_mtime < 900:
         time.sleep(30)
 
 def export(path):

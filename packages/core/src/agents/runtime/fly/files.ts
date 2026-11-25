@@ -13,22 +13,24 @@ const CHUNK = 256 * 1024;
 interface ScanOptions {
     limit: number;
     tail?: boolean;
+    offset?: number;
+    signal?: AbortSignal;
     consume: (chunk: Buffer) => void | Promise<void>;
 }
 
 /** Stat once, then scan fixed byte ranges. A short or missing read never
  * becomes an empty stream. The caller bounds retained output independently. */
-export async function scanFile(api: MachinesApi, id: string, file: string, { consume, limit, tail = false }: ScanOptions) {
-    const stat = await api.exec(id, [...helper, 'size', file]);
+export async function scanFile(api: MachinesApi, id: string, file: string, { consume, limit, tail = false, offset: consumed = 0, signal }: ScanOptions) {
+    const stat = await api.exec(id, [...helper, 'size', file], signal);
     if (stat.exit_code === 44) return null;
     const size = Number(stat.stdout.trim());
-    if (stat.exit_code !== 0 || !/^\d+$/.test(stat.stdout.trim()) || !Number.isSafeInteger(size) || (!tail && size > limit))
+    if (stat.exit_code !== 0 || !/^\d+$/.test(stat.stdout.trim()) || !Number.isSafeInteger(size) || size < consumed || (!tail && size - consumed > limit))
         throw new Error('Invalid Fly file size for ' + file);
-    const start = tail ? Math.max(0, size - limit) : 0;
-    let discardFragment = start > 0;
+    const start = tail ? Math.max(consumed, size - limit) : consumed;
+    let discardFragment = start > consumed;
     for (let offset = start; offset < size; offset += CHUNK) {
         const length = Math.min(size - offset, CHUNK);
-        const read = await api.exec(id, [...helper, 'chunk', file, String(offset), String(length)]);
+        const read = await api.exec(id, [...helper, 'chunk', file, String(offset), String(length)], signal);
         const chunk = Buffer.from(read.stdout.trim(), 'base64');
         if (read.exit_code !== 0 || chunk.length !== length || chunk.toString('base64') !== read.stdout.trim())
             throw new Error('Incomplete Fly file read for ' + file);
