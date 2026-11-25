@@ -1,4 +1,5 @@
 import { registerCostExecution, refuseCostExecution } from '../../claude/docker/dockerCostCap.js';
+import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { currentExtensionLaunch } from '../../extensions/extensionLaunchContext.js';
 import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
@@ -8,7 +9,7 @@ import { startExecutionWatchdog } from '../../claude/docker/dockerExecutionWatch
 import { startLiveOutputStreaming } from '../../claude/docker/dockerLiveOutputStreaming.js';
 import { inspectSessionMessageLine, type SessionLineInspectionContext } from '../../claude/docker/dockerSessionOutput.js';
 import type { DockerCommandOptions } from '../../claude/docker/dockerExecutor.js';
-import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, boundedProviderOutput } from '../impl/utils/boundedProviderOutput.js';
+import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, MAX_PROVIDER_OUTPUT_BYTES, boundedProviderOutput } from '../impl/utils/boundedProviderOutput.js';
 import logger from '../../utils/logger.js';
 
 type Stream = 'stdout' | 'stderr';
@@ -24,6 +25,46 @@ interface PipelineLaunch {
     command: string;
     stopForCostCap: (message: string) => void;
     invokeExecutionCallback: SessionLineInspectionContext['invokeExecutionCallback'];
+}
+
+const MAX_LIVE_RECORD_DIGESTS = 65_536;
+// Fly log messages can omit the CR of a CRLF record terminator.
+const recordDigest = (line: string) => createHash('sha256').update(line.replace(/\r$/, '')).digest('hex');
+
+/** Decode and redact across exec chunk boundaries. Skip an oversized record
+ * through its newline, but continue accounting for subsequent records. */
+function scanCostRecords(secrets: string[], observe: (line: string) => void) {
+    const decoder = new StringDecoder('utf8');
+    const redactor = new ExtensionStreamRedactor(secrets);
+    let partial = '';
+    let oversized = false;
+    let complete = true;
+    function consume(text: string) {
+        const parts = text.split('\n');
+        for (let i = 0; i < parts.length; i++) {
+            if (!oversized) {
+                partial += parts[i];
+                if (Buffer.byteLength(partial) > MAX_PROVIDER_OUTPUT_BYTES) {
+                    oversized = true;
+                    complete = false;
+                    partial = '';
+                }
+            }
+            if (i < parts.length - 1) {
+                if (!oversized) observe(partial);
+                partial = '';
+                oversized = false;
+            }
+        }
+    }
+    return {
+        write(chunk: Buffer) { consume(redactor.push(decoder.write(chunk))); },
+        finish() {
+            consume(redactor.push(decoder.end()) + redactor.finish());
+            if (partial) observe(partial);
+            return complete;
+        },
+    };
 }
 
 /** Consume the physical launch streams before bounded handle readers can drop output. */
@@ -54,10 +95,20 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
     const session = { state: { sessionIdDetected: false }, messageTimestamps, onSessionId: options.onSessionId,
         invokeExecutionCallback: launch.invokeExecutionCallback };
     let pending = '';
-    let liveLogBytes = 0;
+    // Fly log pages can have gaps. Count occurrences, since identical provider
+    // records (including usage without a message id) can legitimately repeat.
+    const liveRecords = new Map<string, number>();
+    let trackedAllLiveRecords = true;
     function inspect(line: string, timestamp: string) {
         inspectSessionMessageLine(line, timestamp, session);
-        execution?.observeLine(line);
+        if (execution) {
+            execution.observeLine(line);
+            if (launch.command === 'fly-machines' && trackedAllLiveRecords) {
+                const key = recordDigest(line);
+                liveRecords.set(key, (liveRecords.get(key) ?? 0) + 1);
+                if (liveRecords.size > MAX_LIVE_RECORD_DIGESTS) trackedAllLiveRecords = false;
+            }
+        }
         watchdog.observeLine(line);
     }
     function publish(stream: Stream, chunk: string, timestamp = new Date().toISOString()) {
@@ -91,7 +142,6 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
             const redactor = redactors[stream];
             const chunk = redactor.push(text);
             const safe = secretsSpanLines ? chunk : chunk + redactor.finish();
-            if (stream === 'stdout') liveLogBytes += Buffer.byteLength(safe);
             publish(stream, safe, timestamp);
         },
         // Reconcile the Machine's exact output without publishing the live records twice.
@@ -99,23 +149,31 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
             const redactor = new ExtensionStreamRedactor(secrets);
             return redactor.push(text) + redactor.finish();
         },
-        recoverCapturedRecords(output: string) {
-            // Fly can observe exit before the last log page arrives. Match complete
-            // live records against the exact file in order before charging missing
-            // records. Never replay a retained tail as though it were the full log.
-            const liveOutput = stdout.output;
-            const liveLines = execution && !secretsSpanLines && Buffer.byteLength(liveOutput) === liveLogBytes
-                ? liveOutput.split('\n').slice(0, -1) : undefined;
-            const lines = output.split('\n');
-            if (liveLines) {
-                let next = 0;
-                const missed: string[] = [];
-                for (const line of lines) {
-                    if (next < liveLines.length && line === liveLines[next]) next++;
-                    else if (line) missed.push(line);
-                }
-                if (next === liveLines.length) for (const line of missed) execution!.observeLine(line);
+        // Called after log polling has stopped. Flush the live redactor before
+        // comparing observations, including when a secret spans log lines.
+        beginCostCapture() {
+            if (!execution) return;
+            const tail = redactors.stdout.finish();
+            if (tail) publish('stdout', tail);
+            if (pending) {
+                inspect(pending, new Date().toISOString());
+                pending = '';
             }
+            const scan = scanCostRecords(secrets, line => {
+                if (!trackedAllLiveRecords) return;
+                const key = recordDigest(line);
+                const count = liveRecords.get(key);
+                if (count === undefined) execution.observeLine(line);
+                else if (count === 1) liveRecords.delete(key);
+                else liveRecords.set(key, count - 1);
+            });
+            return {
+                write: scan.write,
+                finish: () => scan.finish() && trackedAllLiveRecords && liveRecords.size === 0,
+            };
+        },
+        recoverCapturedRecords(output: string) {
+            const lines = output.split('\n');
             const missing = { ...session, messageTimestamps: new Map<string, string>() };
             const timestamp = new Date().toISOString();
             for (const line of lines) inspectSessionMessageLine(line, timestamp, missing);

@@ -38,13 +38,14 @@ const CONFINED_READ_SCRIPT = [
 
 /**
  * A file from the Machine (base64, in chunks), with its modification time;
- * null when it does not exist. `tail` reads only the file's last bytes; a
+ * null when it does not exist. `tail` retains only the file's last bytes.
+ * With `scan`, visit every chunk, including those before the retained tail. A
  * file larger than `limit` is refused right after the stat, before any
  * content is transferred. Follows symlinks: not for paths the run controls
  * that must stay inside a directory (see {@link readConfinedMachineFile}).
  * `signal` aborts the read (it rejects).
  */
-export async function readMachineFile(client: FlyMachinesClient, id: string, filePath: string, bounds: FlyRequestOptions & { tail?: number; limit?: number } = {}): Promise<ExecRead> {
+export async function readMachineFile(client: FlyMachinesClient, id: string, filePath: string, bounds: FlyRequestOptions & { tail?: number; limit?: number; scan?: (chunk: Buffer) => void } = {}): Promise<ExecRead> {
     const request = { signal: bounds.signal };
     const sized = await client.exec(id, ['/bin/sh', '-c', '[ -f "$1" ] || exit 3; stat -c "%s %Y %y" "$1"', 'sh', filePath], 30, request);
     if (sized.exit_code === 3) return null;
@@ -54,16 +55,18 @@ export async function readMachineFile(client: FlyMachinesClient, id: string, fil
     if (bounds.limit !== undefined && size > bounds.limit) return 'oversized';
     const chunks: Buffer[] = [];
     let total = 0;
-    for (let offset = bounds.tail && size > bounds.tail ? size - bounds.tail : 0; offset < size; offset += EXEC_READ_CHUNK_BYTES) {
+    const start = bounds.tail ? Math.max(0, size - bounds.tail) : 0;
+    for (let offset = bounds.scan ? 0 : start; offset < size; offset += EXEC_READ_CHUNK_BYTES) {
         const length = Math.min(EXEC_READ_CHUNK_BYTES, size - offset);
         const read = await client.exec(id, ['/bin/sh', '-c', 'tail -c +"$(($2 + 1))" "$1" | head -c "$3" | base64 | tr -d "\\n"', 'sh', filePath, String(offset), String(length)], 60, request);
         if (read.exit_code !== 0) throw new Error(`Could not read ${filePath} from Fly Machine ${id}: ${read.stderr.trim() || `exit ${read.exit_code}`}`);
         const chunk = Buffer.from(read.stdout.trim(), 'base64');
-        if (bounds.tail !== undefined && chunk.length !== length) throw new Error(`Incomplete capture read for ${filePath} from Fly Machine ${id}`);
+        if ((bounds.tail !== undefined || bounds.scan) && chunk.length !== length) throw new Error(`Incomplete capture read for ${filePath} from Fly Machine ${id}`);
         total += chunk.length;
         // The file may have grown since the stat: never hold more than it reported.
         if (bounds.limit !== undefined && total > bounds.limit) return 'oversized';
-        chunks.push(chunk);
+        bounds.scan?.(chunk);
+        if (offset + chunk.length > start) chunks.push(chunk.subarray(Math.max(0, start - offset)));
     }
     return { content: Buffer.concat(chunks), mtimeMs };
 }
@@ -84,8 +87,9 @@ async function readFlyWorkflowReports(client: FlyMachinesClient, id: string, sig
 export async function collectFlyOutput(client: FlyMachinesClient, id: string | undefined, pipeline: RunPipeline, signal: AbortSignal) {
     const captured: Partial<Pick<ExecutionResult, 'stdout' | 'stderr' | 'exitCode' | 'outputIncomplete'>> = {};
     const bounds = { tail: 8 * 1024 * 1024, signal };
+    const costCapture = pipeline.beginCostCapture();
     const [out, err, reports] = await Promise.all([
-        id ? readMachineFile(client, id, FLY_RUN_FILES.stdout, bounds).catch(() => null) : null,
+        id ? readMachineFile(client, id, FLY_RUN_FILES.stdout, { ...bounds, scan: costCapture?.write }).catch(() => null) : null,
         id ? readMachineFile(client, id, FLY_RUN_FILES.stderr, bounds).catch(() => null) : null,
         id && pipeline.captureWorkflowStderr ? readFlyWorkflowReports(client, id, signal).catch(() => undefined) : undefined,
     ]);
@@ -109,6 +113,9 @@ export async function collectFlyOutput(client: FlyMachinesClient, id: string | u
         captured.stderr = tail.value;
     } else missing.push('stderr');
     if (missing.length) captured.outputIncomplete = `Could not read the Fly Machine ${missing.join(' and ')}`;
+    if (costCapture && (!out || out === 'oversized' || !costCapture.finish())) {
+        captured.outputIncomplete = [captured.outputIncomplete, 'Fly Machine usage accounting incomplete'].filter(Boolean).join('. ');
+    }
     return captured;
 }
 

@@ -521,6 +521,62 @@ test('Fly charges usage missed by live logs before final cost settlement, withou
     });
 });
 
+for (const liveOverflows of [false, true]) {
+    test(`Fly recovers usage after the initial live record falls outside capture (live overflow: ${liveOverflows})`, async () => {
+        const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.ts');
+        const fly = new FakeFly();
+        const initial = '{"usage":{"input_tokens":9}}';
+        const usage = '{"usage":{"input_tokens":1}}';
+        const padding = 'x'.repeat(64 * 1024) + '\n';
+        const streamed = initial + '\n' + padding.repeat(liveOverflows ? 18 : 0) + usage + '\n';
+        fly.agent = machine => {
+            fly.finish(machine, streamed, '', 0);
+            machine.pendingLogs = machine.pendingLogs.filter(line => line.startsWith(FLY_LOG_MARKERS.stdout));
+            // The initial record has a CRLF in the file. One missed usage is
+            // outside the 8 MiB file tail and the final one has no trailing LF.
+            const full = streamed.replace(initial + '\n', initial + '\r\n') + usage + '\n' + padding.repeat(129) + usage;
+            machine.files.set(FLY_RUN_FILES.stdout, Buffer.from(full));
+        };
+        const charged: string[] = [];
+        await runWithActiveRunCostCap({ taskId: 'test', exceeded: false, admit: async () => {}, beginExecution: () => ({
+            observeLine: line => {
+                if (line.includes('"usage"')) charged.push(line);
+                if (line === usage) fly.logsUnavailable = true;
+            },
+            finish: async () => charged.length >= 4 ? 'captured usage reached cap' : null,
+        }) }, async () => {
+            const handle = runtime(fly).start(spec(), { preserveOutputOnTimeout: true });
+            const result = await handle.wait();
+            assert.equal(result.outputIncomplete, undefined);
+            assert.equal(result.costCapExceeded, true);
+            assert.deepEqual(charged, [initial, usage, usage, usage]);
+            await handle.release();
+        });
+    });
+}
+
+test('Fly reports incomplete usage accounting when a captured record exceeds the scan limit', async () => {
+    const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.ts');
+    const fly = new FakeFly();
+    const usage = '{"usage":{"input_tokens":1}}';
+    fly.agent = machine => {
+        fly.finish(machine, '', '', 0);
+        machine.files.set(FLY_RUN_FILES.stdout, Buffer.from('x'.repeat(1024 * 1024 + 1) + '\n' + usage));
+    };
+    let charges = 0;
+    await runWithActiveRunCostCap({ taskId: 'test', exceeded: false, admit: async () => {}, beginExecution: () => ({
+        observeLine: line => { if (line === usage) charges++; },
+        finish: async () => null,
+    }) }, async () => {
+        const handle = runtime(fly).start(spec());
+        const result = await handle.wait();
+        assert.match(result.outputIncomplete!, /usage accounting incomplete/);
+        assert.equal(result.exitCode, -1);
+        assert.equal(charges, 1);
+        await handle.release();
+    });
+});
+
 test('cancellation during Fly cost admission settles without creating a Machine', { timeout: 2000 }, async () => {
     const { runWithActiveRunCostCap } = await import('../packages/core/src/budget/runCostGuardContext.ts');
     const fly = new FakeFly();
