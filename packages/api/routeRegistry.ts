@@ -90,7 +90,7 @@ export function createManagementRouteEntries({
   operatorRateLimiter,
   visualPreviewAuthRoutes,
 }: ManagementRouteDeps): RouteEntry[] {
-  const entries: RouteEntry[] = [
+  return ([
     ['get', '/api/config/followup-keywords', requireManageSettings, configRoutes.getFollowupKeywords],
     ['post', '/api/config/followup-keywords', requireManageSettings, configRoutes.postFollowupKeywords],
     ['get', '/api/config/followup-ignore-keywords', requireManageSettings, configRoutes.getFollowupIgnoreKeywords],
@@ -167,8 +167,7 @@ export function createManagementRouteEntries({
     ['get', '/api/agents/:agentType/images', requireManageAgents, agentVersionRoutes.listImages],
     ['post', '/api/agents/resolve-version', requireManageAgents, agentVersionRoutes.resolveVersionEndpoint],
     ['get', '/api/agents/:agentType/image-tag', requireManageAgents, agentVersionRoutes.getImageTag],
-  ];
-  return entries.map(withDemoViewerBoundary);
+  ] satisfies RouteEntry[]).map(withDemoViewerBoundary);
 }
 
 /**

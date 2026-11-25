@@ -68,6 +68,7 @@ import type { NotificationProjectionSink } from './notificationBackgroundProtoco
 /** CORS origin validation function type compatible with Socket.IO */
 type CorsOriginCallback = (err: Error | null, allow?: boolean) => void;
 type CorsOriginFunction = (origin: string | undefined, callback: CorsOriginCallback) => void;
+type IncomingGoalUpdate = Partial<GoalUpdatePayload> & { goalId: string; ownerId?: string };
 
 /** Dependencies for queue stats broadcasting */
 export interface QueueDependencies {
@@ -84,6 +85,16 @@ function shouldRefreshGoalForTask(payload: TaskUpdatePayload): boolean {
   // reconcile the goal, whose result may have just been committed.
   return payload.state !== payload.previousState
     || ['completed', 'failed', 'cancelled'].includes(payload.state);
+}
+
+function isBroadcastableGoalUpdate(
+  payload: IncomingGoalUpdate,
+): payload is IncomingGoalUpdate & Pick<GoalUpdatePayload, 'occurredAt'> {
+  // Rich transitions must satisfy the full contract. Bare invalidations are
+  // resolved from the committed goal row.
+  return typeof payload.goalId === 'string' && payload.goalId !== ''
+    && isActivityTimestamp(payload.occurredAt)
+    && (payload.state === undefined || isGoalUpdatePayload(payload));
 }
 
 /**
@@ -307,17 +318,11 @@ export class SocketService {
       occurredAt: frame.occurredAt ?? new Date().toISOString() });
   }
 
-  private async handleGoalUpdate(
-    payload: Partial<GoalUpdatePayload> & { goalId: string; ownerId?: string },
-  ): Promise<void> {
+  private async handleGoalUpdate(payload: IncomingGoalUpdate): Promise<void> {
     // A wake only makes bounded goal waiters re-read the durable journal, so
     // any frame naming a goal may deliver it, whatever else it carries.
     notifyGoalWaiters(payload.goalId);
-    if (!this.queueDeps || typeof payload.goalId !== 'string' || !payload.goalId
-      || !isActivityTimestamp(payload.occurredAt)) return;
-    // Rich transition frames must satisfy the PR contract. Bare invalidations
-    // from checkpoint/session writers are resolved from the committed goal row.
-    if (payload.state !== undefined && !isGoalUpdatePayload(payload)) return;
+    if (!this.queueDeps || !isBroadcastableGoalUpdate(payload)) return;
     const goal = await this.queueDeps.db('goals').where({ goal_id: payload.goalId }).first();
     const ownerId = goal?.owner_id ?? payload.ownerId;
     if (typeof ownerId !== 'string' || !ownerId) return;

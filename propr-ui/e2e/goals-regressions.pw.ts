@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import { goalLifecycleServer } from './goalLifecycleServer.mjs';
 
@@ -52,121 +52,64 @@ const earlierCheckpointDeclaration = JSON.stringify({
   message: 'feat(goals): publish dashboard foundation',
 });
 
-async function stubGoalApis(page: Page): Promise<void> {
-  await page.routeWebSocket('**/socket.io/**', socket => socket.close());
-  await page.route('**/api/**', async route => {
-    const url = new URL(route.request().url());
-    const { pathname } = url;
-    if (pathname === '/api/auth/demo-mode') {
-      await route.fulfill({ json: { demoMode: false } });
-      return;
-    }
-    if (pathname === '/api/auth/user') {
-      await route.fulfill({ json: {
-        id: 'user-1', login: 'operator', username: 'operator', displayName: 'Operations',
-        email: null, avatarUrl: null, role: 'admin', permissions: [], authorizationSource: 'local',
-      } });
-      return;
-    }
-    if (pathname === '/api/instance/catalog') {
-      await route.fulfill({ json: catalog });
-      return;
-    }
-    if (pathname === '/api/goals/capabilities') {
-      await route.fulfill({ json: { agents: [{
-        agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true,
-        lifecycle: { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' },
-        controls: { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true },
-        models: ['gpt-5.6-sol'], defaultModel: 'gpt-5.6-sol',
-      }] } });
-      return;
-    }
-    if (pathname === '/api/goals' && route.request().method() === 'GET') {
-      // A busy row beside a settled one: both must measure the same on the desktop table.
-      await route.fulfill({ json: { goals: [goal, {
-        ...goal, id: 'goal-2', repository: 'acme/api', title: 'Prepare Billing API',
-        resultState: 'completed',
-        artifactStats: { issues: 0, openIssues: 0, pullRequests: 0, openPullRequests: 0 },
-        liveSummary: { ...goal.liveSummary, currentTask: null, todos: [] },
-      }] } });
-      return;
-    }
-    if (pathname === '/api/goals/goal-1') {
-      await route.fulfill({ json: { goal: {
-        ...goal,
-        launchStrategy: 'direct',
-        checkpoint: {
-          intervalMinutes: 15, count: 2, lastAt: timestamp, lastCommitSha: 'abc1234', error: null, pending: false,
-          latest: {
-            kind: 'agent', state: 'completed', message: 'feat(goals): publish stable dashboard slice',
-            summary: 'The responsive dashboard and its focused coverage are ready.',
-            include: ['src/dashboard.tsx', 'src/dashboard.css', 'test/dashboard.test.tsx'],
-            exclude: ['src/follow-up.ts'], commitSha: 'abc1234', error: null,
-          },
+const goalApiResponses = new Map(Object.entries({
+  '/api/auth/demo-mode': { demoMode: false },
+  '/api/auth/user': {
+    id: 'user-1', login: 'operator', username: 'operator', displayName: 'Operations',
+    email: null, avatarUrl: null, role: 'admin', permissions: [], authorizationSource: 'local',
+  },
+  '/api/instance/catalog': catalog,
+  '/api/goals/capabilities': { agents: [{
+      agentId: 'agent-1', agentAlias: 'codex', agentType: 'codex', goalCapable: true,
+      lifecycle: { launch: 'native-goal', resume: 'native-goal', runningInput: 'live-steer' },
+      controls: { liveInput: true, inputAtBoundary: true, modelAtBoundary: true, pauseAtBoundary: true },
+      models: ['gpt-5.6-sol'], defaultModel: 'gpt-5.6-sol',
+    }] },
+  // A busy row beside a settled one: both must measure the same on the desktop table.
+  'GET /api/goals': { goals: [goal, {
+      ...goal, id: 'goal-2', repository: 'acme/api', title: 'Prepare Billing API',
+      resultState: 'completed',
+      artifactStats: { issues: 0, openIssues: 0, pullRequests: 0, openPullRequests: 0 },
+      liveSummary: { ...goal.liveSummary, currentTask: null, todos: [] },
+    }] },
+  '/api/goals/goal-1': { goal: {
+      ...goal,
+      launchStrategy: 'direct',
+      checkpoint: {
+        intervalMinutes: 15, count: 2, lastAt: timestamp, lastCommitSha: 'abc1234', error: null, pending: false,
+        latest: {
+          kind: 'agent', state: 'completed', message: 'feat(goals): publish stable dashboard slice',
+          summary: 'The responsive dashboard and its focused coverage are ready.',
+          include: ['src/dashboard.tsx', 'src/dashboard.css', 'test/dashboard.test.tsx'],
+          exclude: ['src/follow-up.ts'], commitSha: 'abc1234', error: null,
         },
-      } } });
-      return;
-    }
-    if (pathname === '/api/task/goal-task-1/live-details') {
-      await route.fulfill({ json: {
-        events: [
-          { id: 'thought-1', type: 'thought', content: 'The focused tests pass and the stable slice is ready.', timestamp },
-          { id: 'checkpoint-0', type: 'thought', content: earlierCheckpointDeclaration, timestamp: '2026-09-10T00:01:00.000Z' },
-          { id: 'checkpoint-1', type: 'thought', content: `Stable dashboard work is **ready for review**.\n\`\`\`json\n${checkpointDeclaration}\n\`\`\``, timestamp: '2026-09-10T00:01:30.000Z' },
-          { id: 'thought-2', type: 'thought', content: 'Continuing with the remaining dashboard polish.', timestamp: '2026-09-10T00:01:40.000Z' },
-        ],
-        todos: [], currentTask: null, tokenUsage: { input_tokens: 1200, output_tokens: 400 },
-      } });
-      return;
-    }
-    if (pathname === '/api/tasks') {
-      await route.fulfill({ json: { tasks: [], total: 0 } });
-      return;
-    }
-    if (pathname === '/api/notifications/unread-count') {
-      await route.fulfill({ json: { unreadCount: 0 } });
-      return;
-    }
-    if (pathname === '/api/notifications/preferences') {
-      await route.fulfill({ json: { preferences: {}, quietHours: { start: null, end: null, timezone: 'UTC' }, badgeEnabled: false } });
-      return;
-    }
-    await route.fulfill({
-      status: 503,
-      contentType: 'application/json',
-      body: JSON.stringify({ error: 'Unavailable in goals browser regression fixture' }),
-    });
-  });
-}
-
-async function contentWidths(page: Page) {
-  return page.evaluate(() => {
-    const workQueue = document.querySelector('[aria-label="Goal work queue"]');
-    const main = document.querySelector('main');
-    if (!(workQueue instanceof HTMLElement) || !(main instanceof HTMLElement)) {
-      throw new Error('Goal work queue layout was not rendered');
-    }
-    return {
-      queueClientWidth: workQueue.clientWidth,
-      queueScrollWidth: workQueue.scrollWidth,
-      mainClientWidth: main.clientWidth,
-      mainScrollWidth: main.scrollWidth,
-    };
-  });
-}
-
-// Every desktop row holds the same height, whatever its status, activity or artifact counts.
-async function rowHeights(page: Page) {
-  return page.evaluate(() => Array.from(
-    document.querySelectorAll('[aria-label="Goal work queue"] a'),
-    row => Math.round(row.getBoundingClientRect().height),
-  ));
-}
+      },
+    } },
+  '/api/task/goal-task-1/live-details': {
+    events: [
+      { id: 'thought-1', type: 'thought', content: 'The focused tests pass and the stable slice is ready.', timestamp },
+      { id: 'checkpoint-0', type: 'thought', content: earlierCheckpointDeclaration, timestamp: '2026-09-10T00:01:00.000Z' },
+      { id: 'checkpoint-1', type: 'thought', content: `Stable dashboard work is **ready for review**.\n\`\`\`json\n${checkpointDeclaration}\n\`\`\``, timestamp: '2026-09-10T00:01:30.000Z' },
+      { id: 'thought-2', type: 'thought', content: 'Continuing with the remaining dashboard polish.', timestamp: '2026-09-10T00:01:40.000Z' },
+    ],
+    todos: [], currentTask: null, tokenUsage: { input_tokens: 1200, output_tokens: 400 },
+  },
+  '/api/tasks': { tasks: [], total: 0 },
+  '/api/notifications/unread-count': { unreadCount: 0 },
+  '/api/notifications/preferences': { preferences: {}, quietHours: { start: null, end: null, timezone: 'UTC' }, badgeEnabled: false },
+}));
 
 test.beforeEach(async ({ page }) => {
   await page.routeWebSocket('**/socket.io/**', socket => socket.close());
   await page.clock.install({ time: Date.parse(timestamp) + 120_000 });
-  await stubGoalApis(page);
+  await page.route('**/api/**', route => {
+    const { pathname } = new URL(route.request().url());
+    const json = goalApiResponses.get(pathname) ?? goalApiResponses.get(`${route.request().method()} ${pathname}`);
+    return json ? route.fulfill({ json }) : route.fulfill({
+      status: 503,
+      json: { error: 'Unavailable in goals browser regression fixture' },
+    });
+  });
 });
 
 test('keeps the goal work queue within the available 1024px desktop content width', async ({ page }) => {
@@ -174,25 +117,23 @@ test('keeps the goal work queue within the available 1024px desktop content widt
   await page.goto('/goals');
 
   const queue = page.getByRole('list', { name: 'Goal work queue' });
-  await expect(queue.getByRole('link')).toHaveCount(2);
-  const dimensions = await contentWidths(page);
-
-  expect(dimensions.queueScrollWidth).toBeLessThanOrEqual(dimensions.queueClientWidth);
-  expect(dimensions.mainScrollWidth).toBeLessThanOrEqual(dimensions.mainClientWidth);
-  // A narrow desktop keeps the table and drops the two secondary measures instead of stacking cards.
-  await expect(page.getByTestId('goal-queue-columns')).toBeVisible();
-  await expect(page.getByTestId('goal-queue-column-tokens')).toBeHidden();
-  await expect(page.getByTestId('goal-queue-column-active-time')).toBeHidden();
-  expect(await rowHeights(page)).toEqual([64, 64]);
-
-  await page.setViewportSize({ width: 1280, height: 820 });
-  await expect(page.getByTestId('goal-queue-columns')).toBeVisible();
-  await expect(page.getByTestId('goal-queue-column-tokens')).toBeVisible();
-  await expect(page.getByTestId('goal-queue-column-active-time')).toBeVisible();
-  expect(await rowHeights(page)).toEqual([64, 64]);
-  const wideDimensions = await contentWidths(page);
-  expect(wideDimensions.queueScrollWidth).toBeLessThanOrEqual(wideDimensions.queueClientWidth);
-  expect(wideDimensions.mainScrollWidth).toBeLessThanOrEqual(wideDimensions.mainClientWidth);
+  const rows = queue.getByRole('link');
+  await expect(rows).toHaveCount(2);
+  for (const width of [1024, 1280]) {
+    await page.setViewportSize({ width, height: 820 });
+    await expect(page.getByTestId('goal-queue-columns')).toBeVisible();
+    // At 1024px the table drops secondary measures and keeps the row layout.
+    for (const column of ['tokens', 'active-time']) {
+      await expect(page.getByTestId(`goal-queue-column-${column}`)).toBeVisible({ visible: width === 1280 });
+    }
+    expect(await rows.evaluateAll(links => links.map(row => Math.round(row.getBoundingClientRect().height)))).toEqual([64, 64]);
+    for (const region of [queue, page.getByRole('main')]) {
+      const { scrollWidth, clientWidth } = await region.evaluate(element => ({
+        scrollWidth: element.scrollWidth, clientWidth: element.clientWidth,
+      }));
+      expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+    }
+  }
   if (process.env.PROPR_CAPTURE_PREVIEWS) {
     await mkdir('../.propr/previews', { recursive: true });
     await page.screenshot({ path: '../.propr/previews/goals-queue.png', animations: 'disabled' });
