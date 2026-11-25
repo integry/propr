@@ -273,7 +273,7 @@ export interface AgentRuntimeRestrictedNetworkEnforcement {
 }
 
 export interface AgentRuntimeCapabilities {
-    /** The runtime applies the selected extension mounts, gateway and launch checks. */
+    /** The runtime applies extension mounts, gateway, launch checks and secret redaction. */
     supportsExtensions?: boolean;
     /** Host paths can be bind-mounted (workspace, git metadata, credentials). */
     supportsBindMounts: boolean;
@@ -299,8 +299,6 @@ export interface AgentRuntimeCapabilities {
      * finished. Lets a runtime without bind mounts use the credential broker.
      */
     supportsFileUpload?: boolean;
-    /** Can stage and redact the extensions requested by a provider run. */
-    supportsExtensions?: boolean;
     /** A worker can reattach to a run it did not start (after restart). */
     reattach: boolean;
     /** Workspace transports the runtime can run; `['bind']` when bind mounts are supported and this is omitted. */
