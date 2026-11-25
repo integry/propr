@@ -42,6 +42,12 @@ export interface SpritePoolOptions {
 type PoolLease = { name: string; leaseId: string; waitMs: number; runs: number };
 
 const LEGACY_NAME = /^propr-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const LEGACY_SPRITE_GRACE_MS = 24 * 60 * 60_000;
+
+function isOldLegacySprite(sprite: Sprite, listedAt: number): boolean {
+    return !sprite.labels?.length && LEGACY_NAME.test(sprite.name) && sprite.createdAt !== undefined
+        && listedAt - sprite.createdAt.getTime() > LEGACY_SPRITE_GRACE_MS;
+}
 
 // The launcher changes the root-owned result directory from 0700 to 0711 after
 // the transport exits. Files can also be durable before that final chmod.
@@ -150,12 +156,12 @@ export class SpritePool {
         const label = spritesPoolLabel(scope);
         for (const sprite of listed) {
             if (state.runners.has(sprite.name)) continue;
-            const labels = sprite.labels ?? [];
-            if (!labels.includes(label)) {
-                if (!labels.includes(SPRITES_POOL_LABEL) && LEGACY_NAME.test(sprite.name)) {
+            if (!sprite.labels?.includes(label)) {
+                if (!isOldLegacySprite(sprite, listedAt)) continue;
+                if (!await this.confirmResultAbsent(sprite.name)) {
                     logger.warn({ sprite: sprite.name }, 'Legacy Sprite may hold an unrecovered result; review it manually');
+                    continue;
                 }
-                continue;
             }
             try {
                 // Other lookups and deletes may have awaited since the inventory read.
@@ -200,21 +206,22 @@ export class SpritePool {
         await Promise.allSettled(claimed.map(([name, record]) => this.reapRunner(name, leaseId, record)));
     }
 
+    private async confirmResultAbsent(name: string): Promise<boolean> {
+        try {
+            const inspection = await this.client.sprite(name).execFile('sudo', ['-n', '/usr/bin/python3', '-I', '-c', INSPECT_RESULT],
+                { cwd: '/', timeout: 30_000 });
+            return inspection.exitCode === 0 && inspection.stdout.toString().trim() === 'absent';
+        } catch (error) {
+            logger.warn({ sprite: name, error: String(error) }, 'Could not inspect Sprite for a result');
+            return false;
+        }
+    }
+
     private async reapRunner(name: string, leaseId: string, record: SpriteRunnerRecord): Promise<void> {
-        if (record.inspectResultOnReap !== false) {
-            let absent = false;
-            try {
-                const inspection = await this.client.sprite(name).execFile('sudo', ['-n', '/usr/bin/python3', '-I', '-c', INSPECT_RESULT],
-                    { cwd: '/', timeout: 30_000 });
-                absent = inspection.exitCode === 0 && inspection.stdout.toString().trim() === 'absent';
-            } catch (error) {
-                logger.warn({ sprite: name, error: String(error) }, 'Could not inspect expired Sprite for a result');
-            }
-            if (!absent) {
-                await this.transact(state => updateSpriteRunner(state, { name, leaseId, now: this.now() },
-                    { state: 'retained', leaseId: undefined, owner: undefined }));
-                return;
-            }
+        if (record.inspectResultOnReap !== false && !await this.confirmResultAbsent(name)) {
+            await this.transact(state => updateSpriteRunner(state, { name, leaseId, now: this.now() },
+                { state: 'retained', leaseId: undefined, owner: undefined }));
+            return;
         }
         // Revalidate the claim after the provider inspection, immediately before deletion.
         await this.deleteRunner(name, leaseId);

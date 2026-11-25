@@ -5,6 +5,7 @@
  * run usage timings and the status summary.
  */
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -177,11 +178,15 @@ test('startup reaps this pool\'s Sprites no record owns and forgets records whos
     const label = spritesPoolLabel(scope);
     const leaked = Object.assign(new FakeSprite('propr-leaked'), { labels: ['propr-pool', label] });
     const otherPool = Object.assign(new FakeSprite('propr-other'), { labels: ['propr-pool', 'propr-pool-0000000000000000'] });
-    const legacyOld = Object.assign(new FakeSprite('propr-0b9d3a52-6f53-4f58-a9b2-2f7f0f0f0f0f'), { createdAt: new Date(Date.now() - 48 * 3600_000) });
-    const legacyNew = new FakeSprite('propr-1b9d3a52-6f53-4f58-a9b2-2f7f0f0f0f0f');
+    const legacyOld = new FakeSprite(`propr-${randomUUID()}`);
+    legacyOld.createdAt = new Date(Date.now() - 48 * 3600_000);
+    const legacyResult = new FakeSprite(`propr-${randomUUID()}`);
+    legacyResult.createdAt = legacyOld.createdAt;
+    legacyResult.files.set('/opt/propr/result/result.bundle', Buffer.from('only copy'));
+    const legacyNew = new FakeSprite(`propr-${randomUUID()}`);
     const unrelated = new FakeSprite('my-own-sprite');
     const pooled = Object.assign(new FakeSprite('propr-pooled'), { labels: ['propr-pool', label] });
-    client.foreign.push(leaked, otherPool, legacyOld, legacyNew, unrelated, pooled);
+    client.foreign.push(leaked, otherPool, legacyResult, legacyOld, legacyNew, unrelated, pooled);
     await store.transact(scope, state => {
         state.runners.set('propr-pooled', { setupFingerprint: readSpriteSetup().fingerprint, state: 'idle', heartbeatAt: 0, since: 0, runs: 1, checkpoint: 'v1' });
         state.runners.set('propr-vanished', { state: 'idle', heartbeatAt: 0, since: 0, runs: 1, checkpoint: 'v1' });
@@ -190,12 +195,54 @@ test('startup reaps this pool\'s Sprites no record owns and forgets records whos
     const runtime = worker(client, store);
     const run = runtime.start(spec());
     await run.wait();
-    assert.deepEqual(client.deleted, ['propr-leaked']);
-    assert.ok((await client.getSprite(legacyOld.name)), 'an old legacy Sprite remains available for result recovery');
+    assert.deepEqual(client.deleted, [leaked.name, legacyOld.name]);
+    const recovered = await client.getSprite(legacyResult.name);
+    assert.equal((await recovered.filesystem().readFile('/opt/propr/result/result.bundle', null)).toString(), 'only copy');
     assert.equal(pooled.launches.length, 1, 'an idle runner with a record is reused, not reaped');
     assert.equal((await store.read(scope)).runners.has('propr-vanished'), false);
     await run.release!();
     await runtime.close();
+});
+
+test('startup only inspects unlabelled legacy UUIDs known to be older than 24 hours', async t => {
+    const client = new FakeSprites();
+    const now = Date.now();
+    const cutoff = now - 24 * 3600_000;
+    t.mock.method(Date, 'now', () => now);
+    for (const createdAt of [new Date(cutoff), new Date(NaN), undefined]) {
+        client.foreign.push(Object.assign(new FakeSprite(`propr-${randomUUID()}`), { createdAt }));
+    }
+    const old = new Date(cutoff - 1);
+    client.foreign.push(
+        Object.assign(new FakeSprite('propr-custom'), { createdAt: old }),
+        Object.assign(new FakeSprite(`propr-${randomUUID()}`), { createdAt: old, labels: ['another-service'] }),
+    );
+    const probes = client.foreign.map(sprite => t.mock.method(sprite, 'execFile'));
+    const eligible = Object.assign(new FakeSprite(`propr-${randomUUID()}`), { createdAt: old });
+    client.foreign.push(eligible);
+    await pool(client, new MemorySpritePoolStore()).reconcile();
+    assert.deepEqual(client.deleted, [eligible.name]);
+    assert.ok(probes.every(probe => probe.mock.callCount() === 0));
+});
+
+test('legacy cleanup requires a conclusive inspection and rechecks ownership after it', async t => {
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    const oldSprite = () => Object.assign(new FakeSprite(`propr-${randomUUID()}`), { createdAt: new Date(0) });
+    const unavailable = oldSprite();
+    const failed = oldSprite();
+    const claimed = oldSprite();
+    client.foreign.push(unavailable, failed, claimed);
+    t.mock.method(unavailable, 'execFile', async () => { throw new Error('inspection unavailable'); });
+    t.mock.method(failed, 'execFile', async () => ({ exitCode: 1, stdout: 'absent', stderr: '' }));
+    const inspected = t.mock.method(claimed, 'execFile', async () => {
+        await store.transact(scope, state => state.runners.set(claimed.name, { state: 'retained', since: 0, heartbeatAt: 0, runs: 1 }));
+        return { exitCode: 0, stdout: 'absent', stderr: '' };
+    });
+    await pool(client, store).reconcile();
+    assert.equal(inspected.mock.callCount(), 1);
+    assert.deepEqual(client.deleted, []);
+    assert.equal((await store.read(scope)).runners.get(claimed.name)?.state, 'retained');
 });
 
 test('lowering the bound discards surplus runners on release', { timeout: 10_000 }, async () => {
