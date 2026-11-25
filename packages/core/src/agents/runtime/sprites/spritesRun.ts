@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Sprite } from '@fly/sprites';
-import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_ENVIRONMENT as E, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../../../git/workspaceTransportScript.js';
+import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_RESULT_DIR, WORKSPACE_TRANSPORT_ENVIRONMENT as E, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../../../git/workspaceTransportScript.js';
 import { CredentialBroker, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside } from '../../credentials/broker.js';
 import { credentialRunRoot, envFileValues } from '../../credentials/hostCredentialStaging.js';
 import { CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
@@ -33,11 +33,14 @@ function supportedBinds(spec: AgentRunSpec) {
 
 type EnvDefaults = ReadonlyArray<readonly [string, string]>;
 
-function runEnvironment(spec: AgentRunSpec, options: AgentRunOptions, token: string, defaults: EnvDefaults) {
+function runEnvironment({ spec, options, token }: SpriteLaunch, defaults: EnvDefaults, validateOnly = false) {
     const inherited = { ...process.env, ...options.extraEnvVars };
-    const env = new Map(Object.entries(options.extraEnvVars ?? {}));
+    // An env file may override any extra. Scan only known effective values during validation.
+    const extras = validateOnly && spec.envFiles.length ? {} : options.extraEnvVars;
+    const env = new Map(Object.entries(extras ?? {}));
     for (const file of [...spec.envFiles].sort((a, b) => a.order - b.order)) {
         fs.accessSync(file.path, fs.constants.R_OK);
+        if (validateOnly) continue;
         for (const [name, value] of envFileValues(file.path, inherited)) env.set(name, value);
     }
     for (const variable of [...(spec.repoSetup?.env ?? []), ...[...spec.env].sort((a, b) => a.order - b.order)]) {
@@ -69,45 +72,78 @@ function claudeSeed(binds: Bind[], token: string): string | undefined {
 }
 
 export type SpriteLaunch = { spec: AgentRunSpec; options: AgentRunOptions; token: string; inputPath: string };
-export async function uploadRun(sprite: Sprite, { spec, options, token, inputPath }: SpriteLaunch, defaults: EnvDefaults = []) {
-    const clone = spec.workspace.clone;
-    if (!clone || spec.workspace.mode !== 'clone' || spec.workspace.containerPath !== '/home/node/workspace' || spec.workspace.readOnly)
+function writableClone(spec: AgentRunSpec) {
+    const { clone, mode, readOnly, containerPath } = spec.workspace;
+    if (mode !== 'clone' || readOnly || containerPath !== '/home/node/workspace' ||
+        !clone?.remote || !clone.baseRef || !clone.baseCommit || !clone.branch ||
+        clone.resultDir !== WORKSPACE_TRANSPORT_RESULT_DIR || clone.script !== WORKSPACE_TRANSPORT_SCRIPT) {
         throw new Error('Sprites requires a prepared writable clone workspace');
+    }
+    return clone;
+}
+
+export function validateSpriteRun(launch: SpriteLaunch, defaults: EnvDefaults = []) {
+    const { spec, options, token } = launch;
+    const clone = writableClone(spec);
     const provider = spec.profile.agentType;
-    if (!(provider in stores)) throw new Error(`Unsupported Sprites provider: ${provider}`);
+    if (!Object.hasOwn(stores, provider)) throw new Error(`Unsupported Sprites provider: ${provider}`);
     const binds = supportedBinds(spec);
-    const { env, transportToken } = runEnvironment(spec, options, token, defaults);
+    const { env, transportToken } = runEnvironment(launch, defaults, true);
+    const credentials = binds.filter(m => m.credentialStore).map(m => {
+        if (m.credentialStore!.provider !== provider) throw new Error('Mismatched Sprite credential store');
+        return { id: 'config', provider, store: 'config' as const, canonicalRoot: m.source };
+    });
+    const argv = spec.repoSetup
+        ? ['/bin/bash', '-c', spec.repoSetup.script, `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args]
+        : [spec.entrypoint ?? `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args];
+    const transportEnv = { PATH, HOME: '/root', [E.path]: spec.workspace.containerPath, [E.remote]: clone.remote,
+        [E.branch]: clone.branch, [E.baseRef]: clone.baseRef, [E.baseCommit]: clone.baseCommit,
+        [E.resultRef]: clone.resultRef ?? '', [E.resultDir]: '/opt/propr/result' };
+    const stdin = options.stdinData ?? '';
+    const directories = binds.filter(m => ['logs', 'scratch'].includes(m.purpose)).map(m => m.target);
+    checkPayload(JSON.stringify({ argv, directories, transportEnv, transportToken, stdin, env: Object.fromEntries(env) }), token);
+    return { provider, binds, credentials, argv, directories, transportEnv, stdin };
+}
+
+function checkPayload(payload: string, token: string) {
+    if (payload.includes(token)) throw new Error('Refusing to upload the Sprites organization credential');
+}
+
+export function prepareSpriteRun(launch: SpriteLaunch,
+    validated: ReturnType<typeof validateSpriteRun>, defaults: EnvDefaults = []) {
+    const { options, token, inputPath } = launch;
+    const { provider, binds, credentials, argv } = validated;
+    const { env, transportToken } = runEnvironment(launch, defaults);
+    env.set('PROPR_EXECUTION_TIMEOUT_MS', String(options.timeout ?? 300_000));
     const home = provider === 'antigravity' ? antigravityHome : '/home/node';
     Object.entries({ PATH, HOME: home, USER: 'node', LOGNAME: 'node', LANG: 'C.UTF-8', DISABLE_AUTOUPDATER: '1', AGY_CLI_DISABLE_AUTO_UPDATE: 'true' })
         .forEach(([key, value]) => env.set(key, value));
     const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(), '.locks') } });
-    const bundle = broker.materialize(binds.filter(m => m.credentialStore).map(m => {
-        if (m.credentialStore!.provider !== provider) throw new Error('Mismatched Sprite credential store');
-        return { id: 'config', provider, store: 'config' as const, canonicalRoot: m.source };
-    }), { definedEnv: [...env].filter(([, value]) => value).map(([key]) => key) });
+    const bundle = broker.materialize(credentials, { definedEnv: [...env].filter(([, value]) => value).map(([key]) => key) });
     const store = bundle.stores[0];
     const files = store?.files.map(f => {
         if (f.content.includes(token)) throw new Error('Sprites org credential found in provider store');
         return [f.path, f.content.toString('base64'), Boolean(f.mode & 0o111)];
     }) ?? [];
     const liveStore = stores[provider as keyof typeof stores];
-    const directories = [home, ...binds.filter(m => ['logs', 'scratch'].includes(m.purpose)).map(m => m.target),
+    const directories = [home, ...validated.directories,
         ...(store?.directories.map(dir => path.join(liveStore, dir)) ?? [])];
-    const argv = spec.repoSetup
-        ? ['/bin/bash', '-c', spec.repoSetup.script, `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args]
-        : [spec.entrypoint ?? `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args];
+    const environment = { ...Object.fromEntries(env), ...bundle.secretEnv };
     const upload = JSON.stringify({
         transport: ['/bin/bash', '-c', WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, ...python, 'agent'],
-        transportEnv: { PATH, HOME: '/root', [E.path]: spec.workspace.containerPath, [E.remote]: clone.remote, [E.branch]: clone.branch,
-            [E.baseRef]: clone.baseRef, [E.baseCommit]: clone.baseCommit, [E.resultRef]: clone.resultRef ?? '', [E.resultDir]: '/opt/propr/result',
-            [WORKSPACE_TRANSPORT_TOKEN_ENV]: transportToken },
-        stdin: options.stdinData ?? '', files,
-        agent: { env: { ...Object.fromEntries(env), ...bundle.secretEnv }, argv, directories, claudeSeed: claudeSeed(binds, token),
+        transportEnv: { ...validated.transportEnv, [WORKSPACE_TRANSPORT_TOKEN_ENV]: transportToken },
+        stdin: validated.stdin, files,
+        agent: { env: environment, argv, directories, claudeSeed: claudeSeed(binds, token),
             store: store ? liveStore : null, outputs: store?.outputs ?? [] },
     });
-    if (upload.includes(token)) throw new Error('Refusing to upload the Sprites organization credential');
-    await sprite.filesystem().writeFile(inputPath, upload, { mode: 0o600 });
-    return async () => {
+    checkPayload(upload, token);
+    return {
+        environment,
+        markerArgs: env.get('PROPR_REPO_SETUP') === '0' ? [] : argv,
+        upload: (sprite: Sprite) => sprite.filesystem().writeFile(inputPath, upload, { mode: 0o600 }),
+        commit,
+    };
+    async function commit(sprite: Sprite) {
         if (!store?.outputs.length) return;
         // The SDK stat/read calls follow links. Run the descriptor-based reader on
         // the Sprite. Only the launcher's unprivileged child reads the live credentials.
@@ -123,5 +159,5 @@ export async function uploadRun(sprite: Sprite, { spec, options, token, inputPat
                 throw new Error('Invalid Sprite credential export');
             return { storeId: store.id, path: store.outputs[record.index], content, mtimeMs: record.mtimeMs };
         }));
-    };
+    }
 }

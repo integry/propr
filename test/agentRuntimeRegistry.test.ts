@@ -44,6 +44,22 @@ test('runtime selection: docker by default, PROPR_AGENT_RUNTIME, then per-agent 
     assert.throws(() => registerAgentRuntime('Bad Name', () => new DockerRuntime()), /Invalid agent runtime name/);
 });
 
+test('registered Docker runtimes retain extension support unless explicitly disabled', async t => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    t.after(() => registerAgentRuntime('docker', () => new DockerRuntime()));
+    await launchContext.run({ taskId: 'ext', secrets: [], mounts: [], beforeLaunch: async () => {} }, async () => {
+        for (const supportsExtensions of [undefined, false]) {
+            registerAgentRuntime('docker', () => {
+                const runtime = new DockerRuntime();
+                return Object.assign(runtime, { capabilities: { ...runtime.capabilities, supportsExtensions } });
+            });
+            const run = runAgent({ runtime: 'docker' }, spec(), { taskId: 'ext', extensionAgentLaunch: true });
+            if (supportsExtensions === false) await assert.rejects(run, { name: 'AgentRuntimeCapabilityError', capability: 'extensions' });
+            else assert.equal((await run).exitCode, 0);
+        }
+    });
+});
+
 test('docker runtime launches the rendered argv and marks the launch as an agent run', async () => {
     calls.length = 0;
     const run = spec();

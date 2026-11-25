@@ -1,3 +1,5 @@
+import { assertNativeLogAdmission } from '../../diagnostics/managedLogRuntime.js';
+import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.js';
 import { randomUUID } from 'node:crypto';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { getExecutionOwnershipContext } from '../../claude/docker/dockerExecutionOwnership.js';
@@ -10,22 +12,23 @@ import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
 import { applySpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWORK_ENFORCEMENT } from './sprites/spritesNetwork.js';
 import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
-import { unsupportedMount, uploadRun } from './sprites/spritesRun.js';
+import { prepareSpriteRun, unsupportedMount, validateSpriteRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
-    readonly capabilities = { supportsBindMounts: false, supportsRestrictedNetwork: true,
+    static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: true,
         restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
         supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
+    readonly capabilities = SpritesRuntime.capabilities;
     readonly unsupportedMount = unsupportedMount;
     private readonly pools = new Map<string, Promise<SpritePool>>();
     private closing?: Promise<void>;
 
-    constructor(private readonly client?: SpriteClient, private readonly environment = process.env) {}
+    constructor(private readonly client?: SpriteClient | ((token: string) => Promise<SpriteClient>), private readonly environment = process.env) {}
 
     close(): Promise<void> {
-        return this.closing ??= Promise.all([...this.pools.values()].map(async pool => (await pool).close())).then(() => {});
+        return this.closing ??= Promise.allSettled([...this.pools.values()].map(async pool => (await pool).close())).then(() => {});
     }
 
     unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec) {
@@ -34,19 +37,33 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         return spritesCliVersionRefusal({ ...config, type });
     }
 
+    private getPool(token: string) {
+        let pool = this.pools.get(token);
+        if (!pool) {
+            const client = this.client;
+            const load = async () => {
+                if (typeof client === 'function') return client(token);
+                if (client) return client;
+                const { SpritesClient } = await import('@fly/sprites');
+                return new SpritesClient(token);
+            };
+            pool = load().then(sdk => new SpritePool(sdk));
+            this.pools.set(token, pool);
+            void pool.catch(() => { if (this.pools.get(token) === pool) this.pools.delete(token); });
+        }
+        return pool;
+    }
+
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {
+        if (extensionLaunchForRun(this.kind, [], { ...options, agentRun: { spec } })) throw new Error('Sprites runtime does not support extensions');
+        assertNativeLogAdmission(options.diagnostics);
         const token = this.environment.PROPR_SPRITES_TOKEN || this.environment.SPRITES_TOKEN;
         if (!token) throw new Error('Set PROPR_SPRITES_TOKEN on the worker to run agents on Sprites');
         // Named networks, private MCP endpoints and malformed policies stay refused.
         const networkPolicy = spriteNetworkPolicy(spec);
         process.env.SPRITES_CLIENT_SIGNALS ??= '0';
         if (this.closing) throw new Error('Sprites runtime is closed');
-        let pool = this.pools.get(token);
-        if (!pool) {
-            pool = this.client ? Promise.resolve(new SpritePool(this.client))
-                : import('@fly/sprites').then(({ SpritesClient }) => new SpritePool(new SpritesClient(token)));
-            this.pools.set(token, pool);
-        }
+        const pool = this.getPool(token);
         options = { ...options, extraEnvVars: { ...options.extraEnvVars } };
         const envDefaults = networkPolicy ? AGENT_EGRESS_RESTRICTED_ENV[spec.profile.agentType] : undefined;
         const diagnostics: string[] = [];
@@ -57,7 +74,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         };
         const cancellation = new AbortController();
         const ownership = getExecutionOwnershipContext()?.signal;
-        const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(options.timeout ?? 300_000),
+        const signal = AbortSignal.any([cancellation.signal,
             ...(options.signal ? [options.signal] : []), ...(ownership ? [ownership] : [])]);
         const output = new LazyOutputStreams();
         let slot: Slot | undefined;
@@ -70,29 +87,43 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
             const inputPath = `/opt/propr/inbox/${randomUUID()}.json`;
             const launch = { spec, options, token, inputPath };
+            const validated = validateSpriteRun(launch, envDefaults);
             const ready = await startupStep(signal, () => pool);
-            const sprite = await startupStep(signal, async () => {
-                // Keep ownership here until upload succeeds. Even a create response arriving
-                // after stop() must dispose of its Sprite before this acquisition ends.
+            const { sprite, prepared } = await startupStep(signal, async () => {
                 const acquired = await ready.acquire(signal);
+                let prepared: ReturnType<typeof prepareSpriteRun> | undefined;
                 try {
                     if (networkPolicy) {
-                        await startupStep(signal, () => applySpriteNetworkPolicy(acquired.sprite, networkPolicy));
+                        await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]),
+                            () => applySpriteNetworkPolicy(acquired.sprite, networkPolicy));
                         acquired.restricted = { policy: networkPolicy, run: spec.name, recordDiagnostic };
                     }
-                    const writeBack = await startupStep(signal, () => uploadRun(acquired.sprite, launch, envDefaults));
+                    signal.throwIfAborted();
+                    const payload = prepareSpriteRun(launch, validated, envDefaults);
+                    prepared = payload;
+                    await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => payload.upload(acquired.sprite));
                     signal.throwIfAborted();
                     slot = acquired;
-                    commit = writeBack;
-                    return acquired.sprite;
+                    return { sprite: acquired.sprite, prepared: payload };
                 } catch (error) {
-                    if (signal.aborted || (networkPolicy && !acquired.restricted)) await ready.discard(acquired.sprite);
-                    else await ready.release(acquired);
+                    // An interrupted policy change or upload can still write to the Sprite.
+                    if (prepared || (networkPolicy && !acquired.restricted)) await ready.discard(acquired.sprite);
+                    else ready.releaseInBackground(acquired);
                     throw error;
                 }
             });
-            signal.throwIfAborted();
-            return execute(sprite, launch, output, signal);
+            try {
+                signal.throwIfAborted();
+                const executionSignal = AbortSignal.any([signal, AbortSignal.timeout(options.timeout ?? 300_000)]);
+                return await execute(sprite, launch, {
+                    output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
+                });
+            } finally {
+                if (!commit && slot) {
+                    ready.releaseInBackground(slot);
+                    slot = undefined;
+                }
+            }
         })().finally(() => { settled = true; output.end(); });
         const release = () => released ??= (async () => {
             await result.catch(() => {});
