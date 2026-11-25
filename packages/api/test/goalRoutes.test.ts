@@ -12,6 +12,8 @@ import { up as addGoalTitles } from '../../core/src/db/migrations/20260907000000
 import { up as addGoalAttachments } from '../../core/src/db/migrations/20260908000000_add_goal_attachments.js';
 import { up as addGoalInputDisplayBody } from '../../core/src/db/migrations/20260923000000_add_goal_input_display_body.js';
 import { up as createGoalBlockers } from '../../core/src/db/migrations/20261003050000_create_goal_blockers.js';
+import { up as createGoalEvents } from '../../core/src/db/migrations/20261004000000_create_goal_events.js';
+import { up as addDraftLifecycle } from '../../core/src/db/migrations/20261125000000_add_goal_draft_lifecycle.js';
 import { GOAL_CREATION_CONTRACT } from '@propr/shared';
 import { createGoalRoutes } from '../routes/goalRoutes.js';
 import { withLiveOutputReads } from './liveOutputRedisFake.js';
@@ -56,6 +58,8 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         await addGoalAttachments(database);
         await addGoalInputDisplayBody(database);
         await createGoalBlockers(database);
+        await createGoalEvents(database);
+        await addDraftLifecycle(database);
         await database.schema.createTable('task_history', table => {
             table.increments('id');
             table.string('task_id');
@@ -300,13 +304,14 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.deepEqual(creation.maxParallelTasks, { min: 1, max: 32 });
         assert.equal(creation.ultrafix.grantsMerge, false);
 
-        const createWith = async (key: string, options: Record<string, unknown>) => {
+        const createWith = async (key: string, options: Record<string, unknown>, files: Express.Multer.File[] = []) => {
             const created = response();
             const createOptionsRequest = request('owner-1', {}, {
                 repository: 'acme/repo', objective: 'Ship options', agentId: 'agent-1', model: 'gpt-5.6',
                 launchStrategy: 'direct', ...options,
             });
             createOptionsRequest.get = () => key;
+            createOptionsRequest.files = files;
             await routes.create(createOptionsRequest, created.res);
             return created.state;
         };
@@ -542,6 +547,55 @@ test('goal routes keep metadata owner-scoped and queue ordinary input on the sam
         assert.equal(await database('task_history').where({ task_id: 'goal-task-9' }).first(), undefined);
         assert.equal(await database('llm_executions').where({ task_id: 'goal-task-9' }).first(), undefined);
         assert.equal(await database('llm_execution_details').where({ execution_id: 'goal-execution-9' }).first(), undefined);
+        const jobsBeforeDraft = queued.length;
+        const capabilityChecksBeforeDraft = capabilityRequests.length;
+        const draftOptions = { draft: true, objective: '', maxParallelTasks: 5 };
+        const draftFiles = [{ originalname: 'dashboard-reference.png', mimetype: 'image/png', size: 128 }] as Express.Multer.File[];
+        const draft = await createWith('save-draft', draftOptions, draftFiles);
+        assert.equal(draft.status, 201);
+        const draftGoal = (draft.body as { goal: { id: string; desiredState: string } }).goal;
+        const draftParams = { goalId: draftGoal.id };
+        assert.equal(draftGoal.desiredState, 'draft');
+        const savedDraft = await database('goals').where({ goal_id: draftGoal.id }).first();
+        assert.equal(savedDraft.run_claim, null);
+        assert.equal(await database('goal_inputs').where({ goal_id: draftGoal.id }).first(), undefined);
+        assert.equal(capabilityRequests.length, capabilityChecksBeforeDraft);
+        assert.equal((await createWith('save-draft', draftOptions, draftFiles)).status, 200);
+        assert.equal((await createWith('save-draft', { maxParallelTasks: 5 })).status, 409);
+        const blankStart = response();
+        await routes.startDraft(request('owner-1', draftParams), blankStart.res);
+        assert.equal(blankStart.state.status, 400);
+        const hiddenStart = response();
+        await routes.startDraft(request('owner-2', draftParams), hiddenStart.res);
+        assert.equal(hiddenStart.state.status, 404);
+        const draftCancel = response();
+        await routes.cancel(request('owner-1', draftParams), draftCancel.res);
+        assert.equal(draftCancel.state.status, 409);
+        assert.equal(queued.length, jobsBeforeDraft);
+
+        const objective = 'Complete the analytics dashboard and capture .propr/previews/dashboard.png';
+        const editDraft = response();
+        await routes.updateDraft(request('owner-1', draftParams, { objective }), editDraft.res);
+        assert.equal(editDraft.state.status, 200);
+        assert.equal((editDraft.state.body as { goal: { objective: string } }).goal.objective, objective);
+        const draftEvents = database('goal_events').where({ goal_id: draftGoal.id }).orderBy('sequence');
+        assert.deepEqual(await draftEvents.clone().pluck('state'), ['draft']);
+
+        const starts = [response(), response()];
+        await Promise.all(starts.map(({ res }) => routes.startDraft(request('owner-1', draftParams), res)));
+        assert.deepEqual(starts.map(({ state }) => state.status), [200, 200]);
+        assert.equal(queued.length, jobsBeforeDraft + 1);
+        assert.equal(queued.at(-1)?.data.input, `/goal ${objective}`);
+        assert.equal(queued.at(-1)?.data.taskId, savedDraft.current_task_id);
+        assert.deepEqual(await draftEvents.pluck('state'), ['draft', 'queued']);
+        const draftContext = await database('goal_inputs').where({ goal_id: draftGoal.id, kind: 'context' }).pluck('message');
+        assert.equal(draftContext.length, 1);
+        assert.match(draftContext[0], /Run at most 5 implementation tasks/);
+        assert.match(draftContext[0], /dashboard-reference\.png/);
+
+        const lateEdit = response();
+        await routes.updateDraft(request('owner-1', draftParams, { objective: 'Overwrite a running goal' }), lateEdit.res);
+        assert.equal(lateEdit.state.status, 409);
         assert(published.some(event => event.desiredState === 'running'));
         assert(published.some(event => event.desiredState === 'paused'));
         assert(published.some(event => event.resultState === 'cancelled'));

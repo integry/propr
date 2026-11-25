@@ -21,7 +21,7 @@ export const GOAL_WAIT_MAX_TIMEOUT_SECONDS = 30;
  * `cancelled` (the goal's result is cancelled) are confirmed.
  */
 export const GOAL_WAIT_LIFECYCLE_STATES = [
-  'queued', 'running', 'pausing', 'paused', 'resuming', 'cancelling', 'completed', 'failed', 'cancelled',
+  'draft', 'queued', 'running', 'pausing', 'paused', 'resuming', 'cancelling', 'completed', 'failed', 'cancelled',
 ] as const;
 export type GoalWaitLifecycleState = typeof GOAL_WAIT_LIFECYCLE_STATES[number];
 
@@ -128,6 +128,7 @@ export interface GoalWaitLifecycleColumns {
  */
 export function goalWaitLifecycleState(goal: GoalWaitLifecycleColumns): GoalWaitLifecycleState {
   if (goal.result_state === 'completed' || goal.result_state === 'failed' || goal.result_state === 'cancelled') return goal.result_state;
+  if (goal.desired_state === 'draft') return 'draft';
   if (goal.desired_state === 'cancelled') return 'cancelling';
   if (goal.desired_state === 'paused') {
     if (goal.resume_requested && goal.resume_requested !== '0') return 'resuming';

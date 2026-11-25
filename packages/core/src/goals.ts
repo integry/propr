@@ -20,7 +20,7 @@ export {
 };
 export type { GoalCheckpointDeclaration, GoalLaunchStrategy, RejectedGoalCheckpointDeclaration };
 
-export type GoalDesiredState = 'running' | 'paused' | 'cancelled';
+export type GoalDesiredState = 'draft' | 'running' | 'paused' | 'cancelled';
 export type GoalResultState = 'completed' | 'failed' | 'cancelled';
 
 export const GOAL_CONTINUE_INPUT = 'ProPR has acknowledged any checkpoint request from the previous turn. Continue working toward the goal.';

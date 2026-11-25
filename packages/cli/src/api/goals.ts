@@ -17,7 +17,7 @@ import { ApiError, NetworkError, RequestCancelledError, TimeoutError } from "./e
 export const GOAL_LAUNCH_STRATEGIES = ["direct", "orchestrate"] as const;
 export type GoalLaunchStrategy = typeof GOAL_LAUNCH_STRATEGIES[number];
 
-export const GOAL_LIST_STATES = ["active", "running", "paused", "completed", "failed", "cancelled", "all"] as const;
+export const GOAL_LIST_STATES = ["active", "draft", "running", "paused", "completed", "failed", "cancelled", "all"] as const;
 export type GoalListState = typeof GOAL_LIST_STATES[number];
 
 /** Matches the MCP mutation key contract so one key format works on every surface. */
@@ -74,7 +74,7 @@ export interface Goal {
   effectiveModel: string | null;
   maxParallelTasks: number | null;
   ultrafix: boolean | null;
-  desiredState: "running" | "paused" | "cancelled";
+  desiredState: "draft" | "running" | "paused" | "cancelled";
   resultState: "completed" | "failed" | "cancelled" | null;
   failureReason: string | null;
   pausePending: boolean;

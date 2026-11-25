@@ -32,8 +32,9 @@
  * Must stay identical to `goalWaitLifecycleState` in @propr/shared; a resumed
  * goal reads `running` (started_at is kept) before a worker claims it.
  */
-const lifecycleState = row => `CASE
+const lifecycleState = (row, drafts = false) => `CASE
   WHEN ${row}.result_state IN ('completed', 'failed', 'cancelled') THEN ${row}.result_state
+  ${drafts ? `WHEN ${row}.desired_state = 'draft' THEN 'draft'` : ''}
   WHEN ${row}.desired_state = 'cancelled' THEN 'cancelling'
   WHEN ${row}.desired_state = 'paused' AND COALESCE(${row}.resume_requested, 0) <> 0 THEN 'resuming'
   WHEN ${row}.desired_state = 'paused' AND ${row}.pause_confirmed_at IS NOT NULL THEN 'paused'
@@ -49,18 +50,27 @@ const now = 'CURRENT_TIMESTAMP';
 // A checkpoint is published work exactly once, even if its row is re-saved.
 const checkpointUnrecorded = "NOT EXISTS (SELECT 1 FROM goal_events WHERE kind = 'checkpoint' AND checkpoint_id = NEW.checkpoint_id)";
 
-const triggers = [
+const lifecycleTriggers = drafts => [
   `CREATE TRIGGER goal_events_lifecycle_insert AFTER INSERT ON goals
    BEGIN
      INSERT INTO goal_events (goal_id, kind, state, previous_state, run_generation, created_at)
-     VALUES (NEW.goal_id, 'lifecycle', ${lifecycleState('NEW')}, NULL, NEW.run_generation, ${now});
+     VALUES (NEW.goal_id, 'lifecycle', ${lifecycleState('NEW', drafts)}, NULL, NEW.run_generation, ${now});
    END`,
   `CREATE TRIGGER goal_events_lifecycle_update AFTER UPDATE ON goals
-   WHEN (${lifecycleState('OLD')}) IS NOT (${lifecycleState('NEW')})
+   WHEN (${lifecycleState('OLD', drafts)}) IS NOT (${lifecycleState('NEW', drafts)})
    BEGIN
      INSERT INTO goal_events (goal_id, kind, state, previous_state, run_generation, created_at)
-     VALUES (NEW.goal_id, 'lifecycle', ${lifecycleState('NEW')}, ${lifecycleState('OLD')}, NEW.run_generation, ${now});
+     VALUES (NEW.goal_id, 'lifecycle', ${lifecycleState('NEW', drafts)}, ${lifecycleState('OLD', drafts)}, NEW.run_generation, ${now});
    END`,
+];
+
+export async function installGoalLifecycleTriggers(knex, drafts = false) {
+  await knex.raw('DROP TRIGGER IF EXISTS goal_events_lifecycle_insert');
+  await knex.raw('DROP TRIGGER IF EXISTS goal_events_lifecycle_update');
+  for (const trigger of lifecycleTriggers(drafts)) await knex.raw(trigger);
+}
+
+const checkpointTriggers = [
   `CREATE TRIGGER goal_events_checkpoint_insert AFTER INSERT ON goal_checkpoints
    WHEN NEW.state = 'completed' AND ${checkpointUnrecorded}
    BEGIN
@@ -101,7 +111,8 @@ export async function up(knex) {
     WHERE goal_checkpoints.state = 'completed'
     ORDER BY goal_checkpoints.completed_at, goal_checkpoints.checkpoint_id`);
 
-  for (const trigger of triggers) await knex.raw(trigger);
+  await installGoalLifecycleTriggers(knex);
+  for (const trigger of checkpointTriggers) await knex.raw(trigger);
 }
 
 export async function down(knex) {
