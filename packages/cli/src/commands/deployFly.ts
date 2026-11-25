@@ -164,45 +164,6 @@ export function resolveFlyDeployPlan(options: DeployFlyOptions, images: Record<s
   };
 }
 
-/**
- * Agent runtimes the worker in the deployed app image can start with. The
- * worker blocks startup (and never advertises task capacity) until the Docker
- * agent image is ready, and it has no Sprites or Fly Machines runtime yet
- * (#3764, #3767): on a Machine without a Docker daemon it would wait forever.
- * Add a runtime here once the worker initializes it without Docker.
- */
-export const FLY_WORKER_AGENT_RUNTIMES: readonly FlyAgentRuntime[] = ["docker"];
-
-/** Refuse, before anything is written or sent to Fly, a runtime the worker cannot start. */
-export function assertFlyAgentRuntimeSupported(plan: Pick<FlyDeployPlan, "agentRuntime">): void {
-  if (FLY_WORKER_AGENT_RUNTIMES.includes(plan.agentRuntime)) return;
-  throw new Error(
-    `Agents on ${plan.agentRuntime} are not supported by this release: its worker only runs Docker agents and would wait forever for a Docker daemon the Machine does not have, so no task would ever run. `
-      + "Deploy with --legacy-docker (Docker daemon in the Machine; 2 GB by default, Docker images on a persistent root filesystem) until the worker supports Sprites and Fly Machines agents.",
-  );
-}
-
-/**
- * Whether the deployed app image can stop an idle Machine. It can (#3770): it
- * detects idleness, serves `/wake`, and stops the whole Machine through the
- * Machines API with the app-scoped token the deploy stores as the
- * FLY_MACHINE_STOP_TOKEN_SECRET secret. An app exit alone would not do: Redis
- * (and any sidecar) would keep the multi-container Machine started.
- */
-export const FLY_IDLE_SHUTDOWN_SUPPORTED: boolean = true;
-
-/** Refuse, before anything is written or sent to Fly, an idle shutdown the app image cannot perform. */
-export function assertFlyIdleShutdownSupported(
-  plan: Pick<FlyDeployPlan, "idleShutdownAfter">,
-  supported: boolean = FLY_IDLE_SHUTDOWN_SUPPORTED,
-): void {
-  if (!plan.idleShutdownAfter || supported) return;
-  throw new Error(
-    "--idle-shutdown is not supported by this release: the app image has no idle detector (#3770), so the Machine would never stop when idle and would keep billing as if always on. "
-      + "Deploy without --idle-shutdown; the Machine then runs always on.",
-  );
-}
-
 /** Keys moved only by explicit flags: a copied tunnel token would split traffic between two connectors. */
 const ENV_FILE_TUNNEL_KEYS = ["PROPR_UI_TUNNEL_TOKEN", "TUNNEL_TOKEN"];
 
@@ -250,8 +211,8 @@ export function collectFlySecrets(
     if (!plan.idleShutdownAfter) throw new Error("--machine-stop-token is only used with --idle-shutdown");
     secrets[FLY_MACHINE_STOP_TOKEN_SECRET] = options.machineStopToken.trim();
   }
-  if (options.agentFlyToken) secrets.FLY_API_TOKEN = options.agentFlyToken;
-  else if (plan.agentRuntime === "fly-machines" && !secrets.FLY_API_TOKEN) {
+  if (options.agentFlyToken) secrets.PROPR_FLY_API_TOKEN = options.agentFlyToken;
+  else if (plan.agentRuntime === "fly-machines" && !secrets.PROPR_FLY_API_TOKEN && !secrets.FLY_API_TOKEN) {
     notes.push("No agent Fly token: create a deploy token for the agent app and pass --agent-fly-token.");
   }
   return { secrets, notes };
@@ -298,6 +259,7 @@ function printSummary(plan: FlyDeployPlan, browserAuth: FlyBrowserAuth): void {
   }
   console.log("");
   console.log("Next steps:");
+  console.log("  If no agent is configured yet, add and enable one in Settings → Agents before labeling an issue.");
   console.log(`  propr remote ${url}     # point this CLI at the Fly control plane`);
   console.log(`  fly logs --app ${plan.app}            # watch the first boot`);
 }
@@ -319,10 +281,8 @@ export interface PreparedFlyDeploy extends CollectedSecrets {
 }
 
 /**
- * Everything the deploy decides before contacting Fly, dry run or not. Throws
- * on a deployment that could not work: an agent runtime the worker cannot
- * start, an idle shutdown the app image cannot perform, Connect without a way
- * to get its relay token, or a control plane nobody could sign in to.
+ * Everything the deploy decides before contacting Fly, dry run or not. Validates the
+ * runtime, administrator, relay and sign-in configuration before provisioning.
  */
 export function prepareFlyDeploy(
   options: DeployFlyOptions,
@@ -332,8 +292,9 @@ export function prepareFlyDeploy(
   readFile?: (path: string) => string,
 ): PreparedFlyDeploy {
   const plan = resolveFlyDeployPlan(options, images);
-  assertFlyAgentRuntimeSupported(plan);
-  assertFlyIdleShutdownSupported(plan);
+  if (!envFileValues.PROPR_ADMIN_USERS?.split(",").some((login) => login.trim())) {
+    throw new Error("Set PROPR_ADMIN_USERS to at least one administrator's GitHub login in the environment or stack .env.");
+  }
   const { secrets, notes } = collectFlySecrets(plan, options, envFileValues, readFile);
   const relayPlan = planFlyRelay(options, secrets, { connect: Boolean(plan.tunnel), githubToken });
   const browserAuth = planFlyBrowserAuth(plan, secrets);
@@ -372,7 +333,10 @@ export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
   if (envFile.path) console.log(`Reading secrets from ${envFile.path}.`);
   const githubToken = configManager.getGithubToken();
   // Fails before any Fly call when the Machine could not work (see prepareFlyDeploy).
-  const prepared = prepareFlyDeploy(options, manifest.images, envFile.values, githubToken);
+  const prepared = prepareFlyDeploy(options, manifest.images, {
+    PROPR_ADMIN_USERS: process.env.PROPR_ADMIN_USERS ?? "",
+    ...envFile.values,
+  }, githubToken);
   const { plan, notes, relayPlan, browserAuth } = prepared;
   const outDir = resolve(options.out ?? "propr-fly");
   const generatedSecrets = { SESSION_SECRET: randomBytes(32).toString("hex") };
@@ -435,7 +399,7 @@ export function createDeployCommand(): Command {
     .option("--volume <name>", `Volume for SQLite and Redis (default: ${FLY_DEFAULTS.volumeName})`)
     .option("--volume-size <gb>", `Volume size in GB (default: ${FLY_DEFAULTS.volumeSizeGb}; the Fly Free plan allows at most ${FLY_FREE_PLAN_MAX_VOLUME_GB})`)
     .option("--image <ref>", "App image (default: the launcher manifest's propr/app tag)")
-    .option("--agent-runtime <runtime>", "Agent runtime: sprites (default), fly-machines, or docker with --legacy-docker; only docker works in this release")
+    .option("--agent-runtime <runtime>", "Agent runtime: sprites (default), fly-machines, or docker with --legacy-docker")
     .option("--sprites-token <token>", "Sprites token for agent runs (or SPRITES_TOKEN)")
     .option("--agent-fly-token <token>", "Fly token the fly-machines agent runtime uses")
     .option("--root <dir>", "Stack root whose .env supplies secrets")
@@ -462,24 +426,23 @@ The control plane and Redis run in one Machine; SQLite and Redis persist on a
 volume. Default size: shared-cpu-1x, 1 GB (about $6.70/month always on in
 iad, plus $0.15/GB-month of volume). --legacy-docker adds a persistent root
 filesystem for Docker images (20 GB: $3.00/month while stopped) and keeps
-the 1 GB volume, so it fits the Fly Free plan's 5 GB volume cap. Agents run on Sprites by default, but
-this release's worker only runs Docker agents: Sprites and Fly Machines are
-refused before anything is created, so pass --legacy-docker for now. The
+the 1 GB volume, so it fits the Fly Free plan's 5 GB volume cap. Agents run on Sprites by default. The
 Machine runs always on unless --idle-shutdown is given: then it stops itself
 through the Machines API once idle, with an app-scoped token stored as the
 ${FLY_MACHINE_STOP_TOKEN_SECRET} secret (flyctl creates it; with the API
 backend pass --machine-stop-token from \`fly tokens create deploy --app <app>\`).
 
+Set PROPR_ADMIN_USERS to the GitHub logins of your instance administrators.
 Browsers sign in through ProPR Connect (--tunnel-token and --tunnel-url) or a
 GitHub OAuth client in the stack .env (GH_OAUTH_CLIENT_ID and
 GH_OAUTH_CLIENT_SECRET, callback https://<app>.fly.dev/api/auth/github/callback).
 Without either the command stops before creating anything on Fly.
 
 Examples:
-  $ propr deploy fly --app my-propr --legacy-docker \\
+  $ propr deploy fly --app my-propr \\
       --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev
-  $ propr deploy fly --app my-propr --legacy-docker   # GitHub OAuth client in the .env
-  $ propr deploy fly --app my-propr --legacy-docker --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev --dry-run
+  $ propr deploy fly --app my-propr   # GitHub OAuth client in the .env
+  $ propr deploy fly --app my-propr --tunnel-token <token> --tunnel-url https://t-<id>.propr.dev --dry-run
 `)
     .action(async (options: DeployFlyOptions) => {
       try {

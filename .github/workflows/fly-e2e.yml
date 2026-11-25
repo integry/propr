@@ -38,7 +38,6 @@ jobs:
       ORG: ${{ vars.FLY_E2E_ORG }}
       REPO: ${{ vars.FLY_E2E_REPO }}
       REGION: iad
-      RUNTIME: sprites
       IDLE_AFTER: 2m
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -53,6 +52,11 @@ jobs:
           : "${ORG:?Set FLY_E2E_ORG}" "${REPO:?Set FLY_E2E_REPO}"
           [[ "$REPO" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ && "${REPO,,}" != "${GITHUB_REPOSITORY,,}" ]]
           npm ci
+          npm run test:prepare
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -s "$GITHUB_WORKSPACE/packages/cli/dist/index.js" "$RUNNER_TEMP/bin/propr"
+          chmod +x packages/cli/dist/index.js
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           image="registry.fly.io/$APP:control-plane-$GITHUB_SHA"
           docker build -f docker/Dockerfile.app.prod -t "$image" .
           echo "IMAGE=$image" >> "$GITHUB_ENV"
@@ -65,7 +69,7 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: flyctl apps create "$APP" --org "$ORG"
 
-      - name: Deploy the tutorial configuration with idle shutdown enabled
+      - name: Run propr deploy fly with Sprites and idle shutdown
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
           APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
@@ -73,14 +77,15 @@ jobs:
         run: |
           umask 077
           printf '%s\n' "$APP_ENV" > "$ENV_FILE"
-          for key in PROPR_ADMIN_USERS GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 CLAUDE_SETTINGS_B64; do
+          for key in PROPR_ADMIN_USERS GH_OAUTH_CLIENT_ID GH_OAUTH_CLIENT_SECRET GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 CLAUDE_SETTINGS_B64; do
             grep -q "^${key}=." "$ENV_FILE" || { echo "Missing $key"; exit 1; }
           done
           openssl rand -hex 32 > "$OUT/hook-secret"
           {
-            echo "SPRITES_TOKEN=$SPRITES_TOKEN"
+            echo "GITHUB_REPOS_TO_MONITOR=$REPO"
+            echo "WORKER_CONCURRENCY=1"
+            echo "PROPR_SPRITES_MAX=1"
             echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
-            echo "SESSION_SECRET=$(openssl rand -hex 32)"
           } >> "$ENV_FILE"
           # Fly's Apps caveat uses the internal numeric ID. Zero would grant access to all apps.
           app_id=$(curl --fail --silent --show-error -H "Authorization: $FLY_API_TOKEN" \
@@ -91,20 +96,11 @@ jobs:
             {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
           ]' | flyctl tokens attenuate)
           echo "::add-mask::$stop_token"
-          printf 'PROPR_FLY_MACHINE_STOP_TOKEN=%s\n' "$stop_token" >> "$ENV_FILE"
-
-          # Exercise the operator's exact config recipe from the checked-out tutorial.
-          awk '/^```bash title="Render Machine configuration"$/{copy=1; next}
-               copy && /^```$/{exit} copy' docs/docs/tutorials/setup-fly.md > "$OUT/render.sh"
-          test -s "$OUT/render.sh"
-          bash -eu "$OUT/render.sh"
           flyctl auth docker
           docker push "$IMAGE"
-          flyctl secrets import --stage --app "$APP" < "$ENV_FILE"
-          flyctl ips allocate-v4 --shared --app "$APP"
-          flyctl ips allocate-v6 --app "$APP"
-          flyctl volumes create propr_data --size 1 --region "$REGION" --app "$APP" --yes
-          flyctl deploy --app "$APP" --config "$OUT/fly.toml" --image "$IMAGE" --ha=false
+          propr deploy fly --app "$APP" --org "$ORG" --region "$REGION" --image "$IMAGE" \
+            --backend flyctl --agent-runtime sprites --idle-shutdown "$IDLE_AFTER" \
+            --machine-stop-token "$stop_token" --env-file "$ENV_FILE" --no-relay --out "$OUT/propr-fly"
           status=$(curl --fail --retry 8 --retry-all-errors -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/health")
           [[ $status == 200 ]]
 

@@ -6,12 +6,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  assertFlyIdleShutdownSupported,
   collectFlySecrets,
   createDeployCommand,
   describeFlyRootfs,
-  FLY_IDLE_SHUTDOWN_SUPPORTED,
-  FLY_WORKER_AGENT_RUNTIMES,
   parseIdleShutdownAfter,
   prepareFlyDeploy,
   resolveFlyDeployPlan,
@@ -61,19 +58,30 @@ test("legacy Docker forces the docker runtime, a persistent rootfs for images, a
   assert.throws(() => resolveFlyDeployPlan({ app: "a1", legacyDocker: true, agentRuntime: "sprites" }, IMAGES), /Docker runtime/);
 });
 
-test("agent runtimes the worker cannot start are refused before anything is written or sent to Fly", () => {
-  // The worker waits for the Docker agent image before claiming capacity; without a Docker daemon it never would.
-  assert.deepEqual(FLY_WORKER_AGENT_RUNTIMES, ["docker"]);
-  const oauth = { GH_OAUTH_CLIENT_ID: "Iv1.client", GH_OAUTH_CLIENT_SECRET: "oauth-secret", PROPR_GH_RELAY_TOKEN: "rt" };
-  for (const flags of [{}, { agentRuntime: "sprites" }, { agentRuntime: "fly-machines" }, { dryRun: true }]) {
-    assert.throws(
-      () => prepareFlyDeploy({ app: "my-propr", spritesToken: "sp", agentFlyToken: "fly", ...flags }, IMAGES, oauth, "gh"),
-      (error: Error) => /Agents on (sprites|fly-machines) are not supported by this release/.test(error.message) && /--legacy-docker/.test(error.message),
-      JSON.stringify(flags),
-    );
+test("prepares both remote runtimes and defaults to Sprites with idle shutdown off", () => {
+  const env = { PROPR_ADMIN_USERS: "owner", PROPR_DEMO_MODE: "true" };
+  for (const agentRuntime of [undefined, "sprites", "fly-machines"]) {
+    const { plan } = prepareFlyDeploy({ app: "my-propr", agentRuntime }, IMAGES, env, undefined);
+    assert.equal(plan.agentRuntime, agentRuntime ?? "sprites");
+    assert.equal(plan.idleShutdownAfter, undefined);
+    assert.equal(buildAppEnv(plan).PROPR_INSTANCE_ID, plan.app);
+    assert.equal(buildAppEnv(plan).PROPR_MANAGED_CREDENTIALS_DIR, "/usr/src/app/data/agent-credentials");
   }
-  const prepared = prepareFlyDeploy({ app: "my-propr", legacyDocker: true }, IMAGES, oauth, "gh");
-  assert.equal(prepared.plan.agentRuntime, "docker");
+});
+
+test("Fly Machines accepts the agent app token from the environment file or flag", () => {
+  const options = { app: "my-propr", agentRuntime: "fly-machines" };
+  const plan = resolveFlyDeployPlan(options, IMAGES);
+  const env = { PROPR_FLY_API_TOKEN: "from-file" };
+  assert.deepEqual(collectFlySecrets(plan, options, env), { secrets: env, notes: [] });
+  const { secrets } = collectFlySecrets(plan, { ...options, agentFlyToken: "from-flag" }, env);
+  assert.equal(secrets.PROPR_FLY_API_TOKEN, "from-flag");
+});
+
+test("requires an administrator before provisioning", () => {
+  for (const admin of ["", " , "]) {
+    assert.throws(() => prepareFlyDeploy({ app: "my-propr" }, IMAGES, { PROPR_ADMIN_USERS: admin }, undefined), /PROPR_ADMIN_USERS/);
+  }
 });
 
 test("invalid inputs are rejected before any Fly call", () => {
@@ -85,8 +93,7 @@ test("invalid inputs are rejected before any Fly call", () => {
 
 test("idle shutdown is accepted now that the app image stops the whole Machine when idle", () => {
   // The app image has the idle detector and /wake (#3770) and stops the Machine through the Machines API.
-  assert.equal(FLY_IDLE_SHUTDOWN_SUPPORTED, true);
-  const oauth = { GH_OAUTH_CLIENT_ID: "Iv1.client", GH_OAUTH_CLIENT_SECRET: "oauth-secret", PROPR_GH_RELAY_TOKEN: "rt" };
+  const oauth = { PROPR_ADMIN_USERS: "owner", GH_OAUTH_CLIENT_ID: "Iv1.client", GH_OAUTH_CLIENT_SECRET: "oauth-secret", PROPR_GH_RELAY_TOKEN: "rt" };
   const flagSets: Array<[Partial<DeployFlyOptions>, string]> = [[{ idleShutdown: true }, "15m"], [{ idleShutdown: "15m" }, "15m"], [{ idleShutdown: "2h", dryRun: true }, "2h"]];
   for (const [flags, after] of flagSets) {
     const { plan } = prepareFlyDeploy({ app: "my-propr", legacyDocker: true, ...flags }, IMAGES, oauth, "gh");
@@ -97,7 +104,7 @@ test("idle shutdown is accepted now that the app image stops the whole Machine w
   // The bare flag as commander parses it, with a token for the Machines API backend.
   const fly = createDeployCommand().commands.find((c) => c.name() === "fly");
   assert.ok(fly);
-  fly.parseOptions(["--app", "my-propr", "--legacy-docker", "--idle-shutdown", "--machine-stop-token", "FlyV1 fm2_given", "--dry-run"]);
+  fly.parseOptions(["--app", "my-propr", "--agent-runtime", "sprites", "--idle-shutdown", "--machine-stop-token", "FlyV1 fm2_given", "--dry-run"]);
   const parsed = fly.opts() as DeployFlyOptions;
   assert.equal(parsed.idleShutdown, true);
   const prepared = prepareFlyDeploy(parsed, IMAGES, oauth, "gh");
@@ -124,10 +131,6 @@ test("idle shutdown is accepted now that the app image stops the whole Machine w
     assert.doesNotMatch(toml, /idle|decides when to stop/i);
     assert.doesNotMatch(renderFlyMachineConfigJson(plan), /PROPR_IDLE_SHUTDOWN/);
   }
-  // The gate still refuses an idle shutdown for an image that cannot perform it.
-  assert.throws(() => assertFlyIdleShutdownSupported({ idleShutdownAfter: "15m" }, false), /--idle-shutdown is not supported by this release/);
-  assert.doesNotThrow(() => assertFlyIdleShutdownSupported({ idleShutdownAfter: "15m" }));
-  assert.doesNotThrow(() => assertFlyIdleShutdownSupported({ idleShutdownAfter: undefined }));
 });
 
 test("idle shutdown is off unless given; bare flag means 15m", () => {

@@ -86,7 +86,7 @@ export interface FlyDeployPlan {
   /**
    * Opt-in idle shutdown (#3770); undefined keeps the Machine always on. When
    * idle, the app stops the whole Machine with the FLY_MACHINE_STOP_TOKEN_SECRET
-   * token (gated by FLY_IDLE_SHUTDOWN_SUPPORTED in deployFly.ts).
+   * token.
    */
   idleShutdownAfter?: string;
   /** Hosted UI tunnel through ProPR Connect; undefined serves on <app>.fly.dev only. */
@@ -156,6 +156,8 @@ export function buildAppEnv(plan: FlyDeployPlan): Record<string, string> {
     SESSION_REDIS_PORT: String(FLY_REDIS_PORT),
     DB_FILENAME: FLY_DB_FILENAME,
     DATA_DIR: FLY_DATA_PATH,
+    PROPR_MANAGED_CREDENTIALS_DIR: `${FLY_DATA_PATH}/agent-credentials`,
+    PROPR_INSTANCE_ID: plan.tunnel?.instanceId ?? plan.app,
     CONFIG_REPO_PATH: "/tmp/config_repo",
     API_PUBLIC_URL: publicUrl,
     FRONTEND_URL: publicUrl,
@@ -169,7 +171,6 @@ export function buildAppEnv(plan: FlyDeployPlan): Record<string, string> {
     // instance through https://t-<id>.propr.dev. cloudflared reaches the API
     // over loopback, so loopback joins the trusted proxy peers.
     env.PROPR_UI_TUNNEL_ENABLED = "true";
-    env.PROPR_INSTANCE_ID = plan.tunnel.instanceId;
     env.PROPR_UI_PUBLIC_API_URL = plan.tunnel.publicUrl;
     env.FRONTEND_URL = "https://app.propr.dev";
     env.PROPR_WEB_AUTH_MODE = "connect";
