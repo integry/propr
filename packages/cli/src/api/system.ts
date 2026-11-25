@@ -1,3 +1,4 @@
+import type { SpritePoolStatus } from '@propr/shared';
 /**
  * System Status API
  *
@@ -11,6 +12,7 @@ import { ApiClient, createApiClient } from "./index.js";
  * System status response from the backend.
  */
 export interface SystemStatus {
+  spritePool?: SpritePoolStatus;
   /**
    * API health status.
    */

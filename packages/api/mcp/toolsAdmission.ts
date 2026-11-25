@@ -28,7 +28,7 @@ function grantedRepositories(deps: ToolDeps, principal: McpPrincipal) {
 export function addAdmissionTools(tools: McpTool[], deps: ToolDeps): void {
   tools.push({
     name: AGENT_RUN_ADMISSION_TOOL,
-    description: 'Read what agent-run admission enforces right now: whether it is enabled, the global limit and its source, and globally and per direct agent the ceiling and the running, reserved, recovering, waiting (global limit, agent ceiling) and deferred executions, nested executions apart. Also queue worker concurrency and repository workflow slots, each labelled, and what the default agent runtime can enforce (restricted networking, ProPR MCP networking): runs needing a capability it lacks are refused. Not subscription usage (get_provider_usage). Task IDs and repositories only within this grant.',
+    description: 'Read what agent-run admission enforces right now: whether it is enabled, the global limit and its source, and globally and per direct agent the ceiling and the running, reserved, recovering, waiting (global limit, agent ceiling) and deferred executions, nested executions apart. Also Sprite pool capacity and orphan cleanup counts, queue worker concurrency and repository workflow slots, each labelled, and what the default agent runtime can enforce (restricted networking, ProPR MCP networking): runs needing a capability it lacks are refused. Not subscription usage (get_provider_usage). Task IDs and repositories only within this grant.',
     scope: 'read',
     readOnly: true,
     schema: z.object({}).strict(),

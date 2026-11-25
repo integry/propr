@@ -9,14 +9,16 @@ import { formatComputeCost, formatMemory, formatWallTime, isFiniteNumber } from 
  */
 export const ComputeUsageChip: React.FC<{ computeUsage?: ComputeUsage }> = ({ computeUsage }) => {
   if (!computeUsage) return null;
-  const { runtime, wallTimeMs, cpuSeconds, peakMemoryBytes, avgMemoryBytes, costUsd, costSource } = computeUsage;
+  const { runtime, wallTimeMs, queueMs, cpuSeconds, peakMemoryBytes, avgMemoryBytes, costUsd, costSource } = computeUsage;
   const parts = [formatWallTime(wallTimeMs)];
+  if (isFiniteNumber(queueMs)) parts.push(`${formatWallTime(queueMs)} queued`);
   if (isFiniteNumber(cpuSeconds)) parts.push(`${cpuSeconds.toFixed(1)} CPU-s`);
   if (isFiniteNumber(peakMemoryBytes)) parts.push(`${formatMemory(peakMemoryBytes)} peak`);
   if (isFiniteNumber(costUsd)) parts.push(formatComputeCost(costUsd));
   const details = [
     `Runtime: ${runtime}`,
     `Wall time: ${formatWallTime(wallTimeMs)}`,
+    ...(isFiniteNumber(queueMs) ? [`Queue time: ${formatWallTime(queueMs)}`] : []),
     isFiniteNumber(cpuSeconds) ? `CPU: ${cpuSeconds.toFixed(1)} s` : 'CPU: not measured',
     isFiniteNumber(peakMemoryBytes) ? `Peak memory: ${formatMemory(peakMemoryBytes)}` : 'Memory: not measured',
     ...(isFiniteNumber(avgMemoryBytes) ? [`Average memory: ${formatMemory(avgMemoryBytes)}`] : []),

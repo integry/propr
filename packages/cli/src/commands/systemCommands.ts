@@ -91,6 +91,11 @@ export function displaySystemStatus(status: SystemStatus): void {
     `${"Worker".padEnd(maxLabelWidth)}  ${formatStatusIndicator(status.worker)}`
   );
 
+  if (status.spritePool) {
+    const { cap, inUse, idle, provisioning, orphansDeleted, awaitingCleanup } = status.spritePool;
+    console.log(`${"Sprite pool".padEnd(maxLabelWidth)}  cap ${cap}, ${inUse} in use, ${idle} idle, ${provisioning} provisioning, ${awaitingCleanup} awaiting cleanup, ${orphansDeleted} orphans deleted`);
+  }
+
   if (status.workerCount !== undefined) {
     console.log(
       `${"Workers Active".padEnd(maxLabelWidth)}  ${status.workerCount}`

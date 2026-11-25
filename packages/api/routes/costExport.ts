@@ -43,6 +43,7 @@ export interface CostFigures {
   compute_runs: number;
   /** Sandbox wall time of those executions. */
   compute_wall_time_ms: number;
+  compute_queue_ms: number | null;
   /** CPU-seconds; null when no execution in the row measured CPU. */
   compute_cpu_seconds: number | null;
   /** Compute cost (runtime-reported or rate table); null when no execution in the row was priced. */
@@ -126,17 +127,18 @@ function loggedRuns(db: Knex, byTask: boolean, window: AnalyticsWindow | null): 
   return db.raw(`(select execution_id, agent_alias, execution_type from (?) where rank = 1) as run`, [ranked]);
 }
 
-interface ExecutionSchema { hasLogs: boolean; logsHaveTask: boolean; hasReasoning: boolean; hasCache: boolean; hasCompute: boolean }
+interface ExecutionSchema { hasLogs: boolean; logsHaveTask: boolean; hasReasoning: boolean; hasCache: boolean; hasCompute: boolean; hasQueue: boolean }
 
 async function probeExecutionSchema(db: Knex): Promise<ExecutionSchema> {
-  const [hasLogs, logsHaveTask, hasReasoning, hasCache, hasCompute] = await Promise.all([
+  const [hasLogs, logsHaveTask, hasReasoning, hasCache, hasCompute, hasQueue] = await Promise.all([
     hasTable(db, 'llm_logs'),
     hasColumn(db, 'llm_logs', 'task_id'),
     hasColumn(db, 'llm_executions', 'reasoning_level'),
     hasColumn(db, 'llm_executions', 'cache_read_input_tokens'),
     hasColumn(db, 'llm_executions', 'compute_wall_time_ms'),
+    hasColumn(db, 'llm_executions', 'compute_queue_ms'),
   ]);
-  return { hasLogs, logsHaveTask, hasReasoning, hasCache, hasCompute };
+  return { hasLogs, logsHaveTask, hasReasoning, hasCache, hasCompute, hasQueue };
 }
 
 /**
@@ -166,6 +168,7 @@ function executionRows(
     .select(db.raw(hasCache
       ? 'coalesce(e.cache_creation_input_tokens, 0) as cache_creation_input_tokens, coalesce(e.cache_read_input_tokens, 0) as cache_read_input_tokens'
       : '0 as cache_creation_input_tokens, 0 as cache_read_input_tokens'))
+    .select(db.raw(schema.hasQueue ? 'e.compute_queue_ms' : 'NULL as compute_queue_ms'))
     .select(db.raw(hasCompute
       ? 'e.compute_wall_time_ms, e.compute_cpu_seconds, e.compute_cost_usd'
       : 'NULL as compute_wall_time_ms, NULL as compute_cpu_seconds, NULL as compute_cost_usd'));
@@ -191,6 +194,7 @@ interface AggregateRow {
   cost_usd?: number | string | null;
   costed?: number | string;
   compute_runs?: number | string;
+  compute_queue_ms?: number | string | null;
   compute_wall_time_ms?: number | string | null;
   compute_cpu_seconds?: number | string | null;
   cpu_measured?: number | string;
@@ -211,6 +215,7 @@ function aggregate(db: Knex, rows: Knex.QueryBuilder): Knex.QueryBuilder {
     .count('x.cost_usd as costed')
     .count('x.compute_wall_time_ms as compute_runs')
     .sum('x.compute_wall_time_ms as compute_wall_time_ms')
+    .sum('x.compute_queue_ms as compute_queue_ms')
     .sum('x.compute_cpu_seconds as compute_cpu_seconds')
     .count('x.compute_cpu_seconds as cpu_measured')
     .sum('x.compute_cost_usd as compute_cost_usd')
@@ -234,6 +239,7 @@ function figures(row: AggregateRow | undefined): CostFigures {
     cost_usd: measuredSum(row?.costed, row?.cost_usd, 6),
     compute_runs: count(row?.compute_runs),
     compute_wall_time_ms: count(row?.compute_wall_time_ms),
+    compute_queue_ms: row?.compute_queue_ms == null ? null : Number(row.compute_queue_ms),
     compute_cpu_seconds: measuredSum(row?.cpu_measured, row?.compute_cpu_seconds, 3),
     compute_cost_usd: measuredSum(row?.compute_costed, row?.compute_cost_usd, 6),
   };
@@ -283,7 +289,7 @@ export async function loadCostExport(
 
 const FIGURE_COLUMNS: Array<keyof CostFigures> = [
   'executions', 'tasks', 'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'cost_usd',
-  'compute_runs', 'compute_wall_time_ms', 'compute_cpu_seconds', 'compute_cost_usd',
+  'compute_runs', 'compute_wall_time_ms', 'compute_cpu_seconds', 'compute_cost_usd', 'compute_queue_ms',
 ];
 
 /** Header row, then one row per group: the grouped dimensions in column order, then the figures. */

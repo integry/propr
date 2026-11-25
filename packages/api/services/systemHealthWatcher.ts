@@ -28,6 +28,7 @@ const HEALTH_FIELDS = [
   'daemon',
   'worker',
   'workerCount',
+  'spritePool',
   'githubAuth',
   'githubAuthMode',
   'githubEventIntake',

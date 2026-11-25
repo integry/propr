@@ -14,6 +14,9 @@ import { applySpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWO
 import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
 import { prepareSpriteRun, unsupportedMount, validateSpriteRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
+import logger from '../../utils/logger.js';
+import { LiveOutputLog } from '../impl/utils/liveOutputLog.js';
+import { SpriteInventory, type SpritePoolRedis } from './sprites/spritesInventory.js';
 
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
@@ -24,10 +27,13 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     readonly unsupportedMount = unsupportedMount;
     private readonly pools = new Map<string, Promise<SpritePool>>();
     private closing?: Promise<void>;
+    private startupRetry?: NodeJS.Timeout;
 
-    constructor(private readonly client?: SpriteClient | ((token: string) => Promise<SpriteClient>), private readonly environment = process.env) {}
+    constructor(private readonly client?: SpriteClient | ((token: string) => Promise<SpriteClient>), private readonly environment = process.env,
+        private readonly poolRedis?: SpritePoolRedis) {}
 
     close(): Promise<void> {
+        clearTimeout(this.startupRetry);
         return this.closing ??= Promise.allSettled([...this.pools.values()].map(async pool => (await pool).close())).then(() => {});
     }
 
@@ -37,17 +43,31 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         return spritesCliVersionRefusal({ ...config, type });
     }
 
+    async initialize() {
+        const token = this.environment.PROPR_SPRITES_TOKEN || this.environment.SPRITES_TOKEN;
+        if (!token || this.closing) return;
+        try { await this.getPool(token); }
+        catch {
+            logger.warn('Sprite pool initialization failed. Will retry in five minutes or at the next launch.');
+            if (!this.closing) this.startupRetry = setTimeout(() => void this.initialize(), 5 * 60_000).unref();
+        }
+    }
+
     private getPool(token: string) {
         let pool = this.pools.get(token);
         if (!pool) {
             const client = this.client;
             const load = async () => {
-                if (typeof client === 'function') return client(token);
-                if (client) return client;
-                const { SpritesClient } = await import('@fly/sprites');
-                return new SpritesClient(token);
+                process.env.SPRITES_CLIENT_SIGNALS ??= '0';
+                const sdk = typeof client === 'function' ? await client(token) : client ?? new (await import('@fly/sprites')).SpritesClient(token);
+                // Embedded clients can supply an already managed Sprite (including the live smoke test).
+                const inventory = sdk.listAllSprites && sdk.getSprite
+                    ? await SpriteInventory.open({ listAllSprites: sdk.listAllSprites.bind(sdk), getSprite: sdk.getSprite.bind(sdk),
+                        deleteSprite: sdk.deleteSprite.bind(sdk) }, this.environment, this.poolRedis)
+                    : undefined;
+                return new SpritePool(sdk, inventory);
             };
-            pool = load().then(sdk => new SpritePool(sdk));
+            pool = load();
             this.pools.set(token, pool);
             void pool.catch(() => { if (this.pools.get(token) === pool) this.pools.delete(token); });
         }
@@ -74,7 +94,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         };
         const cancellation = new AbortController();
         const ownership = getExecutionOwnershipContext()?.signal;
-        const signal = AbortSignal.any([cancellation.signal,
+        let signal = AbortSignal.any([cancellation.signal,
             ...(options.signal ? [options.signal] : []), ...(ownership ? [ownership] : [])]);
         const output = new LazyOutputStreams();
         let slot: Slot | undefined;
@@ -89,8 +109,21 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const launch = { spec, options, token, inputPath };
             const validated = validateSpriteRun(launch, envDefaults);
             const ready = await startupStep(signal, () => pool);
-            const { sprite, prepared } = await startupStep(signal, async () => {
-                const acquired = await ready.acquire(signal);
+            const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs } = await startupStep(signal, async () => {
+                const acquired = await ready.acquire(signal, () => {
+                    diagnostics.push('Waiting for a Sprite');
+                    output.write('stderr', 'Waiting for a Sprite\n');
+                    logger.info({ taskId: options.taskId, run: spec.name }, 'Waiting for a Sprite');
+                    if (options.taskId && options.streamToRedis) {
+                        const log = new LiveOutputLog(options.taskId);
+                        log.append('Waiting for a Sprite\n', 'stderr');
+                        void log.close().catch(() => {});
+                    }
+                });
+                const checkedOutAt = Date.now();
+                if (acquired.lease) signal = AbortSignal.any([signal, acquired.lease]);
+                const waitIndex = diagnostics.indexOf('Waiting for a Sprite');
+                if (waitIndex >= 0) diagnostics.splice(waitIndex, 1);
                 let prepared: ReturnType<typeof prepareSpriteRun> | undefined;
                 try {
                     if (networkPolicy) {
@@ -104,7 +137,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => payload.upload(acquired.sprite));
                     signal.throwIfAborted();
                     slot = acquired;
-                    return { sprite: acquired.sprite, prepared: payload };
+                    return { sprite: acquired.sprite, prepared: payload, checkedOutAt, queueMs: acquired.queueMs, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs };
                 } catch (error) {
                     // An interrupted policy change or upload can still write to the Sprite.
                     if (prepared || (networkPolicy && !acquired.restricted)) await ready.discard(acquired.sprite);
@@ -115,9 +148,12 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             try {
                 signal.throwIfAborted();
                 const executionSignal = AbortSignal.any([signal, AbortSignal.timeout(options.timeout ?? 300_000)]);
-                return await execute(sprite, launch, {
+                const executed = await execute(sprite, launch, {
                     output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
                 });
+                return { ...executed, computeUsage: { runtime: 'sprites', wallTimeMs: Date.now() - checkedOutAt + provisioningMs + restoreMs,
+                    queueMs, provisioningMs, restoreMs, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
+                    costUsd: null, costSource: null } };
             } finally {
                 if (!commit && slot) {
                     ready.releaseInBackground(slot);
@@ -141,12 +177,15 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                 ...(diagnostics.length ? { diagnostics: [...diagnostics] } : {}) }),
             isAlive: async () => !settled,
             readFile: async file => {
-                if (!slot || released || !settled) return null;
+                if (!slot || slot.lease?.aborted || released || !settled) return null;
                 const name = ['status', 'result.bundle'].find(n => file === WORKSPACE_TRANSPORT_RESULT_DIR + '/' + n);
                 if (!name) return null;
                 const read = slot.sprite.filesystem().readFile('/opt/propr/result/' + name, null);
                 reads.add(read);
-                try { return await read; }
+                try {
+                    const content = await read;
+                    return slot.lease?.aborted ? null : content;
+                }
                 catch (error) { if ((error as { code?: string }).code === 'ENOENT') return null; throw error; }
                 finally { reads.delete(read); }
             }, release,

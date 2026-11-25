@@ -108,6 +108,7 @@ export function mapSystemStatus(data: StatusResponse): SystemStatus {
     return {
       daemon: data.daemon === 'running' ? 'Running' : 'Stopped',
       workers,
+      ...(data.spritePool && { spritePool: data.spritePool }),
       redis: data.redis === 'connected' ? 'Connected' : 'Disconnected',
       githubAuth: mapAuthStatus(data.githubAuth),
       claudeAuth: mapClaudeAuthStatus(data.claudeAuth),

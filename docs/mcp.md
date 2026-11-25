@@ -1016,7 +1016,7 @@ For spend rather than progress, `get_cost_breakdown` returns the same rows as
 `repository`, `agent`, `model`, `reasoning_level`, `execution_type` and
 `outcome`, each with `executions`, `tasks`, input/output/cache tokens and
 `cost_usd`, the compute usage agent runtimes reported (`compute_runs`,
-`compute_wall_time_ms`, `compute_cpu_seconds` and `compute_cost_usd`), plus
+`compute_wall_time_ms`, `compute_queue_ms`, `compute_cpu_seconds` and `compute_cost_usd`), plus
 `totals`:
 
 ```json

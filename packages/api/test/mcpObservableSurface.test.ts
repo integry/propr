@@ -337,7 +337,7 @@ test('observable MCP surface keeps receipts, errors, overview, docs and previews
     'setup_not_ready', 'replaced', 'cleared', 'retried', 'settled', 'progressed', 'already_skipped', 'already_retried',
     // Grouping dimensions and figures of get_cost_breakdown rows.
     'agent', 'day', 'execution_type', 'reasoning_level', 'executions', 'tasks', 'cost_usd', 'totals',
-    'compute_runs', 'compute_wall_time_ms', 'compute_cpu_seconds', 'compute_cost_usd',
+    'compute_runs', 'compute_wall_time_ms', 'compute_queue_ms', 'compute_cpu_seconds', 'compute_cost_usd',
     // Connect registration state on health and status surfaces.
     'connect_mcp', 'registered', 'pending', 'disabled',
     // Stored-configuration check fields and states returned by get_agent_run_admission.

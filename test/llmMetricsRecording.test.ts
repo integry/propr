@@ -198,7 +198,7 @@ test('an Antigravity goal whose cache count covers only its first segment prices
 
 test('compute usage is stored on the execution row beside the token cost, and leaves no columns without one', async () => {
     const computeUsage = {
-        runtime: 'docker', wallTimeMs: 61_500.4, cpuSeconds: 42.5, peakMemoryBytes: 1_073_741_824, avgMemoryBytes: 536_870_912,
+        runtime: 'sprites', queueMs: 3000, provisioningMs: 1250, restoreMs: 65, wallTimeMs: 61_500.4, cpuSeconds: 42.5, peakMemoryBytes: 1_073_741_824, avgMemoryBytes: 536_870_912,
         costUsd: 0.0123, costSource: 'rate_table' as const,
     };
     await recordLLMMetrics({ model: 'test-model', success: true, sessionId: 'session-compute', executionTime: 1000, conversationLog: [], computeUsage },
@@ -206,7 +206,7 @@ test('compute usage is stored on the execution row beside the token cost, and le
     assert.deepEqual(errors, []);
     const row = persisted[0].value as Record<string, unknown>;
     assert.deepEqual(Object.fromEntries(Object.entries(row).filter(([key]) => key.startsWith('compute_'))), {
-        compute_runtime: 'docker', compute_wall_time_ms: 61_500, compute_cpu_seconds: 42.5, compute_peak_memory_bytes: 1_073_741_824,
+        compute_runtime: 'sprites', compute_queue_ms: 3000, compute_provisioning_ms: 1250, compute_restore_ms: 65, compute_wall_time_ms: 61_500, compute_cpu_seconds: 42.5, compute_peak_memory_bytes: 1_073_741_824,
         compute_avg_memory_bytes: 536_870_912, compute_cost_usd: 0.0123, compute_cost_source: 'rate_table',
     });
 

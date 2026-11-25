@@ -95,23 +95,24 @@ export function localInstanceId(file: string = resolveIdleInstanceIdPath()): str
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null;
         id = createInstanceId(file);
+        if (id && !INSTANCE_ID_PATTERN.test(id)) return null;
     }
     if (id) instanceIds.set(file, id);
     return id;
 }
 
 /** Publish a complete file or none (a hard link never replaces one): processes starting together agree on one id. */
-function createInstanceId(file: string): string | null {
+export function createInstanceId(file: string, contents: string = randomUUID() + '\n', mode = 0o644): string | null {
     const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     try {
         mkdirSync(path.dirname(file), { recursive: true });
-        writeFileSync(temporary, `${randomUUID()}\n`, { mode: 0o644 });
+        writeFileSync(temporary, contents, { mode });
         try {
             linkSync(temporary, file);
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return null;
         }
-        return readInstanceId(file);
+        return readFileSync(file, 'utf8').trim();
     } catch {
         return null;
     } finally {

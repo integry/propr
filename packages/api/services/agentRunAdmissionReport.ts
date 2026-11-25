@@ -18,6 +18,7 @@
  * appear only when the caller's `access` says it may see them; the counts
  * always cover everything.
  */
+import { readSpritePoolStatus } from './spritePoolStatus.js';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
 import { readAgentRunAdmissionSnapshot, readAgentRuntimeCapabilityReport, type AgentRunAdmissionSnapshot, type AgentRuntimeCapabilityReport } from '@propr/core';
@@ -27,7 +28,7 @@ const WORKER_CAPACITY_KEY = 'system:status:worker-capacity';
 
 export interface AgentRunAdmissionReportDeps {
   taskQueue: Pick<Queue, 'getActiveCount'> & { opts?: { prefix?: string } };
-  redisClient: Pick<RedisClientType, 'sMembers' | 'hGetAll'>;
+  redisClient: Pick<RedisClientType, 'sMembers' | 'hGetAll' | 'eval'>;
   /** Test hook; defaults to the core snapshot over a short-lived Redis connection. */
   readSnapshot?: () => Promise<AgentRunAdmissionSnapshot>;
   /** Test hook; defaults to the default agent runtime's capabilities against the instance network policy. */
@@ -66,11 +67,12 @@ async function queueWorkers(deps: AgentRunAdmissionReportDeps) {
 
 export async function buildAgentRunAdmissionReport(deps: AgentRunAdmissionReportDeps, access: AgentRunAdmissionReportAccess) {
   const read = deps.readSnapshot ?? (() => readAgentRunAdmissionSnapshot({ queuePrefix: deps.taskQueue.opts?.prefix }));
-  const [snapshot, workers, runtime] = await Promise.all([
+  const [snapshot, workers, runtime, spritePool] = await Promise.all([
     read(),
     queueWorkers(deps).catch(() => ({ label: QUEUE_WORKERS_LABEL, inUse: null, total: null, workers: null })),
     (deps.readRuntime ?? (() => readAgentRuntimeCapabilityReport()))()
       .then(report => ({ report }), (error: unknown) => ({ unavailable: runtimeUnavailable(error) })),
+    readSpritePoolStatus(deps.redisClient).catch(() => undefined),
   ]);
   const taskIds = [...new Set(snapshot.agents.flatMap(agent => agent.tasks.map(task => task.taskId)))];
   const [visibleTasks, visibleRepositories] = await Promise.all([
@@ -89,6 +91,7 @@ export async function buildAgentRunAdmissionReport(deps: AgentRunAdmissionReport
     },
     agents: snapshot.agents.map(agent => ({ ...agent, tasks: agent.tasks.filter(task => visibleTasks.has(task.taskId)) })),
     queueWorkers: workers,
+    ...(spritePool && { spritePool }),
     repositoryWorkflowSlots: {
       label: REPOSITORY_SLOTS_LABEL,
       repositories: snapshot.repositoryWorkflowSlots.filter(slot => visibleRepositories.has(slot.repository)),

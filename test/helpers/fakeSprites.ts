@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { Sprite } from '@fly/sprites';
@@ -16,6 +17,7 @@ export class FakeSprite {
     exitCode = 0;
     hold = false;
     pendingSpawn = false;
+    private sessionRunning = false;
     exitBeforeOutputEnds = false;
     launched = Promise.withResolvers<void>();
     output = 'agent output';
@@ -35,7 +37,8 @@ export class FakeSprite {
             readFile: async (p: string) => this.files.get(p) ?? null,
         };
     }
-    async restart() { this.events.push('restart'); }
+    bootId = randomUUID();
+    async restart() { this.bootId = randomUUID(); this.events.push('restart'); }
     async updateNetworkPolicy(policy: { rules: unknown[] }) {
         if (this.failPolicy) throw new Error('policy update failed');
         this.events.push(policy.rules.length ? 'restrict' : 'open');
@@ -44,6 +47,7 @@ export class FakeSprite {
     }
     async getNetworkPolicy() { return structuredClone(this.networkPolicy); }
     async execFile(cmd: string, args: string[], _options?: { signal?: AbortSignal }) {
+        if (cmd === 'cat' && args[0] === '/proc/sys/kernel/random/boot_id') return { exitCode: 0, stdout: this.bootId, stderr: '' };
         if (cmd === 'sudo' && args.join(' ') === '-n find /tmp -xdev -mindepth 1 -delete') {
             this.events.push('wipe');
             if (this.failWipe) throw new Error('wipe failed');
@@ -67,7 +71,9 @@ export class FakeSprite {
         this.files = new Map([...this.baseline, ...[...this.files].filter(([file]) => file.startsWith('/tmp/'))]);
         return completed();
     }
-    async listSessions() { return [{ id: 'test-session', workdir: '/opt/propr/inbox', tty: false }]; }
+    async listSessions() {
+        return this.sessionRunning ? [{ id: 'test-session', workdir: '/opt/propr/inbox', tty: false }] : [];
+    }
     spawn(_cmd: string, args: string[], options?: { sessionId?: string }) {
         const cmd = Object.assign(new EventEmitter(), {
             stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(),
@@ -78,6 +84,8 @@ export class FakeSprite {
             this.launches.push(this.files.get(args.at(-1)!)!.toString());
             this.events.push('launch');
         }
+        this.sessionRunning = true;
+        cmd.once('exit', (code: number) => { if (code >= 0) this.sessionRunning = false; });
         this.launched.resolve();
         setImmediate(() => {
             if (this.pendingSpawn) {
@@ -116,4 +124,16 @@ export class FakeSprites implements SpriteClient {
         return sprite as unknown as Sprite;
     }
     async deleteSprite(name: string) { this.deleted.push(name); }
+}
+
+export class FakeSpriteOrganization extends FakeSprites {
+    // Deliberately ignore the prefix to exercise the worker's own ownership check.
+    async listAllSprites() {
+        return this.created.filter(sprite => !this.deleted.includes(sprite.name)) as unknown as Sprite[];
+    }
+    async getSprite(name: string) {
+        const sprite = (await this.listAllSprites()).find(s => s.name === name);
+        if (!sprite) throw Object.assign(new Error('missing'), { statusCode: 404 });
+        return sprite;
+    }
 }

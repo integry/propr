@@ -23,9 +23,9 @@ describe('Compute usage in the run summary', () => {
   });
 
   it('shows the compute cost and where it came from; leaves unmeasured figures out', () => {
-    render(<ConsumptionGroup computeUsage={{ ...measured, runtime: 'fly', cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: 0.0042, costSource: 'rate_table' }} />);
+    render(<ConsumptionGroup computeUsage={{ ...measured, runtime: 'sprites', queueMs: 18_000, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: 0.0042, costSource: 'rate_table' }} />);
     const chip = screen.getByTestId('compute-usage-chip');
-    expect(chip).toHaveTextContent('4m 12s · $0.0042');
+    expect(chip).toHaveTextContent('4m 12s · 18s queued · $0.0042');
     expect(chip.getAttribute('title')).toContain('CPU: not measured');
     expect(chip.getAttribute('title')).toContain('Compute cost: $0.0042 (from the rate table)');
   });

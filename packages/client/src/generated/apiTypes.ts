@@ -72,6 +72,14 @@ export interface AgentRunAdmissionReport {
     unavailable?: string;
   };
   agents: AgentRunAdmissionAgent[];
+  spritePool?: {
+    cap: number;
+    inUse: number;
+    idle: number;
+    provisioning: number;
+    orphansDeleted: number;
+    awaitingCleanup: number;
+  };
   queueWorkers: {
     label: string;
     inUse: number | null;

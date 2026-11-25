@@ -46,8 +46,8 @@
     "test:docker:timeout": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker timeout 30 npx tsx --test test/*.test.ts",
     "test:docker:clean": "docker ps --filter 'name=propr-worker-run' -q | xargs -r docker stop; npm run test:docker",
     "test:docker:verbose": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker sh -c 'for f in test/*.test.ts; do echo \"=== Testing: $f ===\"; npx tsx --test \"$f\" || echo \"FAILED: $f\"; done'",
-    "test:docker:find-hanging": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker sh -c 'for f in test/*.test.ts; do echo \"=== Testing: $f ===\"; timeout 5 npx tsx --test \"$f\" > /dev/null 2>&1 && echo \"\u2713 PASSED\" || echo \"\u2717 FAILED or TIMEOUT\"; done'",
-    "test:docker:stable": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker sh -c 'for f in test/*.test.ts; do [[ \"$f\" == *\"agentRegistry\"* ]] && continue; echo \"=== Testing: $f ===\"; timeout 10 npx tsx --test \"$f\" > /dev/null 2>&1 && echo \"\u2713 PASSED\" || echo \"\u2717 FAILED or TIMEOUT\"; done'",
+    "test:docker:find-hanging": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker sh -c 'for f in test/*.test.ts; do echo \"=== Testing: $f ===\"; timeout 5 npx tsx --test \"$f\" > /dev/null 2>&1 && echo \"✓ PASSED\" || echo \"✗ FAILED or TIMEOUT\"; done'",
+    "test:docker:stable": "docker-compose run --rm -e REDIS_HOST=redis -e NODE_ENV=test worker sh -c 'for f in test/*.test.ts; do [[ \"$f\" == *\"agentRegistry\"* ]] && continue; echo \"=== Testing: $f ===\"; timeout 10 npx tsx --test \"$f\" > /dev/null 2>&1 && echo \"✓ PASSED\" || echo \"✗ FAILED or TIMEOUT\"; done'",
     "start": "node dist/src/index.js",
     "dev": "tsx watch src/index.ts",
     "daemon": "node dist/src/daemon.js",
@@ -123,7 +123,7 @@
     "docs:check-serving": "node scripts/check-docs-static-serving.mjs docs/build"
   },
   "keywords": [],
-  "author": "Unchained Development O\u00dc / Rinalds Uzkalns",
+  "author": "Unchained Development OÜ / Rinalds Uzkalns",
   "license": "Apache-2.0",
   "description": "Automated GitHub Issue Processor with AI-powered solution generation and unified Plan Studio workflow.",
   "engines": {
@@ -184,6 +184,7 @@
     "cheerio": "^1.1.2",
     "eslint": "^9.39.1",
     "globals": "^16.3.0",
+    "ioredis-mock": "^8.13.1",
     "semver": "^7.7.3",
     "tsx": "^4.21.0",
     "turndown": "^7.2.2",
