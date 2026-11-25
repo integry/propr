@@ -451,11 +451,14 @@ async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDae
     routingService = intakeStartup.routingService;
     routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
-    // After an idle stop, recover Connect replay and record the wake source.
-    void recoverFromIdleWake({ redis: redisClient, routingService, processStartedAt: performance.timeOrigin })
+    // In all-in-one the API is listening before the daemon starts. Finish direct
+    // recovery before arming idle shutdown so a long batch cannot itself be drained.
+    const recovery = recoverFromIdleWake({ redis: redisClient, routingService, intakeMode: EVENT_INTAKE_MODE, processStartedAt: performance.timeOrigin })
         .catch((error: unknown) => logger.warn({ error: (error as Error).message }, 'Idle wake recovery failed'));
+    let closing = false;
     let idleShutdown: DaemonIdleShutdown | null = null;
     const close = async (): Promise<void> => {
+        closing = true;
         await idleShutdown?.stop();
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
@@ -476,8 +479,13 @@ async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDae
     // Composed (all-in-one), an idle stop closes every component together. Standalone, idle shutdown only reports
     // its status: separate processes could not all be started again if a stop were called off, so it never stops.
     if (options.installSignalHandlers !== false || options.idleShutdownStop) {
-        idleShutdown = startDaemonIdleShutdown({ redis: redisClient, intakeMode: EVENT_INTAKE_MODE,
-            getRoutingService: () => routingService, producers, close, stopProcess: options.idleShutdownStop });
+        const startIdleController = () => {
+            if (closing) return;
+            idleShutdown = startDaemonIdleShutdown({ redis: redisClient, intakeMode: EVENT_INTAKE_MODE,
+                getRoutingService: () => routingService, producers, close, stopProcess: options.idleShutdownStop });
+        };
+        if (EVENT_INTAKE_MODE === 'direct_webhook') void recovery.then(startIdleController);
+        else startIdleController();
     }
     if (options.installSignalHandlers !== false) {
         const shutdown = async (signal: string): Promise<void> => {

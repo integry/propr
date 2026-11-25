@@ -253,7 +253,16 @@ export interface IdleWakeHint {
     intakeStoppedAt?: string;
 }
 
+export interface WebhookRecoveryResult {
+    scanned: number;
+    failed: number;
+    redelivered: number;
+    skipped: number;
+    error?: string;
+}
+
 export interface IdleWakeRecord {
+    webhookRecovery?: WebhookRecoveryResult;
     wokeAt: string;
     source: IdleWakeSource;
     /** Process start to daemon ready, in ms. */

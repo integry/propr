@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { createExtensionLibraryRoutes } from './routes/extensionProfileRoutes.js';
 import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
@@ -641,9 +642,7 @@ function setupWebhookRoute(): void {
     try {
       await handleWebhookRequest(req, res, {
         webhookSecret: process.env.GH_WEBHOOK_SECRET,
-        redis: { set: (key, value, opts) => opts
-          ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
-          : redisClient.set(key, value) as Promise<string | null> },
+        redis: redisClient,
         processor: async (payload, event, cid, deliveryId) => {
           await processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId);
         },
@@ -848,7 +847,9 @@ async function start(options: StartApiServerOptions = {}): Promise<StartedApiSer
         }
       }, 30 * 1000);
     }
-    httpServer.listen(PORT, HOST, () => { console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
+    httpServer.listen(PORT, HOST);
+    await once(httpServer, 'listening');
+    console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`);
 
     const close = async (): Promise<void> => {
       // Stop admissions and drain Fleet handlers before their dependencies close.
