@@ -124,16 +124,56 @@ jobs:
           )
           flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'"
 
-      - name: Create agent-labeled issue and signed issues webhook
+      - name: Configure the signed App webhook and create the agent-labeled issue
         env:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          # Cleanup can run after the JWT expires, so mint on each invocation.
+          cat > "$OUT/app-jwt.sh" <<'BASH'
+          set -euo pipefail
+          umask 077
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          sed -n 's/^PROPR_GH_PRIVATE_KEY_B64=//p' "$ENV_FILE" | base64 -d > "$key"
+          app_id=$(sed -n 's/^GH_APP_ID=//p' "$ENV_FILE")
+          [[ $app_id =~ ^[0-9]+$ ]]
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          header=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)
+          now=$(date +%s)
+          payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now-60))" "$((now+540))" "$app_id" | b64url)
+          signature=$(printf '%s' "$header.$payload" | openssl dgst -sha256 -sign "$key" | b64url)
+          printf '%s' "$header.$payload.$signature"
+          BASH
+          jwt=$(bash "$OUT/app-jwt.sh")
+          echo "::add-mask::$jwt"
+          app_api() { curl --fail --silent --show-error -H "Authorization: Bearer $jwt" "https://api.github.com/app$1" "${@:2}"; }
+          registration=$(app_api '')
+          if ! jq -e '.events | contains(["issues","pull_request"])' <<< "$registration" > /dev/null; then
+            echo "::error::Activate the fixture App webhook and subscribe to Issues and Pull request under Permissions & events."
+            exit 1
+          fi
+          # Mark before PATCH so teardown also handles a lost configuration response.
+          touch "$OUT/reset-app-hook"
+          jq -n --rawfile secret "$OUT/hook-secret" --arg url "https://$APP.fly.dev/webhook" \
+            '{url:$url,content_type:"json",insecure_ssl:"0",secret:($secret|rtrimstr("\n"))}' |
+            app_api /hook/config -X PATCH -H 'Content-Type: application/json' --data-binary @- > /dev/null
+
           issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" -F 'labels[]=llm-claude' \
             -f body="Create $APP.txt containing exactly the line $APP. Open a PR resolving this issue." --jq .number)
           echo "ISSUE=$issue" >> "$GITHUB_ENV"
-          jq -n --rawfile secret "$OUT/hook-secret" --arg url "https://$APP.fly.dev/webhook" \
-            '{name:"web",active:true,events:["issues"],config:{url:$url,content_type:"json",secret:($secret|rtrimstr("\n"))}}' |
-            gh api "repos/$REPO/hooks" --input - --jq .id > "$OUT/hook-id"
+          # GET /app does not expose the Active checkbox. Verify the actual delivery.
+          for _ in {1..12}; do
+            delivery=$(app_api '/hook/deliveries?per_page=20' | jq -r \
+              '[.[] | select(.event == "issues" and .action == "opened" and .status_code == 200)][0].id // empty')
+            if [[ -n $delivery ]] && app_api "/hook/deliveries/$delivery" |
+              jq -e --arg title "Fly smoke $APP" '.request.payload.issue.title == $title' > /dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::No successful App webhook delivery for $REPO#$issue. Check Webhook → Active in the fixture App settings and its recent deliveries."
+          exit 1
 
       - name: Observe idle stop and labeled-issue wake
         timeout-minutes: 12
@@ -161,6 +201,20 @@ jobs:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: |
+          set -o pipefail
+          for _ in {1..24}; do
+            if recovery=$(flyctl logs --app "$APP" --no-tail --json |
+              jq -sce '[.[] | .message | fromjson? | select(.msg == "Woke from idle shutdown")]
+                | max_by(.wokeAt).webhookRecovery | objects'); then
+              break
+            fi
+            sleep 5
+          done
+          [[ -n $recovery ]] || { echo "::error::Missing idle-wake webhookRecovery record"; exit 1; }
+          redelivered=$(jq -er '.redelivered | numbers' <<< "$recovery")
+          echo "Idle wake webhookRecovery.redelivered=$redelivered"
+          jq -e '.error == null' <<< "$recovery" > /dev/null || { echo "::error::App webhook recovery reported an error"; exit 1; }
+
           for _ in {1..150}; do
             pr=$(gh pr list --repo "$REPO" --json number,closingIssuesReferences,isCrossRepository |
               jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | .number')
@@ -191,12 +245,16 @@ jobs:
           echo "Missing successful Sprites execution for $REPO#$ISSUE, PR #$pr"
           exit 1
 
-      - name: Remove webhook
+      - name: Reset the fixture App webhook to its placeholder URL
         if: always() && steps.app.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
-          if [[ -s $OUT/hook-id ]]; then gh api -X DELETE "repos/$REPO/hooks/$(cat "$OUT/hook-id")"; fi
+          if [[ -f $OUT/reset-app-hook ]]; then
+            jwt=$(bash "$OUT/app-jwt.sh")
+            echo "::add-mask::$jwt"
+            curl --fail --silent --show-error --retry 3 -o /dev/null -X PATCH \
+              -H "Authorization: Bearer $jwt" -H 'Content-Type: application/json' \
+              --data '{"url":"https://example.invalid/webhook"}' https://api.github.com/app/hook/config
+          fi
       - name: Dump app logs on failure
         if: failure() && steps.app.outcome == 'success'
         env:
