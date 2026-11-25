@@ -89,7 +89,15 @@ export function extensionRuntimeRefusal(runtime: ExtensionRuntime): string | und
     return `Agent runtime "${runtime.kind}" does not support extensions. Choose a runtime that supports extensions (docker).`;
 }
 
-function assertRunExtensionsSupported(runtime: ProviderAgentRuntime, spec: AgentRunSpec, options: AgentRunOptions): void {
+function assertRunLaunchSupported(
+    runtime: ProviderAgentRuntime,
+    config: AgentRunConfigSelection | null | undefined,
+    spec: AgentRunSpec,
+    options: AgentRunOptions,
+): void {
+    // e.g. a CLI version the runtime does not provide: refused, never run on another version.
+    const configRefusal = runtime.unsupportedAgentConfig?.(config ?? null, spec);
+    if (configRefusal) throw new Error(`Agent runtime "${runtime.kind}" cannot run ${spec.name}: ${configRefusal}`);
     if (runtime.kind === FLY_MACHINES_RUNTIME_KIND) assertExtensionLaunchSupported(runtime, options);
     const extensionRefusal = extensionRuntimeRefusal(runtime);
     if (extensionRefusal && extensionLaunchForRun(runtime.kind, [], { ...options, agentRun: { spec } })) {
@@ -191,10 +199,7 @@ export async function runAgent(
     options: AgentRunOptions,
 ): Promise<ExecutionResult> {
     const runtime = getAgentRuntime(config);
-    // e.g. a CLI version the runtime does not provide: refused, never run on another version.
-    const configRefusal = runtime.unsupportedAgentConfig?.(config ?? null, spec);
-    if (configRefusal) throw new Error(`Agent runtime "${runtime.kind}" cannot run ${spec.name}: ${configRefusal}`);
-    assertRunExtensionsSupported(runtime, spec, options);
+    assertRunLaunchSupported(runtime, config, spec, options);
     const resolved = await withAgentRunNetworkRequirement(spec, options);
     const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
     if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {
