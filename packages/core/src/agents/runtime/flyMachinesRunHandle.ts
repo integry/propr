@@ -2,12 +2,11 @@ import { constants as osConstants } from 'node:os';
 import type { Readable } from 'node:stream';
 import type { DockerCommandOptions, ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { getExecutionAbortError, getExecutionOwnershipContext } from '../../claude/docker/dockerExecutionOwnership.js';
-import { settleTimeoutStop, settleWatchdogStop } from '../../claude/docker/dockerExecutionSettlement.js';
-import { admitCostExecution, refuseCostExecution, settleCostCapStop } from '../../claude/docker/dockerCostCap.js';
+import { settleTimeoutStop } from '../../claude/docker/dockerExecutionSettlement.js';
+import { admitCostExecution, refuseCostExecution } from '../../claude/docker/dockerCostCap.js';
 import { startupStep } from './sprites/spritesProvisioning.js';
-import { startRunPipeline } from './runPipeline.js';
+import { startFlyRunPipeline } from './flyMachinesRunPipeline.js';
 import { resolveAgentRunNetworkPolicy } from '../../network/egressExecution.js';
-import { configuredDiagnosticSecrets } from '../../diagnostics/managedLogRuntime.js';
 import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
 import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient, type FlyRequestOptions } from './flyMachinesApi.js';
@@ -164,29 +163,11 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         const { config, now } = this.deps;
         const timeoutMs = runOptions.timeout ?? 300_000;
         const deadline = startedAt + timeoutMs;
-        const preserveOutput = runOptions.preserveOutputOnTimeout ?? false;
-        const args = request.config.init.cmd!;
-        const markerArgs = request.config.env.PROPR_REPO_SETUP === '0' ? [] : args;
-        const policyStop = new AbortController();
-        const running = AbortSignal.any([signal, policyStop.signal]);
-        let costMessage: string | undefined;
-        const invokeExecutionCallback = (callback: () => void | Promise<void>) => {
-            void Promise.resolve().then(callback).catch(error => logger.warn({ run: this.spec.name, error: (error as Error).message }, 'Agent run callback failed'));
-        };
-        const started = startRunPipeline(runOptions, {
-            command: 'fly-machines', markerArgs, diagnosticArgs: args, environment: request.config.env,
-            secrets: [config.token, ...configuredDiagnosticSecrets(request.config.env)],
-            attempt: getExecutionOwnershipContext()?.attemptGeneration, invokeExecutionCallback,
-            stopForCostCap: message => { costMessage = message; policyStop.abort(); },
-            stopForWatchdog: () => {
-                if (running.aborted || this.exitCode !== undefined) return false;
-                policyStop.abort();
-                return true;
-            },
+        const started = startFlyRunPipeline(request, runOptions, signal, {
+            name: this.spec.name, token: config.token, timeoutMs, hasExited: () => this.exitCode !== undefined,
         });
-        if (!started.pipeline) return started.refusal;
-        const { pipeline } = started;
-        if (pipeline.captureWorkflowStderr) request.config.env.PROPR_EXECUTION_TIMEOUT_MS = String(timeoutMs);
+        if ('refusal' in started) return started.refusal;
+        const { pipeline, running, policyStop, invokeExecutionCallback } = started;
         const logs = new FlyLogStream(this.deps.client, this.spec.name, {
             output: pipeline.writeLogLine,
             exit: code => { this.exitCode ??= code; },
@@ -194,7 +175,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         let captured: Awaited<ReturnType<typeof collectFlyOutput>> | undefined;
         let timedOut = false;
         try {
-            if (!policyStop.signal.aborted) {
+            if (!policyStop.aborted) {
                 // A create in flight must return its Machine id even if the run is stopped meanwhile.
                 const machine = await this.creation.create(request);
                 this.machineId = machine.id;
@@ -203,7 +184,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
                 if (runOptions.onContainerId) invokeExecutionCallback(() => runOptions.onContainerId!(machine.id, this.spec.name));
                 timedOut = await this.execute(machine, logs, running, { startedAt, deadline });
                 pipeline.watchdog.stop();
-                if ((timedOut || policyStop.signal.aborted) && !signal.aborted && this.exitCode === undefined) {
+                if ((timedOut || policyStop.aborted) && !signal.aborted && this.exitCode === undefined) {
                     await this.stopAfterTimeout(logs, signal);
                 }
                 await this.discardIfAborted(signal);
@@ -214,20 +195,11 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             if (this.machineId && this.exitCode === undefined && !this.machineGone && !this.discarding) await this.discardMachine('failed');
             throw error;
         } finally {
-            pipeline.finishOutput({ disconnected: !captured || !!captured.outputIncomplete });
-            const finalCost = await pipeline.finishCost();
-            costMessage ??= finalCost ?? undefined;
-            await pipeline.watchdog.settled();
-            await pipeline.closeLive();
+            await started.finish(!captured || !!captured.outputIncomplete);
         }
         await this.discardIfAborted(signal);
         const result = { ...pipeline.result(this.exitCode ?? null), ...captured };
-        return new Promise((resolve, reject) => {
-            if (costMessage) settleCostCapStop(costMessage, result, { preserveOutput, resolve, reject });
-            else if (pipeline.watchdog.trip) settleWatchdogStop(pipeline.watchdog.trip, result, preserveOutput, { resolve, reject });
-            else if (timedOut) settleTimeoutStop(timeoutMs, result, preserveOutput, { resolve, reject });
-            else resolve(result);
-        });
+        return started.settle(result, timedOut);
     }
 
     private async execute(machine: FlyMachine, logs: FlyLogStream, signal: AbortSignal, { startedAt, deadline }: { startedAt: number; deadline: number }): Promise<boolean> {
