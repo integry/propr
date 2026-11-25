@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { after, test } from 'node:test';
+import { after, test, type TestContext } from 'node:test';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
 after(closeConnection);
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
@@ -406,9 +406,7 @@ test('ambiguous restart recovery replaces the runner if a status request hangs p
     const slot = await runtime.acquire(new AbortController().signal);
     const sprite = client.created[0];
     t.mock.method(sprite, 'restart', async () => ({ message: 'restart outcome unknown' }));
-    const deadline = new AbortController();
-    const timeout = AbortSignal.timeout.bind(AbortSignal);
-    t.mock.method(AbortSignal, 'timeout', (ms: number) => ms === 60_000 ? deadline.signal : timeout(ms));
+    const expire = controlDeadline(t, 60_000);
     const polling = Promise.withResolvers<void>();
     t.mock.method(client, 'getSprite', () => {
         polling.resolve();
@@ -416,7 +414,7 @@ test('ambiguous restart recovery replaces the runner if a status request hangs p
     });
     const release = runtime.release(slot);
     await polling.promise;
-    deadline.abort();
+    expire();
     await release;
     assert.deepEqual(client.deleted, [slot.name]);
     assert.equal(client.created.length, 2);
@@ -533,6 +531,265 @@ test('the setup fingerprint covers CLI pins and the contents of every uploaded s
     writeFileSync(dockerfile, readFileSync(dockerfile, 'utf8').replace(/^ARG CODEX_CLI_VERSION=.*$/m, 'ARG CODEX_CLI_VERSION=99.0.0'));
     assert.notEqual(readSpriteSetup(root).fingerprint, setup.fingerprint);
 });
+
+/** Expire just this lifecycle deadline while an SDK request is in flight. */
+function controlDeadline(t: TestContext, duration: number) {
+    const deadline = new AbortController();
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    t.mock.method(AbortSignal, 'timeout', (ms: number) => ms === duration && !deadline.signal.aborted ? deadline.signal : timeout(ms));
+    return () => deadline.abort(new DOMException('deadline expired', 'TimeoutError'));
+}
+
+for (const operation of ['retained lookup', 'orphan inspection', 'orphan deletion']) {
+    test(`a queued acquisition times out during ${operation}`, { timeout: 5000 }, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const runtime = pool(client, store);
+        const signal = new AbortController().signal;
+        await runtime.discard(await runtime.acquire(signal)); // Finish startup before adding the blocked runner.
+        t.mock.timers.enable({ apis: ['setInterval'] });
+        const sprite = new FakeSprite('propr-blocked');
+        client.foreign.push(sprite);
+        const state = operation === 'retained lookup' ? 'retained' : 'orphaned';
+        await store.transact(scope, pool => pool.runners.set(sprite.name, {
+            state, since: 0, heartbeatAt: 0, runs: 1, inspectResultOnReap: operation === 'orphan inspection',
+        }));
+        const started = Promise.withResolvers<void>();
+        const response = Promise.withResolvers<never>();
+        const pending = () => { started.resolve(); return response.promise; };
+        if (operation === 'retained lookup') t.mock.method(client, 'getSprite', pending);
+        else if (operation === 'orphan inspection') t.mock.method(sprite, 'execFile', pending);
+        else t.mock.method(client, 'deleteSprite', pending);
+        const expire = controlDeadline(t, 4321);
+        const queued = runtime.acquire(signal, { timeout: 4321 });
+        await started.promise;
+        expire();
+        await assert.rejects(queued, { name: 'TimeoutError' });
+        response.reject(Object.assign(new Error('late 404'), { statusCode: 404 }));
+        await new Promise(resolve => setImmediate(resolve));
+        const inventory = await store.read(scope);
+        assert.equal(inventory.waiting.size, 0);
+        assert.equal(inventory.runners.get(sprite.name)?.state, state);
+        assert.equal(inventory.runners.get(sprite.name)?.leaseId, undefined);
+        assert.ok(!client.deleted.includes(sprite.name));
+        const writes = t.mock.method(store, 'transact');
+        t.mock.timers.tick(1000);
+        assert.equal(writes.mock.callCount(), 0);
+    });
+}
+
+for (const step of ['health check', 'restore']) {
+    test(`a stalled idle runner ${step} reaches its deadline and is replaced`, { timeout: 5000 }, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const runtime = pool(client, store);
+        const signal = new AbortController().signal;
+        const slot = await runtime.acquire(signal);
+        await runtime.release(slot);
+        const sprite = client.created[0];
+        const started = Promise.withResolvers<void>();
+        const stalled = () => { started.resolve(); return new Promise(() => {}); };
+        if (step === 'health check') t.mock.method(sprite, 'execFile', stalled);
+        else {
+            await store.transact(scope, pool => { pool.runners.get(slot.name)!.warm = { repo: 'previous', checkpoint: 'warm' }; });
+            t.mock.method(sprite, 'restoreCheckpoint', stalled);
+        }
+        const expire = controlDeadline(t, step === 'health check' ? 30_000 : 120_000);
+        const acquiring = runtime.acquire(signal);
+        await started.promise;
+        expire();
+        const next = await acquiring;
+        assert.notEqual(next.name, slot.name);
+        assert.deepEqual(client.deleted, [slot.name]);
+        assert.equal((await store.read(scope)).runners.size, 1);
+        await runtime.discard(next);
+    });
+}
+
+for (const path of ['initial', 'failed health check']) {
+    test(`a pending ${path} create keeps its slot through timeout, a peer 404 and late deletion`, { timeout: 5000 }, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const runtime = pool(client, store);
+        const signal = new AbortController().signal;
+        if (path === 'failed health check') {
+            await runtime.release(await runtime.acquire(signal));
+            client.created[0].failHealth = true;
+        }
+        const expire = controlDeadline(t, 21 * 60_000);
+        const requested = Promise.withResolvers<string>();
+        const resume = Promise.withResolvers<void>();
+        const create = client.createSprite.bind(client);
+        t.mock.method(client, 'createSprite', async (...args: Parameters<typeof create>) => {
+            requested.resolve(args[0]);
+            await resume.promise;
+            return create(...args);
+        }, { times: 1 });
+        const acquiring = runtime.acquire(signal);
+        const name = await requested.promise;
+        expire();
+        await assert.rejects(acquiring, { name: 'TimeoutError' });
+        const peer = pool(client, store);
+        await peer.reconcile();
+        await assert.rejects(peer.acquire(signal, { timeout: 30 }), { name: 'TimeoutError' });
+        const record = async () => (await store.read(scope)).runners.get(name);
+        assert.equal((await record())?.state, 'orphaned');
+        assert.equal((await record())?.leaseId, undefined);
+        assert.ok(!client.deleted.includes(name));
+        const remove = client.deleteSprite.bind(client);
+        const deleting = Promise.withResolvers<void>();
+        const deleted = Promise.withResolvers<void>();
+        t.mock.method(client, 'deleteSprite', async (late: string) => {
+            assert.equal(late, name);
+            deleting.resolve();
+            await deleted.promise;
+            return remove(late);
+        }, { times: 1 });
+        resume.resolve();
+        await deleting.promise;
+        assert.equal((await record())?.state, 'reaping');
+        deleted.resolve();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(await record(), undefined);
+        assert.equal(client.deleted.at(-1), name);
+        assert.deepEqual(client.created.at(-1)?.events, []);
+        await peer.discard(await peer.acquire(signal));
+    });
+}
+
+for (const outcome of ['peer reaped', 'conflict', 'successor lease']) {
+    test(`a timed-out create respects ownership on a late response after ${outcome}`, { timeout: 5000 }, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const runtime = pool(client, store);
+        const peer = pool(client, store);
+        const expire = controlDeadline(t, 21 * 60_000);
+        const create = client.createSprite.bind(client);
+        const started = Promise.withResolvers<string>();
+        const resume = Promise.withResolvers<void>();
+        t.mock.method(client, 'createSprite', async (...args: Parameters<typeof create>) => {
+            const sprite = outcome === 'conflict' ? undefined : await create(...args);
+            if (!sprite) client.foreign.push(Object.assign(new FakeSprite(args[0]), { labels: [spritesPoolLabel(scope)] }));
+            started.resolve(args[0]);
+            await resume.promise;
+            if (!sprite) throw Object.assign(new Error('conflict'), { statusCode: 409 });
+            return sprite;
+        });
+        const acquiring = runtime.acquire(new AbortController().signal);
+        const name = await started.promise;
+        expire();
+        await assert.rejects(acquiring, { name: 'TimeoutError' });
+        if (outcome === 'successor lease') {
+            await store.transact(scope, pool => Object.assign(pool.runners.get(name)!, { state: 'leased', leaseId: 'successor' }));
+        } else {
+            await peer.reconcile();
+            assert.equal((await store.read(scope)).runners.has(name), outcome === 'conflict');
+        }
+        resume.resolve();
+        await new Promise(resolve => setImmediate(resolve));
+        const current = (await store.read(scope)).runners.get(name);
+        if (outcome === 'successor lease') assert.equal(current?.leaseId, 'successor');
+        else assert.equal(current, undefined);
+        assert.deepEqual(client.deleted, outcome === 'peer reaped' ? [name] : []);
+    });
+}
+
+test('a late ambiguous create failure stays counted until a peer sees the matching Sprite', { timeout: 5000 }, async t => {
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    const runtime = pool(client, store);
+    const expire = controlDeadline(t, 21 * 60_000);
+    const create = client.createSprite.bind(client);
+    const requested = Promise.withResolvers<Parameters<typeof create>>();
+    const response = Promise.withResolvers<never>();
+    t.mock.method(client, 'createSprite', (...args: Parameters<typeof create>) => {
+        requested.resolve(args);
+        return response.promise;
+    }, { times: 1 });
+    const acquiring = runtime.acquire(new AbortController().signal);
+    const args = await requested.promise;
+    expire();
+    await assert.rejects(acquiring, { name: 'TimeoutError' });
+    response.reject(new Error('connection lost'));
+    await new Promise(resolve => setImmediate(resolve));
+    const peer = pool(client, store);
+    const signal = new AbortController().signal;
+    await assert.rejects(peer.acquire(signal, { timeout: 30 }), { name: 'TimeoutError' });
+    assert.equal((await store.read(scope)).runners.get(args[0])?.state, 'orphaned');
+    await create(...args);
+    const next = await peer.acquire(signal);
+    assert.deepEqual(client.deleted, [args[0]]);
+    await peer.discard(next);
+});
+
+test('shutdown settles while a background replacement create is still pending', { timeout: 5000 }, async t => {
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    const runtime = pool(client, store);
+    const slot = await runtime.acquire(new AbortController().signal);
+    client.created[0].failWipe = true;
+    const started = Promise.withResolvers<string>();
+    t.mock.method(client, 'createSprite', (name: string) => { started.resolve(name); return new Promise(() => {}); });
+    await runtime.release(slot);
+    const name = await started.promise;
+    await runtime.close();
+    await pool(client, store).reconcile();
+    assert.equal((await store.read(scope)).runners.get(name)?.state, 'orphaned');
+    assert.deepEqual(client.deleted, [slot.name]);
+});
+
+for (const operation of ['list', 'lookup', 'delete']) {
+    test(`startup reconciliation bounds a stalled inventory ${operation}`, { timeout: 5000 }, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const name = 'propr-inventory';
+        const started = Promise.withResolvers<void>();
+        const pending = () => { started.resolve(); return new Promise(() => {}); };
+        if (operation === 'list') t.mock.method(client, 'listAllSprites', pending);
+        if (operation === 'lookup') {
+            await store.transact(scope, pool => pool.runners.set(name, { state: 'retained', since: 0, heartbeatAt: 0, runs: 1 }));
+            t.mock.method(client, 'getSprite', pending);
+        }
+        if (operation === 'delete') {
+            client.foreign.push(Object.assign(new FakeSprite(name), { labels: [spritesPoolLabel(scope)] }));
+            t.mock.method(client, 'deleteSprite', pending);
+        }
+        const expire = controlDeadline(t, 60_000);
+        const checking = pool(client, store).reconcile();
+        await started.promise;
+        expire();
+        if (operation === 'delete') await checking;
+        else await assert.rejects(checking, { name: 'TimeoutError' });
+        if (operation === 'lookup') assert.equal((await store.read(scope)).runners.get(name)?.state, 'retained');
+    });
+}
+
+for (const cleanup of ['replacement', 'shutdown']) {
+    test(`a stalled ${cleanup} deletion leaves the runner counted for retry`, { timeout: 5000 }, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const runtime = pool(client, store);
+        const slot = await runtime.acquire(new AbortController().signal);
+        if (cleanup === 'shutdown') await runtime.release(slot);
+        else client.created[0].failWipe = true;
+        const expire = controlDeadline(t, 60_000);
+        const started = Promise.withResolvers<void>();
+        const response = Promise.withResolvers<void>();
+        t.mock.method(client, 'deleteSprite', () => { started.resolve(); return response.promise; }, { times: 1 });
+        const cleaning = cleanup === 'shutdown' ? runtime.close() : runtime.release(slot);
+        await started.promise;
+        expire();
+        if (cleanup === 'shutdown') await cleaning;
+        else await assert.rejects(cleaning, { name: 'TimeoutError' });
+        response.resolve();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal((await store.read(scope)).runners.get(slot.name)?.state, 'orphaned');
+        assert.equal(client.created.length, 1);
+        await pool(client, store).reconcile();
+        assert.deepEqual(client.deleted, [slot.name]);
+        assert.equal((await store.read(scope)).runners.size, 0);
+    });
+}
 
 test('a lost create response keeps the possible Sprite counted until reaped', async () => {
     const client = new FakeSprites();

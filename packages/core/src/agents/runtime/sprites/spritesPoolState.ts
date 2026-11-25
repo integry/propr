@@ -42,6 +42,8 @@ export interface SpriteRunnerRecord {
     since: number;
     /** Whether an orphan may hold an unreleased execution result. Older orphan records need inspection. */
     inspectResultOnReap?: boolean;
+    /** Identifies a create request whose Sprite may still appear after a lookup returns 404. */
+    pendingCreate?: string;
     setupFingerprint?: string;
     /** The clean setup checkpoint. */
     checkpoint?: string;
@@ -106,11 +108,13 @@ export interface SpriteLeaseRequest {
     ttlMs: number;
 }
 
+export type SpriteInventoryCheck = { name: string; state: SpriteRunnerState; pendingCreate?: string };
+
 export type SpriteLeaseDecision =
     | { action: 'lease'; name: string; record: SpriteRunnerRecord }
     | { action: 'provision'; name: string; record: SpriteRunnerRecord }
     | { action: 'reap'; name: string; record: SpriteRunnerRecord }
-    | { action: 'wait'; position: number; runners: number; retained: string[] };
+    | { action: 'wait'; position: number; runners: number; toCheck: SpriteInventoryCheck[] };
 
 function claim(record: SpriteRunnerRecord, state: SpriteRunnerState, holder: { leaseId: string; owner: string; now: number }) {
     const { leaseId, owner, now } = holder;
@@ -131,13 +135,14 @@ export function acquireSpriteRunner(state: SpritePoolState, request: SpriteLease
     else state.waiting.set(leaseId, { joinedAt: now, seenAt: now });
     const runners = [...state.runners];
     const idle = runners.filter(([, record]) => record.state === 'idle');
-    const orphans = runners.filter(([, record]) => record.state === 'orphaned');
+    const orphans = runners.filter(([, record]) => record.state === 'orphaned' && !record.pendingCreate);
     const free = Math.max(0, request.max - runners.length);
     const queue = [...state.waiting].sort(([a, x], [b, y]) => x.joinedAt - y.joinedAt || a.localeCompare(b));
     const position = queue.findIndex(([id]) => id === leaseId);
     if (position >= idle.length + orphans.length + free) return {
         action: 'wait', position, runners: runners.length,
-        retained: runners.filter(([, record]) => record.state === 'retained').map(([name]) => name),
+        toCheck: runners.filter(([, record]) => record.state === 'retained' || (record.state === 'orphaned' && record.pendingCreate))
+            .map(([name, { state, pendingCreate }]) => ({ name, state, pendingCreate })),
     };
     const leave = () => state.waiting.delete(leaseId);
     if (idle.length) {
@@ -183,6 +188,26 @@ export function updateSpriteRunner(state: SpritePoolState, { name, leaseId, now 
     Object.assign(record, patch, { heartbeatAt: now });
     if (patch.state) record.since = now;
     return true;
+}
+
+export type SpriteCreateOutcome = 'created' | 'late' | 'not-created' | 'failed' | 'pending';
+
+/** Applies a create outcome only to its original reservation. Returns authority to set up or delete a confirmed Sprite. */
+export function recordSpriteCreateOutcome(state: SpritePoolState, lease: SpriteRunnerLease & { owner: string },
+    outcome: SpriteCreateOutcome): boolean {
+    const record = state.runners.get(lease.name);
+    if (record?.pendingCreate !== lease.leaseId) return false;
+    const held = record.state === 'provisioning' && record.leaseId === lease.leaseId;
+    if (!held && (record.state !== 'orphaned' || record.leaseId)) return false;
+    if (outcome !== 'pending') delete record.pendingCreate;
+    if (outcome === 'late') {
+        claim(record, 'reaping', lease);
+        record.inspectResultOnReap = false;
+        return true;
+    }
+    if (outcome === 'not-created') forgetSpriteRunner(state, lease.name, record.leaseId);
+    if (outcome === 'failed' || outcome === 'pending') abandonSpriteRunner(state, lease.name, lease.leaseId, lease.now);
+    return held && outcome === 'created';
 }
 
 /** Swaps a held runner's record for a new Sprite name (its old Sprite is gone), keeping the slot. */
@@ -235,7 +260,7 @@ export function claimSpriteRunners(state: SpritePoolState, request: { leaseId: s
     expireSpritePool(state, request.now, request.ttlMs);
     const claimed: Array<[string, SpriteRunnerRecord]> = [];
     for (const [name, record] of state.runners) {
-        if (!request.states.includes(record.state)) continue;
+        if (!request.states.includes(record.state) || record.pendingCreate) continue;
         if (request.lastOwner && record.lastOwner !== request.lastOwner) continue;
         if (record.state === 'idle') record.inspectResultOnReap = false;
         claim(record, 'reaping', request);

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 import logger from '../../../utils/logger.js';
+import type { SpriteCreateOutcome } from './spritesPoolState.js';
 
 const projectRoot = () => process.env.PROPR_ROOT
     || (existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
@@ -31,6 +32,30 @@ function loadSpritesCliPins(root: string): SpritesCliPins {
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite' | 'getSprite' | 'sprite' | 'listAllSprites'>;
 
+export const PROVIDER_TIMEOUT_MS = 60_000;
+export const createLabel = (leaseId: string) => `propr-create-${leaseId}`;
+
+/** Deletes a Sprite; one that is already gone counts as deleted. */
+export async function deleteSprite(client: SpriteClient, name: string, signal = AbortSignal.timeout(PROVIDER_TIMEOUT_MS)): Promise<void> {
+    try { await startupStep(signal, () => client.deleteSprite(name)); }
+    catch (error) {
+        signal.throwIfAborted();
+        if ((error as { statusCode?: number }).statusCode !== 404) throw error;
+    }
+}
+
+/** A missing Sprite is conclusive only after its create request has settled. */
+export async function inspectSpriteReservation(client: SpriteClient, reservation: { name: string; pendingCreate?: string }, signal: AbortSignal) {
+    try {
+        const sprite = await startupStep(signal, () => client.getSprite(reservation.name));
+        if (reservation.pendingCreate && sprite.labels?.includes(createLabel(reservation.pendingCreate))) return 'created';
+    } catch (error) {
+        signal.throwIfAborted();
+        if ((error as { statusCode?: number }).statusCode !== 404) throw error;
+        if (!reservation.pendingCreate) return 'missing';
+    }
+}
+
 // The launcher changes the root-owned result directory from 0700 to 0711 after
 // the transport exits. Files can also be durable before that final chmod.
 const INSPECT_RESULT = `import os, stat
@@ -44,10 +69,12 @@ else:
     print("absent" if active and not entries else "keep")
 `;
 
-export async function confirmResultAbsent(client: SpriteClient, name: string): Promise<boolean> {
+export async function confirmResultAbsent(client: SpriteClient, name: string, parentSignal?: AbortSignal): Promise<boolean> {
     try {
-        const inspection = await client.sprite(name).execFile('sudo', ['-n', '/usr/bin/python3', '-I', '-c', INSPECT_RESULT],
-            { cwd: '/', timeout: 30_000 });
+        const timeout = AbortSignal.timeout(30_000);
+        const signal = parentSignal ? AbortSignal.any([parentSignal, timeout]) : timeout;
+        const inspection = await startupStep(signal, () => client.sprite(name).execFile('sudo', ['-n', '/usr/bin/python3', '-I', '-c', INSPECT_RESULT],
+            { cwd: '/', timeout: 30_000, signal }));
         return inspection.exitCode === 0 && inspection.stdout.toString().trim() === 'absent';
     } catch (error) {
         logger.warn({ sprite: name, error: String(error) }, 'Could not inspect Sprite for a result');
@@ -68,6 +95,40 @@ export async function startupStep<T>(signal: AbortSignal, operation: () => T | P
     } finally {
         signal.removeEventListener('abort', abort);
     }
+}
+
+/** Record the provider outcome even when the caller's wait ends before the create responds. */
+export async function createReservedSprite(client: SpriteClient, request: { name: string; labels: string[] }, signal: AbortSignal,
+    reservation: { record(outcome: SpriteCreateOutcome): Promise<boolean>; discard(): Promise<void> }): Promise<Sprite> {
+    if (signal.aborted) {
+        await reservation.record('not-created');
+        signal.throwIfAborted();
+    }
+    const { name, labels } = request;
+    const conflict = (error: unknown) => (error as { statusCode?: number })?.statusCode === 409;
+    let creating: Promise<Sprite> | undefined;
+    let sprite: Sprite;
+    try {
+        sprite = await startupStep(signal, () => {
+            creating = client.createSprite(name, { labels });
+            return creating;
+        });
+    } catch (error) {
+        if (creating && signal.aborted) {
+            // A peer may already have identified and reaped this create by its label.
+            void creating.then(async () => {
+                if (await reservation.record('late')) await reservation.discard();
+            }, async failure => {
+                if (conflict(failure)) await reservation.record('not-created');
+            }).catch(error => logger.warn({ sprite: name, error: String(error) }, 'Could not reconcile late Sprite creation'));
+            await reservation.record('pending');
+        } else {
+            await reservation.record(conflict(error) ? 'not-created' : 'failed');
+        }
+        throw error;
+    }
+    if (!await reservation.record('created')) throw new Error('Sprites runner lease lapsed');
+    return sprite;
 }
 
 export async function restartForReset(client: SpriteClient, sprite: Sprite, resetSignal: AbortSignal) {
