@@ -245,6 +245,78 @@ test('legacy cleanup requires a conclusive inspection and rechecks ownership aft
     assert.equal((await store.read(scope)).runners.get(claimed.name)?.state, 'retained');
 });
 
+for (const kind of ['labelled', 'legacy']) {
+    test(`a failed startup deletion keeps the ${kind} orphan counted across workers`, { timeout: 5000 }, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const orphan = new FakeSprite(`propr-${randomUUID()}`);
+        if (kind === 'labelled') orphan.labels = [spritesPoolLabel(scope)];
+        else orphan.createdAt = new Date(0);
+        client.foreign.push(orphan);
+        const unavailable = t.mock.method(client, 'deleteSprite', async () => { throw new Error('provider unavailable'); });
+        const signal = new AbortController().signal;
+        const a = pool(client, store, 2);
+        const b = pool(client, store, 2);
+        const first = await a.acquire(signal);
+        assert.equal((await store.read(scope)).runners.get(orphan.name)?.state, 'orphaned');
+        await assert.rejects(b.acquire(signal, { timeout: 50 }), { name: 'TimeoutError' });
+        assert.deepEqual((await client.listAllSprites()).map(sprite => sprite.name).sort(), [first.name, orphan.name].sort());
+        assert.equal(client.created.length, 1);
+
+        unavailable.mock.restore();
+        const second = await b.acquire(signal);
+        assert.deepEqual(client.deleted, [orphan.name]);
+        assert.equal((await store.read(scope)).runners.has(orphan.name), false);
+        assert.equal((await client.listAllSprites()).length, 2);
+        await Promise.all([a.discard(first), b.discard(second)]);
+    });
+}
+
+test('acquisition retries startup inventory after the store fails to record a listed orphan', async t => {
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    const orphan = Object.assign(new FakeSprite('propr-untracked'), { labels: [spritesPoolLabel(scope)] });
+    client.foreign.push(orphan);
+    const runtime = pool(client, store);
+    t.mock.method(store, 'transact', async () => { throw new Error('Redis unavailable'); }, { times: 1 });
+    const signal = new AbortController().signal;
+    await assert.rejects(runtime.acquire(signal), /Redis unavailable/);
+    assert.deepEqual(client.created, []);
+    assert.deepEqual(client.deleted, []);
+    const slot = await runtime.acquire(signal);
+    assert.deepEqual(client.deleted, [orphan.name]);
+    await runtime.discard(slot);
+});
+
+test('a startup lookup failure leaves listed orphans counted and the remaining capacity available', async t => {
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    const orphan = Object.assign(new FakeSprite('propr-listed'), { labels: [spritesPoolLabel(scope)] });
+    client.foreign.push(orphan);
+    await store.transact(scope, state => state.runners.set('propr-missing', { state: 'retained', since: 0, heartbeatAt: 0, runs: 1 }));
+    t.mock.method(client, 'getSprite', async () => { throw new Error('lookup unavailable'); });
+    const runtime = pool(client, store, 3);
+    const slot = await runtime.acquire(new AbortController().signal);
+    const records = (await store.read(scope)).runners;
+    assert.equal(records.size, 3);
+    assert.equal(records.get(orphan.name)?.state, 'orphaned');
+    assert.equal(records.get('propr-missing')?.state, 'retained');
+    await runtime.discard(slot);
+});
+
+test('retrying a failed legacy deletion requires fresh evidence that no result is present', async t => {
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    const orphan = Object.assign(new FakeSprite(`propr-${randomUUID()}`), { createdAt: new Date(0) });
+    client.foreign.push(orphan);
+    t.mock.method(client, 'deleteSprite', async () => { throw new Error('provider unavailable'); }, { times: 1 });
+    await pool(client, store).reconcile();
+    orphan.files.set('/opt/propr/result/result.bundle', Buffer.from('only copy'));
+    await pool(client, store).reconcile();
+    assert.equal((await store.read(scope)).runners.get(orphan.name)?.state, 'retained');
+    assert.deepEqual(client.deleted, []);
+});
+
 test('lowering the bound discards surplus runners on release', { timeout: 10_000 }, async () => {
     const client = new FakeSprites();
     const store = new MemorySpritePoolStore();
@@ -880,20 +952,37 @@ test('concurrent releases discard only the surplus even while provider deletion 
     await narrow.close();
 });
 
-test('startup rechecks ownership after an earlier orphan deletion', async () => {
+test('startup counts all orphans during deletion and rechecks ownership before the next delete', { timeout: 5000 }, async t => {
     const client = new FakeSprites();
     const store = new MemorySpritePoolStore();
+    const peer = pool(client, store, 2);
+    const signal = new AbortController().signal;
+    const initial = await peer.acquire(signal);
+    await peer.discard(initial); // This worker's acquisitions will skip startup inventory.
     const kept = 'propr-later';
     for (const name of ['propr-first', kept]) {
         client.foreign.push(Object.assign(new FakeSprite(name), { labels: ['propr-pool', spritesPoolLabel(scope)] }));
     }
     const remove = client.deleteSprite.bind(client);
-    client.deleteSprite = async name => {
-        await store.transact(scope, state => state.runners.set(kept, { state: 'retained', heartbeatAt: 0, since: 0, runs: 1 }));
+    const deleting = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    t.mock.method(client, 'deleteSprite', async (name: string) => {
+        deleting.resolve();
+        await resume.promise;
         await remove(name);
-    };
-    await pool(client, store).reconcile();
-    assert.deepEqual(client.deleted, ['propr-first']);
+    });
+    const startup = pool(client, store, 2).reconcile();
+    await deleting.promise;
+    try {
+        await assert.rejects(peer.acquire(signal, { timeout: 50 }), { name: 'TimeoutError' });
+        assert.equal(client.created.length, 1);
+        await store.transact(scope, state => state.runners.set(kept, { state: 'retained', heartbeatAt: 0, since: 0, runs: 1 }));
+    } finally {
+        resume.resolve();
+        await startup;
+    }
+    assert.deepEqual(client.deleted, [initial.name, 'propr-first']);
+    assert.equal((await store.read(scope)).runners.get(kept)?.state, 'retained');
 });
 
 test('a create conflict cannot grant deletion authority over the existing Sprite', async () => {

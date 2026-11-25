@@ -116,49 +116,60 @@ export class SpritePool {
         this.finishedRunners.delete(leaseId);
     }
 
-    /** Once per pool: publish the bounds, forget runners whose Sprite is gone and reap Sprites no record owns. */
+    /** Acquisition needs a counted inventory. After that, failed cleanup can be retried with its slot still held. */
     private initialize(): Promise<void> {
-        return this.ready ??= this.reconcile().catch(error => {
-            logger.warn({ error: error instanceof Error ? error.message : String(error) }, 'Sprites pool reconciliation failed');
-        });
+        return this.ready ??= this.recordInventory().catch(error => {
+            this.ready = undefined;
+            throw error;
+        }).then(checks => this.reconcileRecords(checks).catch(error => {
+            logger.warn({ error: String(error) }, 'Sprites pool reconciliation failed');
+        }));
     }
 
     async reconcile(): Promise<void> {
+        await this.reconcileRecords(await this.recordInventory());
+    }
+
+    private async recordInventory(): Promise<SpriteInventoryCheck[]> {
         const { store, scope, config } = this.options;
         await store.publishConfig(scope, { max: config.max, orgLimit: config.orgLimit, warmClones: config.warmClones, updatedAt: this.now() });
         if (config.clamped) logger.warn({ max: config.max, orgLimit: config.orgLimit }, 'PROPR_SPRITES_MAX exceeds the Sprites organization limit; using the limit');
-        // List first, then read: a record is written before its Sprite is created, so a
-        // listed Sprite missing from the later read is one no worker is creating.
         const listedAt = this.now();
         const listed = await startupStep(AbortSignal.timeout(PROVIDER_TIMEOUT_MS), () => this.client.listAllSprites('propr-'));
-        const state = await store.read(scope);
-        const names = new Set(listed.map(sprite => sprite.name));
-        for (const [name, record] of state.runners) {
-            const expected = effectiveRunnerState(record, listedAt, this.ttlMs);
-            if ((!names.has(name) || record.pendingCreate) && ['idle', 'orphaned', 'retained'].includes(expected)) {
-                await this.checkInventory({ name, state: expected, pendingCreate: record.pendingCreate }, AbortSignal.timeout(PROVIDER_TIMEOUT_MS));
-            }
-        }
         const label = spritesPoolLabel(scope);
-        for (const sprite of listed) {
-            if (state.runners.has(sprite.name)) continue;
-            if (!sprite.labels?.includes(label)) {
-                if (!isOldLegacySprite(sprite, listedAt)) continue;
-                if (!await confirmResultAbsent(this.client, sprite.name)) {
-                    logger.warn({ sprite: sprite.name }, 'Legacy Sprite may hold an unrecovered result; review it manually');
-                    continue;
+        const names = new Set(listed.map(sprite => sprite.name));
+        // Count all discovered orphans together before awaiting any inspection or deletion.
+        // A record written while the inventory request was in flight still owns its Sprite.
+        return this.transact(state => {
+            for (const sprite of listed) {
+                if (state.runners.has(sprite.name)) continue;
+                const labelled = sprite.labels?.includes(label);
+                if (!labelled && !isOldLegacySprite(sprite, listedAt)) continue;
+                state.runners.set(sprite.name, {
+                    state: 'orphaned', since: listedAt, heartbeatAt: listedAt, runs: 0, inspectResultOnReap: !labelled,
+                });
+            }
+            const checks: SpriteInventoryCheck[] = [];
+            for (const [name, record] of state.runners) {
+                const expected = effectiveRunnerState(record, listedAt, this.ttlMs);
+                if ((!names.has(name) || record.pendingCreate) && ['idle', 'orphaned', 'retained'].includes(expected)) {
+                    checks.push({ name, state: expected, pendingCreate: record.pendingCreate });
                 }
             }
+            return checks;
+        });
+    }
+
+    private async reconcileRecords(checks: SpriteInventoryCheck[]): Promise<void> {
+        for (const check of checks) await this.checkInventory(check, AbortSignal.timeout(PROVIDER_TIMEOUT_MS));
+        const leaseId = randomUUID();
+        for (const [name, record] of await this.claimRunners(leaseId, ['orphaned'])) {
             try {
-                // Other lookups and deletes may have awaited since the inventory read.
-                if ((await store.read(scope)).runners.has(sprite.name)) continue;
-                await deleteSprite(this.client, sprite.name);
-                logger.info({ sprite: sprite.name }, 'Deleted orphaned Sprite no pool lease owns');
+                await this.reapRunner(name, leaseId, record);
             } catch (error) {
-                logger.error({ sprite: sprite.name, error: String(error) }, 'Could not delete orphaned Sprite');
+                logger.warn({ sprite: name, error: String(error) }, 'Could not reap orphaned Sprite');
             }
         }
-        await this.deleteClaimed({ states: ['orphaned'] });
     }
 
     private async checkInventory(check: SpriteInventoryCheck, signal: AbortSignal): Promise<void> {
@@ -188,11 +199,8 @@ export class SpritePool {
         }
     }
 
-    /** Deletes the runners a claim returns; a failed deletion leaves the runner orphaned for a later attempt. */
-    private async deleteClaimed(claim: { states: SpriteRunnerRecord['state'][]; lastOwner?: string }): Promise<void> {
-        const leaseId = randomUUID();
-        const claimed = await this.transact(state => claimSpriteRunners(state, { ...claim, leaseId, owner: this.owner, now: this.now(), ttlMs: this.ttlMs }));
-        await Promise.allSettled(claimed.map(([name, record]) => this.reapRunner(name, leaseId, record)));
+    private claimRunners(leaseId: string, states: SpriteRunnerRecord['state'][], lastOwner?: string) {
+        return this.transact(state => claimSpriteRunners(state, { states, lastOwner, leaseId, owner: this.owner, now: this.now(), ttlMs: this.ttlMs }));
     }
 
     private async reapRunner(name: string, leaseId: string, record: SpriteRunnerRecord, signal = AbortSignal.timeout(PROVIDER_TIMEOUT_MS)): Promise<void> {
@@ -202,8 +210,9 @@ export class SpritePool {
             signal.throwIfAborted();
         }
         if (!absent) {
-            await this.transact(state => updateSpriteRunner(state, { name, leaseId, now: this.now() },
+            const retained = await this.transact(state => updateSpriteRunner(state, { name, leaseId, now: this.now() },
                 { state: 'retained', leaseId: undefined, owner: undefined }));
+            if (retained) logger.warn({ sprite: name }, 'Sprite may hold an unrecovered result; review it manually');
             return;
         }
         // Revalidate the claim after the provider inspection, immediately before deletion.
@@ -392,9 +401,13 @@ export class SpritePool {
         this.shutdown.abort();
         await Promise.allSettled(this.replacements);
         // Idle runners this worker last held; deleteRunner logs the name for manual cleanup if deletion fails.
-        await this.deleteClaimed({ states: ['idle'], lastOwner: this.owner }).catch(error => {
+        const leaseId = randomUUID();
+        try {
+            const idle = await this.claimRunners(leaseId, ['idle'], this.owner);
+            await Promise.allSettled(idle.map(([name, record]) => this.reapRunner(name, leaseId, record)));
+        } catch (error) {
             logger.warn({ error: String(error) }, 'Could not delete idle Sprites at shutdown');
-        });
+        }
     }
 
     /**
