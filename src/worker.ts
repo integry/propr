@@ -10,8 +10,7 @@ import { GITHUB_ISSUE_QUEUE_NAME, closeStateManager, createWorker, getStateManag
 import { generateCorrelationId, logger, reconcileEpicExecutionQueues, startEgressProxySweeper } from '@propr/core';
 import { AgentRegistry, areAllChecksPassing, getCurrentPRHead, getCheckRunsStatusForRepo } from '@propr/core';
 import { loadAiPrimaryTag, loadSettings, loadSettingsFromConfig } from '@propr/core';
-import { setUltrafixDeps, startIdleShutdownListener } from '@propr/core';
-import { validateAttachmentBaseUrlConfig } from '@propr/core';
+import { setUltrafixDeps, startIdleShutdownListener, validateAttachmentBaseUrlConfig } from '@propr/core';
 import {
     AGENT_RUNTIME_BUILD_QUEUE_NAME,
     buildAgentRuntimePackageProfile,
@@ -33,9 +32,8 @@ import { processMergeConflictJob } from './jobs/processMergeConflictJob.js';
 import { processGoalJob } from './jobs/processGoalJob.js';
 import { processAgentRunJob } from './jobs/processAgentRunJob.js';
 import { processAgentActionJob } from './jobs/processAgentActionJob.js';
-import { createConfiguredMainWorker } from './workerFactory.js';
+import { createConfiguredMainWorker, type MainWorker } from './workerFactory.js';
 import { resolveWorkerConcurrency } from './workerConcurrency.js';
-import type { MainWorker } from './workerFactory.js';
 import { attachPRCommentTaskStateFinalizers, type PRCommentTaskStateFinalizers } from './jobs/prCommentTaskStateFinalizers.js';
 import { startWorkerTaskStateRecovery } from './workerTaskStateRecovery.js';
 import { ultrafixFailedStepFinalizerOptions } from './jobs/ultrafixFailedStepFinalizer.js';
@@ -171,6 +169,12 @@ export interface StartedWorker {
     close(): Promise<void>;
 }
 
+function initializeSpritesRuntime(): void {
+    if (!process.env.PROPR_SPRITES_TOKEN && !process.env.SPRITES_TOKEN) return;
+    const runtime = getAgentRuntime({ runtime: 'sprites' });
+    if (runtime instanceof SpritesRuntime) void runtime.initialize();
+}
+
 async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> {
     // Opt-in (Fly legacy Docker): the API is already serving; only the worker
     // waits for a Docker daemon that is still booting.
@@ -187,10 +191,7 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     await runMigrations().then(async () => (await import('./extensionLibraryStartup.js')).migrateExtensionLibrary());
     // A malformed or mismatched per-agent admission policy must not leave an agent uncapped.
     await (await import('@propr/core')).validateAgentRunAdmissionPolicy();
-    if (process.env.PROPR_SPRITES_TOKEN || process.env.SPRITES_TOKEN) {
-        const runtime = getAgentRuntime({ runtime: 'sprites' });
-        if (runtime instanceof SpritesRuntime) void runtime.initialize();
-    }
+    initializeSpritesRuntime();
 
     try {
         if (process.env.CONFIG_REPO) {

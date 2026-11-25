@@ -174,8 +174,12 @@ export function SpritePoolSummary({ pool }: { pool: SpritePoolStatus }) {
   </section>;
 }
 
-const AgentRuntimePackagesSection: React.FC = () => {
+function RuntimeSpritePoolSummary() {
   const pool = useSharedSystemStatus().status?.spritePool;
+  return pool ? <SpritePoolSummary pool={pool} /> : null;
+}
+
+const AgentRuntimePackagesSection: React.FC = () => {
   const [state, setState] = useState<AgentRuntimePackageState>(EMPTY_STATE);
   const [packages, setPackages] = useState<string[]>([]);
   const [input, setInput] = useState('');
@@ -329,7 +333,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
       description={<AgentRuntimePackagesDescription />}
       status={<SettingsStatus tone={runtimeStatusTone(state.status)} role="status">{state.status}</SettingsStatus>}
     >
-      {pool && <SpritePoolSummary pool={pool} />}
+      <RuntimeSpritePoolSummary />
       <div className="mb-6 max-w-2xl">
       <p className={`${SETTINGS_LABEL} mb-1.5`} id="agent-runtime-package-label">Add a package</p>
       <PackageAutocomplete

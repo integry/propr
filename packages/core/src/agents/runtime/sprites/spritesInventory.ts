@@ -65,8 +65,20 @@ export class SpriteInventory {
     private closing = false;
     private timers: NodeJS.Timeout[] = [];
 
-    private constructor(private redis: SpritePoolRedis, private key: string, readonly prefix: string, private provider: Provider,
-        private orphanAgeMs: number, private disconnect?: () => void) {}
+    readonly prefix: string;
+    private readonly key: string;
+    private readonly orphanAgeMs: number;
+
+    private constructor(
+        private readonly redis: SpritePoolRedis,
+        private readonly provider: Provider,
+        config: { key: string; prefix: string; orphanAgeMs: number },
+        private disconnect?: () => void,
+    ) {
+        this.key = config.key;
+        this.prefix = config.prefix;
+        this.orphanAgeMs = config.orphanAgeMs;
+    }
 
     static async open(provider: Provider, env: NodeJS.ProcessEnv, store?: SpritePoolRedis) {
         const cap = positive(env.PROPR_SPRITES_MAX, 2, 'PROPR_SPRITES_MAX');
@@ -88,7 +100,9 @@ export class SpriteInventory {
             if (!marker || !/^[0-9a-f]{16}$/.test(marker)) throw new Error('Invalid Sprite deployment marker');
             await redis.hsetnx(key, 'orphansDeleted', '0');
             await redis.hset(key, 'cap', cap);
-            const inventory = new SpriteInventory(redis, key, `propr-${marker}-`, provider, age, () => owned?.disconnect());
+            const inventory = new SpriteInventory(redis, provider, {
+                key, prefix: `propr-${marker}-`, orphanAgeMs: age,
+            }, () => owned?.disconnect());
             await inventory.sweep();
             return inventory;
         } catch (error) {
