@@ -846,6 +846,13 @@ export interface IdleShutdownStatus {
     nextDueAt: string | null;
   } | null;
   lastWake: {
+    webhookRecovery?: {
+      scanned: number;
+      failed: number;
+      redelivered: number;
+      skipped: number;
+      error?: string;
+    };
     wokeAt: string;
     source: "http" | "connect_ping" | "schedule" | "unknown";
     /** Process start to daemon ready. */

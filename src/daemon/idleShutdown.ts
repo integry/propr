@@ -1,3 +1,4 @@
+import { recoverDirectWebhooks } from './directWebhookRecovery.js';
 import type { Redis } from 'ioredis';
 import {
     IDLE_LAST_SHUTDOWN_REDIS_KEY,
@@ -581,6 +582,8 @@ async function waitForWakeSignal(redis: Redis, waitMs: number): Promise<IdleWake
 export async function recoverFromIdleWake(deps: {
     redis: Redis;
     routingService: Pick<RoutingWebSocketIntakeService, 'requestReplay'> | null;
+    intakeMode?: string;
+    recoverWebhooks?: typeof recoverDirectWebhooks;
     processStartedAt: number;
     waitMs?: number;
 }): Promise<void> {
@@ -594,6 +597,13 @@ export async function recoverFromIdleWake(deps: {
         const apiSignal = await waitForWakeSignal(deps.redis, deps.waitMs ?? WAKE_SIGNAL_WAIT_MS);
         const source = classifyIdleWake({ hint, now: readyAt, apiSignal });
         const record = buildIdleWakeRecord({ hint, source, now: readyAt, processStartedAt: deps.processStartedAt });
+        if (deps.intakeMode === 'direct_webhook') {
+            // A fast startup can see the waking request before GitHub records
+            // its outcome. Give it the full ten-second response deadline.
+            const remaining = deps.processStartedAt + 11_000 - Date.now();
+            if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
+            record.webhookRecovery = await (deps.recoverWebhooks ?? recoverDirectWebhooks)(hint.intakeStoppedAt ?? hint.shutdownAt);
+        }
         await deps.redis.set(IDLE_LAST_WAKE_REDIS_KEY, JSON.stringify(record), 'EX', RECORD_TTL_SECONDS).catch(() => undefined);
         await deps.redis.del(IDLE_WAKE_SIGNAL_REDIS_KEY).catch(() => undefined);
         const due = hint.nextDue.filter(item => item.dueAt <= readyAt);

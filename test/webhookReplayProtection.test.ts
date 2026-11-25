@@ -209,6 +209,35 @@ describe('Webhook Replay Protection', () => {
     });
   });
 
+  test('a redelivery while the original is still processing runs the processor once', async () => {
+    let calls = 0;
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const app = createTestApp(redisClient, async () => {
+      calls++;
+      started.resolve();
+      await finish.promise;
+    });
+    const listener = app.listen(0);
+    await new Promise<void>(resolve => listener.on('listening', resolve));
+    const body = makeBody();
+    const headers = {
+      'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+      'x-github-event': 'issues',
+      'x-github-delivery': 'same-waking-delivery',
+    };
+    const original = sendWebhook(listener, body, headers);
+    try {
+      await started.promise;
+      assert.equal((await sendWebhook(listener, body, headers)).status, 409);
+      assert.equal(calls, 1);
+    } finally {
+      finish.resolve();
+      await new Promise<void>(resolve => listener.close(() => resolve()));
+    }
+    assert.equal((await original).status, 200);
+  });
+
   describe('Redis key storage', () => {
     test('stores delivery ID with correct key prefix and TTL', async () => {
       const body = makeBody();

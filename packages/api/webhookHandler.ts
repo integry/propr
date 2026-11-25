@@ -2,16 +2,10 @@ import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { SUPPORTED_WEBHOOK_EVENTS } from '@propr/core';
 
-/**
- * Default TTL for webhook delivery deduplication keys in Redis (seconds).
- * Configurable via WEBHOOK_DELIVERY_TTL_SECONDS env var. Defaults to 300 (5 minutes).
- *
- * This controls how long delivery IDs are retained for duplicate detection.
- * Higher values increase Redis key retention — size the value according to
- * your Redis capacity and expected webhook volume.
- */
-const DEFAULT_DELIVERY_TTL_SECONDS = 300;
-
+// Direct-webhook recovery can request any attempt still in GitHub's three-day
+// delivery history. Keep the GUID reservation for at least that long, even
+// when the instance slept longer than the normal webhook deduplication TTL.
+const DIRECT_WEBHOOK_HISTORY_SECONDS = 3 * 24 * 60 * 60;
 /** Reads a positive-integer env var, falling back when unset or invalid. */
 function parsePositiveIntEnv(name: string, fallback: number): number {
   const env = process.env[name];
@@ -22,7 +16,10 @@ function parsePositiveIntEnv(name: string, fallback: number): number {
   return fallback;
 }
 
-export const WEBHOOK_DELIVERY_TTL_SECONDS: number = parsePositiveIntEnv('WEBHOOK_DELIVERY_TTL_SECONDS', DEFAULT_DELIVERY_TTL_SECONDS);
+export const WEBHOOK_DELIVERY_TTL_SECONDS: number = Math.max(
+  parsePositiveIntEnv('WEBHOOK_DELIVERY_TTL_SECONDS', 300),
+  process.env.GITHUB_EVENT_INTAKE_MODE?.trim().toLowerCase() === 'direct_webhook' ? DIRECT_WEBHOOK_HISTORY_SECONDS : 0,
+);
 
 /**
  * NOTE: Payload-timestamp–based staleness detection was intentionally removed.

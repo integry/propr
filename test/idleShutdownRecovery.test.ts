@@ -233,3 +233,26 @@ test('the replay starts when intake disconnected for the drain, not at the later
     assert.equal((await readIdleWakeHint(hintFile))?.connectReplay, 'accepted');
     await service.stop();
 });
+
+test('only a pending direct webhook wake scans App deliveries and records the result once', async () => {
+    const redis = new FakeRedis();
+    const stops: string[] = [];
+    const result = { scanned: 4, failed: 2, redelivered: 1, skipped: 1 };
+    const recover = (intakeMode: string) => recoverFromIdleWake({
+        redis: redis as never, routingService: null, processStartedAt: Date.now() - 20_000, waitMs: 0, intakeMode,
+        recoverWebhooks: async stoppedAt => { stops.push(stoppedAt); return result; },
+    });
+    await rm(hintFile, { force: true });
+    await recover('direct_webhook');
+    for (const mode of ['polling', 'routing_websocket']) {
+        await writeHint(null);
+        await recover(mode);
+    }
+    const hint = await writeHint(null);
+    const intakeStoppedAt = new Date(SHUTDOWN_AT - 1000).toISOString();
+    await writeIdleWakeHint({ ...hint, intakeStoppedAt }, hintFile);
+    await recover('direct_webhook');
+    await recover('direct_webhook');
+    assert.deepEqual(stops, [intakeStoppedAt]);
+    assert.deepEqual(JSON.parse(redis.values.get(IDLE_LAST_WAKE_REDIS_KEY)!).webhookRecovery, result);
+});

@@ -23,6 +23,10 @@ export const IdleShutdownStatus = component('IdleShutdownStatus', z.object({
   checkedAt: isoDateTime,
   lastShutdown: z.object({ shutdownAt: isoDateTime, reason: z.string(), idleForMs: z.number(), nextDueAt: nullableIso }).nullable(),
   lastWake: z.object({
+    webhookRecovery: z.object({
+      scanned: z.number().int(), failed: z.number().int(), redelivered: z.number().int(), skipped: z.number().int(),
+      error: z.string().optional(),
+    }).optional(),
     wokeAt: isoDateTime,
     source: z.enum(['http', 'connect_ping', 'schedule', 'unknown']),
     coldStartMs: z.number().describe('Process start to daemon ready.'),

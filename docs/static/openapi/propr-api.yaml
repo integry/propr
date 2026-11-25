@@ -12121,6 +12121,25 @@ components:
           anyOf:
             - type: object
               properties:
+                webhookRecovery:
+                  type: object
+                  properties:
+                    scanned:
+                      type: integer
+                    failed:
+                      type: integer
+                    redelivered:
+                      type: integer
+                    skipped:
+                      type: integer
+                    error:
+                      type: string
+                  required:
+                    - scanned
+                    - failed
+                    - redelivered
+                    - skipped
+                  additionalProperties: false
                 wokeAt:
                   type: string
                   format: date-time

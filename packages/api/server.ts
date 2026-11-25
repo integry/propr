@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { createExtensionLibraryRoutes } from './routes/extensionProfileRoutes.js';
 import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
@@ -848,7 +849,9 @@ async function start(options: StartApiServerOptions = {}): Promise<StartedApiSer
         }
       }, 30 * 1000);
     }
-    httpServer.listen(PORT, HOST, () => { console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
+    httpServer.listen(PORT, HOST);
+    await once(httpServer, 'listening');
+    console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`);
 
     const close = async (): Promise<void> => {
       // Stop admissions and drain Fleet handlers before their dependencies close.
