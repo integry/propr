@@ -81,7 +81,8 @@ test('concurrent acquisitions from separate connections never provision past the
     // A release hands the runner to the longest waiter, wherever it waits.
     const [name, record] = [...state.runners].find(([, r]) => r.state === 'provisioning')!;
     assert.equal(await stores[1].transact(scope, s => releaseSpriteRunner(s, { name, leaseId: record.leaseId!, max: 2, now: Date.now() }, { checkpoint: 'v1' })), 'idle');
-    const waiters = [...state.waiting].sort(([, a], [, b]) => a.joinedAt - b.joinedAt).map(([id]) => id);
+    // Concurrent transactions can commit in a different order from their request timestamps.
+    const waiters = [...state.waiting].sort(([, a], [, b]) => a.seq - b.seq).map(([id]) => id);
     const late = await stores[2].transact(scope, s => acquireSpriteRunner(s, { leaseId: waiters[1], owner: 'w', max: 2, newName: 'x', now: Date.now(), ttlMs: 60_000 }));
     assert.equal(late.action, 'wait');
     const first = await stores[2].transact(scope, s => acquireSpriteRunner(s, { leaseId: waiters[0], owner: 'w', max: 2, newName: 'x', now: Date.now(), ttlMs: 60_000 }));
