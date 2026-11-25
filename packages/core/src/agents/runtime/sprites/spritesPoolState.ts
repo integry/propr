@@ -55,7 +55,8 @@ export interface SpriteRunnerRecord {
     provisionMs?: number;
 }
 
-export interface SpriteWaiter { joinedAt: number; seenAt: number }
+/** A queued acquisition. `seq` is its arrival order, assigned in the enqueue transition; clocks can tie. */
+export interface SpriteWaiter { joinedAt: number; seenAt: number; seq: number }
 
 export interface SpritePoolState {
     runners: Map<string, SpriteRunnerRecord>;
@@ -63,6 +64,17 @@ export interface SpritePoolState {
 }
 
 const HELD: ReadonlySet<SpriteRunnerState> = new Set(['provisioning', 'leased', 'resetting', 'finished', 'reaping']);
+
+/** Bound on one provisioning attempt, create request included (the setup script alone may take 20 minutes). */
+export const SPRITE_PROVISION_TIMEOUT_MS = 21 * 60_000;
+/**
+ * How long a reservation whose holder died stays counted while its Sprite is
+ * absent. A live holder gives up its create request after
+ * `SPRITE_PROVISION_TIMEOUT_MS` and then records the outcome itself; a dead
+ * holder's request is gone with its process, so a Sprite still absent this
+ * long after the reservation was orphaned was never created.
+ */
+export const ABANDONED_CREATE_GRACE_MS = SPRITE_PROVISION_TIMEOUT_MS + 60_000;
 
 export function emptySpritePoolState(): SpritePoolState {
     return { runners: new Map(), waiting: new Map() };
@@ -116,6 +128,13 @@ export type SpriteLeaseDecision =
     | { action: 'reap'; name: string; record: SpriteRunnerRecord }
     | { action: 'wait'; position: number; runners: number; toCheck: SpriteInventoryCheck[] };
 
+/** The next arrival number: above every request still queued, so arrival order survives equal timestamps. */
+function nextQueueSequence(state: SpritePoolState): number {
+    let last = 0;
+    for (const waiter of state.waiting.values()) last = Math.max(last, waiter.seq);
+    return last + 1;
+}
+
 function claim(record: SpriteRunnerRecord, state: SpriteRunnerState, holder: { leaseId: string; owner: string; now: number }) {
     const { leaseId, owner, now } = holder;
     Object.assign(record, { state, leaseId, owner, lastOwner: owner, heartbeatAt: now, since: now });
@@ -132,12 +151,12 @@ export function acquireSpriteRunner(state: SpritePoolState, request: SpriteLease
     expireSpritePool(state, now, ttlMs);
     const waiter = state.waiting.get(leaseId);
     if (waiter) waiter.seenAt = now;
-    else state.waiting.set(leaseId, { joinedAt: now, seenAt: now });
+    else state.waiting.set(leaseId, { joinedAt: now, seenAt: now, seq: nextQueueSequence(state) });
     const runners = [...state.runners];
     const idle = runners.filter(([, record]) => record.state === 'idle');
     const orphans = runners.filter(([, record]) => record.state === 'orphaned' && !record.pendingCreate);
     const free = Math.max(0, request.max - runners.length);
-    const queue = [...state.waiting].sort(([a, x], [b, y]) => x.joinedAt - y.joinedAt || a.localeCompare(b));
+    const queue = [...state.waiting].sort(([a, x], [b, y]) => x.seq - y.seq || x.joinedAt - y.joinedAt || a.localeCompare(b));
     const position = queue.findIndex(([id]) => id === leaseId);
     if (position >= idle.length + orphans.length + free) return {
         action: 'wait', position, runners: runners.length,
@@ -162,6 +181,36 @@ export function acquireSpriteRunner(state: SpritePoolState, request: SpriteLease
     const [name, record] = orphans[0];
     claim(record, 'reaping', request);
     return { action: 'reap', name, record: structuredClone(record) };
+}
+
+/**
+ * What a provider lookup found for a checked record: the Sprite of a pending
+ * create (`created`), no Sprite (`missing`), or no Sprite for a create whose
+ * request may still be outstanding (`unsettled`).
+ */
+export type SpriteReservationObservation = 'created' | 'missing' | 'unsettled';
+
+/**
+ * Applies an inventory lookup to the record it checked, if the record is
+ * still as checked. A missing Sprite is forgotten. A pending create's Sprite
+ * is released for reaping. A pending create's Sprite still absent once its
+ * reservation has been orphaned for `ABANDONED_CREATE_GRACE_MS` was never
+ * created (its holder is dead; see `inspectSpriteReservation`), and its record is
+ * forgotten so the slot it held is free again.
+ */
+export function resolveSpriteInventoryCheck(state: SpritePoolState, check: SpriteInventoryCheck, observed: SpriteReservationObservation,
+    now: number): 'forgotten' | 'reapable' | 'unchanged' {
+    const record = state.runners.get(check.name);
+    if (record?.state !== check.state || record.pendingCreate !== check.pendingCreate) return 'unchanged';
+    if (observed === 'missing') return forgetSpriteRunner(state, check.name) ? 'forgotten' : 'unchanged';
+    if (record.state !== 'orphaned' || !record.pendingCreate) return 'unchanged';
+    if (observed === 'created') {
+        delete record.pendingCreate;
+        return 'reapable';
+    }
+    if (now - record.since < ABANDONED_CREATE_GRACE_MS) return 'unchanged';
+    state.runners.delete(check.name);
+    return 'forgotten';
 }
 
 /** Keeps a holder's runners and its place in the queue alive. */

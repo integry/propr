@@ -7,8 +7,8 @@ import type { AgentRunRunnerPoolUsage } from '../computeUsage.js';
 import { SPRITES_LEASE_TTL_MS, SPRITES_POOL_LABEL, spritesPoolLabel, type SpritesPoolConfig } from '../spritesPool.js';
 import {
     abandonSpriteRunner, acquireSpriteRunner, claimSpriteRunners, effectiveRunnerState, expireSpritePool, forgetSpriteRunner,
-    heartbeatSpriteLease, leaveSpriteQueue, releaseSpriteRunner, recordSpriteCreateOutcome, replaceSpriteRunner, updateSpriteRunner,
-    type SpriteInventoryCheck, type SpritePoolState, type SpriteRunnerRecord,
+    heartbeatSpriteLease, leaveSpriteQueue, releaseSpriteRunner, recordSpriteCreateOutcome, replaceSpriteRunner, resolveSpriteInventoryCheck,
+    SPRITE_PROVISION_TIMEOUT_MS, updateSpriteRunner, type SpriteInventoryCheck, type SpritePoolState, type SpriteRunnerRecord,
 } from './spritesPoolState.js';
 import type { SpritePoolStore } from './spritesPoolStore.js';
 import {
@@ -172,16 +172,18 @@ export class SpritePool {
         }
     }
 
+    /** Frees the slot of a record whose Sprite is gone, including a create its dead holder never sent (`resolveSpriteInventoryCheck`). */
     private async checkInventory(check: SpriteInventoryCheck, signal: AbortSignal): Promise<void> {
         const observed = await inspectSpriteReservation(this.client, check, signal);
         if (!observed) return;
-        await this.transact(state => {
-            expireSpritePool(state, this.now(), this.ttlMs);
-            const current = state.runners.get(check.name);
-            if (current?.state !== check.state || current.pendingCreate !== check.pendingCreate) return;
-            if (observed === 'missing') forgetSpriteRunner(state, check.name);
-            else if (current.state === 'orphaned') delete current.pendingCreate;
+        const resolution = await this.transact(state => {
+            const now = this.now();
+            expireSpritePool(state, now, this.ttlMs);
+            return resolveSpriteInventoryCheck(state, check, observed, now);
         });
+        if (resolution === 'forgotten' && observed === 'unsettled') {
+            logger.warn({ sprite: check.name }, 'Sprites runner reservation abandoned by a dead worker before its Sprite was created; slot released');
+        }
     }
 
     private async checkBlocked(records: SpriteInventoryCheck[], signal: AbortSignal): Promise<void> {
@@ -298,7 +300,7 @@ export class SpritePool {
 
     private async provision({ name, leaseId, waitMs, runs }: PoolLease, cancellation = this.shutdown.signal): Promise<Slot> {
         const startedAt = this.now();
-        const signal = AbortSignal.any([cancellation, AbortSignal.timeout(21 * 60_000)]);
+        const signal = AbortSignal.any([cancellation, AbortSignal.timeout(SPRITE_PROVISION_TIMEOUT_MS)]);
         const lease = () => ({ name, leaseId, owner: this.owner, now: this.now() });
         const reserved = await this.transact(state => state.runners.get(name)?.state === 'provisioning'
             && updateSpriteRunner(state, lease(), { pendingCreate: leaseId }));

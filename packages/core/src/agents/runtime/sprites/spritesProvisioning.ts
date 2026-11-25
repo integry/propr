@@ -4,7 +4,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 import logger from '../../../utils/logger.js';
-import type { SpriteCreateOutcome } from './spritesPoolState.js';
+import type { SpriteCreateOutcome, SpriteReservationObservation } from './spritesPoolState.js';
 
 const projectRoot = () => process.env.PROPR_ROOT
     || (existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
@@ -44,15 +44,22 @@ export async function deleteSprite(client: SpriteClient, name: string, signal = 
     }
 }
 
-/** A missing Sprite is conclusive only after its create request has settled. */
-export async function inspectSpriteReservation(client: SpriteClient, reservation: { name: string; pendingCreate?: string }, signal: AbortSignal) {
+/**
+ * Looks a checked record's Sprite up. A missing Sprite is conclusive only after
+ * its create request has settled: for a pending create it is `unsettled`, and
+ * `resolveSpriteInventoryCheck` decides from the reservation's age whether the
+ * holder that sent the request can still be waiting on it. Nothing is returned
+ * when the Sprite exists as recorded.
+ */
+export async function inspectSpriteReservation(client: SpriteClient, reservation: { name: string; pendingCreate?: string },
+    signal: AbortSignal): Promise<SpriteReservationObservation | undefined> {
     try {
         const sprite = await startupStep(signal, () => client.getSprite(reservation.name));
         if (reservation.pendingCreate && sprite.labels?.includes(createLabel(reservation.pendingCreate))) return 'created';
     } catch (error) {
         signal.throwIfAborted();
         if ((error as { statusCode?: number }).statusCode !== 404) throw error;
-        if (!reservation.pendingCreate) return 'missing';
+        return reservation.pendingCreate ? 'unsettled' : 'missing';
     }
 }
 

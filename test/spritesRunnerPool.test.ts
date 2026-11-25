@@ -17,11 +17,15 @@ import { SpritesRuntime } from '../packages/core/src/agents/runtime/spritesRunti
 import {
     MemorySpritePoolStore, readSpritesPoolStatus, resolveSpritesPoolConfig, spritesPoolLabel, spritesPoolScope, spritesWarmCloneKey,
 } from '../packages/core/src/agents/runtime/spritesPool.ts';
-import { acquireSpriteRunner, emptySpritePoolState } from '../packages/core/src/agents/runtime/sprites/spritesPoolState.ts';
+import {
+    ABANDONED_CREATE_GRACE_MS, acquireSpriteRunner, emptySpritePoolState, releaseSpriteRunner,
+} from '../packages/core/src/agents/runtime/sprites/spritesPoolState.ts';
+import { decodeSpritePoolState } from '../packages/core/src/agents/runtime/sprites/spritesPoolStore.ts';
+import type { SpritePoolStore } from '../packages/core/src/agents/runtime/sprites/spritesPoolStore.ts';
 import { formatComputeUsage, normalizeComputeUsage } from '../packages/core/src/agents/runtime/computeUsage.ts';
 import { WORKSPACE_TRANSPORT_ENVIRONMENT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { readSpriteSetup } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts';
-import { SpritePool } from '../packages/core/src/agents/runtime/sprites/spritesRunnerPool.ts';
+import { SpritePool, type SpritePoolOptions } from '../packages/core/src/agents/runtime/sprites/spritesRunnerPool.ts';
 import { FakeSprite, FakeSprites } from './helpers/fakeSprites.ts';
 
 const token = 'test-org-secret';
@@ -397,6 +401,28 @@ test('an acquisition prefers an idle runner warm for the repository, then a clea
     assert.equal((acquireSpriteRunner(state, request('2', 'a')) as { name: string }).name, 'clean');
     assert.equal((acquireSpriteRunner(state, request('3', 'a')) as { name: string }).name, 'warm-other');
     assert.equal(acquireSpriteRunner(state, request('4')).action, 'wait');
+});
+
+test('two requests queued at the same clock value are served in arrival order', () => {
+    const state = emptySpritePoolState();
+    state.runners.set('busy', { state: 'leased', leaseId: 'holder', owner: 'w', heartbeatAt: 0, since: 0, runs: 0, checkpoint: 'v1' });
+    const request = (leaseId: string, now: number) => ({ leaseId, owner: 'w', max: 1, newName: `new-${leaseId}`, now, ttlMs: 60_000 });
+    // The second arrival's ID sorts before the first's: a timestamp tie must not reverse them.
+    const [first, second] = ['zzzz-first', 'aaaa-second'];
+    assert.equal(acquireSpriteRunner(state, request(first, 5)).action, 'wait');
+    assert.equal(acquireSpriteRunner(state, request(second, 5)).action, 'wait');
+    assert.equal(releaseSpriteRunner(state, { name: 'busy', leaseId: 'holder', now: 6, max: 1 }, {}), 'idle');
+    const late = acquireSpriteRunner(state, request(second, 6));
+    assert.equal(late.action, 'wait', 'the later arrival stays queued while only one runner is free');
+    assert.equal((late as { position: number }).position, 1);
+    assert.equal(acquireSpriteRunner(state, request(first, 6)).action, 'lease');
+    assert.equal(acquireSpriteRunner(state, request(second, 7)).action, 'wait');
+    // Arrival numbers keep growing past the requests already served, so a newcomer never overtakes one still queued.
+    assert.equal(acquireSpriteRunner(state, request('0000-third', 7)).action, 'wait');
+    assert.deepEqual([...state.waiting].sort(([, a], [, b]) => a.seq - b.seq).map(([id]) => id), [second, '0000-third']);
+    // Waiters stored by an older worker without an arrival number still decode and sort by their timestamp.
+    const decoded = decodeSpritePoolState({}, { old: JSON.stringify({ joinedAt: 1, seenAt: 1 }), cur: JSON.stringify({ joinedAt: 2, seenAt: 2, seq: 4 }) });
+    assert.deepEqual([...decoded.waiting.values()].map(waiter => waiter.seq), [0, 4]);
 });
 
 test('stored run usage keeps the runner pool timings', () => {
@@ -885,6 +911,88 @@ for (const cleanup of ['replacement', 'shutdown']) {
         assert.deepEqual(client.deleted, [slot.name]);
         assert.equal((await store.read(scope)).runners.size, 0);
     });
+}
+
+test('a reservation whose worker died before sending its create is released after the create deadline', { timeout: 10_000 }, async t => {
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    let clock = 1_000_000;
+    const now = () => clock;
+    const config = resolveSpritesPoolConfig({ PROPR_SPRITES_MAX: '1' });
+    const { pool: dying, die } = dyingWorker(client, store, { config, now });
+    const reserved = Promise.withResolvers<string>();
+    const neverSent = Promise.withResolvers<never>();
+    t.mock.method(client, 'createSprite', (name: string) => {
+        die();
+        reserved.resolve(name);
+        return neverSent.promise;
+    }, { times: 1 });
+    const crashed = dying.acquire(new AbortController().signal);
+    const name = await reserved.promise;
+    const persisted = (await store.read(scope)).runners.get(name);
+    assert.equal(persisted?.pendingCreate, persisted?.leaseId, 'the reservation was committed before the request');
+
+    clock += 1001; // The dead worker's heartbeats lapse.
+    const peer = new SpritePool(client, { scope, store, pollMs: 5, ttlMs: 1000, config, now, owner: 'peer' });
+    const signal = new AbortController().signal;
+    await assert.rejects(peer.acquire(signal, { timeout: 100 }), { name: 'TimeoutError' });
+    const orphaned = (await store.read(scope)).runners.get(name);
+    assert.equal(orphaned?.state, 'orphaned');
+    assert.ok(orphaned.pendingCreate, 'a 404 within the create deadline keeps the slot reserved: the create may still land');
+    assert.equal(client.created.length, 0);
+
+    clock += ABANDONED_CREATE_GRACE_MS; // No Sprite appeared for longer than any create request can stay outstanding.
+    const slot = await peer.acquire(signal, { timeout: 5000 });
+    assert.equal((await store.read(scope)).runners.has(name), false, 'the abandoned reservation is forgotten');
+    assert.notEqual(slot.name, name);
+    assert.equal(client.created.length, 1);
+    assert.deepEqual(client.deleted, []);
+    await peer.discard(slot);
+
+    neverSent.reject(new Error('worker process exited'));
+    await assert.rejects(crashed, /worker process exited/);
+    await peer.close();
+});
+
+test('a pending create whose Sprite appears late is reaped rather than forgotten, even after the deadline', { timeout: 10_000 }, async t => {
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    let clock = 1_000_000;
+    const now = () => clock;
+    const config = resolveSpritesPoolConfig({ PROPR_SPRITES_MAX: '1' });
+    const { pool: dying, die } = dyingWorker(client, store, { config, now });
+    const create = client.createSprite.bind(client);
+    const requested = Promise.withResolvers<Parameters<typeof create>>();
+    const lost = Promise.withResolvers<never>();
+    t.mock.method(client, 'createSprite', (...args: Parameters<typeof create>) => {
+        die();
+        requested.resolve(args);
+        return lost.promise;
+    }, { times: 1 });
+    const crashed = dying.acquire(new AbortController().signal);
+    const args = await requested.promise;
+    clock += 1001 + ABANDONED_CREATE_GRACE_MS;
+    await create(...args); // The request had reached the provider after all.
+    const peer = new SpritePool(client, { scope, store, pollMs: 5, ttlMs: 1000, config, now, owner: 'peer' });
+    const slot = await peer.acquire(new AbortController().signal, { timeout: 5000 });
+    assert.deepEqual(client.deleted, [args[0]], 'the Sprite that did get created is deleted, never leaked');
+    assert.equal(client.created.length, 2);
+    await peer.discard(slot);
+    lost.reject(new Error('worker process exited'));
+    await assert.rejects(crashed, /worker process exited/);
+    await peer.close();
+});
+
+/** A worker whose process ends at `die()`: from then on it writes nothing to the shared state and heartbeats fail. */
+function dyingWorker(client: FakeSprites, store: MemorySpritePoolStore, options: Pick<SpritePoolOptions, 'config' | 'now'>) {
+    let dead = false;
+    const dyingStore: SpritePoolStore = {
+        transact: (scope, operation) => dead ? Promise.reject(new Error('worker process exited')) : store.transact(scope, operation),
+        read: scope => store.read(scope), publishConfig: (scope, published) => store.publishConfig(scope, published),
+        readConfig: scope => store.readConfig(scope), scopes: () => store.scopes(),
+    };
+    const pool = new SpritePool(client, { scope, store: dyingStore, pollMs: 5, ttlMs: 1000, owner: 'dying', ...options });
+    return { pool, die: () => { dead = true; } };
 }
 
 test('a lost create response keeps the possible Sprite counted until reaped', async () => {

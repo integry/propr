@@ -68,7 +68,9 @@ export function decodeSpritePoolState(runners: Record<string, string>, waiting: 
     }
     for (const [id, raw] of Object.entries(waiting)) {
         const waiter = parse<SpriteWaiter>(raw);
-        if (waiter && Number.isFinite(waiter.joinedAt) && Number.isFinite(waiter.seenAt)) state.waiting.set(id, waiter);
+        if (!waiter || !Number.isFinite(waiter.joinedAt) || !Number.isFinite(waiter.seenAt)) continue;
+        // A waiter written without an arrival number (an older worker) sorts by its timestamp and ID.
+        state.waiting.set(id, { ...waiter, seq: Number.isFinite(waiter.seq) ? waiter.seq : 0 });
     }
     return state;
 }
