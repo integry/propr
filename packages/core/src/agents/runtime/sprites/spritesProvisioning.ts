@@ -76,6 +76,7 @@ export class SpritePool {
         // incarnation of this worker, can still have a live run on one it created.
         const started = Date.now();
         const creating = Promise.resolve().then(async () => {
+            signal.throwIfAborted();
             const created = await this.client.createSprite(name);
             if (this.inventory && created.name !== name) throw new Error('Provider returned an unexpected Sprite name');
             return created;
@@ -122,8 +123,9 @@ export class SpritePool {
 
     async discard(sprite: Sprite): Promise<void> {
         try {
-            await startupStep(AbortSignal.timeout(60_000), async () => {
-                if (this.inventory) await this.inventory.deleteOwned(sprite.name);
+            const timeout = AbortSignal.timeout(60_000);
+            await startupStep(timeout, async () => {
+                if (this.inventory) await this.inventory.deleteOwned(sprite.name, timeout);
                 else await this.client.deleteSprite(sprite.name);
             });
         } catch (error) {
@@ -145,9 +147,18 @@ export class SpritePool {
         return work;
     }
 
+    private async transition(slot: Slot, phase: 'idle' | 'inUse') {
+        if (slot.lease?.aborted) return false;
+        try { return !this.inventory || await this.inventory.phase(slot.sprite.name, phase); }
+        catch (error) {
+            await this.discard(slot.sprite);
+            throw error;
+        }
+    }
+
     private async recycleClean(slot: Slot) {
         if (this.closed) await this.discard(slot.sprite);
-        else if (!this.inventory || await this.inventory.phase(slot.sprite.name, 'idle')) {
+        else if (await this.transition(slot, 'idle')) {
             if (this.closed) await this.discard(slot.sprite);
             else this.idle.push(slot);
         }
@@ -183,7 +194,7 @@ export class SpritePool {
                 }
                 slot = await this.claim(this.provisionForPool(name), signal);
             }
-            if (slot.lease?.aborted || (this.inventory && !await this.inventory.phase(slot.sprite.name, 'inUse'))) continue;
+            if (!await this.transition(slot, 'inUse') || slot.lease?.aborted) continue;
             if (signal.aborted) {
                 await this.recycleClean(slot);
                 signal.throwIfAborted();
@@ -297,10 +308,16 @@ export class SpritePool {
 }
 
 async function restart(sprite: Sprite, signal: AbortSignal) {
+    const bootId = async (attempt: AbortSignal) => {
+        const probe = await startupStep(attempt, () => sprite.execFile('cat', ['/proc/sys/kernel/random/boot_id'], { cwd: '/', signal: attempt, timeout: 5000 }));
+        const id = probe.stdout.toString().trim();
+        if (probe.exitCode !== 0 || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) throw new Error('Missing Sprite boot ID');
+        return id.toLowerCase();
+    };
+    const before = await bootId(signal);
     const ambiguous = /restart[ _-]+outcome[ _-]+unknown/i;
     try {
-        const result = await startupStep(signal, () => sprite.restart());
-        if (!ambiguous.test(result?.message ?? '')) return;
+        await startupStep(signal, () => sprite.restart());
     } catch (error) {
         if (!(error instanceof Error && ambiguous.test(error.message))) throw error;
     }
@@ -308,8 +325,7 @@ async function restart(sprite: Sprite, signal: AbortSignal) {
     for (;;) {
         try {
             const attempt = AbortSignal.any([until, AbortSignal.timeout(5000)]);
-            const probe = await startupStep(attempt, () => sprite.execFile('true', [], { cwd: '/', signal: attempt, timeout: 5000 }));
-            if (probe.exitCode === 0) return;
+            if (await bootId(attempt) !== before) return;
         } catch {
             until.throwIfAborted();
         }

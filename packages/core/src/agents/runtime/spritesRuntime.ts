@@ -184,7 +184,10 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                 if (!name) return null;
                 const read = slot.sprite.filesystem().readFile('/opt/propr/result/' + name, null);
                 reads.add(read);
-                try { return await read; }
+                try {
+                    const content = await read;
+                    return slot.lease?.aborted ? null : content;
+                }
                 catch (error) { if ((error as { code?: string }).code === 'ENOENT') return null; throw error; }
                 finally { reads.delete(read); }
             }, release,

@@ -5,6 +5,8 @@ import { spritePoolKey, spritePoolStatus } from '@propr/shared';
 // even if the next provider sweep is several minutes away.
 const snapshot = `
 local inventory = redis.call('HGETALL', KEYS[1])
+local runners = redis.call('HGETALL', KEYS[1] .. ':runners')
+for _, value in ipairs(runners) do table.insert(inventory, value) end
 for i = 1, #inventory, 2 do
     if string.sub(inventory[i], 1, 6) == 'propr-' and
         redis.call('EXISTS', KEYS[1] .. ':lease:' .. inventory[i]) == 0 then

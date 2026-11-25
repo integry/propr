@@ -18,6 +18,8 @@ import Redis from 'ioredis-mock';
 import { spritePoolKey } from '@propr/shared';
 import { FakeSprites, FakeSpriteOrganization } from './helpers/fakeSprites.ts';
 
+const markerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-runtime-'));
+after(() => fs.rmSync(markerDir, { recursive: true, force: true }));
 const token = 'test-org-secret';
 function fixture() {
     const client = new FakeSprites();
@@ -56,7 +58,7 @@ test('a lease lasts through result retrieval and release wipes the separate tmp 
 test('a run at the shared cap reports its wait and then runs on the restored Sprite', { timeout: 5000 }, async t => {
     const { builder } = fixture();
     const provider = new FakeSpriteOrganization();
-    const runtime = new SpritesRuntime(provider, { PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: '1' }, new Redis());
+    const runtime = new SpritesRuntime(provider, { DATA_DIR: markerDir, PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: '1' }, new Redis());
     t.after(() => runtime.close());
     let now = Date.now();
     t.mock.method(Date, 'now', () => now);
@@ -101,7 +103,7 @@ test('lease loss stops the holder while a concurrent sweep preserves its running
         void sprite.launched.promise.then(launched.resolve);
     };
     const redis = new Redis({ port: 9001 });
-    const environment = { PROPR_SPRITES_TOKEN: token };
+    const environment = { DATA_DIR: markerDir, PROPR_SPRITES_TOKEN: token };
     const holder = new SpritesRuntime(provider, environment, redis);
     const cleaner = new SpritesRuntime(provider, environment, redis);
     t.after(() => Promise.all([holder.close(), cleaner.close()]));
@@ -605,13 +607,15 @@ test('physical refusal settles while unused-slot deletion is pending and survive
     builder.credentialBind(root, '/home/node/.gemini-source', true, { provider: 'antigravity', store: 'config', perRun: true });
     client.setup = sprite => { sprite.failWipe = true; };
     const deletion = Promise.withResolvers<void>();
-    client.deleteSprite = () => deletion.promise;
+    const deleting = Promise.withResolvers<void>();
+    client.deleteSprite = () => { deleting.resolve(); return deletion.promise; };
     await runWithActiveRunCostCap({ taskId: 'test', exceeded: false, admit: async () => {},
         beginExecution: () => { throw new RunCostCapExceededError('cap reached'); } }, async () => {
         const run = runtime.start(builder.build(), { preserveOutputOnTimeout: true });
         assert.equal((await run.wait()).costCapExceeded, true);
         await run.release!();
     });
+    await deleting.promise;
     deletion.reject(new Error('delete failed'));
     await runtime.close();
     assert.deepEqual(client.created[0].events, ['checkpoint', 'restore', 'restart', 'wipe']);
@@ -730,4 +734,24 @@ test('CLI admission reuses Dockerfile pins for the same setup root', async t => 
     const pins = readSpritesCliPins(root);
     fs.unlinkSync(file);
     assert.equal(readSpritesCliPins(root), pins);
+});
+
+test('a result read completing after the local lease deadline returns no data', async t => {
+    const { builder } = fixture();
+    const provider = new FakeSpriteOrganization();
+    const redis = new Redis({ port: 9010 });
+    const runtime = new SpritesRuntime(provider, { DATA_DIR: markerDir, PROPR_SPRITES_TOKEN: token }, redis);
+    t.after(() => runtime.close());
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const run = runtime.start(builder.build());
+    await run.wait();
+    const pending = Promise.withResolvers<Buffer>();
+    const sprite = provider.created[0];
+    const fs = sprite.filesystem();
+    sprite.filesystem = () => ({ ...fs, readFile: () => pending.promise });
+    const read = run.readFile!('/tmp/propr-workspace-result/result.bundle');
+    t.mock.timers.tick(179_000);
+    pending.resolve(Buffer.from('old result'));
+    assert.equal(await read, null);
+    await assert.rejects(run.release!(), /lease expired/);
 });

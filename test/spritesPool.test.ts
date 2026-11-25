@@ -1,18 +1,23 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { after, test } from 'node:test';
 import Redis from 'ioredis-mock';
 import { spritePoolKey, spritePoolStatus } from '@propr/shared';
 import { SpriteInventory } from '../packages/core/src/agents/runtime/sprites/spritesInventory.ts';
 import { SpritePool } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts';
 import { FakeSpriteOrganization } from './helpers/fakeSprites.ts';
 
+const data = mkdtempSync(path.join(tmpdir(), 'sprite-markers-'));
+after(() => rmSync(data, { recursive: true, force: true }));
 let port = 8000;
 function fixture() {
     const redis = new Redis({ port: port++ });
     const provider = new FakeSpriteOrganization();
-    const open = () => SpriteInventory.open(provider, { PROPR_SPRITES_MAX: '1' }, redis);
-    const status = async () => spritePoolStatus(await redis.hgetall(spritePoolKey()))!;
+    const open = () => SpriteInventory.open(provider, { PROPR_SPRITES_MAX: '1', DATA_DIR: data }, redis);
+    const status = async () => spritePoolStatus({ ...await redis.hgetall(spritePoolKey()), ...await redis.hgetall(spritePoolKey() + ':runners') })!;
     return { redis, provider, open, status };
 }
 
@@ -144,13 +149,14 @@ for (const recovers of [true, false]) {
         t.after(() => pool.close());
         const slot = await pool.acquire(new AbortController().signal);
         const sprite = provider.created[0];
-        sprite.restart = async () => { throw new Error('restart outcome unknown'); };
+        let restarted = false;
+        sprite.restart = async () => { restarted = true; throw new Error('restart outcome unknown'); };
         const timeout = AbortSignal.timeout.bind(AbortSignal);
         t.mock.method(AbortSignal, 'timeout', (ms: number) => timeout(!recovers && ms === 60_000 ? 35 : ms));
         const exec = sprite.execFile.bind(sprite);
         let probes = 0;
         sprite.execFile = async (cmd, args, options) => {
-            if (cmd === 'true' && (++probes === 1 || !recovers)) throw new Error('still booting');
+            if (cmd === 'cat' && restarted && ++probes === 2 && recovers) sprite.bootId = randomUUID();
             return exec(cmd, args, options);
         };
         await pool.release(slot);
@@ -194,13 +200,193 @@ test('an acknowledged delete that leaves the machine visible keeps its cap slot'
 
 test('different deployments in one provider organization and Redis database have separate inventories', async () => {
     const { redis, provider } = fixture();
-    const first = await SpriteInventory.open(provider, { PROPR_INSTANCE_ID: 'one' }, redis);
+    const first = await SpriteInventory.open(provider, { DATA_DIR: data, PROPR_INSTANCE_ID: 'one' }, redis);
     const foreign = await provider.createSprite(first.prefix + randomUUID());
     foreign.createdAt = new Date(1);
-    const second = await SpriteInventory.open(provider, { PROPR_INSTANCE_ID: 'two' }, redis);
+    const second = await SpriteInventory.open(provider, { DATA_DIR: data, PROPR_INSTANCE_ID: 'two' }, redis);
     assert.notEqual(first.prefix, second.prefix);
     assert.deepEqual(provider.deleted, []);
-    assert.equal(await redis.hlen(spritePoolKey('two')), 2);
+    assert.equal(await redis.hlen(spritePoolKey('two') + ':runners'), 0);
     await first.sweep();
     assert.deepEqual(provider.deleted, [foreign.name]);
+});
+
+test('an open inventory rebuilds lost Redis state before admitting another machine', async () => {
+    const { open, provider, redis, status } = fixture();
+    const inventory = await open();
+    const name = inventory.prefix + randomUUID();
+    const next = inventory.prefix + randomUUID();
+    assert.ok(await inventory.reserve(name));
+    const key = spritePoolKey();
+    await redis.del(key + ':runners');
+    assert.equal(await inventory.reserve(next), false, 'surviving lease covers an in-flight create');
+    await provider.createSprite(name);
+    await redis.del(key + ':runners');
+    assert.ok(await inventory.phase(name, 'inUse'));
+    assert.equal((await status()).inUse, 1);
+    await redis.flushdb();
+    assert.equal(await inventory.reserve(next), false);
+    assert.equal((await status()).awaitingCleanup, 1);
+    await redis.hdel(key, 'cap', 'orphansDeleted');
+    assert.equal(await inventory.reserve(next), false);
+    assert.equal((await status()).cap, 1);
+    assert.equal(await redis.hget(key, 'orphansDeleted'), '0');
+    await provider.deleteSprite(name);
+    await inventory.sweep();
+    assert.ok(await inventory.reserve(next));
+    await inventory.finish(next, 'gone');
+});
+
+test('a listing started before Redis loss cannot publish stale capacity', async () => {
+    const { open, provider, redis } = fixture();
+    const inventory = await open();
+    const list = provider.listAllSprites.bind(provider);
+    let first = true;
+    provider.listAllSprites = async () => {
+        const listed = await list();
+        if (first) {
+            first = false;
+            await provider.createSprite(inventory.prefix + randomUUID());
+            await redis.flushdb();
+        }
+        return listed;
+    };
+    assert.equal(await inventory.reserve(inventory.prefix + randomUUID()), false);
+});
+
+test('a legacy deployment retains its marker and reservations across migration and Redis loss', async () => {
+    const { provider, redis } = fixture();
+    const env = { DATA_DIR: data, PROPR_INSTANCE_ID: 'migrating', PROPR_SPRITES_MAX: '1' };
+    const key = spritePoolKey(env.PROPR_INSTANCE_ID);
+    const marker = '0123456789abcdef';
+    const name = 'propr-' + marker + '-' + randomUUID();
+    const open = () => SpriteInventory.open(provider, env, redis);
+    await redis.set(key + ':deployment', marker);
+    await redis.hset(key, 'cap', '1', 'orphansDeleted', '3', name, 'inUse');
+    await redis.set(key + ':lease:' + name, 'legacy-owner');
+    const sprite = await provider.createSprite(name);
+    const before = await open();
+    assert.equal(await redis.hget(key + ':runners', name), 'inUse');
+    assert.equal(await redis.hget(key, 'orphansDeleted'), '3');
+    await redis.flushdb();
+    const after = await open();
+    assert.equal(after.prefix, before.prefix);
+    assert.equal(await after.reserve(after.prefix + randomUUID()), false);
+    sprite.createdAt = new Date(1);
+    await after.sweep();
+    assert.deepEqual(provider.deleted, [name]);
+});
+
+test('reservation and renewal acknowledgements cannot grant authority beyond their send-time budget', async t => {
+    const { open, redis } = fixture();
+    const inventory = await open();
+    const name = inventory.prefix + randomUUID();
+    let now = 0;
+    t.mock.method(performance, 'now', () => now);
+    const evaluate = redis.eval.bind(redis);
+    let lag = true;
+    t.mock.method(redis, 'eval', async (...args: Parameters<typeof evaluate>) => {
+        const result = await evaluate(...args);
+        if (lag && result === 1) now += 179_000;
+        return result;
+    });
+    await assert.rejects(inventory.reserve(name), /expired/);
+    assert.equal(await redis.get(spritePoolKey() + ':lease:' + name), null);
+    lag = false;
+    assert.ok(await inventory.reserve(name));
+    const signal = inventory.signal(name);
+    lag = true;
+    assert.equal(await inventory.phase(name, 'inUse'), false);
+    assert.ok(signal.aborted);
+    assert.ok(await redis.get(spritePoolKey() + ':lease:' + name));
+});
+
+for (const phase of ['idle', 'inUse'] as const) {
+    test('a persistent ' + phase + ' phase failure discards under verified ownership', async t => {
+        const { open, provider, redis } = fixture();
+        const pool = new SpritePool(provider, await open());
+        t.after(() => pool.close());
+        const evaluate = redis.eval.bind(redis);
+        let attempts = 0;
+        t.mock.method(redis, 'eval', async (...args: Parameters<typeof evaluate>) => {
+            if (args.at(-1) === phase) {
+                await evaluate(...args); // Applied, but the acknowledgement was lost.
+                attempts++;
+                throw new Error('Redis disconnected');
+            }
+            return evaluate(...args);
+        });
+        const checkout = pool.acquire(new AbortController().signal);
+        await assert.rejects(phase === 'idle' ? checkout.then(slot => pool.release(slot)) : checkout, /Redis disconnected/);
+        assert.equal(attempts, 3);
+        assert.deepEqual(provider.deleted, [provider.created[0].name]);
+        assert.equal(await redis.hlen(spritePoolKey() + ':runners'), 0);
+    });
+}
+
+test('lost reservation and phase replies retry the same Sprite at a cap of one', async t => {
+    const { open, provider, redis } = fixture();
+    const pool = new SpritePool(provider, await open());
+    t.after(() => pool.close());
+    const evaluate = redis.eval.bind(redis);
+    const lost = new Set<string>();
+    t.mock.method(redis, 'eval', async (...args: Parameters<typeof evaluate>) => {
+        const result = await evaluate(...args);
+        const operation = args[1] === 4 ? 'reserve' : String(args.at(-1));
+        if (result === 1 && !lost.has(operation)) {
+            lost.add(operation);
+            throw new Error('reply lost');
+        }
+        return result;
+    });
+    const slot = await pool.acquire(AbortSignal.timeout(5000));
+    await pool.release(slot);
+    assert.equal(provider.created.length, 1);
+    assert.deepEqual([...lost], ['reserve', 'inUse', 'idle']);
+});
+
+test('a phase replay after lease takeover leaves the new owner in control', async t => {
+    const { open, redis, provider } = fixture();
+    const inventory = await open();
+    const pool = new SpritePool(provider, inventory);
+    t.after(() => pool.close());
+    const slot = await pool.acquire(new AbortController().signal);
+    const evaluate = redis.eval.bind(redis);
+    const lease = spritePoolKey() + ':lease:' + slot.sprite.name;
+    t.mock.method(redis, 'eval', async (...args: Parameters<typeof evaluate>) => {
+        const result = await evaluate(...args);
+        if (result === 1 && args.at(-1) === 'idle') {
+            await redis.set(lease, 'cleaner');
+            throw new Error('lost reply');
+        }
+        return result;
+    });
+    await pool.release(slot);
+    assert.ok(slot.lease?.aborted);
+    assert.equal(await redis.get(lease), 'cleaner');
+    assert.deepEqual(provider.deleted, []);
+});
+
+test('the holder timer subtracts Redis round-trip time from a successful renewal', async t => {
+    const { open, redis } = fixture();
+    const inventory = await open();
+    const name = inventory.prefix + randomUUID();
+    let now = 0;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    t.mock.method(performance, 'now', () => now);
+    const advance = (ms: number) => { now += ms; t.mock.timers.tick(ms); };
+    assert.ok(await inventory.reserve(name));
+    const signal = inventory.signal(name);
+    advance(60_000);
+    const evaluate = redis.eval.bind(redis);
+    t.mock.method(redis, 'eval', async (...args: Parameters<typeof evaluate>) => {
+        const result = await evaluate(...args);
+        advance(30_000);
+        return result;
+    });
+    assert.ok(await inventory.phase(name, 'inUse'));
+    advance(139_999);
+    assert.equal(signal.aborted, false);
+    advance(1);
+    assert.ok(signal.aborted);
 });

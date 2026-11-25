@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { Sprite } from '@fly/sprites';
@@ -36,7 +37,8 @@ export class FakeSprite {
             readFile: async (p: string) => this.files.get(p) ?? null,
         };
     }
-    async restart() { this.events.push('restart'); }
+    bootId = randomUUID();
+    async restart() { this.bootId = randomUUID(); this.events.push('restart'); }
     async updateNetworkPolicy(policy: { rules: unknown[] }) {
         if (this.failPolicy) throw new Error('policy update failed');
         this.events.push(policy.rules.length ? 'restrict' : 'open');
@@ -45,6 +47,7 @@ export class FakeSprite {
     }
     async getNetworkPolicy() { return structuredClone(this.networkPolicy); }
     async execFile(cmd: string, args: string[], _options?: { signal?: AbortSignal }) {
+        if (cmd === 'cat' && args[0] === '/proc/sys/kernel/random/boot_id') return { exitCode: 0, stdout: this.bootId, stderr: '' };
         if (cmd === 'sudo' && args.join(' ') === '-n find /tmp -xdev -mindepth 1 -delete') {
             this.events.push('wipe');
             if (this.failWipe) throw new Error('wipe failed');
