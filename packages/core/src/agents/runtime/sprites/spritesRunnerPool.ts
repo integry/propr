@@ -11,7 +11,7 @@ import {
     type SpritePoolState, type SpriteRunnerRecord,
 } from './spritesPoolState.js';
 import type { SpritePoolStore } from './spritesPoolStore.js';
-import { carryWarmClone, completeCheckpointStream, installWarmClone, readSpriteSetup, restartForReset, setupSprite, startupStep, type SpriteClient } from './spritesProvisioning.js';
+import { carryWarmClone, completeCheckpointStream, confirmResultAbsent, installWarmClone, readSpriteSetup, restartForReset, setupSprite, startupStep, type SpriteClient } from './spritesProvisioning.js';
 
 /** One leased runner. */
 export type Slot = {
@@ -48,19 +48,6 @@ function isOldLegacySprite(sprite: Sprite, listedAt: number): boolean {
     return !sprite.labels?.length && LEGACY_NAME.test(sprite.name) && sprite.createdAt !== undefined
         && listedAt - sprite.createdAt.getTime() > LEGACY_SPRITE_GRACE_MS;
 }
-
-// The launcher changes the root-owned result directory from 0700 to 0711 after
-// the transport exits. Files can also be durable before that final chmod.
-const INSPECT_RESULT = `import os, stat
-directory = "/opt/propr/result"
-try:
-    entries = os.listdir(directory)
-except FileNotFoundError:
-    print("absent")
-else:
-    active = stat.S_IMODE(os.stat(directory).st_mode) == 0o700
-    print("absent" if active and not entries else "keep")
-`;
 
 /** Deletes a Sprite; one that is already gone counts as deleted. */
 export async function deleteSprite(client: SpriteClient, name: string): Promise<void> {
@@ -158,7 +145,7 @@ export class SpritePool {
             if (state.runners.has(sprite.name)) continue;
             if (!sprite.labels?.includes(label)) {
                 if (!isOldLegacySprite(sprite, listedAt)) continue;
-                if (!await this.confirmResultAbsent(sprite.name)) {
+                if (!await confirmResultAbsent(this.client, sprite.name)) {
                     logger.warn({ sprite: sprite.name }, 'Legacy Sprite may hold an unrecovered result; review it manually');
                     continue;
                 }
@@ -206,19 +193,8 @@ export class SpritePool {
         await Promise.allSettled(claimed.map(([name, record]) => this.reapRunner(name, leaseId, record)));
     }
 
-    private async confirmResultAbsent(name: string): Promise<boolean> {
-        try {
-            const inspection = await this.client.sprite(name).execFile('sudo', ['-n', '/usr/bin/python3', '-I', '-c', INSPECT_RESULT],
-                { cwd: '/', timeout: 30_000 });
-            return inspection.exitCode === 0 && inspection.stdout.toString().trim() === 'absent';
-        } catch (error) {
-            logger.warn({ sprite: name, error: String(error) }, 'Could not inspect Sprite for a result');
-            return false;
-        }
-    }
-
     private async reapRunner(name: string, leaseId: string, record: SpriteRunnerRecord): Promise<void> {
-        if (record.inspectResultOnReap !== false && !await this.confirmResultAbsent(name)) {
+        if (record.inspectResultOnReap !== false && !await confirmResultAbsent(this.client, name)) {
             await this.transact(state => updateSpriteRunner(state, { name, leaseId, now: this.now() },
                 { state: 'retained', leaseId: undefined, owner: undefined }));
             return;

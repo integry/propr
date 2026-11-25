@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
+import logger from '../../../utils/logger.js';
 
 const projectRoot = () => process.env.PROPR_ROOT
     || (existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
@@ -29,6 +30,30 @@ function loadSpritesCliPins(root: string): SpritesCliPins {
 }
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite' | 'getSprite' | 'sprite' | 'listAllSprites'>;
+
+// The launcher changes the root-owned result directory from 0700 to 0711 after
+// the transport exits. Files can also be durable before that final chmod.
+const INSPECT_RESULT = `import os, stat
+directory = "/opt/propr/result"
+try:
+    entries = os.listdir(directory)
+except FileNotFoundError:
+    print("absent")
+else:
+    active = stat.S_IMODE(os.stat(directory).st_mode) == 0o700
+    print("absent" if active and not entries else "keep")
+`;
+
+export async function confirmResultAbsent(client: SpriteClient, name: string): Promise<boolean> {
+    try {
+        const inspection = await client.sprite(name).execFile('sudo', ['-n', '/usr/bin/python3', '-I', '-c', INSPECT_RESULT],
+            { cwd: '/', timeout: 30_000 });
+        return inspection.exitCode === 0 && inspection.stdout.toString().trim() === 'absent';
+    } catch (error) {
+        logger.warn({ sprite: name, error: String(error) }, 'Could not inspect Sprite for a result');
+        return false;
+    }
+}
 
 /** Stop waiting for SDK operations that do not accept a signal. The caller owns any late resource. */
 export async function startupStep<T>(signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
