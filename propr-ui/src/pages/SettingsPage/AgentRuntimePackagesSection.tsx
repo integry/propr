@@ -1,3 +1,5 @@
+import { useSharedSystemStatus } from '../../contexts/SystemStatusContext';
+import type { SpritePoolStatus } from '@propr/shared';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { keepIfEqual } from '../../utils/keepIfEqual';
 import { Check, LoaderCircle, PackagePlus, RefreshCw, X } from 'lucide-react';
@@ -158,7 +160,22 @@ function runtimeStatusTone(status: AgentRuntimePackageState['status']): Settings
   return 'pending';
 }
 
+export function SpritePoolSummary({ pool }: { pool: SpritePoolStatus }) {
+  const metrics = { Cap: pool.cap, 'In use': pool.inUse, Idle: pool.idle, Provisioning: pool.provisioning,
+    'Awaiting cleanup': pool.awaitingCleanup, 'Orphans deleted': pool.orphansDeleted };
+  return <section aria-label="Sprite pool" className="mb-6 max-w-2xl rounded-lg border border-slate-200 p-4">
+    <h3 className="mb-3 text-sm font-semibold text-slate-800">Sprite pool</h3>
+    <dl className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+      {Object.entries(metrics).map(([label, value]) => <div key={label}>
+        <dt className="text-xs text-slate-600">{label}</dt>
+        <dd className="text-lg font-semibold tabular-nums">{value}</dd>
+      </div>)}
+    </dl>
+  </section>;
+}
+
 const AgentRuntimePackagesSection: React.FC = () => {
+  const pool = useSharedSystemStatus().status?.spritePool;
   const [state, setState] = useState<AgentRuntimePackageState>(EMPTY_STATE);
   const [packages, setPackages] = useState<string[]>([]);
   const [input, setInput] = useState('');
@@ -312,6 +329,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
       description={<AgentRuntimePackagesDescription />}
       status={<SettingsStatus tone={runtimeStatusTone(state.status)} role="status">{state.status}</SettingsStatus>}
     >
+      {pool && <SpritePoolSummary pool={pool} />}
       <div className="mb-6 max-w-2xl">
       <p className={`${SETTINGS_LABEL} mb-1.5`} id="agent-runtime-package-label">Add a package</p>
       <PackageAutocomplete

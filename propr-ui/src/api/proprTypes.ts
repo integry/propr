@@ -1,3 +1,4 @@
+import type { SpritePoolStatus } from '@propr/shared';
 import type { GitHubAttachmentCapacity, GitHubAttachmentPlanOverride } from '@propr/shared';
 import type { AuthenticatedInstanceUser, ReasoningLevel } from '@propr/shared';
 
@@ -21,6 +22,7 @@ export interface SystemAgentStatus {
 }
 
 export interface SystemStatus {
+  spritePool?: SpritePoolStatus;
   daemon: string;
   workers: { id: number; status: string }[];
   redis: string;
@@ -57,6 +59,7 @@ export interface SystemWarning {
 }
 
 export interface StatusResponse {
+  spritePool?: SpritePoolStatus;
   version?: string;
   apiCompatibility?: string;
   uiCompatibility?: string;

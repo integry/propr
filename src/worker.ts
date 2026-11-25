@@ -1,4 +1,4 @@
-import { closeAgentRuntimes, preventWithdrawnJob } from '@propr/core';
+import { SpritesRuntime, getAgentRuntime, closeAgentRuntimes, preventWithdrawnJob } from '@propr/core';
 import { prepareWorktreeHost } from './gitDirectoryTrust.js';
 import { waitForDockerApiAtStartup } from './workerDockerReadiness.js';
 import { enforceInstanceNetworkPolicyOutsideRuns } from './jobs/networkEgressSafetyNet.js';
@@ -187,6 +187,10 @@ async function startWorker(options: WorkerOptions = {}): Promise<StartedWorker> 
     await runMigrations().then(async () => (await import('./extensionLibraryStartup.js')).migrateExtensionLibrary());
     // A malformed or mismatched per-agent admission policy must not leave an agent uncapped.
     await (await import('@propr/core')).validateAgentRunAdmissionPolicy();
+    if (process.env.PROPR_SPRITES_TOKEN || process.env.SPRITES_TOKEN) {
+        const runtime = getAgentRuntime({ runtime: 'sprites' });
+        if (runtime instanceof SpritesRuntime) void runtime.initialize();
+    }
 
     try {
         if (process.env.CONFIG_REPO) {

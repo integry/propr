@@ -17,6 +17,8 @@ export function computeUsageColumns(value: unknown): Record<string, unknown> {
     return {
         compute_runtime: usage.runtime.slice(0, 32),
         compute_wall_time_ms: Math.round(usage.wallTimeMs),
+        ...(usage.provisioningMs !== undefined && { compute_provisioning_ms: Math.round(usage.provisioningMs) }),
+        ...(usage.restoreMs !== undefined && { compute_restore_ms: Math.round(usage.restoreMs) }),
         compute_cpu_seconds: usage.cpuSeconds,
         compute_peak_memory_bytes: usage.peakMemoryBytes,
         compute_avg_memory_bytes: usage.avgMemoryBytes,

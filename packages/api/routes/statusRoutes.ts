@@ -26,6 +26,7 @@ import type { SyntheticAgentConfig } from '@propr/shared';
 import { getConnectMcpState } from '../mcp/tunnelMode.js';
 import { applyRoutingStatus, parseConnectAccountStatus, type RoutingState } from './connectAccountStatus.js';
 import { getOrCreatePublicInstanceIdentity } from '../publicInstanceIdentity.js';
+import { readSpritePoolStatus } from '../services/spritePoolStatus.js';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 
 interface StatusRoutesDeps {
@@ -481,16 +482,18 @@ async function getIdleShutdownState(redisClient: RedisClientType): Promise<Recor
 }
 
 async function getRuntimeStatusSnapshot(redisClient: RedisClientType): Promise<RuntimeStatusSnapshot> {
-  const [pingResult, daemonResult, workerResult, routingResult, idleResult] = await Promise.allSettled([
+  const [pingResult, daemonResult, workerResult, routingResult, idleResult, poolResult] = await Promise.allSettled([
     redisClient.ping(),
     redisClient.get('system:status:daemon'),
     redisClient.sCard('system:status:workers'),
     getRoutingState(redisClient),
     getIdleShutdownState(redisClient),
+    readSpritePoolStatus(redisClient),
   ]);
+  const spritePool = poolResult.status === 'fulfilled' ? poolResult.value : undefined;
   const routing = routingResult.status === 'fulfilled' ? routingResult.value : undefined;
   const idleShutdown = idleResult.status === 'fulfilled' ? idleResult.value : undefined;
-  const routingField = { ...(routing ? { routing } : {}), ...(idleShutdown ? { idleShutdown } : {}) };
+  const routingField = { ...(spritePool && { spritePool }), ...(routing ? { routing } : {}), ...(idleShutdown ? { idleShutdown } : {}) };
   if (pingResult.status === 'rejected'
     || daemonResult.status === 'rejected'
     || workerResult.status === 'rejected') {

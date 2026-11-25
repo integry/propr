@@ -54,6 +54,7 @@ const taskQueue = { getActiveCount: async () => 3 } as never;
 const redisClient = {
   sMembers: async () => ['worker-a', 'worker-b'],
   hGetAll: async () => ({ 'worker-a': '2', 'worker-b': '3' }),
+  eval: async () => ['cap', '2', 'orphansDeleted', '7', 'propr-test-private', 'inUse'],
 } as never;
 
 function recorder() {
@@ -155,6 +156,8 @@ test('MCP shows task IDs and repositories only within the grant the policy allow
   const principal = { user: { id: 'u' }, grant: { repositories: ['acme/public', 'acme/private'] } } as unknown as McpPrincipal;
   const result = await tool.run({ principal, args: {} } as never);
   const body = AgentRunAdmissionReport.parse(result.data) as Report;
+  assert.deepEqual(body.spritePool, { cap: 2, idle: 0, inUse: 1, provisioning: 0, orphansDeleted: 7, awaitingCleanup: 0 });
+  assert.ok(!JSON.stringify(result.data).includes('propr-test-private'));
   assert.deepEqual(body.agents[0].tasks.map(task => task.taskId), ['public-task'], 'a task in a repository the policy refuses stays hidden');
   assert.deepEqual(body.repositoryWorkflowSlots.repositories.map(slot => slot.repository), ['acme/public']);
   const narrow = { user: { id: 'u' }, grant: { repositories: [] } } as unknown as McpPrincipal;

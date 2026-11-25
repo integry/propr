@@ -14,7 +14,8 @@ import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TR
 import { CloneWorkspaceTransport } from '../packages/core/src/git/workspaceCloneTransport.ts';
 import { SpritePool } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts';
 import { CLAUDE_JSON_SEED_CONTAINER_PATH } from '../packages/core/src/claude/docker/claudeConfigSeed.ts';
-import { FakeSprites } from './helpers/fakeSprites.ts';
+import Redis from 'ioredis-mock';
+import { FakeSprites, FakeSpriteOrganization } from './helpers/fakeSprites.ts';
 
 const token = 'test-org-secret';
 function fixture() {
@@ -49,6 +50,28 @@ test('a lease lasts through result retrieval and release wipes the separate tmp 
     await next.wait();
     assert.equal(sprite.launches.length, 2);
     await Promise.all([next.release!(), concurrent.release!()]);
+});
+
+test('a run at the shared cap reports its wait and then runs on the restored Sprite', { timeout: 5000 }, async t => {
+    const { builder } = fixture();
+    const provider = new FakeSpriteOrganization();
+    const runtime = new SpritesRuntime(provider, { PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: '1' }, new Redis());
+    t.after(() => runtime.close());
+    const first = runtime.start(builder.build());
+    const cold = await first.wait();
+    assert.ok(cold.computeUsage!.provisioningMs! >= 0);
+    assert.ok(cold.computeUsage!.restoreMs! >= 0);
+    const next = runtime.start(builder.build(), { timeout: 500 });
+    const message = await new Promise<string>(resolve => next.stderr.once('data', chunk => resolve(String(chunk))));
+    assert.match(message, /Waiting for a Sprite/);
+    assert.deepEqual((await next.inspect()).diagnostics, ['Waiting for a Sprite']);
+    await first.release!();
+    const warm = await next.wait();
+    assert.equal(warm.exitCode, 0);
+    assert.equal(warm.computeUsage?.provisioningMs, 0);
+    assert.ok(warm.computeUsage!.restoreMs! >= 0);
+    assert.equal(provider.created.length, 1);
+    await next.release!();
 });
 
 test('closing the runtime deletes idle Sprites once and leaves leased Sprites until release', async () => {

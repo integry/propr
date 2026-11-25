@@ -107,6 +107,7 @@ export const AgentRunAdmissionReport = component('AgentRunAdmissionReport', z.ob
     unavailable: z.string().optional().describe('Why the admission state is missing although admission is enabled.'),
   }),
   agents: z.array(AgentRunAdmissionAgent),
+  spritePool: z.object({ cap: count, inUse: count, idle: count, provisioning: count, orphansDeleted: count, awaitingCleanup: count }).optional(),
   queueWorkers: z.object({
     label: z.string(),
     inUse: count.nullable(),

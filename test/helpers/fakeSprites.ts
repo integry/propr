@@ -117,3 +117,15 @@ export class FakeSprites implements SpriteClient {
     }
     async deleteSprite(name: string) { this.deleted.push(name); }
 }
+
+export class FakeSpriteOrganization extends FakeSprites {
+    // Deliberately ignore the prefix to exercise the worker's own ownership check.
+    async listAllSprites() {
+        return this.created.filter(sprite => !this.deleted.includes(sprite.name)) as unknown as Sprite[];
+    }
+    async getSprite(name: string) {
+        const sprite = (await this.listAllSprites()).find(s => s.name === name);
+        if (!sprite) throw Object.assign(new Error('missing'), { statusCode: 404 });
+        return sprite;
+    }
+}

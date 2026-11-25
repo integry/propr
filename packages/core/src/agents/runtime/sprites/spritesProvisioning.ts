@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
+import { SpriteInventory, spriteGone } from './spritesInventory.js';
 import path from 'node:path';
 import logger from '../../../utils/logger.js';
 import type { NetworkPolicy, Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
@@ -25,8 +27,8 @@ export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
     return pins;
 }
 
-export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'>;
-export type Slot = { sprite: Sprite; checkpoint: string; restricted?: { policy: NetworkPolicy; run: string; recordDiagnostic: (message: string) => void } };
+export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'> & Partial<Pick<SpritesClient, 'listAllSprites' | 'getSprite'>>;
+export type Slot = { sprite: Sprite; lease?: AbortSignal; checkpoint: string; provisioningMs: number; restoreMs: number; restricted?: { policy: NetworkPolicy; run: string; recordDiagnostic: (message: string) => void } };
 
 /** Stop waiting for SDK operations that do not accept a signal. The caller owns any late resource. */
 export async function startupStep<T>(signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
@@ -62,16 +64,27 @@ export class SpritePool {
     private readonly releases = new Set<Promise<void>>();
     private readonly replacements: Promise<Slot>[] = [];
     private get closed() { return this.shutdown.signal.aborted; }
-    constructor(private readonly client: SpriteClient) {}
+    constructor(private readonly client: SpriteClient, private readonly inventory?: SpriteInventory) {
+        inventory?.start(async () => {
+            const idle = this.idle.pop();
+            if (idle) await this.discard(idle.sprite);
+        });
+    }
 
-    private async provision(signal: AbortSignal): Promise<Slot> {
+    private async provision(signal: AbortSignal, name: string): Promise<Slot> {
         // Never discover or adopt a machine by name. Another worker, including an earlier
         // incarnation of this worker, can still have a live run on one it created.
-        const creating = this.client.createSprite(`propr-${randomUUID()}`);
+        const started = Date.now();
+        const creating = Promise.resolve().then(async () => {
+            const created = await this.client.createSprite(name);
+            if (this.inventory && created.name !== name) throw new Error('Provider returned an unexpected Sprite name');
+            return created;
+        });
         let sprite: Sprite;
         try { sprite = await startupStep(signal, () => creating); }
         catch (error) {
-            if (signal.aborted) void creating.then(late => this.discard(late)).catch(() => {});
+            if (signal.aborted) void creating.then(late => this.discard(late), () => this.inventory?.stopRenewing(name)).catch(() => {});
+            else this.inventory?.stopRenewing(name);
             throw error;
         }
         logger.info({ sprite: sprite.name }, 'Worker created Sprite');
@@ -90,8 +103,9 @@ export class SpritePool {
             await step(async () => complete(await sprite.createCheckpoint(comment)));
             const checkpoint = (await step(() => sprite.listCheckpoints())).find(cp => cp.comment === comment && cp.id !== 'Current');
             if (!checkpoint) throw new Error('Missing clean Sprite checkpoint');
+            const restoring = Date.now();
             await step(async () => complete(await sprite.restoreCheckpoint(checkpoint.id)));
-            return { sprite, checkpoint: checkpoint.id };
+            return { sprite, lease: this.inventory?.signal(name), checkpoint: checkpoint.id, provisioningMs: restoring - started, restoreMs: Date.now() - restoring };
         } catch (cause) {
             const stderr = cause instanceof Error && 'stderr' in cause ? String(cause.stderr).slice(-4096).trim() : '';
             const detail = stderr || (cause instanceof Error ? cause.message : String(cause));
@@ -108,16 +122,24 @@ export class SpritePool {
 
     async discard(sprite: Sprite): Promise<void> {
         try {
-            await startupStep(AbortSignal.timeout(60_000), () => this.client.deleteSprite(sprite.name));
+            await startupStep(AbortSignal.timeout(60_000), async () => {
+                if (this.inventory) await this.inventory.deleteConfirmed(sprite.name);
+                else await this.client.deleteSprite(sprite.name);
+            });
         } catch (error) {
-            logger.error({ sprite: sprite.name }, 'Could not delete Sprite');
-            throw error;
+            if (!spriteGone(error)) {
+                await this.inventory?.finish(sprite.name, 'abandon');
+                logger.error({ sprite: sprite.name }, 'Could not delete Sprite');
+                throw error;
+            }
         }
+        await this.inventory?.finish(sprite.name, 'gone');
     }
 
-    private provisionForPool() {
-        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(21 * 60_000)]);
-        const work = this.provision(signal);
+    private provisionForPool(name: string) {
+        const lease = this.inventory?.signal(name);
+        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(21 * 60_000), ...(lease ? [lease] : [])]);
+        const work = this.provision(signal, name);
         this.pending.add(work);
         void work.finally(() => this.pending.delete(work)).catch(() => {});
         return work;
@@ -125,24 +147,49 @@ export class SpritePool {
 
     private async recycleClean(slot: Slot) {
         if (this.closed) await this.discard(slot.sprite);
-        else this.idle.push(slot);
+        else if (!this.inventory || await this.inventory.phase(slot.sprite.name, 'idle')) {
+            if (this.closed) await this.discard(slot.sprite);
+            else this.idle.push(slot);
+        }
     }
 
-    async acquire(signal: AbortSignal): Promise<Slot> {
+    async acquire(signal: AbortSignal, onWaiting?: () => void): Promise<Slot> {
         signal.throwIfAborted();
         if (this.closed) throw new Error('Sprite pool is closed');
-        const idle = this.idle.pop();
-        if (idle) return idle;
-        const replacement = this.replacements.shift();
-        if (replacement) {
-            try { return await this.claim(replacement, signal); }
-            catch {
-                signal.throwIfAborted();
-                this.shutdown.signal.throwIfAborted();
-                // A speculative replacement failed. Give this run its own provisioning attempt.
+        signal = AbortSignal.any([signal, this.shutdown.signal]);
+        let waiting = false;
+        for (;;) {
+            signal.throwIfAborted();
+            let slot = this.idle.pop();
+            const replacement = !slot && this.replacements.shift();
+            if (replacement) {
+                try { slot = await this.claim(replacement, signal); }
+                catch {
+                    signal.throwIfAborted();
+                    // A speculative replacement failed. Give this run its own provisioning attempt.
+                }
             }
+            if (!slot) {
+                const name = (this.inventory?.prefix ?? 'propr-') + randomUUID();
+                if (this.inventory && !await this.inventory.reserve(name)) {
+                    if (!waiting) onWaiting?.();
+                    waiting = true;
+                    await delay(1000, undefined, { signal });
+                    continue;
+                }
+                if (signal.aborted) {
+                    await this.inventory?.finish(name, 'gone'); // No create request was sent.
+                    signal.throwIfAborted();
+                }
+                slot = await this.claim(this.provisionForPool(name), signal);
+            }
+            if (slot.lease?.aborted || (this.inventory && !await this.inventory.phase(slot.sprite.name, 'inUse'))) continue;
+            if (signal.aborted) {
+                await this.recycleClean(slot);
+                signal.throwIfAborted();
+            }
+            return slot;
         }
-        return this.claim(this.provisionForPool(), signal);
     }
 
     private async claim(work: Promise<Slot>, signal: AbortSignal) {
@@ -156,10 +203,17 @@ export class SpritePool {
     async close(): Promise<void> {
         this.shutdown.abort();
         await Promise.allSettled([...this.pending, ...this.releases, ...this.idle.splice(0).map(slot => this.discard(slot.sprite))]);
+        await this.inventory?.close();
     }
 
-    private replaceInBackground() {
-        const work = this.provisionForPool();
+    private async replaceInBackground() {
+        const name = (this.inventory?.prefix ?? 'propr-') + randomUUID();
+        if (this.inventory && !await this.inventory.reserve(name, true)) return;
+        if (this.closed) {
+            await this.inventory?.finish(name, 'gone');
+            return;
+        }
+        const work = this.provisionForPool(name);
         this.replacements.push(work);
         const unclaimed = () => {
             const index = this.replacements.indexOf(work);
@@ -184,10 +238,11 @@ export class SpritePool {
         logger.warn({ sprite: slot.sprite.name, run: slot.restricted?.run, step, error: error instanceof Error ? error.message : String(error) },
             'Sprite release failed, discarding Sprite');
         await this.discard(slot.sprite);
-        if (!this.closed) this.replaceInBackground();
+        if (!this.closed) await this.replaceInBackground();
     }
 
     async release(slot: Slot, commit?: () => Promise<void>): Promise<void> {
+        slot.lease?.throwIfAborted();
         const { sprite, restricted } = slot;
         if (restricted) {
             try {
@@ -211,15 +266,18 @@ export class SpritePool {
     private async reset(slot: Slot): Promise<void> {
         const { sprite, checkpoint, restricted } = slot;
         if (this.closed) return this.discard(sprite);
-        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(120_000)]);
+        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(120_000), ...(slot.lease ? [slot.lease] : [])]);
         let step = 'restart';
+        let restoreMs: number;
         try {
             // Stop descendants that outlived the launcher, including detached processes.
-            await startupStep(signal, () => sprite.restart());
+            await restart(sprite, signal);
             step = 'wipe /tmp';
             await startupStep(signal, () => sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', signal, timeout: 60_000 }));
             step = 'restore checkpoint';
+            const restoring = Date.now();
             await startupStep(signal, async () => complete(await sprite.restoreCheckpoint(checkpoint)));
+            restoreMs = Date.now() - restoring;
             if (restricted) {
                 step = 'clear network policy';
                 await startupStep(signal, () => sprite.updateNetworkPolicy(OPEN_SPRITE_NETWORK_POLICY));
@@ -232,6 +290,27 @@ export class SpritePool {
         } catch (error) {
             return this.replace(slot, step, error);
         }
-        await this.recycleClean({ sprite, checkpoint });
+        await this.recycleClean({ sprite, lease: slot.lease, checkpoint, provisioningMs: 0, restoreMs });
+    }
+}
+
+async function restart(sprite: Sprite, signal: AbortSignal) {
+    const ambiguous = /restart[ _-]+outcome[ _-]+unknown/i;
+    try {
+        const result = await startupStep(signal, () => sprite.restart());
+        if (!ambiguous.test(result?.message ?? '')) return;
+    } catch (error) {
+        if (!(error instanceof Error && ambiguous.test(error.message))) throw error;
+    }
+    const until = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+    for (;;) {
+        try {
+            const attempt = AbortSignal.any([until, AbortSignal.timeout(5000)]);
+            const probe = await startupStep(attempt, () => sprite.execFile('true', [], { cwd: '/', signal: attempt, timeout: 5000 }));
+            if (probe.exitCode === 0) return;
+        } catch {
+            until.throwIfAborted();
+        }
+        await delay(1000, undefined, { signal: until });
     }
 }
