@@ -20,6 +20,10 @@ interface PipelineLaunch {
     environment?: NodeJS.ProcessEnv;
     attempt?: string;
     secrets?: string[];
+    /** False when a remote display stream publishes live output independently. */
+    liveOutput?: boolean;
+    /** Observe captured usage before display redaction can buffer a completed record. */
+    incrementalCaptureCost?: { maxRecordBytes: number; unreadable: () => void };
     stopForWatchdog: () => boolean;
     command: string;
     stopForCostCap: (message: string) => void;
@@ -47,15 +51,38 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
         const redact = new ExtensionStreamRedactor(secrets);
         return redact.push(transcript()) + redact.finish();
     } : transcript;
-    const live = startLiveOutputStreaming({ ...options, streamExtraOutput, onOverflow: warn, onActivity: watchdog.recordActivity,
+    const live = launch.liveOutput === false ? null : startLiveOutputStreaming({ ...options, streamExtraOutput, onOverflow: warn, onActivity: watchdog.recordActivity,
         onTranscriptRecord: watchdog.observeLine }, () => stdout.output, () => stderr.value);
     const messageTimestamps = new Map<string, string>();
     const session = { state: { sessionIdDetected: false }, messageTimestamps, onSessionId: options.onSessionId,
         invokeExecutionCallback: launch.invokeExecutionCallback };
     let pending = '';
+    const captureCost = execution && launch.incrementalCaptureCost && { execution, ...launch.incrementalCaptureCost };
+    let costPending = '';
+    let costBytes = 0;
+    function observeCapturedCost(data: string) {
+        if (!captureCost) return;
+        const limit = captureCost.maxRecordBytes;
+        const parts = data.split('\n');
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            const previous = costBytes;
+            costBytes += Buffer.byteLength(part);
+            if (costBytes <= limit) costPending += part;
+            else if (previous <= limit) {
+                costPending = '';
+                captureCost.unreadable();
+            }
+            if (i < parts.length - 1) {
+                if (costBytes <= limit) captureCost.execution.observeLine(costPending);
+                costPending = '';
+                costBytes = 0;
+            }
+        }
+    }
     function inspect(line: string, timestamp: string) {
         inspectSessionMessageLine(line, timestamp, session);
-        execution?.observeLine(line);
+        if (!captureCost) execution?.observeLine(line);
         watchdog.observeLine(line);
     }
     function publish(stream: Stream, chunk: string) {
@@ -74,14 +101,16 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
     }
     const pipeline = {
         watchdog,
+        hasCaptureCost: !!captureCost,
         finishCost: () => execution?.finish(),
         write(stream: Stream, data: Buffer) {
             watchdog.recordActivity();
             const decoded = decoders[stream].write(data);
+            if (stream === 'stdout' && captureCost) observeCapturedCost(decoded);
             if (stream === 'stderr') markers?.append(decoded);
             publish(stream, redactors[stream].push(decoded));
         },
-        finishOutput({ disconnected = false } = {}) {
+        finishOutput({ disconnected = false, stdoutComplete = !disconnected }: { disconnected?: boolean; stdoutComplete?: boolean } = {}) {
             const workflow = markers && repositoryWorkflowExecution.getStore();
             if (disconnected && workflow) {
                 workflow.wrapped = true;
@@ -91,6 +120,10 @@ export function startRunPipeline(options: DockerCommandOptions, launch: Pipeline
             capture?.snapshot();
             for (const stream of ['stdout', 'stderr'] as const) {
                 const tail = decoders[stream].end();
+                if (stream === 'stdout' && captureCost) {
+                    observeCapturedCost(tail);
+                    if (costPending && stdoutComplete) captureCost.execution.observeLine(costPending);
+                }
                 if (stream === 'stderr' && !disconnected) markers?.finish(tail);
                 publish(stream, redactors[stream].push(tail) + redactors[stream].finish());
             }

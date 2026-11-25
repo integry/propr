@@ -33,7 +33,7 @@ function supportedBinds(spec: AgentRunSpec) {
 
 type EnvDefaults = ReadonlyArray<readonly [string, string]>;
 
-function runEnvironment({ spec, options, token }: SpriteLaunch, defaults: EnvDefaults, validateOnly = false) {
+export function resolveRunEnvironment({ spec, options }: Pick<SpriteLaunch, 'spec' | 'options'>, defaults: EnvDefaults = [], validateOnly = false) {
     const inherited = { ...process.env, ...options.extraEnvVars };
     // An env file may override any extra. Scan only known effective values during validation.
     const extras = validateOnly && spec.envFiles.length ? {} : options.extraEnvVars;
@@ -54,6 +54,12 @@ function runEnvironment({ spec, options, token }: SpriteLaunch, defaults: EnvDef
     const transportToken = env.get(WORKSPACE_TRANSPORT_TOKEN_ENV) ?? '';
     env.delete(WORKSPACE_TRANSPORT_TOKEN_ENV);
     for (const name of Object.values(E)) env.delete(name);
+    return { env, transportToken };
+}
+
+function runEnvironment(launch: SpriteLaunch, defaults: EnvDefaults, validateOnly = false) {
+    const { env, transportToken } = resolveRunEnvironment(launch, defaults, validateOnly);
+    const { token } = launch;
     for (const [name, value] of env) {
         if (['SPRITES_TOKEN', 'PROPR_SPRITES_TOKEN', 'PROPR_SPRITES_LIVE_TOKEN'].includes(name) || value.includes(token)) env.delete(name);
     }

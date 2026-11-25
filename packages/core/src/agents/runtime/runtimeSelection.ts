@@ -2,6 +2,7 @@ import type { AgentConfig } from '../types.js';
 
 export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
 export const DEFAULT_AGENT_RUNTIME = 'docker';
+export const FLY_MACHINES_AGENT_RUNTIME = 'fly-machines';
 export const SPRITES_AGENT_RUNTIME = 'sprites';
 
 /**
@@ -24,5 +25,5 @@ export function dockerAgentRuntimeInUse(
 ): boolean {
     const enabled = configs.filter(config => config.enabled !== false);
     const selections = enabled.length > 0 ? enabled : [null];
-    return selections.some(config => selectedAgentRuntimeName(config, environment) !== SPRITES_AGENT_RUNTIME);
+    return selections.some(config => ![SPRITES_AGENT_RUNTIME, FLY_MACHINES_AGENT_RUNTIME].includes(selectedAgentRuntimeName(config, environment)));
 }

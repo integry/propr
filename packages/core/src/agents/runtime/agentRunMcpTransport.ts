@@ -1,3 +1,4 @@
+import { flyMcpEndpoint } from './fly/config.js';
 import type { AgentNetworkMode } from '../../network/networkPolicy.js';
 import { restrictedSpriteMcpEndpoint } from './sprites/spritesNetwork.js';
 import { getAgentRuntime, runtimeSupportsMcpReachableUrl, type ProviderAgentRuntime } from './registry.js';
@@ -41,12 +42,9 @@ export function agentRunMcpUnpinnedEndpoint(environment: NodeJS.ProcessEnv = pro
     return explicit && !environment.PROPR_AGENT_DOCKER_NETWORK?.trim() ? explicit : undefined;
 }
 
-/**
- * A runtime's own public MCP endpoint: `PROPR_SPRITES_MCP_URL` for Sprites,
- * which can never reach a private address (for example a public ProPR origin
- * or a Sprites Connect gateway in front of the API).
- */
+/** A runtime-specific endpoint reachable from the agent's network. */
 export function agentRunMcpRuntimeEndpoint(kind: string, environment: NodeJS.ProcessEnv = process.env): string | undefined {
+    if (kind === 'fly-machines') return flyMcpEndpoint(environment);
     return kind === 'sprites' ? environment.PROPR_SPRITES_MCP_URL?.trim() || undefined : undefined;
 }
 
@@ -56,7 +54,7 @@ function selectAgentRunMcpTransport(
 ): AgentRunMcpTransportPlan {
     const own = agentRunMcpRuntimeEndpoint(runtime.kind, environment);
     if (own && runtimeSupportsMcpReachableUrl(runtime.capabilities)) {
-        return { transport: 'reachable-url', url: own, reason: `PROPR_SPRITES_MCP_URL is set; runs on agent runtime "${runtime.kind}" reach ProPR MCP at that URL with their per-run grant token.` };
+        return { transport: 'reachable-url', url: own, reason: `Runs on agent runtime "${runtime.kind}" reach their runtime-specific ProPR MCP endpoint with their per-run grant token.` };
     }
     // The configured endpoint decides before the private-network preference:
     // an unpinned custom URL never joins a private network, even on a runtime that could.
