@@ -326,9 +326,26 @@ describe('validateAgentDefinitionRuntime', () => {
     }
   });
 
-  test('added extensions require a qualified direct or default runtime even without propr_mcp', async () => {
+  test('added extensions require a qualified direct or default runtime even without propr_mcp', async t => {
+    const original = process.env.PROPR_AGENT_RUNTIME;
+    process.env.PROPR_AGENT_RUNTIME = 'sprites';
+    t.after(() => {
+      if (original === undefined) delete process.env.PROPR_AGENT_RUNTIME;
+      else process.env.PROPR_AGENT_RUNTIME = original;
+    });
     const extensions = { servers: ['docs'], skills: [] };
     assert.equal(await check({ extensions }), null);
+    const { registerAgentRuntime } = await import('../packages/core/src/agents/runtime/registry.ts');
+    registerAgentRuntime('worker-custom', () => { throw new Error('API constructed a runtime'); });
+    const sprites = { ...deps, loadAgents: async () => [{ ...agent(), runtime: 'sprites' }], loadDefaultAgentAlias: async () => 'claude' };
+    for (const selection of [{}, { agentAlias: null, modelName: null }]) {
+      for (const runtime of [undefined, 'docker', 'worker-custom']) {
+        assert.equal(await validateAgentDefinitionRuntime({ ...base, extensions, ...selection }, {
+          ...sprites, loadAgents: async () => [agent({ runtime })],
+        }), null);
+      }
+      assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, ...selection }, sprites) ?? '', /sprites.*does not support extensions/);
+    }
     assert.match(await check({ extensions, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude or Codex/);
     assert.match(await check({ extensions, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude or Codex/);
     assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude or Codex/);

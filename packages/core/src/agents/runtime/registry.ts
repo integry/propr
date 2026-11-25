@@ -1,3 +1,4 @@
+import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.js';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { createWorkspaceTransport, runWithWorkspaceTransport } from '../../git/workspaceTransport.js';
 import { resolveWorkspaceTransportMode, runtimeWorkspaceTransports, WORKSPACE_TRANSPORT_ENV } from '../../git/workspaceTransportMode.js';
@@ -6,28 +7,26 @@ import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.j
 import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { collectingHandle, uploadAgentRunFiles, type UploadedAgentRunFiles } from './agentRunFileUpload.js';
-import { AgentRuntimeCapabilityError, assertExtensionLaunchSupported, extensionRuntimeRefusal, restrictedNetworkRefusal, specNetworkRestriction } from './agentRuntimeCapabilityError.js';
+import { AgentRuntimeCapabilityError, assertExtensionLaunchSupported, restrictedNetworkRefusal, specNetworkRestriction } from './agentRuntimeCapabilityError.js';
 import { withComputeCost } from './computeUsage.js';
-import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
+import { DOCKER_RUNTIME_CAPABILITIES, DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import { FLY_MACHINES_RUNTIME_KIND, flyMachinesCapabilities, FlyMachinesRuntime } from './flyMachinesRuntime.js';
+import { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME, selectedAgentRuntimeName } from './runtimeSelection.js';
 import { SpritesRuntime } from './spritesRuntime.js';
 import type { AgentRunConfigSelection, AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
 export { AgentRuntimeCapabilityError, restrictedNetworkRefusal, type AgentRuntimeCapability } from './agentRuntimeCapabilityError.js';
-
-export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
-export const DEFAULT_AGENT_RUNTIME = 'docker';
-export const SPRITES_AGENT_RUNTIME = 'sprites';
+export { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME };
 
 /** Every runtime accepts the same launch options and settles with the executor result shape. */
 export type ProviderAgentRuntime = AgentRuntime<AgentRunOptions, ExecutionResult>;
 export type AgentRuntimeFactory = () => ProviderAgentRuntime;
 
-const factories = new Map<string, AgentRuntimeFactory>([
-    [DEFAULT_AGENT_RUNTIME, () => new DockerRuntime()],
-    [FLY_MACHINES_RUNTIME_KIND, () => new FlyMachinesRuntime()],
-    // Constructing it reads no settings and loads no SDK; both happen when a run starts.
-    [SPRITES_AGENT_RUNTIME, () => new SpritesRuntime()],
+type ExtensionRuntime = { kind: string; capabilities: Pick<AgentRuntimeCapabilities, 'supportsExtensions'> };
+const registrations = new Map<string, { factory: AgentRuntimeFactory; capabilities?: ExtensionRuntime['capabilities'] }>([
+    [DEFAULT_AGENT_RUNTIME, { factory: () => new DockerRuntime(), capabilities: DOCKER_RUNTIME_CAPABILITIES }],
+    [FLY_MACHINES_RUNTIME_KIND, { factory: () => new FlyMachinesRuntime(), capabilities: flyMachinesCapabilities() }],
+    [SPRITES_AGENT_RUNTIME, { factory: () => new SpritesRuntime(), capabilities: SpritesRuntime.capabilities }],
 ]);
 const instances = new Map<string, ProviderAgentRuntime>();
 
@@ -36,7 +35,7 @@ const RUNTIME_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 /** Register (or replace) a runtime implementation under `kind`. */
 export function registerAgentRuntime(kind: string, factory: AgentRuntimeFactory): void {
     if (!RUNTIME_NAME_PATTERN.test(kind)) throw new Error(`Invalid agent runtime name: ${kind}`);
-    factories.set(kind, factory);
+    registrations.set(kind, { factory });
     instances.delete(kind);
 }
 
@@ -47,7 +46,7 @@ export async function closeAgentRuntimes(): Promise<void> {
 }
 
 export function registeredAgentRuntimes(): string[] {
-    return [...factories.keys()];
+    return [...registrations.keys()];
 }
 
 /**
@@ -59,8 +58,8 @@ export function resolveAgentRuntimeKind(
     config?: Pick<AgentConfig, 'runtime'> | null,
     environment: NodeJS.ProcessEnv = process.env,
 ): string {
-    const kind = (config?.runtime?.trim() || environment[AGENT_RUNTIME_ENV]?.trim() || DEFAULT_AGENT_RUNTIME).toLowerCase();
-    if (!factories.has(kind)) {
+    const kind = selectedAgentRuntimeName(config, environment);
+    if (!registrations.has(kind)) {
         throw new Error(`Unknown agent runtime "${kind}" (set by ${config?.runtime?.trim() ? 'agent configuration' : AGENT_RUNTIME_ENV}); available: ${registeredAgentRuntimes().join(', ')}`);
     }
     return kind;
@@ -73,15 +72,21 @@ export function getAgentRuntime(
     const kind = resolveAgentRuntimeKind(config, environment);
     let runtime = instances.get(kind);
     if (!runtime) {
-        runtime = factories.get(kind)!();
+        runtime = registrations.get(kind)!.factory();
         instances.set(kind, runtime);
     }
     return runtime;
 }
 
-/** Check a configured Fly runtime at admission without constructing it (which can prewarm a Machine). */
 export function configuredExtensionRefusal(kind: string): string | undefined {
-    if (kind === FLY_MACHINES_RUNTIME_KIND) return extensionRuntimeRefusal({ kind, capabilities: flyMachinesCapabilities() });
+    // The API has no worker capability report. A worker-selected or custom runtime checks at launch.
+    const capabilities = registrations.get(kind)?.capabilities;
+    if (capabilities) return extensionRuntimeRefusal({ kind, capabilities });
+}
+
+export function extensionRuntimeRefusal(runtime: ExtensionRuntime): string | undefined {
+    if (runtime.capabilities.supportsExtensions ?? (runtime.kind === DEFAULT_AGENT_RUNTIME)) return undefined;
+    return `Agent runtime "${runtime.kind}" does not support extensions. Choose a runtime that supports extensions (docker).`;
 }
 
 /** Absent `supportsMcpReachableUrl` counts as supported. */
@@ -181,7 +186,11 @@ export async function runAgent(
     // e.g. a CLI version the runtime does not provide: refused, never run on another version.
     const configRefusal = runtime.unsupportedAgentConfig?.(config ?? null, spec);
     if (configRefusal) throw new Error(`Agent runtime "${runtime.kind}" cannot run ${spec.name}: ${configRefusal}`);
-    assertExtensionLaunchSupported(runtime, options);
+    if (runtime.kind === FLY_MACHINES_RUNTIME_KIND) assertExtensionLaunchSupported(runtime, options);
+    const extensionRefusal = extensionRuntimeRefusal(runtime);
+    if (extensionRefusal && extensionLaunchForRun(runtime.kind, [], { ...options, agentRun: { spec } })) {
+        throw new AgentRuntimeCapabilityError(extensionRefusal, runtime.kind, 'extensions');
+    }
     const resolved = await withAgentRunNetworkRequirement(spec, options);
     const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
     if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {
@@ -208,13 +217,13 @@ export async function runAgent(
         if (mode === 'bind') {
             assertAgentRuntimeSupports(runtime, runSpec);
             const result = await runRuntime.start(runSpec, runOptions).wait();
-            return withRunComputeUsage(runtime.kind, startedAt, result);
+            return finalizeRunResult(runtime.kind, startedAt, result);
         }
         const result = await runWithWorkspaceTransport(runRuntime, runSpec, runOptions, {
             transport: await createWorkspaceTransport(mode),
             assertSupported: prepared => assertAgentRuntimeSupports(runtime, prepared),
         });
-        return withRunComputeUsage(runtime.kind, startedAt, result);
+        return finalizeRunResult(runtime.kind, startedAt, result);
     } finally {
         await staged?.complete();
     }
@@ -233,7 +242,8 @@ function withCredentialCollection(runtime: ProviderAgentRuntime, uploaded: Uploa
  * runtime that reports none, the wall time the dispatcher observed. The cost is
  * the runtime's, else the `PROPR_COMPUTE_RATES` rate for its kind, else unknown.
  */
-function withRunComputeUsage(kind: string, startedAt: number, result: ExecutionResult): ExecutionResult {
+function finalizeRunResult(kind: string, startedAt: number, result: ExecutionResult): ExecutionResult {
+    if (result.outputIncomplete) throw new Error(result.outputIncomplete);
     const usage = result.computeUsage ?? {
         runtime: kind, wallTimeMs: Date.now() - startedAt,
         cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null,
