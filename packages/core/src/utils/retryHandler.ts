@@ -125,7 +125,10 @@ function safeToString(record: Record<string, unknown>): string {
  * @param config - Retry configuration
  * @returns Delay in milliseconds
  */
-export function calculateDelay(attempt: number, config: Pick<RetryConfig, 'baseDelay' | 'maxDelay' | 'exponentialBase' | 'jitter'>): number {
+export function calculateDelay(
+    attempt: number,
+    config: RetryConfig | Pick<RetryConfig, 'baseDelay' | 'maxDelay' | 'exponentialBase' | 'jitter'>
+): number {
     const exponentialDelay = config.baseDelay * Math.pow(config.exponentialBase, attempt);
     let delay = Math.min(exponentialDelay, config.maxDelay);
 
