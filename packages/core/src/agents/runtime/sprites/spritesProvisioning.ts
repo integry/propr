@@ -28,7 +28,7 @@ export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
 }
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'> & Partial<Pick<SpritesClient, 'listAllSprites' | 'getSprite'>>;
-export type Slot = { sprite: Sprite; lease?: AbortSignal; checkpoint: string; preparationStarted: number; provisioningMs: number; restoreMs: number; restricted?: { policy: NetworkPolicy; run: string; recordDiagnostic: (message: string) => void } };
+export type Slot = { sprite: Sprite; lease?: AbortSignal; checkpoint: string; provisioningMs: number; restoreMs: number; restricted?: { policy: NetworkPolicy; run: string; recordDiagnostic: (message: string) => void } };
 
 /** Stop waiting for SDK operations that do not accept a signal. The caller owns any late resource. */
 export async function startupStep<T>(signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
@@ -106,7 +106,7 @@ export class SpritePool {
             if (!checkpoint) throw new Error('Missing clean Sprite checkpoint');
             const restoring = Date.now();
             await step(async () => complete(await sprite.restoreCheckpoint(checkpoint.id)));
-            return { sprite, lease: this.inventory?.signal(name), checkpoint: checkpoint.id, preparationStarted: started, provisioningMs: restoring - started, restoreMs: Date.now() - restoring };
+            return { sprite, lease: this.inventory?.signal(name), checkpoint: checkpoint.id, provisioningMs: restoring - started, restoreMs: Date.now() - restoring };
         } catch (cause) {
             const stderr = cause instanceof Error && 'stderr' in cause ? String(cause.stderr).slice(-4096).trim() : '';
             const detail = stderr || (cause instanceof Error ? cause.message : String(cause));
@@ -280,7 +280,6 @@ export class SpritePool {
         if (this.closed) return this.discard(sprite);
         const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(120_000), ...(slot.lease ? [slot.lease] : [])]);
         let step = 'restart';
-        let restoring: number;
         let restoreMs: number;
         try {
             // Stop descendants that outlived the launcher, including detached processes.
@@ -288,7 +287,7 @@ export class SpritePool {
             step = 'wipe /tmp';
             await startupStep(signal, () => sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', signal, timeout: 60_000 }));
             step = 'restore checkpoint';
-            restoring = Date.now();
+            const restoring = Date.now();
             await startupStep(signal, async () => complete(await sprite.restoreCheckpoint(checkpoint)));
             restoreMs = Date.now() - restoring;
             if (restricted) {
@@ -303,7 +302,7 @@ export class SpritePool {
         } catch (error) {
             return this.replace(slot, step, error);
         }
-        await this.recycleClean({ sprite, lease: slot.lease, checkpoint, preparationStarted: restoring, provisioningMs: 0, restoreMs });
+        await this.recycleClean({ sprite, lease: slot.lease, checkpoint, provisioningMs: 0, restoreMs });
     }
 }
 

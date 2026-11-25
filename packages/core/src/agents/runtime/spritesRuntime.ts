@@ -109,8 +109,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const launch = { spec, options, token, inputPath };
             const validated = validateSpriteRun(launch, envDefaults);
             const ready = await startupStep(signal, () => pool);
-            const acquiring = Date.now();
-            const { sprite, prepared, preparationStarted, provisioningMs, restoreMs } = await startupStep(signal, async () => {
+            const { sprite, prepared, checkedOutAt, provisioningMs, restoreMs } = await startupStep(signal, async () => {
                 const acquired = await ready.acquire(signal, () => {
                     diagnostics.push('Waiting for a Sprite');
                     output.write('stderr', 'Waiting for a Sprite\n');
@@ -121,6 +120,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                         void log.close().catch(() => {});
                     }
                 });
+                const checkedOutAt = Date.now();
                 if (acquired.lease) signal = AbortSignal.any([signal, acquired.lease]);
                 const waitIndex = diagnostics.indexOf('Waiting for a Sprite');
                 if (waitIndex >= 0) diagnostics.splice(waitIndex, 1);
@@ -137,7 +137,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => payload.upload(acquired.sprite));
                     signal.throwIfAborted();
                     slot = acquired;
-                    return { sprite: acquired.sprite, prepared: payload, preparationStarted: acquired.preparationStarted, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs };
+                    return { sprite: acquired.sprite, prepared: payload, checkedOutAt, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs };
                 } catch (error) {
                     // An interrupted policy change or upload can still write to the Sprite.
                     if (prepared || (networkPolicy && !acquired.restricted)) await ready.discard(acquired.sprite);
@@ -151,9 +151,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                 const executed = await execute(sprite, launch, {
                     output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
                 });
-                // Warm or speculative preparation can precede checkout. Count only its portion outside the run's elapsed time.
-                const priorPreparation = Math.min(provisioningMs + restoreMs, Math.max(0, acquiring - preparationStarted));
-                return { ...executed, computeUsage: { runtime: 'sprites', wallTimeMs: Date.now() - acquiring + priorPreparation,
+                return { ...executed, computeUsage: { runtime: 'sprites', wallTimeMs: Date.now() - checkedOutAt + provisioningMs + restoreMs,
                     provisioningMs, restoreMs, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
                     costUsd: null, costSource: null } };
             } finally {

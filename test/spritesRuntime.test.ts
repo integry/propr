@@ -55,7 +55,7 @@ test('a lease lasts through result retrieval and release wipes the separate tmp 
     await Promise.all([next.release!(), concurrent.release!()]);
 });
 
-test('a run at the shared cap reports its wait and then runs on the restored Sprite', { timeout: 5000 }, async t => {
+test('a run at the shared cap reports its wait and excludes it from compute usage', { timeout: 5000 }, async t => {
     const { builder } = fixture();
     const provider = new FakeSpriteOrganization();
     const runtime = new SpritesRuntime(provider, { DATA_DIR: markerDir, PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: '1' }, new Redis());
@@ -68,13 +68,18 @@ test('a run at the shared cap reports its wait and then runs on the restored Spr
             now += 100;
             return restore(id);
         };
+        const spawn = sprite.spawn.bind(sprite);
+        sprite.spawn = (...args) => {
+            now += 50;
+            return spawn(...args);
+        };
         now += 200;
     };
     const first = runtime.start(builder.build());
     const cold = await first.wait();
     assert.equal(cold.computeUsage!.provisioningMs, 200);
     assert.equal(cold.computeUsage!.restoreMs, 100);
-    assert.equal(cold.computeUsage!.wallTimeMs, 300);
+    assert.equal(cold.computeUsage!.wallTimeMs, 350);
     const next = runtime.start(builder.build(), { timeout: 500 });
     const message = await new Promise<string>(resolve => next.stderr.once('data', chunk => resolve(String(chunk))));
     assert.match(message, /Waiting for a Sprite/);
@@ -85,12 +90,12 @@ test('a run at the shared cap reports its wait and then runs on the restored Spr
     assert.equal(warm.exitCode, 0);
     assert.equal(warm.computeUsage?.provisioningMs, 0);
     assert.equal(warm.computeUsage!.restoreMs, 100);
-    assert.equal(warm.computeUsage!.wallTimeMs, 1300);
+    assert.equal(warm.computeUsage!.wallTimeMs, 150);
     assert.equal(provider.created.length, 1);
     await next.release!();
     now += 10_000; // Idle time between runs is outside both checkout and preparation.
     const idle = runtime.start(builder.build());
-    assert.equal((await idle.wait()).computeUsage!.wallTimeMs, 100);
+    assert.equal((await idle.wait()).computeUsage!.wallTimeMs, 150);
     await idle.release!();
 });
 
