@@ -1,14 +1,16 @@
 import type { AgentConfig } from '../types.js';
 
+export const AGENT_RUNTIME_ENV = 'PROPR_AGENT_RUNTIME';
+export const DEFAULT_AGENT_RUNTIME = 'docker';
+export const SPRITES_AGENT_RUNTIME = 'sprites';
+
 /**
  * Which runtime agents select, without loading any runtime (image
  * preparation and Docker sweeps import this). Unknown names count as Docker
  * here, so Docker preparation continues until the launch itself refuses them.
  */
-const NON_DOCKER_AGENT_RUNTIMES = new Set(['sprites']);
-
 export function selectedAgentRuntimeName(config?: Pick<AgentConfig, 'runtime'> | null, environment: NodeJS.ProcessEnv = process.env): string {
-    return (config?.runtime?.trim() || environment.PROPR_AGENT_RUNTIME?.trim() || 'docker').toLowerCase();
+    return (config?.runtime?.trim() || environment[AGENT_RUNTIME_ENV]?.trim() || DEFAULT_AGENT_RUNTIME).toLowerCase();
 }
 
 /**
@@ -22,5 +24,5 @@ export function dockerAgentRuntimeInUse(
 ): boolean {
     const enabled = configs.filter(config => config.enabled !== false);
     const selections = enabled.length > 0 ? enabled : [null];
-    return selections.some(config => !NON_DOCKER_AGENT_RUNTIMES.has(selectedAgentRuntimeName(config, environment)));
+    return selections.some(config => selectedAgentRuntimeName(config, environment) !== SPRITES_AGENT_RUNTIME);
 }

@@ -8,7 +8,17 @@ const projectRoot = () => process.env.PROPR_ROOT
 const pinNames = ['CLAUDE_CLI_VERSION', 'CODEX_CLI_VERSION', 'ANTIGRAVITY_CLI_VERSION', 'ANTIGRAVITY_CLI_RELEASE_ID', 'ANTIGRAVITY_CLI_SHA512'] as const;
 export type SpritesCliPins = Record<typeof pinNames[number], string>;
 
+const pinsByRoot = new Map<string, SpritesCliPins>();
+
 export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
+    const cached = pinsByRoot.get(root);
+    if (cached) return cached;
+    const pins = Object.freeze(loadSpritesCliPins(root));
+    pinsByRoot.set(root, pins);
+    return pins;
+}
+
+function loadSpritesCliPins(root: string): SpritesCliPins {
     const dockerfile = readFileSync(path.join(root, 'Dockerfile.agent'), 'utf8');
     return Object.fromEntries(pinNames.map(name => {
         const value = new RegExp(`^ARG ${name}=([a-zA-Z0-9.+_-]+)$`, 'm').exec(dockerfile)?.[1];
@@ -82,7 +92,7 @@ export async function createNamedCheckpoint(sprite: Sprite, comment: string, ste
 const setupFiles = ['sprites-agent-setup.sh', 'sprites-launcher.py', 'gh-wrapper.sh',
     'claude-entrypoint.sh', 'codex-entrypoint.sh', 'antigravity-entrypoint.sh'];
 export function readSpriteSetup(root = projectRoot()) {
-    const pins = readSpritesCliPins(root);
+    const pins = loadSpritesCliPins(root);
     const files = setupFiles.map(name => ({ name, contents: readFileSync(path.join(root, 'scripts', name), 'utf8') }));
     const fingerprint = createHash('sha256').update(JSON.stringify({ pins, files })).digest('hex');
     return { pins, files, fingerprint };

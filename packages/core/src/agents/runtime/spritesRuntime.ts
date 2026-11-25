@@ -1,3 +1,5 @@
+import { assertNativeLogAdmission } from '../../diagnostics/managedLogRuntime.js';
+import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.js';
 import { randomUUID } from 'node:crypto';
 import type { NetworkPolicy } from '@fly/sprites';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
@@ -15,7 +17,7 @@ import {
 } from './sprites/spritesNetwork.js';
 import { afterSpriteRestore, startupStep, type SpriteClient } from './sprites/spritesProvisioning.js';
 import { SpritePool, type Slot } from './sprites/spritesRunnerPool.js';
-import { unsupportedMount, uploadRun } from './sprites/spritesRun.js';
+import { prepareSpriteRun, unsupportedMount, validateSpriteRun } from './sprites/spritesRun.js';
 import { RedisSpritePoolStore, resolveSpritesPoolConfig, spritesPoolScope, spritesWarmCloneKey, type SpritePoolStore } from './spritesPool.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
@@ -34,7 +36,8 @@ async function releaseRunner(pool: SpritePool, slot: Slot, options: {
     );
     if (policy) {
         try {
-            if (!sameSpriteNetworkPolicy(await sprite.getNetworkPolicy(), policy)) {
+            const applied = await startupStep(AbortSignal.timeout(60_000), () => sprite.getNetworkPolicy());
+            if (!sameSpriteNetworkPolicy(applied, policy)) {
                 const message = `Network policy mismatch at release for run ${run} on Sprite ${sprite.name}`;
                 recordDiagnostic(message);
                 throw new Error(message);
@@ -47,11 +50,13 @@ async function releaseRunner(pool: SpritePool, slot: Slot, options: {
     }
     let policyFailure: { step: string; error: unknown } | undefined;
     const releasing = policy ? { ...slot, sprite: afterSpriteRestore(sprite, async () => {
+        const signal = AbortSignal.timeout(60_000);
         let step = 'clear network policy';
         try {
-            await sprite.updateNetworkPolicy(OPEN_SPRITE_NETWORK_POLICY);
+            await startupStep(signal, () => sprite.updateNetworkPolicy(OPEN_SPRITE_NETWORK_POLICY));
             step = 'verify cleared network policy';
-            if (!sameSpriteNetworkPolicy(await sprite.getNetworkPolicy(), OPEN_SPRITE_NETWORK_POLICY)) {
+            const cleared = await startupStep(signal, () => sprite.getNetworkPolicy());
+            if (!sameSpriteNetworkPolicy(cleared, OPEN_SPRITE_NETWORK_POLICY)) {
                 throw new Error('Sprite did not verify the cleared network policy');
             }
         } catch (error) {
@@ -69,12 +74,15 @@ async function releaseRunner(pool: SpritePool, slot: Slot, options: {
 
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
-    readonly capabilities = { supportsBindMounts: false, supportsRestrictedNetwork: true,
+    static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: true,
         restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
         supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
+    readonly capabilities = SpritesRuntime.capabilities;
     readonly unsupportedMount = unsupportedMount;
     private readonly pools = new Map<string, Promise<SpritePool>>();
+    private readonly unusedReleases = new Set<Promise<void>>();
     private closing?: Promise<void>;
+    private poolsClosed = false;
     private store?: SpritePoolStore;
     /** Runs that may still use the pool store (not yet released). */
     private active = 0;
@@ -83,17 +91,22 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
      * `pool.store` holds the runner leases every worker of the organization shares:
      * Redis (REDIS_HOST/REDIS_PORT) unless given.
      */
-    constructor(private readonly client?: SpriteClient, private readonly environment = process.env,
+    constructor(private readonly client?: SpriteClient | ((token: string) => Promise<SpriteClient>),
+        private readonly environment = process.env,
         private readonly pool: { store?: SpritePoolStore; pollMs?: number; ttlMs?: number; owner?: string } = {}) {}
 
     close(): Promise<void> {
-        return this.closing ??= Promise.all([...this.pools.values()].map(async pool => (await pool).close()))
-            .then(() => this.closeStoreWhenIdle());
+        return this.closing ??= (async () => {
+            await Promise.allSettled([...this.pools.values()].map(async pool => (await pool).close()));
+            await Promise.allSettled(this.unusedReleases);
+            this.poolsClosed = true;
+            await this.closeStoreWhenIdle();
+        })();
     }
 
     /** An owned store stays open until runs leased before close() are released. */
     private async closeStoreWhenIdle(): Promise<void> {
-        if (this.closing && this.active === 0 && !this.pool.store) await this.store?.close?.();
+        if (this.poolsClosed && this.active === 0 && !this.pool.store) await this.store?.close?.();
     }
 
     /** The organization's pool, shared by every run of this runtime with the same token. */
@@ -102,9 +115,16 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         if (!pool) {
             const store = this.pool.store ?? (this.store ??= new RedisSpritePoolStore());
             const options = { ...this.pool, store, scope: spritesPoolScope(token), config };
-            pool = this.client ? Promise.resolve(new SpritePool(this.client, options))
-                : import('@fly/sprites').then(({ SpritesClient }) => new SpritePool(new SpritesClient(token), options));
+            const client = this.client;
+            const load = async () => {
+                if (typeof client === 'function') return client(token);
+                if (client) return client;
+                const { SpritesClient } = await import('@fly/sprites');
+                return new SpritesClient(token);
+            };
+            pool = load().then(sdk => new SpritePool(sdk, options));
             this.pools.set(token, pool);
+            void pool.catch(() => { if (this.pools.get(token) === pool) this.pools.delete(token); });
         }
         return pool;
     }
@@ -115,7 +135,18 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         return spritesCliVersionRefusal({ ...config, type });
     }
 
+    private releaseUnused(slot: Slot, release: () => Promise<void>): Promise<void> {
+        const work = release().catch(error => {
+            logger.warn({ sprite: slot.name, error: String(error) }, 'Failed to clean up unused Sprite');
+        });
+        this.unusedReleases.add(work);
+        void work.then(() => this.unusedReleases.delete(work));
+        return work;
+    }
+
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {
+        if (extensionLaunchForRun(this.kind, [], { ...options, agentRun: { spec } })) throw new Error('Sprites runtime does not support extensions');
+        assertNativeLogAdmission(options.diagnostics);
         const token = this.environment.PROPR_SPRITES_TOKEN || this.environment.SPRITES_TOKEN;
         if (!token) throw new Error('Set PROPR_SPRITES_TOKEN on the worker to run agents on Sprites');
         // Named networks, private MCP endpoints and malformed policies stay refused.
@@ -143,6 +174,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         let released: Promise<void> | undefined;
         const reads = new Set<Promise<Buffer | null>>();
         let commit: (() => Promise<void>) | undefined;
+        let cleanup: Promise<unknown> | undefined;
         let settled = false;
         this.active += 1;
         let finishedUse = false;
@@ -157,40 +189,63 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
             const inputPath = `/opt/propr/inbox/${randomUUID()}.json`;
             const launch = { spec, options, token, inputPath, warmClone: repo };
+            const validated = validateSpriteRun(launch, envDefaults);
             const ready = await startupStep(signal, () => pool);
-            const sprite = await startupStep(signal, async () => {
+            const acquire = async () => {
                 // Keep ownership here until upload succeeds. Even a create response arriving
                 // after stop() must dispose of its Sprite before this acquisition ends.
                 const acquired = await ready.acquire(signal, { repo });
                 let appliedPolicy: NetworkPolicy | undefined;
+                let uploadStarted = false;
                 try {
                     if (networkPolicy) {
-                        await startupStep(signal, () => applySpriteNetworkPolicy(acquired.sprite, networkPolicy));
+                        await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]),
+                            () => applySpriteNetworkPolicy(acquired.sprite, networkPolicy));
                         appliedPolicy = networkPolicy;
                     }
-                    const writeBack = await startupStep(signal, () => uploadRun(acquired.sprite, launch, envDefaults));
+                    signal.throwIfAborted();
+                    const payload = prepareSpriteRun(launch, validated, envDefaults);
+                    uploadStarted = true;
+                    await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => payload.upload(acquired.sprite));
                     signal.throwIfAborted();
                     slot = acquired;
-                    commit = writeBack;
-                    return acquired.sprite;
+                    return { acquired, prepared: payload };
                 } catch (error) {
-                    if (signal.aborted || (networkPolicy && !appliedPolicy)) await ready.discard(acquired);
-                    else await releaseRunner(ready, acquired, { policy: appliedPolicy, run: spec.name, recordDiagnostic });
+                    await this.releaseUnused(acquired, () => uploadStarted || signal.aborted || (networkPolicy && !appliedPolicy)
+                        ? ready.discard(acquired)
+                        : releaseRunner(ready, acquired, { policy: appliedPolicy, run: spec.name, recordDiagnostic }));
                     throw error;
                 }
+            };
+            const { acquired, prepared } = await startupStep(signal, () => {
+                const acquisition = acquire();
+                cleanup = acquisition;
+                return acquisition;
             });
-            signal.throwIfAborted();
+            const { sprite } = acquired;
             const startedAt = Date.now();
             try {
-                const executed = await execute(sprite, launch, output, signal);
+                signal.throwIfAborted();
+                const executed = await execute(sprite, launch, {
+                    output, signal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
+                });
                 return { ...executed, computeUsage: {
                     runtime: 'sprites', wallTimeMs: Date.now() - startedAt, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
-                    costUsd: null, costSource: null, runnerPool: slot!.usage,
+                    costUsd: null, costSource: null, runnerPool: acquired.usage,
                 } };
             } finally {
-                await ready.finished(slot!);
+                if (commit) await ready.finished(acquired);
+                else {
+                    slot = undefined;
+                    cleanup = this.releaseUnused(acquired,
+                        () => releaseRunner(ready, acquired, { policy: networkPolicy, run: spec.name, recordDiagnostic }));
+                }
             }
-        })().finally(() => { settled = true; output.end(); if (!slot) doneWithPool(); });
+        })().finally(() => {
+            settled = true;
+            output.end();
+            if (!slot) void Promise.resolve(cleanup).then(doneWithPool, doneWithPool);
+        });
         const release = () => released ??= (async () => {
             await result.catch(() => {});
             if (!slot) return;
