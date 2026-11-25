@@ -91,6 +91,7 @@ export function buildAgentRunRepoSetup(agentType: AgentType): AgentRunRepoSetup 
     return {
         agentType,
         shell: '/bin/bash',
+        ...(execution && { requiresWorkflowMarkers: true }),
         script: execution ? buildWorkflowWrapper(execution.workflow, execution.marker) : REPO_SETUP_WRAPPER_SCRIPT,
         providerEntrypoint: ENTRYPOINT_PATHS[agentType],
         env: repoSetupEnvironment(agentType),

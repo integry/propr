@@ -7,7 +7,7 @@ import type { AgentRunSpec, AgentRuntimeCapabilities } from './types.js';
  * runtimes can import it without an import cycle.
  */
 
-export type AgentRuntimeCapability = 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url';
+export type AgentRuntimeCapability = 'extensions' | 'workflow_markers' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url';
 
 /**
  * A run refused before launch because its runtime cannot provide what the
@@ -20,6 +20,16 @@ export class AgentRuntimeCapabilityError extends Error {
         super(message);
         this.name = 'AgentRuntimeCapabilityError';
     }
+}
+
+export function extensionRuntimeRefusal(runtime: { kind: string; capabilities: Pick<AgentRuntimeCapabilities, 'supportsExtensions'> }): string | undefined {
+    if (runtime.capabilities.supportsExtensions === false) return `Agent runtime "${runtime.kind}" does not support extensions. Choose a runtime that supports extensions (docker).`;
+}
+
+export function assertExtensionLaunchSupported(runtime: { kind: string; capabilities: AgentRuntimeCapabilities }, options: { extensionAgentLaunch?: boolean }): void {
+    if (!options.extensionAgentLaunch) return;
+    const refusal = extensionRuntimeRefusal(runtime);
+    if (refusal) throw new AgentRuntimeCapabilityError(refusal, runtime.kind, 'extensions');
 }
 
 /** The refusal a restricted run gets on this runtime, or undefined when it can enforce restricted mode. */

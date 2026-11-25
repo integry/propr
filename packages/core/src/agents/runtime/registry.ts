@@ -6,10 +6,10 @@ import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.j
 import type { AgentConfig } from '../types.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { collectingHandle, uploadAgentRunFiles, type UploadedAgentRunFiles } from './agentRunFileUpload.js';
-import { AgentRuntimeCapabilityError, restrictedNetworkRefusal, specNetworkRestriction } from './agentRuntimeCapabilityError.js';
+import { AgentRuntimeCapabilityError, assertExtensionLaunchSupported, extensionRuntimeRefusal, restrictedNetworkRefusal, specNetworkRestriction } from './agentRuntimeCapabilityError.js';
 import { withComputeCost } from './computeUsage.js';
 import { DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
-import { FLY_MACHINES_RUNTIME_KIND, FlyMachinesRuntime } from './flyMachinesRuntime.js';
+import { FLY_MACHINES_RUNTIME_KIND, flyMachinesCapabilities, FlyMachinesRuntime } from './flyMachinesRuntime.js';
 import { SpritesRuntime } from './spritesRuntime.js';
 import type { AgentRunConfigSelection, AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
@@ -77,6 +77,11 @@ export function getAgentRuntime(
         instances.set(kind, runtime);
     }
     return runtime;
+}
+
+/** Check a configured Fly runtime at admission without constructing it (which can prewarm a Machine). */
+export function configuredExtensionRefusal(kind: string): string | undefined {
+    if (kind === FLY_MACHINES_RUNTIME_KIND) return extensionRuntimeRefusal({ kind, capabilities: flyMachinesCapabilities() });
 }
 
 /** Absent `supportsMcpReachableUrl` counts as supported. */
@@ -176,6 +181,7 @@ export async function runAgent(
     // e.g. a CLI version the runtime does not provide: refused, never run on another version.
     const configRefusal = runtime.unsupportedAgentConfig?.(config ?? null, spec);
     if (configRefusal) throw new Error(`Agent runtime "${runtime.kind}" cannot run ${spec.name}: ${configRefusal}`);
+    assertExtensionLaunchSupported(runtime, options);
     const resolved = await withAgentRunNetworkRequirement(spec, options);
     const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
     if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {

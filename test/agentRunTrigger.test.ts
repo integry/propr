@@ -318,6 +318,14 @@ describe('validateAgentDefinitionRuntime', () => {
     assert.equal(await withDefault([], null)({ capabilities: ['propr_mcp'] }), null);
   });
 
+  test('refuses extensions for a named or default Fly Machines agent', async () => {
+    const fly = { ...deps, loadAgents: async () => [agent({ runtime: 'fly-machines' })], loadDefaultAgentAlias: async () => 'claude' };
+    for (const selection of [{}, { agentAlias: null, modelName: null }]) {
+      const refusal = await validateAgentDefinitionRuntime({ ...base, ...selection, extensions: { servers: ['docs'], skills: [] } }, fly);
+      assert.match(refusal ?? '', /fly-machines.*does not support extensions/);
+    }
+  });
+
   test('added extensions require a qualified direct or default runtime even without propr_mcp', async () => {
     const extensions = { servers: ['docs'], skills: [] };
     assert.equal(await check({ extensions }), null);

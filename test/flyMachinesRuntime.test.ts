@@ -325,6 +325,7 @@ test('capabilities: clone transport and file upload, no binds or restricted netw
     const off = flyMachinesCapabilities({});
     assert.equal(off.supportsBindMounts, false);
     assert.equal(off.supportsFileUpload, true);
+    assert.equal(off.supportsExtensions, false);
     assert.equal(off.supportsRestrictedNetwork, false);
     assert.equal(off.supportsMcpPrivateNetwork, false);
     assert.deepEqual(off.workspaceTransports, ['clone']);
@@ -334,6 +335,32 @@ test('capabilities: clone transport and file upload, no binds or restricted netw
     const onFly = runtime(new FakeFly(), { ...FLY_ENV, FLY_APP_NAME: 'propr', FLY_PRIVATE_IP: 'fdaa::3' });
     assert.equal(planAgentRunMcpTransport(onFly, {}).transport, 'private-network');
     assert.equal(planAgentRunMcpTransport(runtime(new FakeFly()), { API_PUBLIC_URL: 'https://propr.example' }).transport, 'reachable-url');
+});
+
+test('Fly refuses extension launches at dispatch and direct start before provisioning', async () => {
+    const options = { extensionAgentLaunch: true };
+    const refusal = { name: 'AgentRuntimeCapabilityError', capability: 'extensions' };
+    await assert.rejects(runAgent({ runtime: 'fly-machines' }, spec(), options), refusal);
+    const fly = new FakeFly();
+    assert.throws(() => runtime(fly).start(spec(), options), refusal);
+    assert.equal(fly.requests.length, 0);
+});
+
+test('Fly refuses an active workflow wrapper before provisioning and allows a read-only run', async () => {
+    const { repositoryWorkflowExecution } = await import('../packages/core/src/workflow/workflowExecution.ts');
+    const workflow = { revision: 'a', baseBranch: 'main', fileRevision: 'b', timeoutMs: 60000, maxParallelTasks: 1, config: { validation: ['true'] } };
+    const marker = 'PROPR_WORKFLOW_test';
+    const run = spec();
+    const { buildAgentRunRepoSetup } = await import('../packages/core/src/claude/docker/repoSetupWrapper.ts');
+    run.repoSetup = repositoryWorkflowExecution.run({ workflow, marker }, () => buildAgentRunRepoSetup('claude'));
+    const fly = new FakeFly();
+    const selected = runtime(fly);
+    await assert.rejects(selected.start(run).wait(), { name: 'AgentRuntimeCapabilityError', capability: 'workflow_markers' });
+    assert.equal(fly.requests.length, 0);
+    run.repoSetup!.env.push({ name: 'PROPR_REPO_SETUP', value: '0' });
+    const handle = selected.start(run);
+    assert.equal((await handle.wait()).exitCode, 0);
+    await handle.release();
 });
 
 test('capability checks refuse binds and restricted networking before launch', () => {

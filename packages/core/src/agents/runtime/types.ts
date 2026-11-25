@@ -255,6 +255,8 @@ export interface AgentRunRepoSetup {
     agentType: AgentType;
     /** Shell the wrapper runs (`/bin/bash`). */
     shell: string;
+    /** This wrapper emits reports that the runtime must capture from its stderr. */
+    requiresWorkflowMarkers?: boolean;
     /** Wrapper script: the setup hook or the repository workflow wrapper. */
     script: string;
     /** Image entrypoint the wrapper `exec`s after setup. */
@@ -295,6 +297,8 @@ export interface AgentRuntimeCapabilities {
      * finished. Lets a runtime without bind mounts use the credential broker.
      */
     supportsFileUpload?: boolean;
+    /** Can stage and redact the extensions requested by a provider run. */
+    supportsExtensions?: boolean;
     /** A worker can reattach to a run it did not start (after restart). */
     reattach: boolean;
     /** Workspace transports the runtime can run; `['bind']` when bind mounts are supported and this is omitted. */

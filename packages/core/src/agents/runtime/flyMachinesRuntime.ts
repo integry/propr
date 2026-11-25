@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import logger from '../../utils/logger.js';
+import { assertExtensionLaunchSupported } from './agentRuntimeCapabilityError.js';
 import type { AgentRunOptions } from './dockerRuntime.js';
 import { FlyMachinesClient, type FetchLike } from './flyMachinesApi.js';
 import { FLY_MACHINES_RUNTIME_KIND, flyPrivateNetworkEnabled, resolveFlyMachinesConfig, type FlyMachinesConfig } from './flyMachinesConfig.js';
@@ -24,6 +25,7 @@ export function flyMachinesCapabilities(environment: NodeJS.ProcessEnv = process
     return Object.freeze({
         supportsBindMounts: false,
         supportsFileUpload: true,
+        supportsExtensions: false,
         supportsRestrictedNetwork: false,
         supportsMcpPrivateNetwork: flyPrivateNetworkEnabled(environment),
         supportsMcpReachableUrl: true,
@@ -73,6 +75,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
     }
 
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {
+        assertExtensionLaunchSupported(this, options);
         const { config, client } = this.resolve();
         if (spec.mcpGrant?.network) {
             logger.debug({ run: spec.name, network: spec.mcpGrant.network }, 'Fly Machines join the org private network; the Docker network name is not used');
