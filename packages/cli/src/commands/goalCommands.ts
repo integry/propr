@@ -77,6 +77,7 @@ class GoalUsageError extends Error {}
 
 /** What the provider/worker has confirmed, as opposed to the requested `desiredState`. */
 export type GoalObservedState =
+  | "draft"
   | "starting"
   | "running"
   | "resuming"
@@ -91,6 +92,7 @@ export function observedGoalState(
   goal: Pick<Goal, "resultState" | "desiredState" | "pausePending" | "startedAt"> & { control?: Pick<Goal["control"], "pending"> | null },
 ): GoalObservedState {
   if (goal.resultState) return goal.resultState;
+  if (goal.desiredState === "draft") return "draft";
   if (goal.desiredState === "cancelled") return "cancelling";
   if (goal.desiredState === "paused") return goal.pausePending ? "pausing" : "paused";
   if (!goal.startedAt) return "starting";

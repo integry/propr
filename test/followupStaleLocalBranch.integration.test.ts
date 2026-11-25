@@ -22,6 +22,7 @@ process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
 await mock.module('../packages/core/src/db/connection.js', { namedExports: { db: () => { throw new Error('no database in this suite'); } } });
 const { addWorktreeWithoutTracking } = await import('../packages/core/src/git/worktreeCreation.js');
 const { createWorktreeFromExistingBranch } = await import('../packages/core/src/git/repoManager.js');
+const { OBJECT_REPAIR_MARKER, RepositoryRepairRequiredError } = await import('../packages/core/src/git/repositoryPreparation.js');
 
 const BRANCH = '3621/claude-opus-5-5-stale-branch';
 let serial = 0;
@@ -151,27 +152,34 @@ test('a stale registration of the same worktree path whose directory is gone is 
     assert.equal(await head(retry.worktreePath), tip);
 });
 
-test('a local branch whose tip is missing fails with a message naming the branch and changes nothing', async () => {
+test('an unrecoverable local branch tip is reported by ref name and the branch is preserved', async () => {
+    const tip = 'f'.repeat(40);
     const ref = path.join(clone, '.git', 'refs', 'heads', ...BRANCH.split('/'));
     await fs.ensureDir(path.dirname(ref));
-    await fs.writeFile(ref, `${'f'.repeat(40)}\n`);
-    // The fetch's connectivity check already refuses the broken branch.
-    await assert.rejects(followup('missing-tip'), (error: Error) => {
+    await fs.writeFile(ref, `${tip}\n`);
+    await assert.rejects(followup('missing-tip'), error => {
+        assert.ok(error instanceof RepositoryRepairRequiredError);
         assert.ok(error.message.includes(`refs/heads/${BRANCH}`), error.message);
         assert.doesNotMatch(error.message, /already exists/);
         return true;
     });
-    // So does the reuse check itself, instead of treating the branch as absent.
+    const marker = path.join(clone, '.git', OBJECT_REPAIR_MARKER);
+    const incident = await fs.readFile(marker, 'utf8');
+    assert.equal(JSON.parse(incident).revision, tip);
+    const worktreePath = path.join(root, `missing-tip-${serial}`);
     await assert.rejects(
-        addWorktreeWithoutTracking(git, path.join(root, `missing-tip-${serial}`), BRANCH, { startPoint: `origin/${BRANCH}`, resetBranch: true }),
-        (error: Error) => {
-            assert.match(error.message, /bad ref/);
-            assert.ok(error.message.includes(`'${BRANCH}'`), error.message);
+        addWorktreeWithoutTracking(git, worktreePath, BRANCH, { startPoint: `origin/${BRANCH}`, resetBranch: true }),
+        error => {
+            assert.ok(error instanceof RepositoryRepairRequiredError);
+            assert.match(error.message, /previous automatic repair failed/);
+            assert.ok(error.message.includes(`refs/heads/${BRANCH}`), error.message);
             return true;
         },
     );
-    assert.equal(await fs.pathExists(path.join(root, `missing-tip-${serial}`)), false);
-    assert.equal(await fs.readFile(ref, 'utf8'), `${'f'.repeat(40)}\n`);
+    assert.equal(await fs.readFile(marker, 'utf8'), incident);
+    assert.equal(await fs.pathExists(path.join(root, 'worktrees', 'owner', repoName, 'missing-tip')), false);
+    assert.equal(await fs.pathExists(worktreePath), false);
+    assert.equal(await fs.readFile(ref, 'utf8'), `${tip}\n`);
 });
 
 test('a branch Git refuses to create as already existing is reused instead of failing', async () => {

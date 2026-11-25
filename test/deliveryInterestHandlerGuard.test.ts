@@ -8,6 +8,7 @@
  */
 import assert from 'node:assert/strict';
 import { after, beforeEach, mock, test } from 'node:test';
+import { UnrecoverableError } from 'bullmq';
 
 process.env.PROPR_DEMO_MODE = 'true';
 
@@ -27,6 +28,7 @@ function countingProxy(name: string): object {
 await mock.module('ioredis', { namedExports: { Redis: function Redis() { return countingProxy('redis'); } } });
 await mock.module('bullmq', { namedExports: {
     ErrorCode: { JobNotExist: -1, JobNotInState: -3 },
+    UnrecoverableError,
     Queue: function Queue() { return countingProxy('queue'); },
     QueueEvents: function QueueEvents() { return countingProxy('queue-events'); },
     Worker: function Worker() { return countingProxy('worker'); },

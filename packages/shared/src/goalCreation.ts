@@ -54,9 +54,9 @@ export function isValidGoalCheckpointInterval(value: unknown): value is number {
  * request satisfies the contract. Agent/model support is checked separately
  * against the live goal capabilities.
  */
-export function validateGoalCreationOptions(body: Record<string, unknown>): string | null {
+export function validateGoalCreationOptions(body: Record<string, unknown>, draft = false): string | null {
   if (typeof body.repository !== 'string' || !GOAL_REPOSITORY_PATTERN.test(body.repository)) return 'repository must be in owner/repo format';
-  if (typeof body.objective !== 'string' || body.objective.trim().length < 1 || body.objective.length > GOAL_OBJECTIVE_MAX_LENGTH) return 'objective is required';
+  if (typeof body.objective !== 'string' || (!draft && !body.objective.trim()) || body.objective.length > GOAL_OBJECTIVE_MAX_LENGTH) return 'objective is required';
   if (!GOAL_LAUNCH_STRATEGIES.includes(body.launchStrategy as GoalLaunchStrategy)) return 'launchStrategy must be direct or orchestrate';
   if (typeof body.agentId !== 'string' || !body.agentId) return 'agentId is required';
   if (typeof body.model !== 'string' || !body.model) return 'model is required';

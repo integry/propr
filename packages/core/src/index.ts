@@ -748,3 +748,5 @@ export {
     AGENT_ADMISSION_PARENT_KEY_ENV, goalParentSigningKey, agentAdmissionChildIdentity, agentRunGrantParentScope, createGoalParentNonce, currentAgentAdmissionNesting, goalParentScope, parentExecutionMarker, parentScopeFromIssueBody, parentScopeFromCommentJob,
     runAsAgentAdmissionParent, runWithAgentAdmissionParent, type AgentAdmissionNesting,
 } from './agents/agentRunNesting.js';
+
+export { RepositoryRepairRequiredError } from './git/objectRecovery.js';

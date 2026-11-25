@@ -182,7 +182,7 @@ test('a broken loose branch ref fails closed instead of appearing absent', async
     await assert.rejects(cleanupExistingBranch(git, 'broken'), /bad ref/);
     await assert.rejects(addWorktreeWithoutTracking(git, worktree, 'broken', {
         startPoint: 'main', resetBranch: true,
-    }), /bad ref/);
+    }), { name: 'RepositoryRepairRequiredError' });
     assert.equal(await fs.pathExists(worktree), false);
     assert.equal(await fs.readFile(path.join(repo, '.git', 'refs', 'heads', 'broken'), 'utf8'), 'f'.repeat(40) + '\n');
 });
@@ -1007,3 +1007,61 @@ test('a local branch behind the PR head is fast-forwarded, and one ahead is refu
     assert.equal(await headOf('attempt-3'), advanced, 'behind: fast-forwarded to the head');
     assert.equal((await git.raw(['for-each-ref', 'refs/propr/superseded/'])).trim(), '', 'nothing needed a backup');
 });
+
+for (const entry of ['base', 'replacement', 'existing', 'base-donor-error'] as const) {
+    test(`the ${entry} worktree path handles a missing thin-pack delta base`, async t => {
+        const before = Array.from({ length: 6000 }, (_, index) => `line ${index} for delta compression\n`).join('');
+        await fs.writeFile(path.join(repo, 'tracked'), before);
+        await git.add('.').commit('delta base');
+        const branch = entry.startsWith('base') ? 'main' : 'task';
+        await remoteBranch(branch);
+
+        const remote = path.join(root, `remote-${serial}.git`);
+        const writerPath = path.join(root, `writer-${serial}`);
+        await simpleGit().clone(remote, writerPath);
+        const writer = simpleGit(writerPath);
+        if (branch !== 'main') await writer.checkout(branch);
+        await writer.addConfig('user.name', 'Test');
+        await writer.addConfig('user.email', 'test@example.com');
+        const after = before.replace('line 2000', 'edited 2000');
+        await fs.writeFile(path.join(writerPath, 'tracked'), after);
+        await writer.add('.').commit('small edit').push('origin', branch);
+
+        const blob = (await git.revparse(['HEAD:tracked'])).trim();
+        await fs.unlink(path.join(repo, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+        await assert.rejects(git.raw(['fetch', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]), /failed to resolve \d+ delta|unresolved deltas left after unpacking/);
+
+        if (entry === 'base-donor-error') {
+            const standardPath = process.env.PATH;
+            const gitBinary = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+            const isolatedBin = path.join(root, 'failing-donor-bin');
+            await fs.ensureDir(isolatedBin);
+            await fs.writeFile(path.join(isolatedBin, 'git'), `#!/bin/sh
+case "$PWD" in
+    */propr-object-recovery-*)
+        for arg do
+            if [ "$arg" = fetch ]; then
+                echo "fatal: donor does not appear to be a git repository" >&2
+                exit 128
+            fi
+        done
+        ;;
+esac
+exec "${gitBinary}" "$@"
+`, { mode: 0o755 });
+            process.env.PATH = `${isolatedBin}${path.delimiter}${standardPath}`;
+            t.after(() => { process.env.PATH = standardPath; });
+            await assert.rejects(createWorktreeForIssue(repo, issue(), { baseBranch: 'main' }), {
+                name: 'RepositoryRepairRequiredError',
+                message: /donor does not appear to be a git repository/,
+            });
+            return;
+        }
+
+        const result = entry === 'existing'
+            ? await createWorktreeFromExistingBranch(repo, branch, { owner: 'owner', repoName, worktreeDirName: 'repaired' })
+            : await createWorktreeForIssue(repo, issue(), { baseBranch: 'main', reuseBranch: entry === 'replacement' ? branch : undefined });
+        assert.equal(await fs.readFile(path.join(result.worktreePath, 'tracked'), 'utf8'), after);
+        assert.equal((await simpleGit(result.worktreePath).revparse(['HEAD'])).trim(), (await writer.revparse(['HEAD'])).trim());
+    });
+}
