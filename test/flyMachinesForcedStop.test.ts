@@ -145,6 +145,16 @@ function launchCloneRun(root: string, agentScript: string, env: Record<string, s
     write(path.join(bin, 'chown'), '#!/bin/bash\nexit 0\n', 0o755);
     const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
     write(path.join(bin, 'git'), `#!/bin/bash\n${slow('push')}case " $* " in *" push "*) [ "\${PUSH_FAILS:-}" = 1 ] && exit 1 ;; esac\nexec ${realGit} "$@"\n`, 0o755);
+    // With PHASE_MV_PAUSE set, the wrapper's first rename that publishes that phase creates PHASE_MV_MARKER and
+    // holds until PHASE_MV_MARKER/release exists (or it is killed), leaving the publication half done.
+    const realMv = execFileSync('/bin/sh', ['-c', 'command -v mv'], { encoding: 'utf8' }).trim();
+    write(path.join(bin, 'mv'), `#!/bin/bash
+if [ -n "\${PHASE_MV_PAUSE:-}" ] && [ "\${@: -1}" = "\${PHASE_FILE:-}" ] && [ "$(cat "\${@: -2:1}")" = "$PHASE_MV_PAUSE" ] \\
+    && mkdir "$PHASE_MV_MARKER" 2>/dev/null; then
+  while [ ! -e "$PHASE_MV_MARKER/release" ]; do sleep 0.05; done
+fi
+exec ${realMv} "$@"
+`, 0o755);
     const agent = path.join(root, 'agent.sh');
     write(agent, agentScript, 0o755);
 
@@ -167,7 +177,7 @@ function launchCloneRun(root: string, agentScript: string, env: Record<string, s
     const launcher = spawn(shell!, [...launcherArgs, runDir, linger, workdir!, user!, noNewPrivileges!, phaseFile!, ...command], {
         detached: true, stdio: 'ignore',
         env: {
-            PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: root, TMPDIR: root, ...GIT_ENV, ...env,
+            PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`, HOME: root, TMPDIR: root, ...GIT_ENV, PHASE_FILE: phaseFile!, ...env,
             [E.path]: workspace, [E.remote]: remote, [E.baseRef]: baseRef, [E.baseCommit]: base,
             [E.branch]: 'task', [E.resultRef]: resultRef, [E.resultDir]: resultDir,
         },
@@ -256,6 +266,50 @@ test('a termination signal reaches the agent but never ends the clone wrapper, a
             assert.equal(fs.readFileSync(run.runFile(FLY_RUN_FILES.exitStatus), 'utf8').trim(), String(expected));
             const [state, snapshot] = fs.readFileSync(path.join(run.resultDir, WORKSPACE_RESULT_STATUS_FILE), 'utf8').trim().split(' ');
             assert.equal(state, 'pushed', `the wrapper survived the signal and published the workspace (${moment})`);
+            assert.equal(git(root, '--git-dir', run.remote, 'rev-parse', run.resultRef), snapshot);
+            assert.equal(git(root, '--git-dir', run.remote, 'show', `${run.resultRef}:a.txt`), 'changed');
+        } finally {
+            if (launcher?.pid) try { process.kill(-launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
+            fs.rmSync(root, { recursive: true, force: true });
+        }
+    }
+});
+
+test('a forced stop during a phase publication finds the previous complete phase and still lets the wrapper publish', { timeout: 60_000 }, async () => {
+    // agent: the agent was started, its phase not yet published; finalizing: the agent exited and its
+    // phase is being replaced. Either way the phase is read while the rename is pending.
+    for (const moment of ['agent', 'finalizing'] as const) {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-phase-publish-'));
+        let launcher: ChildProcess | undefined;
+        try {
+            const marker = path.join(root, 'phase-mv');
+            const readyFile = path.join(root, 'ready');
+            const run = launchCloneRun(root, CHANGING_AGENT_SCRIPT, {
+                PHASE_MV_PAUSE: moment, PHASE_MV_MARKER: marker, READY_FILE: readyFile, FINISH: moment === 'agent' ? 'run' : 'exit',
+            });
+            launcher = run.launcher;
+            const phaseFile = path.join(run.resultDir, WORKSPACE_RESULT_PHASE_FILE);
+            await until(() => fs.existsSync(marker), `the wrapper to start publishing its ${moment} phase`);
+            const pidFile = run.runFile(FLY_RUN_FILES.pid);
+            await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8').trim() !== '', 'the launcher to record the wrapper');
+            if (moment === 'agent') {
+                // Not yet published: no phase at all (a bootstrapping wrapper), never an empty one.
+                assert.equal(fs.existsSync(phaseFile), false, 'the agent phase appears only once complete');
+                write(path.join(marker, 'release'), '');
+                await until(() => fs.existsSync(readyFile) && fs.existsSync(phaseFile), 'the agent phase to be published');
+                assert.equal(fs.readFileSync(phaseFile, 'utf8'), 'agent\n');
+                process.kill(launcher.pid!, 'SIGTERM');
+                assert.equal(await run.launcherExit, 143, 'the agent ended on the deadline\'s TERM');
+            } else {
+                assert.equal(fs.readFileSync(phaseFile, 'utf8'), 'agent\n', 'the previous phase stays complete while its replacement is pending');
+                // The forced stop holds the wrapper, reads `agent` and kills its session (the pending rename too);
+                // the resumed wrapper publishes the phase again and finalizes.
+                assert.deepEqual(forcedStop(pidFile, phaseFile), { status: 0, stdout: 'killed' });
+                assert.equal(await run.launcherExit, 0, 'the launcher exits with the agent\'s own status');
+            }
+            assert.equal(fs.readFileSync(phaseFile, 'utf8'), 'finalizing\n');
+            const [state, snapshot] = fs.readFileSync(path.join(run.resultDir, WORKSPACE_RESULT_STATUS_FILE), 'utf8').trim().split(' ');
+            assert.equal(state, 'pushed', `the wrapper published the workspace (${moment})`);
             assert.equal(git(root, '--git-dir', run.remote, 'rev-parse', run.resultRef), snapshot);
             assert.equal(git(root, '--git-dir', run.remote, 'show', `${run.resultRef}:a.txt`), 'changed');
         } finally {

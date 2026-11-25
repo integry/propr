@@ -54,6 +54,8 @@ export const WORKSPACE_RESULT_BUNDLE_FILE = 'result.bundle';
  * else in the wrapper's session is the agent's), \`finalizing\` once it exited
  * and the wrapper snapshots and publishes the workspace. Absent while the
  * workspace is bootstrapped, before anything agent-controlled started.
+ * Each value replaces the last by rename, so a reader (the wrapper held
+ * stopped at any point) sees a complete phase or none, never a partial one.
  */
 export const WORKSPACE_RESULT_PHASE_FILE = 'phase';
 /** Ref the bundle fallback carries the snapshot under. */
@@ -165,6 +167,19 @@ drop_secrets() {
 record() {
     printf '%s\\n' "$*" > "$result_dir/${WORKSPACE_RESULT_STATUS_FILE}.tmp" && mv "$result_dir/${WORKSPACE_RESULT_STATUS_FILE}.tmp" "$result_dir/${WORKSPACE_RESULT_STATUS_FILE}"
 }
+# The phase is replaced by rename, never by truncating and rewriting it in place: a forced stop holds this
+# wrapper stopped at any point and reads the phase, which must then be the previous complete value (or none)
+# or the new one. The mv is a process in the agent's session, which a forced stop or a forwarded signal
+# kills while the phase still reads \`agent\`; the wrapper then retries it.
+publish_phase() {
+    local attempt
+    for attempt in 1 2 3; do
+        printf '%s\\n' "$1" > "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}.tmp" \\
+            && mv -f "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}.tmp" "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}" && return 0
+    done
+    echo "ProPR workspace transport: cannot record the $1 phase" >&2
+    return 1
+}
 bootstrap_failed() {
     echo "ProPR workspace transport: $*" >&2
     record "failed bootstrap"
@@ -218,7 +233,7 @@ else
 fi
 child=$!
 exec 3<&-
-printf 'agent\\n' > "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}"
+publish_phase agent
 trap 'kill -s TERM "$child" 2>/dev/null' TERM
 trap 'kill -s INT "$child" 2>/dev/null' INT
 trap 'kill -s HUP "$child" 2>/dev/null' HUP
@@ -228,7 +243,7 @@ while :; do
     kill -0 "$child" 2>/dev/null || break
 done
 trap - TERM INT HUP
-printf 'finalizing\\n' > "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}"
+publish_phase finalizing
 cd / || exit 1
 
 if [ -n "$result_ref" ]; then
