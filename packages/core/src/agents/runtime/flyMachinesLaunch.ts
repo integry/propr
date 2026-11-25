@@ -134,6 +134,8 @@ else
     if [ ! -e "$phase_file" ]; then
       kill -s "$sig" "$child" 2>/dev/null
     elif [ "$(cat "$phase_file" 2>/dev/null)" != finalizing ]; then
+      # The wrapper may have published agent but not forked yet.
+      : > "$phase_file.stop"
       for stat in /proc/[0-9]*/stat; do
         { read -r line < "$stat"; } 2>/dev/null || continue
         set -- \${line##*) }
@@ -248,13 +250,14 @@ if [ -n "$phase_file" ] && kill -s STOP "$pid" 2>/dev/null; then
   phase=$(cat "$phase_file" 2>/dev/null)
   case "$phase" in
     agent)
+      : > "$phase_file.stop" || exit 1
       if kill_agent spare; then echo killed; exit 0; fi
       trap - EXIT
       kill -s KILL -- "-$pid" 2>/dev/null; kill -s KILL "$pid" 2>/dev/null
       exit 1 ;;
     finalizing) echo finalizing; exit 0 ;;
   esac
-  kill -s CONT "$pid" 2>/dev/null
+  # Keep bootstrap stopped until KILL so it cannot launch the agent.
   trap - EXIT
 fi
 status=0

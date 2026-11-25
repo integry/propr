@@ -8,7 +8,7 @@ import { test } from 'node:test';
 const { FLY_FORCED_STOP_SCRIPT, FLY_RUN_FILES, flyForcedStopCommand, renderFlyMachineRequest } = await import('../packages/core/src/agents/runtime/flyMachinesLaunch.ts');
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const {
-    WORKSPACE_TRANSPORT_ENVIRONMENT: E, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_RESULT_BUNDLE_FILE, WORKSPACE_RESULT_PHASE_FILE, WORKSPACE_RESULT_STATUS_FILE,
+    WORKSPACE_BOOTSTRAP_FAILURE_EXIT, WORKSPACE_TRANSPORT_ENVIRONMENT: E, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_RESULT_BUNDLE_FILE, WORKSPACE_RESULT_PHASE_FILE, WORKSPACE_RESULT_STATUS_FILE,
 } = await import('../packages/core/src/git/workspaceTransportScript.ts');
 
 const GIT_ENV = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_NOSYSTEM: '1' };
@@ -160,16 +160,19 @@ cat "$1" >> "$PHASE_TRACE"
 `, 0o755);
     }
     // With PHASE_MV_PAUSE set, the wrapper's first rename that publishes that phase creates PHASE_MV_MARKER and
-    // holds until PHASE_MV_MARKER/release exists (or it is killed), leaving the publication half done.
+    // waits there until signalled or released. PAUSE_AFTER_RENAME holds it just after the rename instead.
     const realMv = execFileSync('/bin/sh', ['-c', 'command -v mv'], { encoding: 'utf8' }).trim();
     write(path.join(bin, 'mv'), `#!/bin/bash
 if [ -n "\${PHASE_TRACE:-}" ] && [ "\${@: -1}" = "$PHASE_FILE" ]; then
   printf 'rename ' >> "$PHASE_TRACE"
   cat "\${@: -2:1}" >> "$PHASE_TRACE"
 fi
+if [ "\${FAIL_INITIAL_RENAME:-}" = 1 ] && [ "\${@: -1}" = "$PHASE_FILE" ]; then exit 1; fi
 if [ -n "\${PHASE_MV_PAUSE:-}" ] && [ "\${@: -1}" = "\${PHASE_FILE:-}" ] && [ "$(cat "\${@: -2:1}")" = "$PHASE_MV_PAUSE" ] \\
     && mkdir "$PHASE_MV_MARKER" 2>/dev/null; then
-  while [ ! -e "$PHASE_MV_MARKER/release" ]; do sleep 0.05; done
+  if [ "\${PAUSE_AFTER_RENAME:-}" = 1 ]; then ${realMv} "$@" || exit 1; touch "$PHASE_MV_MARKER/renamed"; fi
+  while [ -d "$PHASE_MV_MARKER" ] && [ ! -e "$PHASE_MV_MARKER/release" ]; do sleep 0.05; done
+  [ "\${PAUSE_AFTER_RENAME:-}" != 1 ] || exit 0
 fi
 exec ${realMv} "$@"
 `, 0o755);
@@ -306,47 +309,66 @@ test('both phase renames wait for a successful sync of the complete temporary fi
     }
 });
 
-test('a forced stop during a phase publication finds the previous complete phase and still lets the wrapper publish', { timeout: 60_000 }, async () => {
-    // agent: the agent was started, its phase not yet published; finalizing: the agent exited and its
-    // phase is being replaced. Either way the phase is read while the rename is pending.
-    for (const moment of ['agent', 'finalizing'] as const) {
-        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-phase-publish-'));
-        let launcher: ChildProcess | undefined;
-        try {
+test('failure to publish the initial phase aborts bootstrap before the agent runs', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-phase-failure-'));
+    try {
+        const run = launchCloneRun(root, CHANGING_AGENT_SCRIPT, { FAIL_INITIAL_RENAME: '1', FINISH: 'exit' });
+        assert.equal(await run.launcherExit, WORKSPACE_BOOTSTRAP_FAILURE_EXIT);
+        assert.equal(fs.readFileSync(path.join(run.resultDir, WORKSPACE_RESULT_STATUS_FILE), 'utf8'), 'failed bootstrap\n');
+        assert.equal(fs.readFileSync(path.join(run.workspace, 'a.txt'), 'utf8'), 'base\n');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
+for (const stop of ['TERM', 'forced'] as const) {
+    for (const renamed of [false, true]) {
+        test(`a ${stop} stop ${renamed ? 'after' : 'before'} the initial rename prevents agent startup`, { timeout: 30_000 }, async () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-phase-start-'));
             const marker = path.join(root, 'phase-mv');
-            const readyFile = path.join(root, 'ready');
             const run = launchCloneRun(root, CHANGING_AGENT_SCRIPT, {
-                PHASE_MV_PAUSE: moment, PHASE_MV_MARKER: marker, READY_FILE: readyFile, FINISH: moment === 'agent' ? 'run' : 'exit',
+                PHASE_MV_PAUSE: 'agent', PHASE_MV_MARKER: marker, PAUSE_AFTER_RENAME: renamed ? '1' : '0', FINISH: 'exit',
             });
-            launcher = run.launcher;
-            const phaseFile = path.join(run.resultDir, WORKSPACE_RESULT_PHASE_FILE);
-            await until(() => fs.existsSync(marker), `the wrapper to start publishing its ${moment} phase`);
-            const pidFile = run.runFile(FLY_RUN_FILES.pid);
-            await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8').trim() !== '', 'the launcher to record the wrapper');
-            if (moment === 'agent') {
-                // Not yet published: no phase at all (a bootstrapping wrapper), never an empty one.
-                assert.equal(fs.existsSync(phaseFile), false, 'the agent phase appears only once complete');
+            try {
+                await until(() => fs.existsSync(renamed ? path.join(marker, 'renamed') : marker), 'the initial phase rename to pause');
+                const phaseFile = path.join(run.resultDir, WORKSPACE_RESULT_PHASE_FILE);
+                assert.equal(fs.existsSync(phaseFile), renamed);
+                const pidFile = run.runFile(FLY_RUN_FILES.pid);
+                if (stop === 'TERM') process.kill(run.launcher.pid!, 'SIGTERM');
+                else assert.equal(forcedStop(pidFile, phaseFile).status, 0);
+                const wrapper = Number(fs.readFileSync(pidFile, 'utf8'));
+                await until(() => !alive(wrapper), 'the stopped wrapper to exit');
+                // Bootstrap TERM can leave the paused mv holding the output pipes after its parent exits.
                 write(path.join(marker, 'release'), '');
-                await until(() => fs.existsSync(readyFile) && fs.existsSync(phaseFile), 'the agent phase to be published');
-                assert.equal(fs.readFileSync(phaseFile, 'utf8'), 'agent\n');
-                process.kill(launcher.pid!, 'SIGTERM');
-                assert.equal(await run.launcherExit, 143, 'the agent ended on the deadline\'s TERM');
-            } else {
-                assert.equal(fs.readFileSync(phaseFile, 'utf8'), 'agent\n', 'the previous phase stays complete while its replacement is pending');
-                // The forced stop holds the wrapper, reads `agent` and kills its session (the pending rename too);
-                // the resumed wrapper publishes the phase again and finalizes.
-                assert.deepEqual(forcedStop(pidFile, phaseFile), { status: 0, stdout: 'killed' });
-                assert.equal(await run.launcherExit, 0, 'the launcher exits with the agent\'s own status');
+                assert.equal(await run.launcherExit, stop === 'forced' && !renamed ? 137 : 143);
+                if (renamed) assert.equal(git(root, '--git-dir', run.remote, 'show', `${run.resultRef}:a.txt`), 'base');
+                assert.equal(fs.readFileSync(path.join(run.workspace, 'a.txt'), 'utf8'), 'base\n');
+            } finally {
+                if (run.launcher.pid) try { process.kill(-run.launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
+                fs.rmSync(root, { recursive: true, force: true });
             }
-            assert.equal(fs.readFileSync(phaseFile, 'utf8'), 'finalizing\n');
-            const [state, snapshot] = fs.readFileSync(path.join(run.resultDir, WORKSPACE_RESULT_STATUS_FILE), 'utf8').trim().split(' ');
-            assert.equal(state, 'pushed', `the wrapper published the workspace (${moment})`);
-            assert.equal(git(root, '--git-dir', run.remote, 'rev-parse', run.resultRef), snapshot);
-            assert.equal(git(root, '--git-dir', run.remote, 'show', `${run.resultRef}:a.txt`), 'changed');
-        } finally {
-            if (launcher?.pid) try { process.kill(-launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
-            fs.rmSync(root, { recursive: true, force: true });
-        }
+        });
+    }
+}
+
+test('a forced stop during the finalizing rename sees the complete agent phase and lets the wrapper publish', { timeout: 60_000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-fly-phase-publish-'));
+    const marker = path.join(root, 'phase-mv');
+    const run = launchCloneRun(root, CHANGING_AGENT_SCRIPT, { PHASE_MV_PAUSE: 'finalizing', PHASE_MV_MARKER: marker, FINISH: 'exit' });
+    try {
+        await until(() => fs.existsSync(marker), 'the wrapper to start publishing its finalizing phase');
+        const phaseFile = path.join(run.resultDir, WORKSPACE_RESULT_PHASE_FILE);
+        assert.equal(fs.readFileSync(phaseFile, 'utf8'), 'agent\n');
+        assert.deepEqual(forcedStop(run.runFile(FLY_RUN_FILES.pid), phaseFile), { status: 0, stdout: 'killed' });
+        assert.equal(await run.launcherExit, 0);
+        assert.equal(fs.readFileSync(phaseFile, 'utf8'), 'finalizing\n');
+        const [state, snapshot] = fs.readFileSync(path.join(run.resultDir, WORKSPACE_RESULT_STATUS_FILE), 'utf8').trim().split(' ');
+        assert.equal(state, 'pushed');
+        assert.equal(git(root, '--git-dir', run.remote, 'rev-parse', run.resultRef), snapshot);
+        assert.equal(git(root, '--git-dir', run.remote, 'show', `${run.resultRef}:a.txt`), 'changed');
+    } finally {
+        if (run.launcher.pid) try { process.kill(-run.launcher.pid, 'SIGKILL'); } catch { /* already gone */ }
+        fs.rmSync(root, { recursive: true, force: true });
     }
 });
 

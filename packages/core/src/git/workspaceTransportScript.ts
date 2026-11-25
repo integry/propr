@@ -223,21 +223,32 @@ local_git update-ref -d refs/propr/base
 chown -R ${WORKSPACE_AGENT_USER}:${WORKSPACE_AGENT_USER} "$workspace" 2>/dev/null || true
 echo "ProPR workspace transport: cloned $base_commit into $workspace" >&2
 
+publish_phase agent || bootstrap_failed "cannot publish the initial agent phase"
+
+child=""
+pending_signal=""
+forward_signal() {
+    if [ -n "$child" ]; then kill -s "$1" "$child" 2>/dev/null; else pending_signal="$1"; fi
+}
+trap 'forward_signal TERM' TERM
+trap 'forward_signal INT' INT
+trap 'forward_signal HUP' HUP
+# Fly may have stopped the run after the phase rename but before this fork.
+# Check in the child: once past the check it already exists for Fly to signal.
+launch_agent() {
+    [ ! -e "$result_dir/${WORKSPACE_RESULT_PHASE_FILE}.stop" ] || exit 143
+    if [ "$inner_script" = "${WORKSPACE_DIRECT_AGENT_LAUNCH}" ]; then
+        exec "\${agent_identity[@]}" "$@"
+    else
+        # The repository setup or workflow wrapper and provider entrypoint drop privileges.
+        exec /bin/bash -lc "$inner_script" "$@"
+    fi
+}
 exec 3<&0
-if [ "$inner_script" = "${WORKSPACE_DIRECT_AGENT_LAUNCH}" ]; then
-    # A direct entrypoint has no trusted wrapper that drops privileges: start it as the agent.
-    "\${agent_identity[@]}" "$@" <&3 3<&- &
-else
-    # The repository setup or workflow wrapper drops the setup hook, and the ProPR
-    # provider entrypoint it execs drops the agent, to the agent user.
-    /bin/bash -lc "$inner_script" "$@" <&3 3<&- &
-fi
+launch_agent "$@" <&3 3<&- &
 child=$!
+[ -z "$pending_signal" ] || forward_signal "$pending_signal"
 exec 3<&-
-publish_phase agent
-trap 'kill -s TERM "$child" 2>/dev/null' TERM
-trap 'kill -s INT "$child" 2>/dev/null' INT
-trap 'kill -s HUP "$child" 2>/dev/null' HUP
 while :; do
     wait "$child"
     status=$?
