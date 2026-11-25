@@ -150,6 +150,14 @@ jobs:
           signature=$(printf '%s' "$header.$payload" | openssl dgst -sha256 -sign "$key" | b64url)
           printf '%s' "$header.$payload.$signature"
           BASH
+          cat > "$OUT/installation-token.sh" <<'BASH'
+          set -euo pipefail
+          installation_id=$(sed -n 's/^GH_INSTALLATION_ID=//p' "$ENV_FILE")
+          [[ $installation_id =~ ^[0-9]+$ ]]
+          jwt=$(bash "$OUT/app-jwt.sh")
+          echo "::add-mask::$jwt" >&2
+          GH_TOKEN="$jwt" gh api --method POST "app/installations/$installation_id/access_tokens" --jq .token
+          BASH
           jwt=$(bash "$OUT/app-jwt.sh")
           echo "::add-mask::$jwt"
           app_api() { curl --fail --silent --show-error -H "Authorization: Bearer $jwt" "https://api.github.com/app$1" "${@:2}"; }
@@ -228,7 +236,9 @@ jobs:
           done
           [[ $pr =~ ^[0-9]+$ ]] || { echo "No unique linked PR for $REPO#$ISSUE"; exit 1; }
           sha=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
-          contents=$(gh api "repos/$REPO/contents/$APP.txt?ref=$sha" --jq .content | base64 -d)
+          token=$(bash "$OUT/installation-token.sh")
+          echo "::add-mask::$token"
+          contents=$(GH_TOKEN="$token" gh api "repos/$REPO/contents/$APP.txt?ref=$sha" --jq .content | base64 -d)
           [[ $contents == "$APP" ]]
           # Read the worker's measurement for this issue AND PR, after wake was observed.
           check=$(base64 -w0 <<JS
@@ -297,7 +307,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
-          prs=$(gh pr list --repo "$REPO" --json number,closingIssuesReferences,isCrossRepository |
-            jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | .number')
-          for pr in $prs; do gh pr close "$pr" --repo "$REPO" --delete-branch; done
+          set -euo pipefail
+          prs=$(gh pr list --repo "$REPO" --json number,headRefName,closingIssuesReferences,isCrossRepository |
+            jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | [.number, (.headRefName | split("/") | map(@uri) | join("/"))] | @tsv')
+          if [[ -n $prs ]]; then
+            token=$(bash "$OUT/installation-token.sh")
+            echo "::add-mask::$token"
+            while IFS=$'\t' read -r pr ref; do
+              gh pr close "$pr" --repo "$REPO"
+              status=$(curl --silent --show-error -o "$OUT/delete-ref.json" -w '%{http_code}' -X DELETE \
+                -H "Authorization: Bearer $token" "https://api.github.com/repos/$REPO/git/refs/heads/$ref")
+              [[ $status == 204 ]] && continue
+              if [[ $status == 404 || $status == 422 ]] && jq -e --arg status "$status" '
+                .message | test("^Reference does not exist[.]?$"; "i") or ($status == "404" and . == "Not Found")
+              ' "$OUT/delete-ref.json" >/dev/null; then
+                continue
+              fi
+              echo "::error::Deleting the head branch for PR #$pr returned HTTP $status"
+              exit 1
+            done <<< "$prs"
+          fi
           gh issue close "$ISSUE" --repo "$REPO"
