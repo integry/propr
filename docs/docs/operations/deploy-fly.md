@@ -1,7 +1,7 @@
 ---
 sidebar_label: "Deploy to Fly"
 title: "Run the control plane on a Fly Machine with propr deploy fly"
-description: "propr deploy fly runs the slim control plane and Redis on one small Fly Machine, keeps SQLite and Redis on a volume, sets secrets, enrolls Connect and the GitHub relay, and runs agents on Sprites or Fly Machines."
+description: "propr deploy fly runs the slim control plane and Redis on one small Fly Machine, keeps SQLite and Redis on a volume, sets secrets, enrolls Connect and the GitHub relay, and supports Docker agents with --legacy-docker."
 ---
 # Deploy to Fly
 
@@ -11,10 +11,14 @@ description: "propr deploy fly runs the slim control plane and Redis on one smal
 - Redis in the **same Machine**, bound to loopback;
 - SQLite and the Redis append-only file on a Fly **volume**.
 
-The published `propr/app` image from the CLI's launcher manifest is deployed as it is. There is no image build and no Docker-in-Docker. Agents are meant to run on **Sprites** by default, or on **Fly Machines**, neither of which needs Docker on the control-plane Machine.
+The published `propr/app` image from the CLI's launcher manifest is deployed as it is. Remote agent runtimes run without a Docker daemon on the control-plane Machine.
 
-:::warning Sprites and Fly Machines agents are not available yet
-The worker in this release only runs Docker agents: it waits for the Docker agent image before it takes any task, and the Sprites and Fly Machines runtimes (#3764, #3767) have not landed. On a Machine without a Docker daemon it would never run a task, so the command refuses `--agent-runtime sprites` (the default) and `fly-machines` before creating anything on Fly, `--dry-run` included. Until then, deploy with [`--legacy-docker`](#legacy-mode-docker-in-the-machine).
+:::warning[Remote runtimes require the configuration builder on this branch]
+
+Live runs have verified that the worker can run agents on both Sprites and Fly Machines. See the [runtime capabilities matrix](../architecture/agent-runtime.md) for supported agents and network policies.
+
+On this branch, `propr deploy fly` rejects both `--agent-runtime sprites` (the default) and `--agent-runtime fly-machines`, even with `--dry-run`. For either remote runtime, follow [Run ProPR on Fly](../tutorials/setup-fly.md#deploy-the-machine) to render the Machine configuration with the configuration builder. For Docker agents, use the CLI with [`--legacy-docker`](#legacy-mode-docker-in-the-machine).
+
 :::
 
 ```bash
@@ -73,7 +77,7 @@ In a multi-container Machine, Fly passes app secrets only to the containers that
 | --- | --- |
 | Stack `.env` entries | `<stack root>/.env` when present, or `--env-file <path>`. Skipped: empty values, host paths (`HOST_*`), and every key the deploy sets itself (ports, Redis, database path, URLs, `NODE_ENV`, `PROPR_INDEXING`, the agent runtime and, with `--legacy-docker`, the clone, worktree and egress paths under `/usr/src/app/data/propr-shared`). Turn this off with `--no-env-file`. |
 | `SESSION_SECRET` | Generated only when the app does not have one yet, so a redeploy does not sign everyone out. A `SESSION_SECRET` in the `.env` is uploaded as is. |
-| `PROPR_GH_PRIVATE_KEY_B64` | The GitHub App key from `--github-app-key` or `HOST_GH_PRIVATE_KEY`, base64; a `PROPR_GH_PRIVATE_KEY_B64` already in the `.env` is uploaded as is. The Machine writes it to `/run/propr/github-app.pem` (mode 0400) and sets `GH_PRIVATE_KEY_PATH`. A redeploy without a key keeps the earlier one wired in the same way. |
+| `PROPR_GH_PRIVATE_KEY_B64` | The GitHub App key from `--github-app-key` or `HOST_GH_PRIVATE_KEY`, base64; a `PROPR_GH_PRIVATE_KEY_B64` already in the `.env` is uploaded as is. The Machine writes it to `/etc/propr/github-app.pem` (mode 0400) and sets `GH_PRIVATE_KEY_PATH`. A redeploy without a key keeps the earlier one wired in the same way. |
 | `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, `GH_INSTALLATION_ID` | The GitHub relay enrollment (below). |
 | `GITHUB_EVENT_INTAKE_MODE` | Written on every run, see [GitHub event intake](#github-event-intake). |
 | `SPRITES_TOKEN` | `--sprites-token` or `SPRITES_TOKEN`. Without it agent runs on Sprites fail, and the command says so. |
@@ -171,7 +175,7 @@ Fly rejects volumes over 5 GB on the Free plan (`Volumes larger than 5GB aren't 
 | --- | --- |
 | Machine | shared-cpu-1x, 1 GB (the default) |
 | Volume | 1 GB (the default); anything up to 5 GB |
-| Agents | Sprites (the default runtime), once the worker supports it (see the warning above) |
+| Agents | Sprites via the [Fly deployment tutorial](../tutorials/setup-fly.md#deploy-the-machine) |
 | Idle shutdown | opt-in with `--idle-shutdown` (see [Idle shutdown](#idle-shutdown)) |
 | Docker agents | `--legacy-docker` with a volume up to 5 GB (1 GB by default; it also holds clones and worktrees). Docker images go on the persistent root filesystem (`--rootfs-size`, 20 GB or more, see [sizing](#legacy-mode-docker-in-the-machine)), which the volume cap does not limit. A 20 GB persistent root filesystem with `dockerd` on overlay2 ran on a Free-plan shared-cpu-1x, 1 GB Machine (`--memory 1024`; the legacy default is 2048 MB); 512 MB was not enough. |
 
@@ -187,7 +191,7 @@ The command checks the cap before it creates anything: with a `--volume-size` ov
 | `--memory <mb>` / `--cpus <n>` | `1024` / `1` | Machine size (shared CPU) |
 | `--volume <name>` / `--volume-size <gb>` | `propr_data` / `1` | Volume for SQLite and Redis; at most 5 GB on the Fly Free plan |
 | `--image <ref>` | manifest `images.app` | Deploy a different app image |
-| `--agent-runtime <runtime>` | `sprites` | `sprites`, `fly-machines`, or `docker` (with `--legacy-docker`). Only `docker` is accepted in this release, see the warning above |
+| `--agent-runtime <runtime>` | `sprites` | `sprites`, `fly-machines`, or `docker` (with `--legacy-docker`). The CLI on this branch accepts only `docker` (see the warning above) |
 | `--sprites-token`, `--agent-fly-token` | — | Agent runtime credentials, stored as secrets |
 | `--root`, `--env-file`, `--no-env-file` | stack `.env` | Where secrets come from |
 | `--github-app-key <path>` | `HOST_GH_PRIVATE_KEY` | Own GitHub App private key |

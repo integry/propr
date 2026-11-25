@@ -11,12 +11,12 @@ import {
   buildMachineConfig,
   FLY_DATA_PATH,
   FLY_DB_FILENAME,
-  FLY_GH_PRIVATE_KEY_PATH,
   FLY_GH_PRIVATE_KEY_SECRET,
   FLY_MANAGED_ENV_KEYS,
   renderFlyMachineConfigJson,
   renderFlyToml,
   selectEnvFileSecrets,
+  validateContainerFilePaths,
   validateFlyAppName,
   validateFlyVolumeName,
   type FlyDeployPlan,
@@ -144,11 +144,30 @@ test("each container lists the app secrets it needs; Fly passes no others in a m
   assert.deepEqual(buildContainers(basePlan()).find((c) => c.name === "app")?.secrets, []);
 });
 
-test("GitHub App key is written from a secret, not embedded", () => {
-  const config = buildMachineConfig(basePlan({ githubAppKey: true }));
-  const app = container(config, "app");
-  assert.deepEqual(app.files, [{ guest_path: FLY_GH_PRIVATE_KEY_PATH, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }]);
-  assert.equal((app.env as Record<string, string>).GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_PATH);
+test("Machine files cannot be hidden by the Fly volume or /run tmpfs", () => {
+  const validate = (guest_path: string) => validateContainerFilePaths([
+    { name: "redis" }, { name: "app", files: [{ guest_path: "/etc/hosts" }, { guest_path }] },
+  ]);
+  for (const mount of [FLY_DATA_PATH, "/run"]) {
+    for (const path of [mount, mount + "/claude/settings.json", "/etc/.." + mount + "//key"]) {
+      assert.throws(() => validate(path), /would be hidden/);
+    }
+    assert.doesNotThrow(() => validate(mount + "-other/key"));
+  }
+});
+
+test("Sprites and legacy Docker mount the GitHub App key on the app root filesystem", () => {
+  const keyPath = "/etc/propr/github-app.pem";
+  for (const plan of [
+    basePlan({ githubAppKey: true }),
+    basePlan({ githubAppKey: true, legacyDocker: true, agentRuntime: "docker" }),
+  ]) {
+    for (const config of [buildMachineConfig(plan), JSON.parse(renderFlyMachineConfigJson(plan))]) {
+      const app = container(config, "app");
+      assert.deepEqual(app.files, [{ guest_path: keyPath, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }]);
+      assert.equal((app.env as Record<string, string>).GH_PRIVATE_KEY_PATH, keyPath);
+    }
+  }
 });
 
 test("legacy Docker mode adds the daemon container and shares worktree paths", () => {

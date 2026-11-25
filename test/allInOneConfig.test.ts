@@ -299,28 +299,31 @@ test('an idle exit still closing when the arranged wake comes exits 1 then, not 
     assert.match(errors[0], /still shutting down when the wake arranged for the idle stop came \(still closing: worker\)/);
 });
 
-test('an idle exit that closes before the arranged wake exits 0, flushing only for the time left', async () => {
+test('an idle exit that closes before the arranged wake exits 0, flushing only for the time left', async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_000 });
     const exits: number[] = [];
-    const flushes: Array<{ timeoutMs: number | undefined; at: number }> = [];
+    const flushes: Array<number | undefined> = [];
     const exitBy = Date.now() + 500;
     createBoundedExit({
-        close: async () => [],
+        close: async () => {
+            t.mock.timers.tick(200);
+            return [];
+        },
         exit: code => { exits.push(code); },
         pendingStep: () => null,
         log: quietLog,
-        flush: async timeoutMs => { flushes.push({ timeoutMs, at: Date.now() }); },
+        flush: async timeoutMs => { flushes.push(timeoutMs); },
         deadlineMs: 5_000,
     })(0, { exitBy });
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(exits, [0]);
-    assert.equal(flushes.length, 1);
-    const [{ timeoutMs, at }] = flushes;
-    assert.ok(timeoutMs !== undefined && timeoutMs <= exitBy - at, 'the flush cannot carry the exit past the wake');
+    assert.deepEqual(flushes, [300], 'the 200 ms close leaves 300 ms to flush before the wake');
 
     // A wake that is already due when the close starts: exit 1 at once.
     const late: number[] = [];
     createBoundedExit({ close: () => new Promise<string[]>(() => undefined), exit: code => { late.push(code); }, pendingStep: () => null, log: quietLog, deadlineMs: 5_000 })(0, { exitBy: Date.now() - 1 });
-    await new Promise(resolve => setTimeout(resolve, 20));
+    t.mock.timers.tick(1);
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(late, [1]);
 });
 

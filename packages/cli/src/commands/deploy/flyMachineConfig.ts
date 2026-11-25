@@ -19,6 +19,7 @@
  * Legacy mode keeps Docker images on a persistent root filesystem instead.
  */
 
+import { posix } from "node:path";
 import { Buffer } from "node:buffer";
 import {
   buildLegacyDockerContainer,
@@ -32,7 +33,8 @@ export const FLY_DB_FILENAME = `${FLY_DATA_PATH}/propr.sqlite`;
 export const FLY_REDIS_DIR = `${FLY_DATA_PATH}/redis`;
 export const FLY_API_PORT = 4000;
 export const FLY_REDIS_PORT = 6379;
-export const FLY_GH_PRIVATE_KEY_PATH = "/run/propr/github-app.pem";
+// Keep the secret file on the container root filesystem; Pilot mounts tmpfs at /run.
+export const FLY_GH_PRIVATE_KEY_PATH = "/etc/propr/github-app.pem";
 /** Secret holding the base64 GitHub App private key, written to FLY_GH_PRIVATE_KEY_PATH. */
 export const FLY_GH_PRIVATE_KEY_SECRET = "PROPR_GH_PRIVATE_KEY_B64";
 
@@ -291,12 +293,27 @@ function buildTunnelContainer(image: string, secretNames: readonly string[]): Js
   };
 }
 
+/** Fly installs Machine files before the data volume and /run tmpfs cover these paths. */
+export function validateContainerFilePaths(containers: JsonObject[]): void {
+  for (const container of containers) {
+    for (const file of (container.files ?? []) as Array<{ guest_path: string }>) {
+      const path = posix.resolve("/", file.guest_path);
+      for (const mount of [FLY_DATA_PATH, "/run"]) {
+        if (path === mount || path.startsWith(mount + "/")) {
+          throw new Error(`Machine file ${file.guest_path} in ${container.name} would be hidden by the ${mount} mount`);
+        }
+      }
+    }
+  }
+}
+
 /** Multi-container list. `appImage` lets flyctl substitute the image it deploys. */
 export function buildContainers(plan: FlyDeployPlan, appImage: string = plan.images.app): JsonObject[] {
   const containers = [buildRedisContainer(plan.images.redis)];
   if (plan.legacyDocker) containers.push(buildLegacyDockerContainer(legacyDockerDiskSizeGb(legacyRootfsSizeGb(plan))));
   containers.push(buildAppContainer(plan, appImage));
   if (plan.tunnel) containers.push(buildTunnelContainer(plan.images.cloudflared, plan.secretNames ?? []));
+  validateContainerFilePaths(containers);
   return containers;
 }
 
