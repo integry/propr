@@ -1,0 +1,203 @@
+name: Fly end-to-end smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fly-e2e-fixture
+  cancel-in-progress: false
+
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        env:
+          ENABLED: ${{ secrets.FLY_E2E_TOKEN != '' && secrets.FLY_E2E_SPRITES_TOKEN != '' && secrets.FLY_E2E_APP_ENV != '' && secrets.FLY_E2E_GITHUB_TOKEN != '' }}
+        run: |
+          echo "enabled=$ENABLED" >> "$GITHUB_OUTPUT"
+          if [[ $ENABLED == false ]]; then
+            echo "Skipping live smoke because fixture secrets are missing." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  smoke:
+    needs: fixture
+    if: needs.fixture.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      APP: propr-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+      ORG: ${{ vars.FLY_E2E_ORG }}
+      REPO: ${{ vars.FLY_E2E_REPO }}
+      REGION: iad
+      RUNTIME: sprites
+      IDLE_AFTER: 2m
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+      - uses: superfly/flyctl-actions/setup-flyctl@98172f70657cb3e15db199af139be99bd3e61200
+      - name: Prepare the fixture and build this checkout
+        run: |
+          : "${ORG:?Set FLY_E2E_ORG}" "${REPO:?Set FLY_E2E_REPO}"
+          [[ "$REPO" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ && "${REPO,,}" != "${GITHUB_REPOSITORY,,}" ]]
+          npm ci
+          image="registry.fly.io/$APP/control-plane:$GITHUB_SHA"
+          docker build -f docker/Dockerfile.app.prod -t "$image" .
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "ENV_FILE=$RUNNER_TEMP/fly.env" >> "$GITHUB_ENV"
+
+      - name: Create disposable app
+        id: app
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: flyctl apps create "$APP" --org "$ORG"
+
+      - name: Deploy the tutorial configuration with idle shutdown enabled
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
+          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+        run: |
+          umask 077
+          printf '%s\n' "$APP_ENV" > "$ENV_FILE"
+          for key in GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 CLAUDE_SETTINGS_B64; do
+            grep -q "^${key}=." "$ENV_FILE" || { echo "Missing $key"; exit 1; }
+          done
+          openssl rand -hex 32 > "$OUT/hook-secret"
+          {
+            echo "SPRITES_TOKEN=$SPRITES_TOKEN"
+            echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
+            echo "SESSION_SECRET=$(openssl rand -hex 32)"
+          } >> "$ENV_FILE"
+          stop_token=$(flyctl tokens create deploy --app "$APP" --expiry 2h --json | jq -er .token)
+          printf 'PROPR_FLY_MACHINE_STOP_TOKEN=%s\n' "$stop_token" >> "$ENV_FILE"
+
+          # Exercise the operator's exact config recipe from the checked-out tutorial.
+          awk '/^```bash title="Render Machine configuration"$/{copy=1; next}
+               copy && /^```$/{exit} copy' docs/docs/tutorials/setup-fly.md > "$OUT/render.sh"
+          test -s "$OUT/render.sh"
+          bash -eu "$OUT/render.sh"
+          flyctl auth docker
+          docker push "$IMAGE"
+          flyctl secrets import --stage --app "$APP" < "$ENV_FILE"
+          flyctl ips allocate-v4 --shared --app "$APP"
+          flyctl ips allocate-v6 --app "$APP"
+          flyctl volumes create propr_data --size 1 --region "$REGION" --app "$APP" --yes
+          flyctl deploy --app "$APP" --config "$OUT/fly.toml" --image "$IMAGE" --ha=false
+          curl --fail --retry 8 --retry-all-errors "https://$APP.fly.dev/health"
+
+      - name: Create unlabeled issue and signed issues webhook
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" \
+            -f body="Create $APP.txt containing exactly the line $APP. Open a PR resolving this issue." --jq .number)
+          echo "ISSUE=$issue" >> "$GITHUB_ENV"
+          jq -n --rawfile secret "$OUT/hook-secret" --arg url "https://$APP.fly.dev/webhook" \
+            '{name:"web",active:true,events:["issues"],config:{url:$url,content_type:"json",secret:($secret|rtrimstr("\n"))}}' |
+            gh api "repos/$REPO/hooks" --input - --jq .id > "$OUT/hook-id"
+
+      - name: Observe idle stop and labeled-issue wake
+        timeout-minutes: 12
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          machine=$(flyctl machine list --app "$APP" --json | jq -er 'select(length == 1) | .[0].id')
+          wait_state() {
+            for _ in {1..55}; do
+              state=$(flyctl machine list --app "$APP" --json | jq -er --arg id "$machine" '.[] | select(.id == $id) | .state')
+              [[ $state != "$1" ]] || return 0
+              sleep 5
+            done
+            echo "Machine $machine remained $state waiting for $1"
+            return 1
+          }
+          wait_state stopped
+          gh issue edit "$ISSUE" --repo "$REPO" --add-label AI
+          wait_state started
+
+      - name: Verify the linked PR and its Sprites execution
+        timeout-minutes: 40
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          for _ in {1..150}; do
+            pr=$(gh pr list --repo "$REPO" --json number,closingIssuesReferences,isCrossRepository |
+              jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | .number')
+            [[ -z $pr ]] || break
+            sleep 15
+          done
+          [[ $pr =~ ^[0-9]+$ ]] || { echo "No unique linked PR for $REPO#$ISSUE"; exit 1; }
+          sha=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
+          contents=$(gh api "repos/$REPO/contents/$APP.txt?ref=$sha" --jq .content | base64 -d)
+          [[ $contents == "$APP" ]]
+          # Read the worker's measurement for this issue AND PR, after wake was observed.
+          check=$(base64 -w0 <<JS
+          const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
+          const run = db.prepare(\`SELECT e.compute_runtime, e.compute_wall_time_ms, e.compute_cost_usd
+            FROM llm_executions e JOIN tasks t USING (task_id)
+            WHERE t.repository = ? COLLATE NOCASE AND t.issue_number = ? AND t.pr_number = ?
+              AND e.success = 1 AND e.compute_runtime = 'sprites' LIMIT 1\`).get('$REPO', $ISSUE, $pr);
+          if (!run) process.exit(1);
+          console.log(JSON.stringify(run));
+          JS
+          )
+          for _ in {1..12}; do
+            if flyctl ssh console --app "$APP" --container app -C "node -e \"eval(Buffer.from('$check','base64').toString())\""; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Missing successful Sprites execution for $REPO#$ISSUE, PR #$pr"
+          exit 1
+
+      - name: Remove webhook
+        if: always() && steps.app.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          if [[ -s $OUT/hook-id ]]; then gh api -X DELETE "repos/$REPO/hooks/$(cat "$OUT/hook-id")"; fi
+      - name: Destroy test app, Machines and volume
+        if: always() && steps.app.outcome == 'success'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: flyctl apps destroy "$APP" --yes
+      - name: Reap remaining Sprites owned by this deployment
+        if: always() && steps.app.outcome == 'success'
+        env:
+          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+        run: |
+          node --import tsx --input-type=module <<'JS'
+          import { createHash } from 'node:crypto';
+          import { SpritesClient } from '@fly/sprites';
+          import { spritePoolKey } from './packages/shared/src/statusKeys.ts';
+          const marker = createHash('sha256').update(spritePoolKey(process.env.APP)).digest('hex').slice(0, 16);
+          const prefix = 'propr-' + marker + '-';
+          const client = new SpritesClient(process.env.SPRITES_TOKEN);
+          for (const sprite of await client.listAllSprites(prefix)) {
+            if (sprite.name.startsWith(prefix)) await client.deleteSprite(sprite.name);
+          }
+          JS
+      - name: Close fixture work
+        if: always() && env.ISSUE != ''
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          prs=$(gh pr list --repo "$REPO" --json number,closingIssuesReferences,isCrossRepository |
+            jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | .number')
+          for pr in $prs; do gh pr close "$pr" --repo "$REPO" --delete-branch; done
+          gh issue close "$ISSUE" --repo "$REPO"

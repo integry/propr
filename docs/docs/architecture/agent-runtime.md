@@ -4,7 +4,18 @@ sidebar_position: 6
 
 # Agent Runtime Reference
 
-This is the canonical runtime reference for ProPR coding agents. It covers the shared Docker execution model used by Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe. For the higher-level integration contract, routing model, and worker responsibilities, see [Coding Agent Integration](./coding-agent-integration.md).
+The worker selects the agent’s configured runtime, then the instance default (`PROPR_AGENT_RUNTIME`), then Docker. Choose a runtime that supports the provider and the repository’s network policy.
+
+| Capability | Docker (`docker`) | Sprites (`sprites`) | Fly Machines (`fly-machines`) |
+| --- | --- | --- | --- |
+| Coding agents | Claude Code, Codex, Antigravity, OpenCode, Mistral Vibe | Claude Code, Codex, Antigravity | Claude Code, Codex |
+| Workspace | Host worktree or clone | Clone with scoped token | Clone with scoped token |
+| Isolation and lifetime | Container per run on the operator’s daemon | One run per leased Sprite, restored to a clean checkpoint before reuse | Fresh Machine per run, destroyed after result retrieval |
+| Restricted network | Worker allowlist proxy | Sprite DNS allowlist | Restricted runs refused |
+| Agent extensions | Supported | Unsupported | Unsupported |
+| Capacity | Host CPU, RAM and worker concurrency | Redis-backed pool, default two Sprites | Available Machine slots in the agent app’s organization |
+
+For the run contract see [Coding Agent Integration](./coding-agent-integration.md). For a control plane that delegates all agent work to Fly, follow [Run ProPR on Fly](../tutorials/setup-fly.md).
 
 ## Runtime Model
 
