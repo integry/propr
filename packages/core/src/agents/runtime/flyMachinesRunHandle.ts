@@ -197,6 +197,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         }
         await this.discardIfAborted(signal);
         const result = { ...pipeline.result(this.exitCode ?? null), ...captured };
+        if (result.outputIncomplete && result.exitCode === 0) result.exitCode = -1;
         return started.settle(result, timedOut);
     }
 

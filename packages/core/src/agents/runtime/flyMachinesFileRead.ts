@@ -59,6 +59,7 @@ export async function readMachineFile(client: FlyMachinesClient, id: string, fil
         const read = await client.exec(id, ['/bin/sh', '-c', 'tail -c +"$(($2 + 1))" "$1" | head -c "$3" | base64 | tr -d "\\n"', 'sh', filePath, String(offset), String(length)], 60, request);
         if (read.exit_code !== 0) throw new Error(`Could not read ${filePath} from Fly Machine ${id}: ${read.stderr.trim() || `exit ${read.exit_code}`}`);
         const chunk = Buffer.from(read.stdout.trim(), 'base64');
+        if (bounds.tail !== undefined && chunk.length !== length) throw new Error(`Incomplete capture read for ${filePath} from Fly Machine ${id}`);
         total += chunk.length;
         // The file may have grown since the stat: never hold more than it reported.
         if (bounds.limit !== undefined && total > bounds.limit) return 'oversized';
@@ -88,11 +89,12 @@ export async function collectFlyOutput(client: FlyMachinesClient, id: string | u
         id ? readMachineFile(client, id, FLY_RUN_FILES.stderr, bounds).catch(() => null) : null,
         id && pipeline.captureWorkflowStderr ? readFlyWorkflowReports(client, id, signal).catch(() => undefined) : undefined,
     ]);
+    const missing: string[] = [];
     if (pipeline.captureWorkflowStderr) {
         if (reports !== undefined) pipeline.captureWorkflowStderr(reports);
         else {
             captured.exitCode = -1;
-            captured.outputIncomplete = 'Could not read the Fly Machine repository workflow reports';
+            missing.push('repository workflow reports');
         }
     }
     if (out && out !== 'oversized') {
@@ -100,12 +102,13 @@ export async function collectFlyOutput(client: FlyMachinesClient, id: string | u
         buffer.append(pipeline.redactCapture(out.content.toString('utf8')));
         captured.stdout = buffer.output;
         pipeline.recoverCapturedRecords(captured.stdout);
-    }
+    } else missing.push('stdout');
     if (err && err !== 'oversized') {
         const tail = new BoundedDiagnosticTail();
         tail.append(pipeline.redactCapture(err.content.toString('utf8')));
         captured.stderr = tail.value;
-    }
+    } else missing.push('stderr');
+    if (missing.length) captured.outputIncomplete = `Could not read the Fly Machine ${missing.join(' and ')}`;
     return captured;
 }
 

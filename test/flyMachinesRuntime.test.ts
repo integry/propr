@@ -76,6 +76,8 @@ class FakeFly {
     /** Log polls before the agent "runs". */
     delayPolls = 1;
     ignoreSignals = false;
+    logsUnavailable = false;
+    failedContentRead?: { file: string; short: boolean };
     /** The forced kill exec fails (e.g. the exec API is down). */
     killFails = false;
     /** After a forced stop, the clone wrapper takes this many log polls to finalize (0: the exit is recorded at once). */
@@ -196,6 +198,7 @@ class FakeFly {
             if (this.delayPolls > 0) { this.delayPolls--; return json(200, { data: [], meta: { next_token: 't0' } }); }
             if (!machine.ran) { machine.ran = true; this.agent(machine); }
             if (machine.finalizeIn !== undefined && --machine.finalizeIn === 0) this.finish(machine, 'partial\n', 'killed\n', 137);
+            if (this.logsUnavailable) return json(503, { error: 'logs unavailable' });
             const lines = machine.pendingLogs.splice(0);
             return json(200, { data: lines.map(message => ({ attributes: { timestamp: '2026-11-24T10:00:00Z', message } })), meta: { next_token: 't1' } });
         }
@@ -277,6 +280,10 @@ class FakeFly {
             }
             if (script === ': > "$1"') { machine.files.set(file, Buffer.alloc(0)); return json(200, { exit_code: 0 }); }
             this.contentReads.set(file, (this.contentReads.get(file) ?? 0) + 1);
+            if (this.failedContentRead?.file === file) {
+                if (this.failedContentRead.short) return json(200, { exit_code: 0, stdout: '' });
+                return json(503, { error: 'capture exec unavailable' });
+            }
             const slice = content!.subarray(Number(offset), Number(offset) + Number(length));
             return json(200, { exit_code: 0, stdout: slice.toString('base64') });
         }
@@ -399,7 +406,7 @@ test('Fly runs repository workflow hooks and propagates failures even when the l
     }
 });
 
-test('Fly treats missing authoritative workflow stderr as incomplete output', async () => {
+test('Fly treats missing authoritative workflow reports or captures as incomplete output', async () => {
     const { repositoryWorkflowExecution } = await import('../packages/core/src/workflow/workflowExecution.ts');
     const { buildAgentRunRepoSetup } = await import('../packages/core/src/claude/docker/repoSetupWrapper.ts');
     const workflow = { revision: 'a', baseBranch: 'main', fileRevision: 'b', timeoutMs: 60000, maxParallelTasks: 1,
@@ -417,8 +424,38 @@ test('Fly treats missing authoritative workflow stderr as incomplete output', as
         assert.match(result.outputIncomplete!, /workflow reports/);
         assert.equal(repositoryWorkflowExecution.getStore()?.observed, undefined);
         await handle.release();
+
+        // Even a readable workflow report cannot complete a run with missing stdout.
+        fly.agent = machine => {
+            fly.finish(machine, '', '\nPROPR_WORKFLOW_missing:hook:before_run:0\n', 0);
+            machine.files.delete(FLY_RUN_FILES.stdout);
+        };
+        const missingStdout = runtime(fly).start(run);
+        const incomplete = await missingStdout.wait();
+        assert.equal(incomplete.exitCode, -1);
+        assert.match(incomplete.outputIncomplete!, /stdout/);
+        assert.equal(repositoryWorkflowExecution.getStore()?.observed, undefined);
+        await missingStdout.release();
     });
 });
+
+for (const [stream, short] of [['stdout', false], ['stderr', false], ['stdout', true]] as const) {
+    test(`Fly reports incomplete output when logs are unavailable and the ${stream} read ${short ? 'is short' : 'fails'}`, async () => {
+        const fly = new FakeFly();
+        fly.logsUnavailable = true;
+        fly.failedContentRead = { file: FLY_RUN_FILES[stream], short };
+        const handle = runtime(fly).start(spec());
+        try {
+            const result = await handle.wait();
+            assert.equal(result.exitCode, -1);
+            assert.match(result.outputIncomplete!, new RegExp(stream));
+            assert.equal(result.stdout, stream === 'stdout' ? '' : 'out\n');
+            assert.equal(result.stderr, stream === 'stderr' ? '' : 'err\n');
+        } finally {
+            await handle.release();
+        }
+    });
+}
 
 test('Fly redacts the deploy token in live streams and exact output', async () => {
     const fly = new FakeFly();
@@ -776,6 +813,7 @@ test('a Machine that ends without reporting (OOM) settles from its exit event an
     const result = await runtime(fly).start(spec(), { timeout: 10_000 }).wait();
     assert.equal(result.exitCode, 137);
     assert.equal(result.stdout, '{"type":"assistant"}\n');
+    assert.match(result.outputIncomplete!, /stdout and stderr/);
 });
 
 test('upload step: credential stores become per-run files and refreshed tokens are written back', async () => {
