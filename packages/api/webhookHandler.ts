@@ -95,7 +95,7 @@ function verifyWebhookSignature(req: Request, res: Response, webhookSecret: stri
 export interface WebhookHandlerDeps {
   webhookSecret: string | undefined;
   redis: {
-    set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => Promise<string | null>;
+    set: (key: string, value: string, opts: { GET: true; EX: number }) => Promise<string | null>;
   };
   processor: (payload: Record<string, unknown>, event: string, correlationId: string, deliveryId: string) => Promise<void>;
   correlationId: string;
@@ -242,8 +242,8 @@ export async function cancelActiveTasksForMergedPR(
  * Security layers:
  * 1. HMAC signature verification — proves the payload was sent by someone
  *    who knows the webhook secret and that the body has not been tampered with.
- * 2. Redis-based delivery-ID deduplication (NX + TTL) — rejects duplicate
- *    deliveries within the TTL window.
+ * 2. Redis-based delivery-ID deduplication — each attempt renews the TTL, and
+ *    only the first attempt within the window proceeds.
  *
  * Failure semantics: once a delivery ID is reserved in Redis, it is NOT
  * removed on downstream processing errors. This prevents a partially-
@@ -285,10 +285,11 @@ export async function handleWebhookRequest(
     return;
   }
 
-  // --- Replay protection: reject duplicate delivery IDs via Redis NX ---
+  // Renew the TTL and read the previous reservation in one Redis operation.
+  // Each duplicate has its own timestamp in GitHub’s delivery history.
   const deliveryKey = `webhook:delivery:${rawDeliveryId}`;
-  const isNew = await redis.set(deliveryKey, '1', { NX: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
-  if (!isNew) {
+  const previous = await redis.set(deliveryKey, '1', { GET: true, EX: WEBHOOK_DELIVERY_TTL_SECONDS });
+  if (previous !== null) {
     console.warn(`[webhook] Duplicate delivery rejected: ${rawDeliveryId}`);
     res.status(409).send('Duplicate webhook delivery.');
     return;
