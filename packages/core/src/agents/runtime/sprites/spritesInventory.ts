@@ -267,7 +267,7 @@ export class SpriteInventory {
                 await this.change(name, deleted ? 'deleted' : 'gone', cleaner);
                 return;
             }
-        } catch (error) {
+        } catch {
             logger.warn({ sprite: name }, 'Could not verify or delete orphan Sprite');
         }
         await this.change(name, 'abandon', cleaner);
