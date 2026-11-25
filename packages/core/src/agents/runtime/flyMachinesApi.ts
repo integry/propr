@@ -201,6 +201,33 @@ export class FlyMachinesClient {
         return status !== 408;
     }
 
+    /** Wait for boot. An early exit returns its code (null if unknown). Startup or cancellation returns undefined. */
+    async waitForStart(
+        machine: FlyMachine, runName: string, signal: AbortSignal,
+        { deadline, now }: { deadline: number; now: () => number },
+    ): Promise<number | null | undefined> {
+        if (machine.state === 'started') return;
+        while (!signal.aborted) {
+            const remainingSeconds = Math.ceil((deadline - now()) / 1000);
+            if (remainingSeconds <= 0) throw new Error(`Fly Machine ${machine.id} for ${runName} did not start in time (image pull and boot)`);
+            // Both requests give way to a cancellation, which destroys the Machine instead.
+            const reached = await this.waitForState(machine.id, 'started', Math.min(60, remainingSeconds), { instanceId: machine.instance_id, signal }).catch(() => false);
+            if (reached || signal.aborted) return;
+            let current: FlyMachine | null;
+            try {
+                current = await this.getMachine(machine.id, { signal });
+            } catch (error) {
+                if (signal.aborted) return;
+                throw error;
+            }
+            if (current?.state === 'started') return;
+            if (!current || ['stopped', 'destroyed', 'destroying', 'failed'].includes(current.state ?? '')) {
+                // It ran and ended before we saw it start (e.g. the launcher could not run): report what Fly recorded.
+                return flyMachineExitCode(current);
+            }
+        }
+    }
+
     /** Sends `signal` to the Machine's main process. */
     async signal(id: string, signal: number, options: FlyRequestOptions = {}): Promise<void> {
         await this.request('POST', this.machinesUrl(`/${encodeURIComponent(id)}/signal`), { body: { signal }, signal: options.signal });

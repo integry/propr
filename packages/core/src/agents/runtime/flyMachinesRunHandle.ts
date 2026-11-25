@@ -9,7 +9,7 @@ import { startFlyRunPipeline } from './flyMachinesRunPipeline.js';
 import { resolveAgentRunNetworkPolicy } from '../../network/egressExecution.js';
 import logger from '../../utils/logger.js';
 import { AgentRunStoppedError, LazyOutputStreams, UNRELEASED_RUN_REMOVAL_MS, type AgentRunOptions } from './dockerRuntime.js';
-import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient, type FlyRequestOptions } from './flyMachinesApi.js';
+import { flyMachineExitCode, type FlyMachine, type FlyMachinesClient } from './flyMachinesApi.js';
 import { FlyMachineCreation } from './flyMachinesCreation.js';
 import { collectFlyOutput, confinedCredentialPath, flyCloneWrapperFinalizing, readConfinedMachineFile, readMachineFile, type ExecRead } from './flyMachinesFileRead.js';
 import type { FlyMachinesConfig } from './flyMachinesConfig.js';
@@ -144,7 +144,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             this.throwIfAborted(signal);
             if (!interrupt.due()) {
                 if (refusal) return refuseCostExecution(refusal, preserveOutput);
-                return this.runAdmitted(request, runOptions, signal, startedAt);
+                return this.runAdmitted(request, runOptions, signal, { startedAt, timeoutMs });
             }
         } catch (error) {
             this.throwIfAborted(signal);
@@ -158,10 +158,10 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
 
     private async runAdmitted(
         request: ReturnType<typeof renderFlyMachineRequest>,
-        runOptions: DockerCommandOptions, signal: AbortSignal, startedAt: number,
+        runOptions: DockerCommandOptions, signal: AbortSignal,
+        { startedAt, timeoutMs }: { startedAt: number; timeoutMs: number },
     ): Promise<ExecutionResult> {
         const { config, now } = this.deps;
-        const timeoutMs = runOptions.timeout ?? 300_000;
         const deadline = startedAt + timeoutMs;
         const started = startFlyRunPipeline(request, runOptions, signal, {
             name: this.spec.name, token: config.token, timeoutMs, hasExited: () => this.exitCode !== undefined,
@@ -184,9 +184,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
                 if (runOptions.onContainerId) invokeExecutionCallback(() => runOptions.onContainerId!(machine.id, this.spec.name));
                 timedOut = await this.execute(machine, logs, running, { startedAt, deadline });
                 pipeline.watchdog.stop();
-                if ((timedOut || policyStop.aborted) && !signal.aborted && this.exitCode === undefined) {
-                    await this.stopAfterTimeout(logs, signal);
-                }
+                if (timedOut || policyStop.aborted) await this.stopAfterTimeout(logs, signal);
                 await this.discardIfAborted(signal);
                 captured = await collectFlyOutput(this.deps.client, this.machineGone ? undefined : machine.id, pipeline, signal);
                 await this.discardIfAborted(signal);
@@ -204,7 +202,12 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
 
     private async execute(machine: FlyMachine, logs: FlyLogStream, signal: AbortSignal, { startedAt, deadline }: { startedAt: number; deadline: number }): Promise<boolean> {
         const { now } = this.deps;
-        await this.awaitStarted(machine, signal, Math.min(deadline, startedAt + START_TIMEOUT_MS));
+        const bootDeadline = Math.min(deadline, startedAt + START_TIMEOUT_MS);
+        const earlyExit = await this.deps.client.waitForStart(machine, this.spec.name, signal, { deadline: bootDeadline, now });
+        if (earlyExit !== undefined) {
+            this.machineGone = true;
+            this.exitCode = earlyExit;
+        }
         if (!signal.aborted) {
             this.timing.coldStartMs = now() - startedAt;
             logger.info({ run: this.spec.name, machine: machine.id, region: machine.region, ...this.timing }, 'Fly Machine started for agent run');
@@ -264,32 +267,6 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         this.releaseTimer.unref();
     }
 
-    private async awaitStarted(machine: FlyMachine, signal: AbortSignal, deadline: number): Promise<void> {
-        const { client, now } = this.deps;
-        if (machine.state === 'started') return;
-        while (!signal.aborted) {
-            const remainingSeconds = Math.ceil((deadline - now()) / 1000);
-            if (remainingSeconds <= 0) throw new Error(`Fly Machine ${machine.id} for ${this.spec.name} did not start in time (image pull and boot)`);
-            // Both requests give way to a cancellation, which destroys the Machine instead.
-            const reached = await client.waitForState(machine.id, 'started', Math.min(60, remainingSeconds), { instanceId: machine.instance_id, signal }).catch(() => false);
-            if (reached || signal.aborted) return;
-            let current: FlyMachine | null;
-            try {
-                current = await client.getMachine(machine.id, { signal });
-            } catch (error) {
-                if (signal.aborted) return;
-                throw error;
-            }
-            if (current?.state === 'started') return;
-            if (!current || ['stopped', 'destroyed', 'destroying', 'failed'].includes(current.state ?? '')) {
-                // It ran and ended before we saw it start (e.g. the launcher could not run): report what Fly recorded.
-                this.machineGone = true;
-                this.exitCode = flyMachineExitCode(current);
-                return;
-            }
-        }
-    }
-
     /**
      * The exit status file (the launcher writes it before lingering), else
      * whether the Machine ended. `signal` aborts the check: the run's
@@ -299,7 +276,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
      * decides whether it may cancel the run.
      */
     private async checkStatus(signal?: AbortSignal): Promise<void> {
-        const status = await this.execRead(FLY_RUN_FILES.exitStatus, { limit: MAX_EXIT_STATUS_BYTES, signal }).catch(() => undefined);
+        const status = await readMachineFile(this.deps.client, this.machineId!, FLY_RUN_FILES.exitStatus, { limit: MAX_EXIT_STATUS_BYTES, signal }).catch(() => undefined);
         if (status && status !== 'oversized') {
             const code = Number(status.content.toString('utf8').trim());
             if (Number.isInteger(code)) { this.exitCode ??= code; return; }
@@ -326,6 +303,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
      * meanwhile: the caller then destroys the Machine.
      */
     private async stopAfterTimeout(logs: FlyLogStream, signal: AbortSignal): Promise<void> {
+        if (signal.aborted || this.exitCode !== undefined) return;
         await this.deps.client.signal(this.machineId!, signalNumber('SIGTERM'), { signal }).catch(() => undefined);
         await this.awaitExit(logs, DEFAULT_STOP_TIMEOUT_MS, signal);
         if (this.exitCode !== undefined || signal.aborted) return;
@@ -359,10 +337,6 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
             }
             if (this.exitCode === undefined && !signal.aborted) await this.checkStatus(signal);
         }
-    }
-
-    private execRead(filePath: string, bounds: FlyRequestOptions & { tail?: number; limit?: number } = {}): Promise<ExecRead> {
-        return readMachineFile(this.deps.client, this.machineId!, filePath, bounds);
     }
 
     /**
@@ -443,7 +417,7 @@ export class FlyMachineRunHandle implements AgentRunHandle<ExecutionResult> {
         if (!this.readable()) return null;
         await this.retaining;
         if (!this.readable()) return null;
-        return this.execRead(filePath, { limit: options.maxBytes });
+        return readMachineFile(this.deps.client, this.machineId!, filePath, { limit: options.maxBytes });
     }
 
     async readCredentialFile(root: string, relative: string, options: { maxBytes: number }): Promise<ExecRead> {
