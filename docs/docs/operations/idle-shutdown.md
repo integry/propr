@@ -103,7 +103,11 @@ Anything that starts the host starts the control plane:
 - **Connect wake ping**: Connect sends a request to `POST /wake` when a delivery arrives for a stopped instance. The endpoint is public and answers `202 { "status": "awake" }` at once. A ping that reaches the instance while it is stopping means Connect is holding a delivery for it, so it counts as activity: a stop that has not started yet is aborted (intake reconnects and asks for the replay), and one already under way exits with code 1 instead of stopping the host, so the supervisor starts the instance again and that start asks for the replay.
 - **Schedule**: Connect, or your own scheduler reading the wake hint file, starts the host when `nextDueAt` is reached. The file alone wakes nothing: without Connect intake the instance stops with scheduled work only when you set `PROPR_IDLE_SCHEDULED_WAKE=external` to say that such a scheduler runs. Otherwise any scheduled work keeps it running (blocker `scheduled_work`, `… nothing would wake the stopped instance for it`). `propr deploy fly` with direct webhook intake installs no such scheduler.
 
-Expect a cold start of about 5–10 seconds (host start plus Node boot) before work begins. That is fine for jobs that take minutes; a Web UI visit to a stopped instance takes that long to load.
+On Fly, a cold wake took about 15–20 seconds to the first HTTP response. GitHub times out after 10 seconds and does not automatically retry the webhook that starts the Machine.
+
+With `direct_webhook`, once the API is listening after an idle stop, the daemon uses the GitHub App JWT to scan deliveries back to two minutes before the stop. It requests up to 200 redeliveries of failed events, skipping GUIDs with a later successful attempt. The webhook handler reserves each GUID in Redis before processing, including when the sender times out waiting for the response. Keep Redis on the persistent volume and retain delivery IDs for the full GitHub delivery history (three days) when using recovery.
+
+The info log and `/api/status` field `idleShutdown.lastWake.webhookRecovery` report scanned and failed attempts, accepted redelivery requests, skipped attempts, and any API error. Recovery covers the GitHub App’s own webhook. A repository-level webhook has separate delivery history and would require a token with repository-hook access.
 
 ### Recovery after a wake
 
