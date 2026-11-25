@@ -97,6 +97,14 @@ export async function startupStep<T>(signal: AbortSignal, operation: () => T | P
     }
 }
 
+// These responses reject the create request. A timeout, server error or lost response may follow a successful create.
+const rejectedCreateStatuses = new Set([400, 401, 402, 403, 404, 405, 409, 413, 415, 422, 429]);
+
+function isDefinitiveCreateRejection(error: unknown): boolean {
+    const status = (error as { statusCode?: number })?.statusCode;
+    return status !== undefined && rejectedCreateStatuses.has(status);
+}
+
 /** Record the provider outcome even when the caller's wait ends before the create responds. */
 export async function createReservedSprite(client: SpriteClient, request: { name: string; labels: string[] }, signal: AbortSignal,
     reservation: { record(outcome: SpriteCreateOutcome): Promise<boolean>; discard(): Promise<void> }): Promise<Sprite> {
@@ -105,7 +113,6 @@ export async function createReservedSprite(client: SpriteClient, request: { name
         signal.throwIfAborted();
     }
     const { name, labels } = request;
-    const conflict = (error: unknown) => (error as { statusCode?: number })?.statusCode === 409;
     let creating: Promise<Sprite> | undefined;
     let sprite: Sprite;
     try {
@@ -119,11 +126,11 @@ export async function createReservedSprite(client: SpriteClient, request: { name
             void creating.then(async () => {
                 if (await reservation.record('late')) await reservation.discard();
             }, async failure => {
-                if (conflict(failure)) await reservation.record('not-created');
+                if (isDefinitiveCreateRejection(failure)) await reservation.record('not-created');
             }).catch(error => logger.warn({ sprite: name, error: String(error) }, 'Could not reconcile late Sprite creation'));
             await reservation.record('pending');
         } else {
-            await reservation.record(conflict(error) ? 'not-created' : 'failed');
+            await reservation.record(isDefinitiveCreateRejection(error) ? 'not-created' : 'failed');
         }
         throw error;
     }

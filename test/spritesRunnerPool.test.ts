@@ -766,49 +766,73 @@ for (const outcome of ['peer reaped', 'conflict', 'successor lease']) {
     });
 }
 
-test('a late ambiguous create failure stays counted until a peer sees the matching Sprite', { timeout: 5000 }, async t => {
-    const client = new FakeSprites();
-    const store = new MemorySpritePoolStore();
-    const runtime = pool(client, store);
-    const expire = controlDeadline(t, 21 * 60_000);
-    const create = client.createSprite.bind(client);
-    const requested = Promise.withResolvers<Parameters<typeof create>>();
-    const response = Promise.withResolvers<never>();
-    t.mock.method(client, 'createSprite', (...args: Parameters<typeof create>) => {
-        requested.resolve(args);
-        return response.promise;
-    }, { times: 1 });
-    const acquiring = runtime.acquire(new AbortController().signal);
-    const args = await requested.promise;
-    expire();
-    await assert.rejects(acquiring, { name: 'TimeoutError' });
-    response.reject(new Error('connection lost'));
-    await new Promise(resolve => setImmediate(resolve));
-    const peer = pool(client, store);
-    const signal = new AbortController().signal;
-    await assert.rejects(peer.acquire(signal, { timeout: 30 }), { name: 'TimeoutError' });
-    assert.equal((await store.read(scope)).runners.get(args[0])?.state, 'orphaned');
-    await create(...args);
-    const next = await peer.acquire(signal);
-    assert.deepEqual(client.deleted, [args[0]]);
-    await peer.discard(next);
-});
+for (const failure of [
+    new Error('connection lost'),
+    Object.assign(new Error('request timed out'), { statusCode: 408 }),
+    Object.assign(new Error('service unavailable'), { statusCode: 503 }),
+]) {
+    test(`a late create failure (${failure.message}) stays counted until a peer sees the matching Sprite`, { timeout: 5000 }, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const runtime = pool(client, store);
+        const expire = controlDeadline(t, 21 * 60_000);
+        const create = client.createSprite.bind(client);
+        const requested = Promise.withResolvers<Parameters<typeof create>>();
+        const response = Promise.withResolvers<never>();
+        t.mock.method(client, 'createSprite', (...args: Parameters<typeof create>) => {
+            requested.resolve(args);
+            return response.promise;
+        }, { times: 1 });
+        const acquiring = runtime.acquire(new AbortController().signal);
+        const args = await requested.promise;
+        expire();
+        await assert.rejects(acquiring, { name: 'TimeoutError' });
+        response.reject(failure);
+        await new Promise(resolve => setImmediate(resolve));
+        const peer = pool(client, store);
+        const signal = new AbortController().signal;
+        await assert.rejects(peer.acquire(signal, { timeout: 30 }), { name: 'TimeoutError' });
+        assert.equal((await store.read(scope)).runners.get(args[0])?.state, 'orphaned');
+        await create(...args);
+        const next = await peer.acquire(signal);
+        assert.deepEqual(client.deleted, [args[0]]);
+        await peer.discard(next);
+    });
+}
 
-test('shutdown settles while a background replacement create is still pending', { timeout: 5000 }, async t => {
-    const client = new FakeSprites();
-    const store = new MemorySpritePoolStore();
-    const runtime = pool(client, store);
-    const slot = await runtime.acquire(new AbortController().signal);
-    client.created[0].failWipe = true;
-    const started = Promise.withResolvers<string>();
-    t.mock.method(client, 'createSprite', (name: string) => { started.resolve(name); return new Promise(() => {}); });
-    await runtime.release(slot);
-    const name = await started.promise;
-    await runtime.close();
-    await pool(client, store).reconcile();
-    assert.equal((await store.read(scope)).runners.get(name)?.state, 'orphaned');
-    assert.deepEqual(client.deleted, [slot.name]);
-});
+for (const path of ['initial', 'background replacement']) {
+    test(`a late rejection after shutdown frees the ${path} create's slot for a peer`, { timeout: 5000 }, async t => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        const runtime = pool(client, store);
+        const signal = new AbortController().signal;
+        const original = path === 'background replacement' ? await runtime.acquire(signal) : undefined;
+        const started = Promise.withResolvers<string>();
+        const response = Promise.withResolvers<never>();
+        t.mock.method(client, 'createSprite', (name: string) => {
+            started.resolve(name);
+            return response.promise;
+        }, { times: 1 });
+        if (original) client.created[0].failWipe = true;
+        const operation = original ? runtime.release(original) : assert.rejects(runtime.acquire(signal), { name: 'AbortError' });
+        const name = await started.promise;
+        await runtime.close();
+        await operation;
+        const peer = pool(client, store);
+        await peer.reconcile();
+        const pending = (await store.read(scope)).runners.get(name);
+        assert.equal(pending?.state, 'orphaned');
+        assert.ok(pending.pendingCreate, 'a peer lookup returning 404 must keep the slot reserved');
+
+        response.reject(Object.assign(new Error('unauthorized'), { statusCode: 401 }));
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal((await store.read(scope)).runners.has(name), false);
+        const next = await peer.acquire(signal, { timeout: 1000 });
+        assert.deepEqual([...(await store.read(scope)).runners.keys()], [next.name]);
+        assert.deepEqual(client.deleted, original ? [original.name] : []);
+        await peer.discard(next);
+    });
+}
 
 for (const operation of ['list', 'lookup', 'delete']) {
     test(`startup reconciliation bounds a stalled inventory ${operation}`, { timeout: 5000 }, async t => {
@@ -985,19 +1009,21 @@ test('startup counts all orphans during deletion and rechecks ownership before t
     assert.equal((await store.read(scope)).runners.get(kept)?.state, 'retained');
 });
 
-test('a create conflict cannot grant deletion authority over the existing Sprite', async () => {
-    const client = new FakeSprites();
-    const store = new MemorySpritePoolStore();
-    client.createSprite = async name => {
-        client.foreign.push(new FakeSprite(name));
-        throw Object.assign(new Error('name already taken'), { statusCode: 409 });
-    };
-    const runtime = pool(client, store);
-    await assert.rejects(runtime.acquire(new AbortController().signal), /name already taken/);
-    assert.equal((await store.read(scope)).runners.size, 0);
-    await runtime.reconcile();
-    assert.deepEqual(client.deleted, []);
-});
+for (const statusCode of [403, 409, 422, 429]) {
+    test(`an immediate HTTP ${statusCode} create rejection releases the reservation without deleting a Sprite`, async () => {
+        const client = new FakeSprites();
+        const store = new MemorySpritePoolStore();
+        client.createSprite = async name => {
+            client.foreign.push(new FakeSprite(name));
+            throw Object.assign(new Error('create rejected'), { statusCode });
+        };
+        const runtime = pool(client, store);
+        await assert.rejects(runtime.acquire(new AbortController().signal), { statusCode });
+        assert.equal((await store.read(scope)).runners.size, 0);
+        await runtime.reconcile();
+        assert.deepEqual(client.deleted, []);
+    });
+}
 
 test('a worker losing its reservation during setup cannot hand out the checkpoint', async () => {
     const client = new FakeSprites();
