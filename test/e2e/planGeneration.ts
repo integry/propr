@@ -285,9 +285,17 @@ async function runPlanAttempt(
     );
   }
   if ((!sawGenerating && currentPlan.status !== "review") || currentPlan.status === "failed") {
-    const reason = currentPlan.generation_trace?.error;
+    const trace = currentPlan.generation_trace;
+    const reason = trace?.error;
     if (typeof reason === "string" && reason) {
-      log(`    Plan ${label} failed: ${reason}`);
+      const run = typeof trace.runId === "string" ? `, run ${trace.runId}` : "";
+      const steps = Array.isArray(trace.steps) ? trace.steps : [];
+      const progress = ["context", "additional_context", "llm", "granularity_enforcement"]
+        .flatMap((name) => {
+          const status = steps.find((step) => step?.name === name)?.status;
+          return status === "completed" || status === "failed" ? [`${name}=${status}`] : [];
+        }).join(", ");
+      log(`    Plan ${plan.draft_id}${run} failed: ${reason} (${progress || "no completed or failed generation steps"})`);
       if (isPlannerAuthenticationFailure(reason)) {
         throw new Error(
           `Plan ${label} failed: ${reason} Reauthenticate the planner's provider account on the E2E server; retrying cannot succeed until then.`,
@@ -302,19 +310,28 @@ async function runPlanAttempt(
   }
 
   await call("finalization", (request) => api.finalizePlan(plan.draft_id, client, request));
-  const finalizedPlan = await call("finalized plan", (request) => api.getPlan(plan.draft_id, client, request));
-  const expectedIssueCount = Math.max(1, Array.isArray(finalizedPlan.plan_json) ? finalizedPlan.plan_json.length : 1);
-
+  // Finalization can create every issue before it finishes updating the draft.
+  // Starting implementation during that window can lose the new epic selector.
   const issuesDeadline = Math.min(now() + PLAN_ISSUES_TIMEOUT_MS, deadline);
+  let finalizationStatus: Plan["status"];
+  let expectedIssueCount = 0;
   let issues: PlanIssue[] = [];
   for (;;) {
-    issues = await call("plan issues", (request) => api.listPlanIssues(plan.draft_id, client, request));
-    if (issues.length >= expectedIssueCount) return { planId: plan.draft_id, issues };
+    const finalizedPlan = await call("finalized plan", (request) => api.getPlan(plan.draft_id, client, request));
+    finalizationStatus = finalizedPlan.status;
+    if (finalizationStatus === "failed") throw new Error(`Plan ${plan.draft_id} failed during publication.`);
+    if (finalizationStatus === "executed") {
+      expectedIssueCount = Math.max(1, Array.isArray(finalizedPlan.plan_json) ? finalizedPlan.plan_json.length : 1);
+      issues = await call("plan issues", (request) => api.listPlanIssues(plan.draft_id, client, request));
+      if (issues.length >= expectedIssueCount) return { planId: plan.draft_id, issues };
+    }
     if (now() >= issuesDeadline) break;
     await sleep(Math.min(PLAN_ISSUES_POLL_INTERVAL_MS, Math.max(0, issuesDeadline - now())), signal);
   }
   throw new PlanDeadlineError(
-    `Plan ${label} was finalized but only ${issues.length}/${expectedIssueCount} issue(s) appeared before its deadline.`,
+    finalizationStatus === "executed"
+      ? `Plan ${label} was finalized but only ${issues.length}/${expectedIssueCount} issue(s) appeared before its deadline.`
+      : `Plan ${label} was still ${finalizationStatus} when its publication deadline expired.`,
   );
 }
 

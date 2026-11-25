@@ -2,6 +2,7 @@ import { test, mock, describe, beforeEach, after } from 'node:test';
 import assert from 'node:assert';
 import { createHash } from 'node:crypto';
 import type { IssueCommentEvent, Label } from '@octokit/webhooks-types';
+import { UnrecoverableError } from 'bullmq';
 import { createWebhookIssueCommentCreatedEvent, createWebhookPRReviewCommentCreatedEvent, createMockLabel } from './testHelpers.js';
 
 function manualRevisionIdentity(updatedAt: string, body: string, eventType = 'issue_comment'): string {
@@ -51,6 +52,7 @@ const mockDelayedKey = 'bull:github-issue-processor:delayed';
 await mock.module('bullmq', {
     namedExports: {
         ErrorCode: { JobNotExist: -1, JobNotInState: -3 },
+        UnrecoverableError,
         Queue: function Queue() {
             return {
                 add: mockQueueAdd,

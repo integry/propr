@@ -35,6 +35,7 @@ import type { RedisClientType } from 'redis';
 import {
   agentSupportsSavedModel,
   GOAL_CREATION_CONTRACT,
+  GOAL_OBJECTIVE_MAX_LENGTH,
   GOAL_WAIT_CONDITIONS,
   GOAL_WAIT_MAX_TIMEOUT_SECONDS,
   isGoalWaitCondition,
@@ -191,7 +192,7 @@ function buildCreateIdentity(
   body: Record<string, unknown>,
   attachmentIdentity: readonly Record<string, unknown>[] = [],
 ): { operation: string; payloadHash: string } {
-  const operation = 'goal.create';
+  const operation = body.draft === true ? 'goal.createDraft' : 'goal.create';
   const payloadHash = mutationHash(operation, {
     repository: body.repository, objective: body.objective, launchStrategy: body.launchStrategy,
     agentId: body.agentId, model: body.model, baseBranch: body.baseBranch ?? null,
@@ -269,17 +270,18 @@ type AgentSelection = { agent: Agent } | { error: string; status: number };
 async function resolveCreationAgent(
   body: Record<string, unknown>,
   getCapabilities: () => Promise<GoalCapability[]>,
-  initialPrompt: string,
+  initialPrompt: string | null,
 ): Promise<AgentSelection> {
   const registry = AgentRegistry.getInstance();
   await registry.ensureInitialized();
   const agent = registry.getAgentById(body.agentId as string) || registry.getAgentByAlias(body.agentId as string);
   if (!agent) return { error: 'Selected agent was not found', status: 400 };
-  const promptError = nativeGoalPromptValidationError(agent.config.type, initialPrompt);
+  const promptError = initialPrompt === null ? null : nativeGoalPromptValidationError(agent.config.type, initialPrompt);
   if (promptError) return { error: promptError, status: 400 };
   if (!agentSupportsSavedModel(agent.config, body.model as string) && agent.config.defaultModel !== body.model) {
     return { error: 'Selected model is not supported by this agent', status: 400 };
   }
+  if (initialPrompt === null) return { agent };
   const capability = (await getCapabilities()).find(item => item.agentId === agent.config.id);
   if (!capability?.goalCapable) {
     return { error: capability?.reason || 'Selected agent does not support the required goal/session contract', status: 409 };
@@ -546,13 +548,66 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     }
   };
 
+  const canAccessRepository = async (repository: string): Promise<boolean> => {
+    const [owner, repo] = repository.split('/');
+    try {
+      const octokit = await getOctokit();
+      await octokit.request('GET /repos/{owner}/{repo}', { owner, repo });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const insertInitialContext = async (
+    trx: Knex.Transaction,
+    row: Pick<GoalRow, 'goal_id' | 'owner_id'>,
+    message: string,
+    createdAt: string,
+  ) => {
+    const operation = 'goal.context';
+    await trx('goal_inputs').insert({
+      input_id: randomUUID(),
+      goal_id: row.goal_id,
+      owner_id: row.owner_id,
+      idempotency_key: `goal-initial-context:${row.goal_id}`,
+      operation,
+      payload_hash: mutationHash(operation, { goalId: row.goal_id, message }),
+      kind: 'context',
+      message,
+      state: 'pending',
+      created_at: createdAt,
+    });
+  };
+
+  const enqueueInitialGoal = async (row: GoalRow, res: Response, status: number) => {
+    const [repoOwner, repoName] = row.repository.split('/');
+    const data: GoalJobData = {
+      goalId: row.goal_id, taskId: row.current_task_id, repoOwner, repoName, generation: row.run_generation,
+      claimId: row.run_claim!, input: row.initial_prompt,
+    };
+    try {
+      await deps.taskQueue.add('processGoal', data, { jobId: goalJobId(data.goalId, data.generation), attempts: 1 });
+    } catch {
+      return void res.status(503).json({
+        error: 'Goal was saved but its first attempt could not be queued; recovery will retry it safely',
+        goalId: row.goal_id,
+      });
+    }
+    res.status(status).json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+  };
+
   // eslint-disable-next-line complexity -- creation coordinates idempotency, capability checks, durable files, and queue publication
   const createGoal = async (req: Request, res: Response, files: MulterFile[]) => {
     let body: Record<string, unknown>;
     try { body = requestBody(req); } catch (error) {
       return void res.status(400).json({ error: (error as Error).message });
     }
-    const validationError = validateGoalCreationOptions(body);
+    if (body.draft !== undefined && typeof body.draft !== 'boolean') {
+      return void res.status(400).json({ error: 'draft must be a boolean' });
+    }
+    const draft = body.draft === true;
+    const validationError = validateGoalCreationOptions(body, draft);
     if (validationError) return void res.status(400).json({ error: validationError });
     const ownerId = currentOwnerId(req);
     if (!ownerId) return void res.status(401).json({ error: 'Authentication required' });
@@ -578,27 +633,22 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       maxParallelTasks: body.maxParallelTasks as number | null | undefined,
       ultrafix: body.ultrafix === true,
       checkpointIntervalMinutes: body.checkpointIntervalMinutes as number | null | undefined,
-      visualPreviewSettings: await loadVisualPreviewSettings(body.repository as string),
+      visualPreviewSettings: draft ? undefined : await loadVisualPreviewSettings(body.repository as string),
     };
     const initialPrompt = buildNativeGoalCommand(promptOptions);
-    const baseInitialContext = buildNativeGoalContext(promptOptions);
-    const selection = await resolveCreationAgent(body, getCapabilities, initialPrompt);
+    const selection = await resolveCreationAgent(body, getCapabilities, draft ? null : initialPrompt);
     if ('error' in selection) return void res.status(selection.status).json({ error: selection.error });
     const { agent } = selection;
 
-    const [repoOwner, repoName] = (body.repository as string).split('/');
-    try {
-      const octokit = await getOctokit();
-      await octokit.request('GET /repos/{owner}/{repo}', { owner: repoOwner, repo: repoName });
-    } catch {
+    if (!await canAccessRepository(body.repository as string)) {
       return void res.status(403).json({ error: 'Repository is not accessible to this ProPR installation' });
     }
 
     const goalId = randomUUID();
-    const claimId = randomUUID();
+    const claimId = draft ? null : randomUUID();
     const taskId = `goal-${goalId}`;
     const now = new Date().toISOString();
-    const title = await resolveGoalTitle(deps.generateTitle ?? generateGoalTitle, {
+    const title = draft ? goalTitleFallback(promptOptions.objective) : await resolveGoalTitle(deps.generateTitle ?? generateGoalTitle, {
       objective: body.objective as string,
       repository: body.repository as string,
       taskId,
@@ -608,10 +658,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     let attachmentsPersisted = false;
     try {
       attachments = await storeAttachments(files, goalId);
-      const initialContext = appendGoalAttachments(baseInitialContext, attachments);
-      const contextOperation = 'goal.context';
-      const contextKey = `goal-initial-context:${goalId}`;
-      const contextPayloadHash = mutationHash(contextOperation, { goalId, message: initialContext });
+      const initialContext = draft ? null : appendGoalAttachments(buildNativeGoalContext(promptOptions), attachments);
       const row = {
         goal_id: goalId,
         owner_id: ownerId,
@@ -632,7 +679,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         checkpoint_interval_minutes: launchStrategy === 'direct'
           ? body.checkpointIntervalMinutes ?? DEFAULT_GOAL_CHECKPOINT_INTERVAL_MINUTES
           : null,
-        desired_state: 'running',
+        desired_state: draft ? 'draft' : 'running',
         current_task_id: taskId,
         run_generation: 0,
         run_claim: claimId,
@@ -647,26 +694,9 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
       try {
         await deps.db.transaction(async trx => {
           await trx('goals').insert(row);
-          await trx('goal_inputs').insert({
-            input_id: randomUUID(),
-            goal_id: goalId,
-            owner_id: ownerId,
-            idempotency_key: contextKey,
-            operation: contextOperation,
-            payload_hash: contextPayloadHash,
-            kind: 'context',
-            message: initialContext,
-            state: 'pending',
-            created_at: now,
-          });
+          if (initialContext !== null) await insertInitialContext(trx, row, initialContext, now);
         });
         attachmentsPersisted = true;
-        logger.info({
-          goalId,
-          agentType: agent.config.type,
-          initialPromptCharacters: Array.from(initialPrompt).length,
-          initialContextCharacters: Array.from(initialContext).length,
-        }, 'Created goal with separate objective and delivery-context messages');
       } catch (error) {
         const raced = await deps.db<GoalRow>('goals').where({
           owner_id: ownerId,
@@ -680,24 +710,21 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         }
         throw error;
       }
+      if (initialContext !== null) {
+        logger.info({
+          goalId,
+          agentType: agent.config.type,
+          initialPromptCharacters: Array.from(initialPrompt).length,
+          initialContextCharacters: Array.from(initialContext).length,
+        }, 'Created goal with separate objective and delivery-context messages');
+      }
       const inserted = await deps.db('goals').where({ goal_id: goalId }).first() as GoalRow;
       // Warm the profile cache so the new goal's creator renders with an avatar.
       await rememberCreator(req.user);
       // Announce the durable creation even if queueing needs recovery.
       await publishGoalActivity(inserted);
-      const data: GoalJobData = {
-        goalId, taskId, repoOwner, repoName, generation: 0, claimId,
-        input: initialPrompt,
-      };
-      try {
-        await deps.taskQueue.add('processGoal', data, { jobId: goalJobId(goalId, 0), attempts: 1 });
-      } catch {
-        return void res.status(503).json({
-          error: 'Goal was saved but its first attempt could not be queued; recovery will retry it safely',
-          goalId,
-        });
-      }
-      res.status(201).json({ goal: await serializeGoal(deps.db, deps.redisClient, inserted) });
+      if (draft) return void res.status(201).json({ goal: await serializeGoal(deps.db, deps.redisClient, inserted) });
+      await enqueueInitialGoal(inserted, res, 201);
     } finally {
       if (!attachmentsPersisted) await deleteGoalAttachments(attachments);
     }
@@ -717,6 +744,65 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     } finally {
       await cleanupTemporaryUploads(files);
     }
+  };
+
+  const updateDraft = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    const objective: unknown = req.body?.objective;
+    if (typeof objective !== 'string' || objective.length > GOAL_OBJECTIVE_MAX_LENGTH) {
+      return void res.status(400).json({ error: `Enter a prompt of up to ${GOAL_OBJECTIVE_MAX_LENGTH} characters` });
+    }
+    const [updated] = await deps.db<GoalRow>('goals')
+      .where({ goal_id: row.goal_id, owner_id: row.owner_id, desired_state: 'draft' })
+      .update({
+        objective, title: goalTitleFallback(objective), initial_prompt: buildNativeGoalCommand({ objective }),
+        updated_at: new Date().toISOString(),
+      }).returning('*');
+    if (!updated) return void res.status(409).json({ error: 'Only draft goals can be edited' });
+    await respondWithGoalTransition(res, row, updated);
+  };
+
+  const startDraft = async (req: Request, res: Response) => {
+    const row = await findOwnedGoal(deps.db, req, res);
+    if (!row) return;
+    if (row.create_idempotency_operation !== 'goal.createDraft') {
+      return void res.status(409).json({ error: 'Only draft goals can be started' });
+    }
+    if (row.desired_state !== 'draft') return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, row) });
+    if (!row.objective.trim()) return void res.status(400).json({ error: 'Enter a prompt before starting the goal' });
+    const selection = await resolveCreationAgent({ agentId: row.agent_id, model: row.requested_model }, getCapabilities, row.initial_prompt);
+    if ('error' in selection) return void res.status(selection.status).json({ error: selection.error });
+    if (!await canAccessRepository(row.repository)) {
+      return void res.status(403).json({ error: 'Repository is not accessible to this ProPR installation' });
+    }
+    const context = appendGoalAttachments(buildNativeGoalContext({
+      objective: row.objective,
+      launchStrategy: row.launch_strategy,
+      maxParallelTasks: row.max_parallel_tasks,
+      ultrafix: Boolean(row.ultrafix),
+      checkpointIntervalMinutes: row.checkpoint_interval_minutes,
+      visualPreviewSettings: await loadVisualPreviewSettings(row.repository),
+    }), parseGoalAttachments(row.attachments));
+    const now = new Date().toISOString();
+    const started = await deps.db.transaction(async trx => {
+      const [updated] = await trx<GoalRow>('goals').where({
+        goal_id: row.goal_id, owner_id: row.owner_id, desired_state: 'draft', objective: row.objective,
+      }).update({
+        desired_state: 'running', run_claim: randomUUID(), updated_at: now,
+        agent_id: selection.agent.config.id, agent_alias: selection.agent.config.alias, agent_type: selection.agent.config.type,
+      }).returning('*');
+      if (updated) await insertInitialContext(trx, updated, context, now);
+      return updated;
+    });
+    if (!started) {
+      const latest = await findOwnedGoal(deps.db, req, res);
+      if (!latest) return;
+      if (latest.desired_state !== 'draft') return void res.json({ goal: await serializeGoal(deps.db, deps.redisClient, latest) });
+      return void res.status(409).json({ error: 'The draft changed while starting. Review the saved prompt and try again.' });
+    }
+    await publishGoalTransition({ previous: row, next: started });
+    await enqueueInitialGoal(started, res, 200);
   };
 
   const pause = async (req: Request, res: Response) => {
@@ -891,6 +977,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const cancel = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;
+    if (row.desired_state === 'draft') return void res.status(409).json({ error: 'The goal has not started' });
     const key = requiredIdempotencyKey(req, res);
     if (!key) return;
     const operation = 'goal.cancel';
@@ -983,15 +1070,19 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
         });
       }
     }
-    await deps.db.transaction(async trx => {
-      await trx('goals').where({ goal_id: row.goal_id, owner_id: row.owner_id }).delete();
+    const deleted = await deps.db.transaction(async trx => {
+      const query = trx('goals').where({ goal_id: row.goal_id, owner_id: row.owner_id });
+      if (row.desired_state === 'draft') query.where('desired_state', 'draft');
+      if (await query.delete() !== 1) return false;
       await trx('llm_execution_details').whereIn('execution_id', function selectGoalExecutions() {
         this.select('execution_id').from('llm_executions').where({ task_id: row.current_task_id });
       }).delete();
       await trx('llm_executions').where({ task_id: row.current_task_id }).delete();
       await trx('task_history').where({ task_id: row.current_task_id }).delete();
       await trx('tasks').where({ task_id: row.current_task_id }).delete();
+      return true;
     });
+    if (!deleted) return void res.status(409).json({ error: 'Goal state changed before deletion' });
     await deleteGoalAttachmentDirectory(row.goal_id).catch(error => {
       logger.warn({ goalId: row.goal_id, error: (error as Error).message }, 'Could not remove deleted goal attachments');
     });
@@ -1003,6 +1094,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const requestModel = async (req: Request, res: Response) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;
+    if (row.desired_state === 'draft') return void res.status(409).json({ error: 'The goal has not started' });
     const key = requiredIdempotencyKey(req, res);
     if (!key) return;
     const model = req.body?.model;
@@ -1054,6 +1146,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   const addInput = async (req: Request, res: Response, files: MulterFile[]) => {
     const row = await findOwnedGoal(deps.db, req, res);
     if (!row) return;
+    if (row.desired_state === 'draft') return void res.status(409).json({ error: 'The goal has not started' });
     const key = requiredIdempotencyKey(req, res);
     if (!key) return;
     if (row.result_state || row.desired_state === 'cancelled') return void res.status(409).json({ error: 'Goal is terminal' });
@@ -1385,7 +1478,7 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
   };
 
   return {
-    capabilities, list, attention, get, detail, inputs, wait, previews, create, pause, resume, cancel, remove, requestModel, input, continueGoal, attachment,
+    capabilities, list, attention, get, detail, inputs, wait, previews, create, updateDraft, startDraft, pause, resume, cancel, remove, requestModel, input, continueGoal, attachment,
     requireGoalTaskOwnership,
   };
 }

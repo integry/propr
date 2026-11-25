@@ -44,6 +44,7 @@ export function goalActivityState(goal: GoalLifecycleSnapshot): GoalActivityStat
     if (goal.result_state === 'completed') return 'completed';
     if (goal.result_state === 'failed') return 'failed';
     if (goal.result_state === 'cancelled') return 'cancelled';
+    if (goal.desired_state === 'draft') return 'draft';
     if (goal.desired_state === 'cancelled') return 'cancelled';
     if (goal.desired_state === 'paused') return 'paused';
     // Accepted but never claimed by a worker: distinct from running, because a
@@ -67,7 +68,7 @@ export async function publishGoalActivity(
             goalId: goal.goal_id,
             repository: goal.repository,
             state: goalActivityState(goal),
-            currentTaskId: goal.current_task_id ?? null,
+            currentTaskId: goal.desired_state === 'draft' ? null : goal.current_task_id ?? null,
             occurredAt: new Date().toISOString(),
         });
     } catch (error) {

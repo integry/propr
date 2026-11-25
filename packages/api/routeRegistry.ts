@@ -90,7 +90,7 @@ export function createManagementRouteEntries({
   operatorRateLimiter,
   visualPreviewAuthRoutes,
 }: ManagementRouteDeps): RouteEntry[] {
-  const entries: RouteEntry[] = [
+  return ([
     ['get', '/api/config/followup-keywords', requireManageSettings, configRoutes.getFollowupKeywords],
     ['post', '/api/config/followup-keywords', requireManageSettings, configRoutes.postFollowupKeywords],
     ['get', '/api/config/followup-ignore-keywords', requireManageSettings, configRoutes.getFollowupIgnoreKeywords],
@@ -167,8 +167,7 @@ export function createManagementRouteEntries({
     ['get', '/api/agents/:agentType/images', requireManageAgents, agentVersionRoutes.listImages],
     ['post', '/api/agents/resolve-version', requireManageAgents, agentVersionRoutes.resolveVersionEndpoint],
     ['get', '/api/agents/:agentType/image-tag', requireManageAgents, agentVersionRoutes.getImageTag],
-  ];
-  return entries.map(withDemoViewerBoundary);
+  ] satisfies RouteEntry[]).map(withDemoViewerBoundary);
 }
 
 /**
@@ -232,6 +231,8 @@ export function createOperationalRouteEntries(deps: OperationalRouteDeps): Route
     ['get', '/api/goals/:goalId/wait', goalRoutes.wait],
     ['get', '/api/goals/:goalId/previews', goalRoutes.previews],
     ['delete', '/api/goals/:goalId', goalRoutes.remove],
+    ['patch', '/api/goals/:goalId/draft', goalRoutes.updateDraft],
+    ['post', '/api/goals/:goalId/start', goalRoutes.startDraft],
     ['post', '/api/goals/:goalId/pause', goalRoutes.pause],
     ['post', '/api/goals/:goalId/resume', goalRoutes.resume],
     ['post', '/api/goals/:goalId/cancel', goalRoutes.cancel],

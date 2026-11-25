@@ -216,11 +216,14 @@ async function loadImplementationTarget(params: {
   planIssue: PlanIssue;
 }> {
   const { deps, req, draftId, issueNumber } = params;
-  const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name', 'context_config']);
+  const ownership = await deps.verifyOwnership(draftId, req.user!.id, ['user_id', 'repository', 'name', 'context_config', 'status']);
   if (!ownership.authorized) {
     throw new ImplementationRequestError(ownership.status ?? 403, ownership.error ?? 'Not authorized');
   }
   const draft = ownership.draft!;
+  if (draft.status === 'executing') {
+    throw new ImplementationRequestError(409, 'Wait for plan publication to finish before implementing issues.');
+  }
   const repository = draft.repository as string;
   const repositoryParts = parseProjectSlug(repository);
   if (!repositoryParts) throw new ImplementationRequestError(400, 'Invalid repository format');

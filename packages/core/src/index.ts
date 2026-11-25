@@ -762,3 +762,5 @@ export {
 } from './agents/agentRunNesting.js';
 // Opt-in control-plane idle shutdown: detector, signal collectors, activity heartbeats and wake hints.
 export * from './idle/index.js';
+
+export { RepositoryRepairRequiredError } from './git/objectRecovery.js';

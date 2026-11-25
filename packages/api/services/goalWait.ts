@@ -226,7 +226,7 @@ export function goalWaitProjection(goal: GoalWaitGoalRow) {
     terminal: goal.result_state !== null,
     goalCompleted: goal.result_state === 'completed',
     pauseConfirmed: lifecycleState === 'paused',
-    currentTaskId: goal.current_task_id ?? null,
+    currentTaskId: lifecycleState === 'draft' ? null : goal.current_task_id ?? null,
     checkpoint: { count: Number(goal.checkpoint_count ?? 0), lastAt: goal.last_checkpoint_at ?? null },
     finalPr: goal.final_pr_number ? { number: goal.final_pr_number, url: goal.final_pr_url ?? null } : null,
     failureReason: goal.failure_reason ?? null,

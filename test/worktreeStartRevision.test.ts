@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rename, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { simpleGit } from 'simple-git';
@@ -94,4 +94,37 @@ test('a base that moved away from the policy commit stops preparation instead of
     // Sanity: each rejected base exists and could have been checked out without a policy.
     assert.equal(await head((await create(null, 'rewritten')).worktreePath), rewrittenCommit);
     assert.equal(await head((await create(null, 'epic')).worktreePath), headCommit);
+});
+
+const looseObject = (id: string) => path.join(clone, '.git', 'objects', id.slice(0, 2), id.slice(2));
+const repairMarker = path.join(clone, '.git', 'propr-object-repair-required.json');
+
+test('a healthy policy commit is checked out beneath a branch head whose tree is missing', async t => {
+    const git = simpleGit(clone);
+    const tree = (await git.revparse([`${headCommit}^{tree}`])).trim();
+    const saved = path.join(root, 'saved-head-tree');
+    await rename(looseObject(tree), saved);
+    t.after(() => rename(saved, looseObject(tree)));
+    // An ordinary fetch does not notice the missing tree.
+    await git.raw(['fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main']);
+    await assert.rejects(git.raw(['rev-list', '--objects', '--quiet', '--missing=error', headCommit]));
+
+    const { worktreePath } = await create({ branch: 'main', revision: policyCommit });
+    assert.equal(await head(worktreePath), policyCommit);
+    assert.equal(await readFile(path.join(worktreePath, 'state.txt'), 'utf8'), 'policy');
+    // The head was neither walked nor repaired: no donor ran and no incident was recorded.
+    await assert.rejects(git.raw(['rev-list', '--objects', '--quiet', '--missing=error', headCommit]));
+    await assert.rejects(access(repairMarker));
+});
+
+test('commit history missing between the policy commit and the head is repaired to prove ancestry', async () => {
+    const git = simpleGit(clone);
+    await rm(looseObject(headCommit));
+    await assert.rejects(git.raw(['merge-base', policyCommit, headCommit]));
+
+    const { worktreePath } = await create({ branch: 'main', revision: policyCommit });
+    assert.equal(await head(worktreePath), policyCommit);
+    assert.equal((await git.raw(['cat-file', '-t', headCommit])).trim(), 'commit');
+    await assert.rejects(access(repairMarker));
+    await git.raw(['fsck', '--no-dangling']);
 });
