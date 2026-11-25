@@ -113,6 +113,14 @@ function providerArgv(spec: AgentRunSpec, provider: 'claude' | 'codex') {
     return [spec.repoSetup?.providerEntrypoint ?? spec.entrypoint ?? `/home/node/${provider}-entrypoint.sh`, ...spec.args];
 }
 
+function environmentSecrets(env: Map<string, string>) {
+    const secrets: string[] = [];
+    for (const [name, value] of env) {
+        if (/token|secret|password|api.?key|authorization/i.test(name)) secrets.push(value);
+    }
+    return secrets;
+}
+
 export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig) {
     const { clone, containerPath, provider } = validateLaunch(spec, options);
     const files: MachineLaunch['config']['files'] = [];
@@ -132,9 +140,8 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     const storePath = '/home/node/.' + provider;
     const staged = stageCredentials(store, storePath, add, directories);
     const owned = staged.owned;
-    const secrets = [transportToken, ...Object.values(bundle.secretEnv), ...staged.secrets];
+    const secrets = [transportToken, ...Object.values(bundle.secretEnv), ...staged.secrets, ...environmentSecrets(env)];
     const environment = { PATH, ...Object.fromEntries(env), ...bundle.secretEnv, HOME: '/home/node', USER: 'node', LOGNAME: 'node' };
-    for (const [k, v] of env) if (/token|secret|password|api.?key|authorization/i.test(k)) secrets.push(v);
     // Only trusted values enter the root shell. Provider settings such as
     // BASH_ENV, PATH and LD_PRELOAD take effect after dropping privileges.
     const transportEnv = { PATH, HOME: '/root', LANG: 'C.UTF-8', PROPR_AGENT_TYPE: provider,

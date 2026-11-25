@@ -209,6 +209,22 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 }
                 await destroy();
             };
+            const recoverUnconfirmedExit = async (machine: string, running: boolean) => {
+                missing.push('status');
+                if (running && !credentialsPending) {
+                    workspaceSafeToDestroy = true;
+                    void api.signal(machine, 'SIGKILL').catch(() => {});
+                    await destroy();
+                } else {
+                    // A failed probe can hide either an active agent or a finished
+                    // bundle. ALRM kills a confirmed running command group while
+                    // keeping the credential-bearing guest available for recovery.
+                    if (running) await api.signal(machine, 'SIGALRM').catch(() => {});
+                    else if (!stopping) await api.signal(machine, 'SIGTERM').catch(() => {});
+                    if (credentialsPending) failures.push(credentialRecovery());
+                    failures.push('Check for a workspace result at ' + machineLocation());
+                }
+            };
             let exitCode = -1;
             try {
                 id = await api.create(prepared.launch);
@@ -244,20 +260,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 clearTimeout(graceTimer);
                 logs.abort();
                 if (!exited) {
-                    missing.push('status');
-                    if (code === 'running' && !credentialsPending) {
-                        workspaceSafeToDestroy = true;
-                        void api.signal(id, 'SIGKILL').catch(() => {});
-                        await destroy();
-                    } else {
-                        // A failed probe can hide either an active agent or a finished
-                        // bundle. ALRM kills a confirmed running command group while
-                        // keeping the credential-bearing guest available for recovery.
-                        if (code === 'running') await api.signal(id, 'SIGALRM').catch(() => {});
-                        else if (!stopping) await api.signal(id, 'SIGTERM').catch(() => {});
-                        if (credentialsPending) failures.push(credentialRecovery());
-                        failures.push('Check for a workspace result at ' + machineLocation());
-                    }
+                    await recoverUnconfirmedExit(id, code === 'running');
                 } else {
                     await collectExitedMachine(id);
                 }
