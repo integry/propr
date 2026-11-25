@@ -123,6 +123,11 @@ jobs:
           JS
           )
           flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'"
+          # Install and verify the settings over SSH after the volume is mounted.
+          awk '/^```bash title="Install headless Claude settings"$/{copy=1; next}
+               copy && /^```$/{exit} copy' docs/docs/tutorials/setup-fly.md > "$OUT/claude-settings.sh"
+          test -s "$OUT/claude-settings.sh"
+          bash -eu "$OUT/claude-settings.sh"
 
       - name: Configure the signed App webhook and create the agent-labeled issue
         env:

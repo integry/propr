@@ -16,6 +16,7 @@ import {
   renderFlyMachineConfigJson,
   renderFlyToml,
   selectEnvFileSecrets,
+  validateContainerFilePaths,
   validateFlyAppName,
   validateFlyVolumeName,
   type FlyDeployPlan,
@@ -141,6 +142,18 @@ test("each container lists the app secrets it needs; Fly passes no others in a m
   const json = JSON.parse(renderFlyMachineConfigJson(plan)) as { containers: JsonObject[] };
   assert.deepEqual(json.containers.find((c) => c.name === "app")?.secrets, byName.app);
   assert.deepEqual(buildContainers(basePlan()).find((c) => c.name === "app")?.secrets, []);
+});
+
+test("Machine files cannot be hidden by the Fly volume or /run tmpfs", () => {
+  const validate = (guest_path: string) => validateContainerFilePaths([
+    { name: "redis" }, { name: "app", files: [{ guest_path: "/etc/hosts" }, { guest_path }] },
+  ]);
+  for (const mount of [FLY_DATA_PATH, "/run"]) {
+    for (const path of [mount, mount + "/claude/settings.json", "/etc/.." + mount + "//key"]) {
+      assert.throws(() => validate(path), /would be hidden/);
+    }
+    assert.doesNotThrow(() => validate(mount + "-other/key"));
+  }
 });
 
 test("Sprites and legacy Docker mount the GitHub App key on the app root filesystem", () => {

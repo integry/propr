@@ -62,7 +62,7 @@ Supply the credentials for your chosen agent runtime.
 
 Idle shutdown is **off by default**. To opt in, export `IDLE_AFTER=15m` and add an app-scoped token from `fly tokens create deploy --app "$APP" --name "$APP-stop"` to the private file as `PROPR_FLY_MACHINE_STOP_TOKEN`. Fly proxy autostart wakes the Machine on the next webhook. With direct webhooks, a cold start takes about 15–20 seconds, longer than GitHub’s 10-second timeout for the delivery that wakes the Machine. After startup, ProPR requests redelivery from the GitHub App’s webhook delivery history. Repository-level webhooks have separate histories and are outside this recovery path. Polling intake keeps the instance awake. With Connect intake, the relay must acknowledge the wake hint, ping the public `/wake` endpoint on delivery and replay the event after reconnect. Until the relay supports this handshake, the instance stays up. [Idle shutdown and wake](../operations/idle-shutdown.md#how-it-wakes)
 
-Generate the two Fly config files. Only secret names go into them. The optional headless setup maps a Fly secret to Claude Code’s settings file. Encode a settings JSON containing an `env` object with a dedicated `ANTHROPIC_API_KEY` as single-line base64.
+Generate the two Fly config files. Only secret names go into them. For headless Claude setup, add `CLAUDE_SETTINGS_B64` to the private environment file. Its value is single-line base64 of a settings JSON containing an `env` object with a dedicated `ANTHROPIC_API_KEY`. The app container receives this secret as an environment variable. Fly mounts the data volume and the `/run` tmpfs over Machine files at those paths, so write Claude’s settings after deployment.
 
 ```bash title="Render Machine configuration"
 node --import tsx --input-type=module <<'JS'
@@ -85,16 +85,8 @@ const plan = {
     PROPR_MANAGED_CREDENTIALS_DIR: '/usr/src/app/data/agent-credentials',
   },
 };
-const config = JSON.parse(renderFlyMachineConfigJson(plan));
-if (names.includes('CLAUDE_SETTINGS_B64')) {
-  const app = config.containers.find(c => c.name === 'app');
-  (app.files ??= []).push({
-    guest_path: plan.extraEnv.PROPR_MANAGED_CREDENTIALS_DIR + '/claude/.claude/settings.json',
-    secret_name: 'CLAUDE_SETTINGS_B64', mode: 0o600,
-  });
-}
 const path = resolve(OUT, 'propr-machine.json');
-writeFileSync(path, JSON.stringify(config, null, 2));
+writeFileSync(path, renderFlyMachineConfigJson(plan));
 writeFileSync(resolve(OUT, 'fly.toml'), renderFlyToml(plan, path));
 JS
 ```
@@ -107,10 +99,44 @@ fly volumes create propr_data --size 1 --region "$REGION" --app "$APP" --yes
 fly deploy --app "$APP" --config "$OUT/fly.toml" --image "$IMAGE" --ha=false
 ```
 
+### Install headless Claude credentials
+
+If you supplied `CLAUDE_SETTINGS_B64`, run this after deployment for the Claude agent with ID `claude`. It writes the settings to the managed credential directory on the mounted volume, where they survive idle stops and restarts. The SSH command prints the installed file’s byte count. Run it again after rotating the secret.
+
+```bash title="Install headless Claude settings"
+setup=$(base64 <<'JS' | tr -d '\n'
+import { chmod, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { getManagedAgentConfigPath, getManagedAgentConfigRelativePath } from '@propr/shared';
+
+const config = getManagedAgentConfigPath('claude', 'claude');
+const dir = join(process.env.PROPR_MANAGED_CREDENTIALS_DIR, getManagedAgentConfigRelativePath(config));
+const settings = Buffer.from(process.env.CLAUDE_SETTINGS_B64 || '', 'base64');
+if (!settings.length) throw new Error('CLAUDE_SETTINGS_B64 decoded to empty settings');
+
+await mkdir(dir, { recursive: true, mode: 0o700 });
+await chmod(dir, 0o700);
+const file = join(dir, 'settings.json');
+const temp = join(dir, `.settings-${randomUUID()}`);
+try {
+  await writeFile(temp, settings, { flag: 'wx', mode: 0o600 });
+  await rename(temp, file);
+} finally {
+  await rm(temp, { force: true });
+}
+const { size } = await stat(file);
+if (!size) throw new Error('Installed Claude settings.json is empty');
+console.log(size);
+JS
+)
+flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'"
+```
+
 ### Verify an issue run
 
 1. Confirm that `https://<app>.fly.dev/health` returns HTTP 200.
-2. Configure at least one agent. In **Settings → Agents**, add an agent, choose its alias and default model, sign in to the provider and enable the agent. For headless Claude setup with `CLAUDE_SETTINGS_B64`, use the MCP tool `create_agent_configuration` with agent ID `claude` so its managed credential directory matches the mounted settings file. Set an alias, supported models and a default model you can access. New MCP configurations start disabled, so call `update_agent_configuration` with `enabled: true`.
+2. Configure at least one agent. In **Settings → Agents**, add an agent, choose its alias and default model, sign in to the provider and enable the agent. For headless Claude setup with `CLAUDE_SETTINGS_B64`, use the MCP tool `create_agent_configuration` with agent ID `claude` to use the settings installed on the volume. Set an alias, supported models and a default model you can access. New MCP configurations start disabled, so call `update_agent_configuration` with `enabled: true`.
 3. Apply `llm-<alias>` to a small issue to select that agent’s default model (for example, `llm-claude` for alias `claude`), then add the `AI` trigger label. Check that its PR contains the requested edit and that the task’s compute usage names the selected runtime.
 
 To check idle wake, close the UI, wait until `fly machine list --app "$APP"` shows `stopped`, then apply the same labels to another issue. Use Fly’s Machine list to observe the transition to `started`. Visiting the instance yourself would also wake it.
