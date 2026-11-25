@@ -258,8 +258,7 @@ export class SpritePool {
                     signal.throwIfAborted();
                     continue;
                 }
-                const waitMs = this.now() - startedAt;
-                const lease = { name: decision.name, leaseId, waitMs, runs: decision.record.runs };
+                const lease = { name: decision.name, leaseId, waitMs: this.now() - startedAt, runs: decision.record.runs };
                 if (decision.action === 'provision') {
                     // Setup belongs to the pool. A caller that stops before upload leaves a clean runner.
                     const slot = await this.provision(lease, this.provisionSignal());
@@ -280,7 +279,6 @@ export class SpritePool {
 
     private async provision({ name, leaseId, waitMs, runs }: PoolLease, signal: AbortSignal): Promise<Slot> {
         const startedAt = this.now();
-        const { scope } = this.options;
         if (signal.aborted) {
             await this.transact(state => forgetSpriteRunner(state, name, leaseId));
             signal.throwIfAborted();
@@ -288,7 +286,7 @@ export class SpritePool {
         let sprite: Sprite;
         try {
             // Never discover or adopt a machine by name: the record above owns the name.
-            sprite = await this.client.createSprite(name, { labels: [SPRITES_POOL_LABEL, spritesPoolLabel(scope)] });
+            sprite = await this.client.createSprite(name, { labels: [SPRITES_POOL_LABEL, spritesPoolLabel(this.options.scope)] });
         } catch (error) {
             // A name conflict explicitly rejects our create. An ambiguous failure can
             // leave a Sprite behind, so keep its reservation for the next reaper.
@@ -411,7 +409,7 @@ export class SpritePool {
             if (this.closed) return await this.discard(slot);
             const held = await this.transact(state => updateSpriteRunner(state, { name: slot.name, leaseId: slot.leaseId, now: this.now() }, { state: 'resetting' }));
             if (!held) return;
-            let next: { checkpoint: string; warm?: Slot['warm']; restoreMs?: number };
+            let next;
             try {
                 const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(120_000)]);
                 next = await this.reset(slot, signal, outcome.repo);
@@ -430,10 +428,7 @@ export class SpritePool {
                 replacing = true;
                 return;
             }
-            await this.returnClean(slot, {
-                checkpoint: next.checkpoint, warm: next.warm, runs: slot.runs + 1,
-                ...(next.restoreMs !== undefined ? { lastRestoreMs: next.restoreMs } : {}),
-            });
+            await this.returnClean(slot, next);
         } finally {
             if (!replacing) this.stopHeartbeat(slot.leaseId);
         }
@@ -456,8 +451,8 @@ export class SpritePool {
         const target = carried ? slot.checkpoint : slot.warm?.checkpoint ?? slot.checkpoint;
         const startedAt = this.now();
         await step(async () => completeCheckpointStream(await slot.sprite.restoreCheckpoint(target)));
-        const restoreMs = this.now() - startedAt;
+        const lastRestoreMs = this.now() - startedAt;
         const warm = carried ? await step(() => installWarmClone(slot.sprite, repo!)) : target === slot.checkpoint ? undefined : slot.warm;
-        return { checkpoint: slot.checkpoint, warm, restoreMs };
+        return { checkpoint: slot.checkpoint, warm, lastRestoreMs, runs: slot.runs + 1 };
     }
 }
