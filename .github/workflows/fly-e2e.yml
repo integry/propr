@@ -82,8 +82,15 @@ jobs:
             echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
             echo "SESSION_SECRET=$(openssl rand -hex 32)"
           } >> "$ENV_FILE"
-          touch "$OUT/stop-token-requested"
-          stop_token=$(flyctl tokens create deploy --app "$APP" --name "$APP-stop" --expiry 2h --json | jq -er .token)
+          # Fly's Apps caveat uses the internal numeric ID. Zero would grant access to all apps.
+          app_id=$(curl --fail --silent --show-error -H "Authorization: $FLY_API_TOKEN" \
+            "https://api.machines.dev/v1/apps/$APP" | jq -er '.internal_numeric_id | numbers | select(. > 0)')
+          [[ $app_id =~ ^[1-9][0-9]*$ ]]
+          stop_token=$(jq -n --arg id "$app_id" '[
+            {type: "Apps", body: {apps: {($id): "rwC"}}},
+            {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
+          ]' | flyctl tokens attenuate)
+          echo "::add-mask::$stop_token"
           printf 'PROPR_FLY_MACHINE_STOP_TOKEN=%s\n' "$stop_token" >> "$ENV_FILE"
 
           # Exercise the operator's exact config recipe from the checked-out tutorial.
@@ -190,17 +197,6 @@ jobs:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
           if [[ -s $OUT/hook-id ]]; then gh api -X DELETE "repos/$REPO/hooks/$(cat "$OUT/hook-id")"; fi
-      - name: Revoke the Machine stop token
-        if: always() && steps.app.outcome == 'success'
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
-        shell: bash
-        run: |
-          [[ -f "$OUT/stop-token-requested" ]] || exit 0
-          # flyctl lists token IDs and names in the first two table columns.
-          id=$(flyctl tokens list --app "$APP" | sed 's/│/ /g; s/|/ /g' |
-            awk -v name="$APP-stop" '$2 == name {id=$1; matches++} END {if (matches != 1) exit 1; print id}')
-          flyctl tokens revoke "$id"
       - name: Destroy test app, Machines and volume
         if: always() && steps.app.outcome == 'success'
         env:

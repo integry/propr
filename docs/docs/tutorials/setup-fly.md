@@ -127,9 +127,9 @@ The **Fly end-to-end smoke** GitHub Actions workflow runs on manual dispatch by 
 
 | Secret | Fixture access |
 | --- | --- |
-| `FLY_E2E_TOKEN` | Test org access to create and destroy apps, push a registry image, deploy, inspect Machines and mint and revoke an app stop token |
+| `FLY_E2E_TOKEN` | Fly organization token from `fly tokens create org -o <test-org>`. The workflow derives a Machine stop token locally, scoped to the disposable app and valid for at most two hours. |
 | `FLY_E2E_SPRITES_TOKEN` | Test Sprites org access to create, run and delete Sprites |
 | `FLY_E2E_GITHUB_TOKEN` | Fixture repository access to manage webhooks, issues, PRs and test branches |
 | `FLY_E2E_APP_ENV` | Private environment file containing `PROPR_ADMIN_USERS` (fixture administrator’s GitHub login), `GH_APP_ID`, `GH_INSTALLATION_ID`, `PROPR_GH_PRIVATE_KEY_B64` and `CLAUDE_SETTINGS_B64` containing the test account’s API-key settings described above |
 
-The test creates a signed repository webhook for its temporary URL. The installed test GitHub App needs access to read the issue and write the branch and PR. The workflow waits for natural idle shutdown, labels a fresh issue, observes wake and checks the linked PR and recorded execution runtime. Teardown removes the test hook, closes the issue and PR, revokes the stop token and deletes the temporary compute.
+The test creates a signed repository webhook for its temporary URL. The installed test GitHub App needs access to read the issue and write the branch and PR. The workflow waits for natural idle shutdown, labels a fresh issue, observes wake and checks the linked PR and recorded execution runtime. Teardown removes the test hook, closes the issue and PR, and deletes the temporary compute.
