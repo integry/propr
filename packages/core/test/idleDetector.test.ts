@@ -160,6 +160,13 @@ test('idle window parsing accepts units and bare minutes within 1m..24h', () => 
     assert.equal(formatIdleShutdownDuration(15 * 60_000), '15m');
 });
 
+test('idle window parsing rejects oversized input without scanning it', () => {
+    assert.equal(parseIdleShutdownDuration('0'.repeat(100_000)), null);
+    assert.equal(parseIdleShutdownDuration(`${'0'.repeat(100_000)}x`), null);
+    assert.equal(parseIdleShutdownDuration(`${'0'.repeat(50)}15m`), 15 * 60_000);
+    assert.equal(parseIdleShutdownDuration('15 m'), 15 * 60_000);
+});
+
 test('the switch accepts on/off spellings only', () => {
     assert.equal(parseIdleShutdownSwitch('on'), true);
     assert.equal(parseIdleShutdownSwitch('OFF'), false);

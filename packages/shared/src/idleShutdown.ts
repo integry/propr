@@ -72,30 +72,51 @@ export interface IdleShutdownConfig {
     warnings: string[];
 }
 
-const DURATION_PART = /(\d+)\s*(ms|s|m|h)/gy;
 const UNIT_MS: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 };
+/** Longest idle window string accepted; real values are a few characters (`1h30m`). */
+const MAX_DURATION_INPUT_LENGTH = 64;
 
 /**
  * Parse an idle window such as `15m`, `90s`, `1h30m` or `2h`. A bare integer
  * is minutes. Returns null for anything else, including values outside
  * [1 minute, 24 hours].
+ *
+ * Scanned by hand rather than with a regular expression so the cost stays
+ * linear in the (length-capped) input whatever an operator or API caller sends.
  */
 export function parseIdleShutdownDuration(raw: unknown): number | null {
     if (typeof raw === 'number') return boundDuration(raw);
     if (typeof raw !== 'string') return null;
+    if (raw.length > MAX_DURATION_INPUT_LENGTH) return null;
     const value = raw.trim().toLowerCase();
     if (value === '') return null;
-    if (/^\d+$/.test(value)) return boundDuration(Number(value) * 60_000);
-    DURATION_PART.lastIndex = 0;
+    if (isAllDigits(value)) return boundDuration(Number(value) * 60_000);
     let total = 0;
-    let consumed = 0;
-    for (let match = DURATION_PART.exec(value); match; match = DURATION_PART.exec(value)) {
-        total += Number(match[1]) * UNIT_MS[match[2]];
-        consumed = DURATION_PART.lastIndex;
-        while (value[consumed] === ' ') consumed += 1;
-        DURATION_PART.lastIndex = consumed;
+    let index = 0;
+    while (index < value.length) {
+        const digitsStart = index;
+        while (index < value.length && isDigit(value[index])) index += 1;
+        if (index === digitsStart) return null;
+        const amount = Number(value.slice(digitsStart, index));
+        while (value[index] === ' ' || value[index] === '\t') index += 1;
+        let unit: string;
+        if (value.startsWith('ms', index)) unit = 'ms';
+        else if (value[index] === 's' || value[index] === 'm' || value[index] === 'h') unit = value[index];
+        else return null;
+        index += unit.length;
+        total += amount * UNIT_MS[unit];
+        while (value[index] === ' ') index += 1;
     }
-    return consumed === value.length ? boundDuration(total) : null;
+    return boundDuration(total);
+}
+
+function isDigit(char: string | undefined): boolean {
+    return char !== undefined && char >= '0' && char <= '9';
+}
+
+function isAllDigits(value: string): boolean {
+    for (const char of value) if (!isDigit(char)) return false;
+    return true;
 }
 
 function boundDuration(ms: number): number | null {
