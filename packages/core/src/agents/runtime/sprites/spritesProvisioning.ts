@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 
 const projectRoot = () => process.env.PROPR_ROOT
@@ -41,6 +42,31 @@ export async function startupStep<T>(signal: AbortSignal, operation: () => T | P
         return await Promise.race([cancelled, operation()]);
     } finally {
         signal.removeEventListener('abort', abort);
+    }
+}
+
+export async function restartForReset(client: SpriteClient, sprite: Sprite, resetSignal: AbortSignal) {
+    const ambiguous = /restart outcome unknown/i;
+    try {
+        const result = await startupStep(resetSignal, () => sprite.restart());
+        if (!ambiguous.test(result?.message ?? '')) return;
+    } catch (error) {
+        if (!(error instanceof Error && ambiguous.test(error.message))) throw error;
+    }
+
+    const signal = AbortSignal.any([resetSignal, AbortSignal.timeout(60_000)]);
+    for (;;) {
+        try {
+            const current = await startupStep(signal, () => client.getSprite(sprite.name));
+            if (current.status === 'running') {
+                const probe = await startupStep(signal, () => current.execFile('/bin/true', [], { cwd: '/', timeout: 5000, signal }));
+                if (probe.exitCode === 0) return;
+            }
+        } catch {
+            // Status and exec can both fail transiently while the machine restarts.
+            signal.throwIfAborted();
+        }
+        await delay(1000, undefined, { signal });
     }
 }
 

@@ -15,6 +15,7 @@ import { WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTr
 import type { AgentRunSpec } from '../packages/core/src/agents/runtime/types.ts';
 import { executeWithNetworkPolicy } from '../packages/core/src/network/egressExecution.ts';
 import logger from '../packages/core/src/utils/logger.ts';
+import { MemorySpritePoolStore } from '../packages/core/src/agents/runtime/spritesPool.ts';
 import { FakeSprites } from './helpers/fakeSprites.ts';
 
 const restriction = { mode: 'restricted' as const, source: 'instance' as const, allow: ['*.example.com', 'docs.example.org:8443', '203.0.113.9'], instanceAllow: ['10.0.0.5'] };
@@ -27,6 +28,10 @@ function build(network = agentRunNetwork('bridge'), mcpUrl?: string): AgentRunSp
             clone: { remote: 'unused', baseRef: 'base', baseCommit: 'unused', branch: 'test', resultDir: '/tmp/propr-workspace-result', script: WORKSPACE_TRANSPORT_SCRIPT } },
     }).command('claude', '--version').build();
     return spec;
+}
+
+function testRuntime(client: FakeSprites) {
+    return new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' }, { store: new MemorySpritePoolStore() });
 }
 
 const restricted = (mcpUrl?: string) => build({ ...agentRunNetwork('bridge'), restriction, policy: agentRunNetworkPolicy('claude', restriction) }, mcpUrl);
@@ -93,7 +98,7 @@ test('admission accepts restricted Sprites runs, and the Sprites MCP URL wins ov
 
 test('the policy is applied before upload and launch, cleared after restore, and a Sprite that keeps it is discarded', async t => {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const runtime = testRuntime(client);
     const run = runtime.start(restricted('https://propr.example.net/api/mcp'));
     await run.wait();
     const sprite = client.created[0];
@@ -136,7 +141,7 @@ test('the policy is applied before upload and launch, cleared after restore, and
 
 test('release logs the verification step and replaces a Sprite when clear read-back omits the rules', async t => {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const runtime = testRuntime(client);
     const run = runtime.start(restricted());
     await run.wait();
     const sprite = client.created[0];
@@ -153,7 +158,7 @@ test('release logs the verification step and replaces a Sprite when clear read-b
 
 test('a policy that fails to apply refuses the run before upload and discards the unverified Sprite', async () => {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const runtime = testRuntime(client);
     const first = runtime.start(build());
     await first.wait();
     await first.release!();
@@ -170,7 +175,7 @@ test('a policy that fails to apply refuses the run before upload and discards th
 test('a restricted Sprite whose cleanup fails is discarded with egress still restricted', async () => {
     for (const failure of ['failWipe', 'failRestore'] as const) {
         const client = new FakeSprites();
-        const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+        const runtime = testRuntime(client);
         const run = runtime.start(restricted());
         await run.wait();
         const sprite = client.created[0];
@@ -184,7 +189,7 @@ test('a restricted Sprite whose cleanup fails is discarded with egress still res
 
 test('restricted environment defaults preserve explicit values and stay out of open runs', async t => {
     const client = new FakeSprites();
-    const subject = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const subject = testRuntime(client);
     const key = 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC';
     const inherited = restricted();
     inherited.env.push({ name: key, order: 0 });
@@ -206,7 +211,7 @@ test('restricted environment defaults preserve explicit values and stay out of o
 
 test('release records a changed policy against the lease and discards before cleanup, even during shutdown', async t => {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const runtime = testRuntime(client);
     const warn = t.mock.method(logger, 'warn');
     const store = mkdtempSync(path.join(tmpdir(), 'sprite-tamper-'));
     t.after(() => rmSync(store, { recursive: true, force: true }));

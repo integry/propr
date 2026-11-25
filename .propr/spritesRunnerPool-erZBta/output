@@ -1,0 +1,370 @@
+TAP version 13
+# Subtest: the bound holds across workers: a run queues until a runner is released and then reuses it
+ok 1 - the bound holds across workers: a run queues until a runner is released and then reuses it
+  ---
+  duration_ms: 49.635046
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.202 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-c4a6f193-bb4f-46e4-87f7-ed580e1d912c"
+# [2026-11-25 00:55:11.203 +0000] [32mINFO[39m: [36mSQLite database connection established successfully[39m
+#     filename: "/home/node/workspace/.propr/spritesRunnerPool-erZBta/propr.test.sqlite"
+#     environment: "test"
+# [2026-11-25 00:55:11.217 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 0
+#     runners: 1
+#     max: 1
+# [2026-11-25 00:55:11.243 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-0512ed42-019d-4e05-b7d2-cb126a9cb3af"
+# [2026-11-25 00:55:11.248 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 0
+#     runners: 1
+#     max: 1
+# [2026-11-25 00:55:11.268 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 1
+#     runners: 1
+#     max: 1
+# [2026-11-25 00:55:11.288 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 2
+#     runners: 1
+#     max: 1
+# Subtest: queued runs are served first come, first served and a cancelled wait leaves the queue
+ok 2 - queued runs are served first come, first served and a cancelled wait leaves the queue
+  ---
+  duration_ms: 98.575227
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.341 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-1acc904a-2070-4f36-9c51-040505cc5a02"
+# [2026-11-25 00:55:11.344 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 0
+#     runners: 1
+#     max: 1
+# Subtest: a run that times out in the queue leaves its slot with the holder
+ok 3 - a run that times out in the queue leaves its slot with the holder
+  ---
+  duration_ms: 37.496202
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.380 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-1ce1722a-9642-4e57-9d19-e700b96ec589"
+# Subtest: a runner failing its health check is destroyed and re-provisioned in its slot
+ok 4 - a runner failing its health check is destroyed and re-provisioned in its slot
+  ---
+  duration_ms: 11.431238
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.386 +0000] [33mWARN[39m: [36mSprites runner failed its health check; re-provisioning it[39m
+#     sprite: "propr-1ce1722a-9642-4e57-9d19-e700b96ec589"
+#     error: "Sprite unreachable"
+# [2026-11-25 00:55:11.387 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-277bb899-a810-452d-8076-ab692bab215b"
+# [2026-11-25 00:55:11.391 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-ef53b3a2-a65e-4eca-a067-ac5bf7e721a1"
+# [2026-11-25 00:55:11.397 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 0
+#     runners: 2
+#     max: 2
+# Subtest: a crashed worker's leased runner is reaped before its slot is reused; a kept result is never reaped
+ok 5 - a crashed worker's leased runner is reaped before its slot is reused; a kept result is never reaped
+  ---
+  duration_ms: 31.289528
+  type: 'test'
+  ...
+# Subtest: startup reaps this pool's Sprites no record owns and forgets records whose Sprite is gone
+ok 6 - startup reaps this pool's Sprites no record owns and forgets records whose Sprite is gone
+  ---
+  duration_ms: 3.891873
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.422 +0000] [32mINFO[39m: [36mDeleted orphaned Sprite no pool lease owns[39m
+#     sprite: "propr-leaked"
+# [2026-11-25 00:55:11.422 +0000] [33mWARN[39m: [36mLegacy Sprite may hold an unrecovered result; review it manually[39m
+#     sprite: "propr-0b9d3a52-6f53-4f58-a9b2-2f7f0f0f0f0f"
+# [2026-11-25 00:55:11.422 +0000] [33mWARN[39m: [36mLegacy Sprite may hold an unrecovered result; review it manually[39m
+#     sprite: "propr-1b9d3a52-6f53-4f58-a9b2-2f7f0f0f0f0f"
+# [2026-11-25 00:55:11.427 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-48c77b57-25bd-4a60-9141-791b72ae024f"
+# [2026-11-25 00:55:11.427 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-164eca14-16fe-4321-b707-b8293b19c41c"
+# Subtest: lowering the bound discards surplus runners on release
+ok 7 - lowering the bound discards surplus runners on release
+  ---
+  duration_ms: 9.907885
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.436 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-4fcb9716-b911-42c3-befd-71fc1a4580a5"
+# Subtest: warm clones: a run refreshes its repository reference, the next run of it starts warm, another repository starts clean
+ok 8 - warm clones: a run refreshes its repository reference, the next run of it starts warm, another repository starts clean
+  ---
+  duration_ms: 7.494304
+  type: 'test'
+  ...
+# Subtest: pool settings: default bound 2, clamped to the organization limit, invalid values refused
+ok 9 - pool settings: default bound 2, clamped to the organization limit, invalid values refused
+  ---
+  duration_ms: 0.492284
+  type: 'test'
+  ...
+# Subtest: an acquisition prefers an idle runner warm for the repository, then a clean one
+ok 10 - an acquisition prefers an idle runner warm for the repository, then a clean one
+  ---
+  duration_ms: 0.614755
+  type: 'test'
+  ...
+# Subtest: stored run usage keeps the runner pool timings
+ok 11 - stored run usage keeps the runner pool timings
+  ---
+  duration_ms: 0.204881
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.445 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-72ab70a2-28a1-43d4-b8ec-f015a5718a1a"
+# Subtest: a run cancelled during the health check hands the runner back instead of destroying it
+ok 12 - a run cancelled during the health check hands the runner back instead of destroying it
+  ---
+  duration_ms: 34.627157
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.479 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-a71fb53d-8c49-4f64-8bd8-f0f4bad08b9d"
+# Subtest: an ambiguous restart waits for running status and a successful exec before resetting
+ok 13 - an ambiguous restart waits for running status and a successful exec before resetting
+  ---
+  duration_ms: 2005.249359
+  type: 'test'
+  ...
+# Subtest: ambiguous restart recovery replaces the runner if a status request hangs past the deadline
+ok 14 - ambiguous restart recovery replaces the runner if a status request hangs past the deadline
+  ---
+  duration_ms: 2.215649
+  type: 'test'
+  ...
+# Subtest: failed surplus deletion stays counted after reset
+ok 15 - failed surplus deletion stays counted after reset
+  ---
+  duration_ms: 3.645111
+  type: 'test'
+  ...
+# Subtest: failed surplus deletion stays counted after cancelled health check
+ok 16 - failed surplus deletion stays counted after cancelled health check
+  ---
+  duration_ms: 3.712922
+  type: 'test'
+  ...
+# [2026-11-25 00:55:13.484 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-b2f90f17-0046-465a-9050-985245764e9b"
+# [2026-11-25 00:55:13.485 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-b2f90f17-0046-465a-9050-985245764e9b"
+# [2026-11-25 00:55:13.485 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-4c2714df-f2ba-4ca9-a45e-a296ec5a3d5c"
+# [2026-11-25 00:55:13.486 +0000] [33mWARN[39m: [36mFailed to replace discarded Sprite[39m
+#     sprite: "propr-4c2714df-f2ba-4ca9-a45e-a296ec5a3d5c"
+#     error: "AbortError: This operation was aborted"
+# [2026-11-25 00:55:13.487 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-ccb26617-ee5f-4851-991c-30608e4de411"
+# [2026-11-25 00:55:13.487 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-f995bef9-d954-44ba-8ad2-d9d8db6096ed"
+# [2026-11-25 00:55:13.489 +0000] [31mERROR[39m: [36mCould not delete Sprite[39m
+#     sprite: "propr-f995bef9-d954-44ba-8ad2-d9d8db6096ed"
+# [2026-11-25 00:55:13.489 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-31d796b7-9b58-4827-b68b-b13fd620a9c7"
+# [2026-11-25 00:55:13.490 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-0f88540d-3e95-49a4-8932-cbde9754b286"
+# [2026-11-25 00:55:13.491 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-a53bd337-520b-4820-addd-1cca9b78dc7c"
+# [2026-11-25 00:55:13.492 +0000] [31mERROR[39m: [36mCould not delete Sprite[39m
+#     sprite: "propr-a53bd337-520b-4820-addd-1cca9b78dc7c"
+# [2026-11-25 00:55:13.492 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-a5a4a2a4-d4f4-4a83-b0a2-397920057d26"
+# [2026-11-25 00:55:13.494 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 0
+#     runners: 1
+#     max: 1
+# [2026-11-25 00:55:13.494 +0000] [33mWARN[39m: [36mCould not check retained Sprite[39m
+#     sprite: "propr-retained"
+#     error: "Error: try again"
+# Subtest: a blocked pool retries retained lookup after failure and frees the slot after manual deletion
+ok 17 - a blocked pool retries retained lookup after failure and frees the slot after manual deletion
+  ---
+  duration_ms: 510.691075
+  type: 'test'
+  ...
+# Subtest: incompatible and historical checkpoints are replaced within their held slot
+ok 18 - incompatible and historical checkpoints are replaced within their held slot
+  ---
+  duration_ms: 5.595198
+  type: 'test'
+  ...
+# Subtest: the setup fingerprint covers CLI pins and the contents of every uploaded script
+ok 19 - the setup fingerprint covers CLI pins and the contents of every uploaded script
+  ---
+  duration_ms: 9.845435
+  type: 'test'
+  ...
+# Subtest: a lost create response keeps the possible Sprite counted until reaped
+ok 20 - a lost create response keeps the possible Sprite counted until reaped
+  ---
+  duration_ms: 1.509773
+  type: 'test'
+  ...
+# Subtest: a retained lookup cannot forget a record claimed while the provider responds
+ok 21 - a retained lookup cannot forget a record claimed while the provider responds
+  ---
+  duration_ms: 1.066629
+  type: 'test'
+  ...
+# Subtest: losing ownership during the health check prevents handoff
+ok 22 - losing ownership during the health check prevents handoff
+  ---
+  duration_ms: 1.17939
+  type: 'test'
+  ...
+# Subtest: losing ownership during the health check prevents stale cleanup
+ok 23 - losing ownership during the health check prevents stale cleanup
+  ---
+  duration_ms: 1.18392
+  type: 'test'
+  ...
+# (node:1894) ExperimentalWarning: The MockTimers API is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: concurrent releases discard only the surplus even while provider deletion is pending
+ok 24 - concurrent releases discard only the surplus even while provider deletion is pending
+  ---
+  duration_ms: 14.309453
+  type: 'test'
+  ...
+# Subtest: startup rechecks ownership after an earlier orphan deletion
+ok 25 - startup rechecks ownership after an earlier orphan deletion
+  ---
+  duration_ms: 1.057459
+  type: 'test'
+  ...
+# Subtest: a create conflict cannot grant deletion authority over the existing Sprite
+ok 26 - a create conflict cannot grant deletion authority over the existing Sprite
+  ---
+  duration_ms: 0.881738
+  type: 'test'
+  ...
+# Subtest: a worker losing its reservation during setup cannot hand out the checkpoint
+ok 27 - a worker losing its reservation during setup cannot hand out the checkpoint
+  ---
+  duration_ms: 1.031159
+  type: 'test'
+  ...
+# Subtest: a heartbeat repairs a failed completion write and the unreleased result survives expiry
+ok 28 - a heartbeat repairs a failed completion write and the unreleased result survives expiry
+  ---
+  duration_ms: 4.770911
+  type: 'test'
+  ...
+# Subtest: completion retries leave a resetting runner and a successor lease alone
+ok 29 - completion retries leave a resetting runner and a successor lease alone
+  ---
+  duration_ms: 1.607944
+  type: 'test'
+  ...
+# Subtest: startup retains the only bundle when the worker dies before completion repair
+ok 30 - startup retains the only bundle when the worker dies before completion repair
+  ---
+  duration_ms: 2.657412
+  type: 'test'
+  ...
+# Subtest: acquisition retains the only bundle when the worker dies before completion repair
+ok 31 - acquisition retains the only bundle when the worker dies before completion repair
+  ---
+  duration_ms: 2.752304
+  type: 'test'
+  ...
+# Subtest: expired execution result inspection handles completed directory
+ok 32 - expired execution result inspection handles completed directory
+  ---
+  duration_ms: 0.678886
+  type: 'test'
+  ...
+# Subtest: expired execution result inspection handles inspection failure
+ok 33 - expired execution result inspection handles inspection failure
+  ---
+  duration_ms: 0.485384
+  type: 'test'
+  ...
+# Subtest: expired execution result inspection handles stale negative
+ok 34 - expired execution result inspection handles stale negative
+  ---
+  duration_ms: 0.435484
+  type: 'test'
+  ...
+# Subtest: expired execution result inspection handles stale positive
+ok 35 - expired execution result inspection handles stale positive
+  ---
+  duration_ms: 0.423454
+  type: 'test'
+  ...
+# [2026-11-25 00:55:14.003 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-6ce6d6d0-61fd-4990-bd22-73666642fa0a"
+# [2026-11-25 00:55:14.005 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-67233499-2705-4532-9be1-4c7fc7e0a281"
+# [2026-11-25 00:55:14.007 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-40c6a7bb-7521-481e-bea0-3545222dbbbd"
+# [2026-11-25 00:55:14.008 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-ff159c1c-0b63-4e56-a0bb-3e2e5a10b6e1"
+# [2026-11-25 00:55:14.021 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-d75cbbc2-bb3e-48ed-8c6c-0f511b2a61e0"
+# [2026-11-25 00:55:14.022 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 0
+#     runners: 1
+#     max: 1
+# [2026-11-25 00:55:14.023 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-e6001f1f-4470-4a87-a611-691b5e591ea7"
+# [2026-11-25 00:55:14.024 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-60aed407-8f6b-4e16-8682-5e04b961e78d"
+# [2026-11-25 00:55:14.025 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-108bf035-c700-47a0-8ead-e64753b54093"
+# [2026-11-25 00:55:14.026 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-8434705c-3248-4380-9989-8ffed333339f"
+# [2026-11-25 00:55:14.040 +0000] [32mINFO[39m: [36mDeleted orphaned Sprite no pool lease owns[39m
+#     sprite: "propr-first"
+# [2026-11-25 00:55:14.041 +0000] [33mWARN[39m: [36mLegacy Sprite may hold an unrecovered result; review it manually[39m
+#     sprite: "propr-c0f23a55-9c74-4dca-ba08-24515fb03f91"
+# [2026-11-25 00:55:14.041 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-24ceacc0-290d-40b8-997c-266776b892d3"
+# [2026-11-25 00:55:14.043 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-32a66e3f-e899-43c9-9e36-b8945a6ac708"
+# [2026-11-25 00:55:14.046 +0000] [33mWARN[39m: [36mCould not record a finished Sprites run[39m
+#     error: "Error: Redis unavailable"
+# [2026-11-25 00:55:14.046 +0000] [33mWARN[39m: [36mSprites pool heartbeat failed[39m
+#     error: "Error: Redis unavailable"
+# [2026-11-25 00:55:14.048 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-0c6b1514-878e-433c-9ba6-c69202580925"
+# [2026-11-25 00:55:14.048 +0000] [33mWARN[39m: [36mCould not record a finished Sprites run[39m
+#     error: "Error: Redis unavailable"
+# [2026-11-25 00:55:14.048 +0000] [33mWARN[39m: [36mCould not record a finished Sprites run[39m
+#     error: "Error: Redis unavailable"
+# [2026-11-25 00:55:14.050 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-c1c8990d-a092-495e-a634-c9e508a60a7f"
+# [2026-11-25 00:55:14.051 +0000] [33mWARN[39m: [36mCould not record a finished Sprites run[39m
+#     error: "Error: Redis unavailable"
+# [2026-11-25 00:55:14.052 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-1d16e99d-1986-43fb-8f4b-a98cc119528b"
+# [2026-11-25 00:55:14.053 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-7f81309d-90a6-4412-a3b2-560f85909860"
+# [2026-11-25 00:55:14.053 +0000] [33mWARN[39m: [36mCould not record a finished Sprites run[39m
+#     error: "Error: Redis unavailable"
+# [2026-11-25 00:55:14.054 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 0
+#     runners: 1
+#     max: 1
+# [2026-11-25 00:55:14.055 +0000] [33mWARN[39m: [36mCould not inspect expired Sprite for a result[39m
+#     sprite: "propr-expired"
+#     error: "Error: provider unavailable"
+# [2026-11-25 00:55:14.057 +0000] [32mINFO[39m: [36mSQLite database connection closed[39m
+1..35
+# tests 35
+# suites 0
+# pass 35
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 5779.297531

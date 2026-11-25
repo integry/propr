@@ -9,18 +9,19 @@ import { closeConnection } from '../packages/core/src/db/connection.ts';
 after(closeConnection);
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { SpritesRuntime } from '../packages/core/src/agents/runtime/spritesRuntime.ts';
-import { MemorySpritePoolStore } from '../packages/core/src/agents/runtime/spritesPool.ts';
+import { MemorySpritePoolStore, resolveSpritesPoolConfig } from '../packages/core/src/agents/runtime/spritesPool.ts';
 import { buildAgentRunRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.ts';
 import { WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_TOKEN_ENV } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { CloneWorkspaceTransport } from '../packages/core/src/git/workspaceCloneTransport.ts';
-import { SpritePool } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts';
+import { SpritePool } from '../packages/core/src/agents/runtime/sprites/spritesRunnerPool.ts';
 import { CLAUDE_JSON_SEED_CONTAINER_PATH } from '../packages/core/src/claude/docker/claudeConfigSeed.ts';
 import { FakeSprites } from './helpers/fakeSprites.ts';
 
 const token = 'test-org-secret';
-function fixture() {
+function fixture(max = 2) {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: token }, { store: new MemorySpritePoolStore() });
+    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: String(max) },
+        { store: new MemorySpritePoolStore(), pollMs: 5 });
     const builder = new AgentRunSpecBuilder({
         name: 'test', stdin: true, agentType: 'antigravity', image: 'test', network: agentRunNetwork('bridge'), user: '0:0',
         workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',
@@ -88,7 +89,7 @@ test('closing during a failed restore discards the Sprite without provisioning a
 });
 
 test('a failed or killed run restores before reuse and a failed restore destroys and reprovisions', async () => {
-    const { runtime, client, builder } = fixture();
+    const { runtime, client, builder } = fixture(1);
     client.setup = sprite => { sprite.exitCode = 19; };
     const failed = runtime.start(builder.build());
     assert.equal((await failed.wait()).exitCode, 19);
@@ -115,7 +116,7 @@ test('a failed or killed run restores before reuse and a failed restore destroys
 });
 
 test('a failed tmp wipe discards the Sprite before another lease', async () => {
-    const { runtime, client, builder } = fixture();
+    const { runtime, client, builder } = fixture(1);
     const run = runtime.start(builder.build());
     await run.wait();
     const sprite = client.created[0];
@@ -519,7 +520,7 @@ test('failed pool initialization can be retried and cannot interrupt shutdown', 
     const runtime = new SpritesRuntime(async key => {
         if (++loads === 1 || key !== token) throw new Error('SDK unavailable');
         return client;
-    }, env);
+    }, env, { store: new MemorySpritePoolStore() });
     await assert.rejects(runtime.start(builder.build()).wait(), /SDK unavailable/);
     const warm = runtime.start(builder.build());
     await warm.wait();
@@ -566,9 +567,14 @@ test('timeout before spawn settles while unused-slot cleanup is pending', { time
     await runtime.close();
 });
 
+function singleRunnerPool(client: FakeSprites) {
+    const config = resolveSpritesPoolConfig({ PROPR_SPRITES_MAX: '1' });
+    return new SpritePool(client, { store: new MemorySpritePoolStore(), scope: 'test', pollMs: 5, config });
+}
+
 test('a run claiming a failed replacement gets one fresh provisioning attempt', async () => {
     const client = new FakeSprites();
-    const pool = new SpritePool(client);
+    const pool = singleRunnerPool(client);
     const signal = new AbortController().signal;
     const original = await pool.acquire(signal);
     client.created[0].failWipe = true;
@@ -589,7 +595,7 @@ test('a run claiming a failed replacement gets one fresh provisioning attempt', 
 for (const interruption of ['cancel', 'shutdown'] as const) {
     test(`a claimed replacement does not start fresh provisioning after ${interruption}`, async () => {
         const client = new FakeSprites();
-        const pool = new SpritePool(client);
+        const pool = singleRunnerPool(client);
         const caller = new AbortController();
         const original = await pool.acquire(caller.signal);
         client.created[0].failWipe = true;
@@ -598,10 +604,11 @@ for (const interruption of ['cancel', 'shutdown'] as const) {
         client.createSprite = () => { attempts++; return replacement.promise; };
         await pool.release(original);
         const acquiring = pool.acquire(caller.signal);
+        const closing = interruption === 'shutdown' ? pool.close() : undefined;
         if (interruption === 'cancel') caller.abort();
-        else await pool.close();
         replacement.reject(new Error('replacement failed'));
         await assert.rejects(acquiring, { name: 'AbortError' });
+        await closing;
         assert.equal(attempts, 1);
         await pool.close();
     });

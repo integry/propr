@@ -167,7 +167,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         };
         const cancellation = new AbortController();
         const ownership = getExecutionOwnershipContext()?.signal;
-        const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(options.timeout ?? 300_000),
+        const timeout = options.timeout ?? 300_000;
+        const signal = AbortSignal.any([cancellation.signal,
             ...(options.signal ? [options.signal] : []), ...(ownership ? [ownership] : [])]);
         const output = new LazyOutputStreams();
         let slot: Slot | undefined;
@@ -194,7 +195,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const acquire = async () => {
                 // Keep ownership here until upload succeeds. Even a create response arriving
                 // after stop() must dispose of its Sprite before this acquisition ends.
-                const acquired = await ready.acquire(signal, { repo });
+                const acquired = await ready.acquire(signal, { repo, timeout });
                 let appliedPolicy: NetworkPolicy | undefined;
                 let uploadStarted = false;
                 try {
@@ -226,8 +227,9 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const startedAt = Date.now();
             try {
                 signal.throwIfAborted();
+                const executionSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.max(0, timeout - acquired.usage.waitMs))]);
                 const executed = await execute(sprite, launch, {
-                    output, signal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
+                    output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
                 });
                 return { ...executed, computeUsage: {
                     runtime: 'sprites', wallTimeMs: Date.now() - startedAt, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,

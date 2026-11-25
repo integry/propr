@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Sprite } from '@fly/sprites';
 import logger from '../../../utils/logger.js';
 import type { AgentRunRunnerPoolUsage } from '../computeUsage.js';
@@ -10,7 +11,7 @@ import {
     type SpritePoolState, type SpriteRunnerRecord,
 } from './spritesPoolState.js';
 import type { SpritePoolStore } from './spritesPoolStore.js';
-import { carryWarmClone, completeCheckpointStream, installWarmClone, readSpriteSetup, setupSprite, startupStep, type SpriteClient } from './spritesProvisioning.js';
+import { carryWarmClone, completeCheckpointStream, installWarmClone, readSpriteSetup, restartForReset, setupSprite, startupStep, type SpriteClient } from './spritesProvisioning.js';
 
 /** One leased runner. */
 export type Slot = {
@@ -61,16 +62,6 @@ export async function deleteSprite(client: SpriteClient, name: string): Promise<
     catch (error) { if ((error as { statusCode?: number }).statusCode !== 404) throw error; }
 }
 
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-    return new Promise((resolve, reject) => {
-        const done = () => { signal.removeEventListener('abort', abort); resolve(); };
-        const timer = setTimeout(done, ms);
-        const abort = () => { clearTimeout(timer); reject(signal.reason); };
-        if (signal.aborted) abort();
-        else signal.addEventListener('abort', abort, { once: true });
-    });
-}
-
 /**
  * Runner Sprites shared by every worker of one Sprites organization, bounded
  * by `config.max`. A run leases a runner through the shared lease state
@@ -84,7 +75,9 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * deletes this pool's Sprites that have no record at all.
  */
 export class SpritePool {
-    private closed = false;
+    private readonly shutdown = new AbortController();
+    private readonly replacements = new Set<Promise<void>>();
+    private get closed() { return this.shutdown.signal.aborted; }
     private readonly setup = readSpriteSetup();
     private nextRetainedCheck = 0;
     private checkingRetained = false;
@@ -251,10 +244,14 @@ export class SpritePool {
         finally { this.stopHeartbeat(slot.leaseId); }
     }
 
-    async acquire(signal: AbortSignal, request: { repo?: string } = {}): Promise<Slot> {
+    async acquire(signal: AbortSignal, request: { repo?: string; timeout?: number } = {}): Promise<Slot> {
         signal.throwIfAborted();
         if (this.closed) throw new Error('Sprite pool is closed');
-        await startupStep(signal, () => this.initialize());
+        signal = AbortSignal.any([signal, this.shutdown.signal]);
+        const queueSignal = request.timeout === undefined ? signal : AbortSignal.any([signal, AbortSignal.timeout(request.timeout)]);
+        const poll = () => delay(this.options.pollMs ?? 2000, undefined, { signal: queueSignal })
+            .catch(() => queueSignal.throwIfAborted());
+        await startupStep(queueSignal, () => this.initialize());
         const leaseId = randomUUID();
         const startedAt = this.now();
         const { config } = this.options;
@@ -262,7 +259,7 @@ export class SpritePool {
         this.startHeartbeat(leaseId);
         try {
             for (;;) {
-                if (this.closed) throw new Error('Sprite pool is closed');
+                queueSignal.throwIfAborted();
                 const decision = await this.transact(state => acquireSpriteRunner(state, {
                     leaseId, owner: this.owner, max: config.max, repo: request.repo, newName: `propr-${randomUUID()}`, now: this.now(), ttlMs: this.ttlMs,
                 }));
@@ -270,17 +267,25 @@ export class SpritePool {
                     if (!queued) logger.info({ position: decision.position, runners: decision.runners, max: config.max }, 'Every Sprites runner is busy; run queued for one');
                     queued = true;
                     await this.checkRetained(decision.retained);
-                    await sleep(this.options.pollMs ?? 2000, signal);
+                    await poll();
                     continue;
                 }
                 if (decision.action === 'reap') {
-                    await this.reapRunner(decision.name, leaseId, decision.record).catch(() => sleep(this.options.pollMs ?? 2000, signal));
+                    await this.reapRunner(decision.name, leaseId, decision.record).catch(poll);
                     signal.throwIfAborted();
                     continue;
                 }
                 const waitMs = this.now() - startedAt;
                 const lease = { name: decision.name, leaseId, waitMs, runs: decision.record.runs };
-                if (decision.action === 'provision') return await this.provision(lease, signal);
+                if (decision.action === 'provision') {
+                    // Setup belongs to the pool. A caller that stops before upload leaves a clean runner.
+                    const slot = await this.provision(lease, this.provisionSignal());
+                    if (signal.aborted) {
+                        await this.returnClean(slot, { checkpoint: slot.checkpoint, runs: slot.runs });
+                        signal.throwIfAborted();
+                    }
+                    return slot;
+                }
                 return await this.leaseIdle({ ...lease, record: decision.record, repo: request.repo }, signal);
             }
         } catch (error) {
@@ -293,6 +298,10 @@ export class SpritePool {
     private async provision({ name, leaseId, waitMs, runs }: PoolLease, signal: AbortSignal): Promise<Slot> {
         const startedAt = this.now();
         const { scope } = this.options;
+        if (signal.aborted) {
+            await this.transact(state => forgetSpriteRunner(state, name, leaseId));
+            signal.throwIfAborted();
+        }
         let sprite: Sprite;
         try {
             // Never discover or adopt a machine by name: the record above owns the name.
@@ -374,13 +383,21 @@ export class SpritePool {
     }
 
     /** Destroys a broken runner and provisions a replacement under the same lease. */
-    private async reprovision({ name, leaseId, waitMs, runs }: PoolLease, signal: AbortSignal): Promise<Slot> {
+    private async reprovision(lease: PoolLease, signal: AbortSignal): Promise<Slot> {
+        return this.provision(await this.reserveReplacement(lease), signal);
+    }
+
+    private provisionSignal() {
+        return AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(21 * 60_000)]);
+    }
+
+    private async reserveReplacement({ name, leaseId, waitMs, runs }: PoolLease): Promise<PoolLease> {
         await this.deleteHeldSprite(name, leaseId);
         const replacement = `propr-${randomUUID()}`;
         if (!await this.transact(state => replaceSpriteRunner(state, { name, leaseId, now: this.now() }, replacement))) {
             throw new Error('Sprites runner lease lapsed');
         }
-        return this.provision({ name: replacement, leaseId, waitMs, runs }, signal);
+        return { name: replacement, leaseId, waitMs, runs };
     }
 
     /** The run settled; until its release the runner's result may still be read. */
@@ -391,7 +408,8 @@ export class SpritePool {
     }
 
     async close(): Promise<void> {
-        this.closed = true;
+        this.shutdown.abort();
+        await Promise.allSettled(this.replacements);
         // Idle runners this worker last held; deleteRunner logs the name for manual cleanup if deletion fails.
         await this.deleteClaimed({ states: ['idle'], lastOwner: this.owner }).catch(error => {
             logger.warn({ error: String(error) }, 'Could not delete idle Sprites at shutdown');
@@ -405,67 +423,58 @@ export class SpritePool {
      * new warm checkpoint: clean checkpoint plus only that root-owned reference.
      */
     async release(slot: Slot, outcome: { repo?: string } = {}): Promise<void> {
+        let replacing = false;
         try {
             if (this.closed) return await this.discard(slot);
             const held = await this.transact(state => updateSpriteRunner(state, { name: slot.name, leaseId: slot.leaseId, now: this.now() }, { state: 'resetting' }));
             if (!held) return;
             let next: { checkpoint: string; warm?: Slot['warm']; restoreMs?: number };
             try {
-                next = await this.reset(slot, outcome.repo);
+                const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(120_000)]);
+                next = await this.reset(slot, signal, outcome.repo);
             } catch {
                 if (this.closed) return await this.deleteRunner(slot.name, slot.leaseId);
                 logger.warn({ sprite: slot.name }, 'Sprites runner could not be reset; re-provisioning it');
-                slot = await this.reprovision({ name: slot.name, leaseId: slot.leaseId, waitMs: 0, runs: slot.runs }, new AbortController().signal);
-                next = { checkpoint: slot.checkpoint };
+                const lease = await this.reserveReplacement({ ...slot, waitMs: 0 });
+                const work = this.provision(lease, this.provisionSignal())
+                    .then(fresh => this.returnClean(fresh, { checkpoint: fresh.checkpoint, runs: fresh.runs + 1 }))
+                    .catch(error => logger.warn({ sprite: lease.name, error: String(error) }, 'Failed to replace discarded Sprite'))
+                    .finally(() => {
+                        this.stopHeartbeat(lease.leaseId);
+                        this.replacements.delete(work);
+                    });
+                this.replacements.add(work);
+                replacing = true;
+                return;
             }
-            if (this.closed) return await this.discard(slot);
-            const lease = { name: slot.name, leaseId: slot.leaseId, max: this.options.config.max, now: this.now() };
-            const released = await this.transact(state => releaseSpriteRunner(state, lease, {
-                checkpoint: next.checkpoint, warm: next.warm, lastOwner: this.owner, runs: slot.runs + 1,
+            await this.returnClean(slot, {
+                checkpoint: next.checkpoint, warm: next.warm, runs: slot.runs + 1,
                 ...(next.restoreMs !== undefined ? { lastRestoreMs: next.restoreMs } : {}),
-            }));
-            if (released === 'discard') await this.deleteRunner(slot.name, slot.leaseId).catch(() => {});
-            if (released === 'lost') logger.warn({ sprite: slot.name }, 'Sprites runner lease lapsed before release; it is reaped as an orphan');
+            });
         } finally {
-            this.stopHeartbeat(slot.leaseId);
+            if (!replacing) this.stopHeartbeat(slot.leaseId);
         }
     }
 
-    private async restartForReset(sprite: Sprite) {
-        const ambiguous = /restart outcome unknown/i;
-        try {
-            const result = await sprite.restart();
-            if (!ambiguous.test(result?.message ?? '')) return;
-        } catch (error) {
-            if (!(error instanceof Error && ambiguous.test(error.message))) throw error;
-        }
-
-        const signal = AbortSignal.timeout(60_000);
-        for (;;) {
-            try {
-                const current = await startupStep(signal, () => this.client.getSprite(sprite.name));
-                if (current.status === 'running') {
-                    const probe = await startupStep(signal, () => current.execFile('/bin/true', [], { cwd: '/', timeout: 5000, signal }));
-                    if (probe.exitCode === 0) return;
-                }
-            } catch {
-                // Status and exec can both fail transiently while the machine restarts.
-                signal.throwIfAborted();
-            }
-            await sleep(1000, signal);
-        }
+    private async returnClean(slot: Slot, patch: Partial<SpriteRunnerRecord>): Promise<void> {
+        if (this.closed) return this.discard(slot);
+        const lease = { name: slot.name, leaseId: slot.leaseId, max: this.options.config.max, now: this.now() };
+        const released = await this.transact(state => releaseSpriteRunner(state, lease, { ...patch, lastOwner: this.owner }));
+        if (released === 'discard') await this.deleteRunner(slot.name, slot.leaseId).catch(() => {});
+        if (released === 'lost') logger.warn({ sprite: slot.name }, 'Sprites runner lease lapsed before release; it is reaped as an orphan');
     }
 
-    private async reset(slot: Slot, repo?: string) {
+    private async reset(slot: Slot, signal: AbortSignal, repo?: string) {
         // Stop descendants that outlived the launcher, including detached processes.
-        await this.restartForReset(slot.sprite);
-        await slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', timeout: 60_000 });
-        const carried = this.options.config.warmClones && repo ? await carryWarmClone(slot.sprite, repo) : false;
+        const step = <T>(operation: () => Promise<T>) => startupStep(signal, operation);
+        await restartForReset(this.client, slot.sprite, signal);
+        await step(() => slot.sprite.execFile('sudo', ['-n', 'find', '/tmp', '-xdev', '-mindepth', '1', '-delete'], { cwd: '/', signal, timeout: 60_000 }));
+        const carried = this.options.config.warmClones && repo ? await step(() => carryWarmClone(slot.sprite, repo)) : false;
         const target = carried ? slot.checkpoint : slot.warm?.checkpoint ?? slot.checkpoint;
         const startedAt = this.now();
-        await completeCheckpointStream(await slot.sprite.restoreCheckpoint(target));
+        await step(async () => completeCheckpointStream(await slot.sprite.restoreCheckpoint(target)));
         const restoreMs = this.now() - startedAt;
-        const warm = carried ? await installWarmClone(slot.sprite, repo!) : target === slot.checkpoint ? undefined : slot.warm;
+        const warm = carried ? await step(() => installWarmClone(slot.sprite, repo!)) : target === slot.checkpoint ? undefined : slot.warm;
         return { checkpoint: slot.checkpoint, warm, restoreMs };
     }
 }

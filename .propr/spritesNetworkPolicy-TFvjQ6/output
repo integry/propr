@@ -1,0 +1,141 @@
+TAP version 13
+# Subtest: the run allowlist becomes a deny-by-default DNS policy that never covers a bare wildcard zone or raw IPs
+ok 1 - the run allowlist becomes a deny-by-default DNS policy that never covers a bare wildcard zone or raw IPs
+  ---
+  duration_ms: 20.848359
+  type: 'test'
+  ...
+# Subtest: neutral policy hostnames use the same normalization as MCP endpoints
+ok 2 - neutral policy hostnames use the same normalization as MCP endpoints
+  ---
+  duration_ms: 1.801725
+  type: 'test'
+  ...
+# Subtest: a broader wildcard allows the bare zone of a nested wildcard
+ok 3 - a broader wildcard allows the bare zone of a nested wildcard
+  ---
+  duration_ms: 5.191394
+  type: 'test'
+  ...
+# Subtest: Sprites still refuses what it cannot enforce
+ok 4 - Sprites still refuses what it cannot enforce
+  ---
+  duration_ms: 5.337146
+  type: 'test'
+  ...
+# Subtest: admission accepts restricted Sprites runs, and the Sprites MCP URL wins over the generic fallback
+ok 5 - admission accepts restricted Sprites runs, and the Sprites MCP URL wins over the generic fallback
+  ---
+  duration_ms: 2.475622
+  type: 'test'
+  ...
+# Subtest: the policy is applied before upload and launch, cleared after restore, and a Sprite that keeps it is discarded
+ok 6 - the policy is applied before upload and launch, cleared after restore, and a Sprite that keeps it is discarded
+  ---
+  duration_ms: 55.166123
+  type: 'test'
+  ...
+# Subtest: release logs the verification step and replaces a Sprite when clear read-back omits the rules
+ok 7 - release logs the verification step and replaces a Sprite when clear read-back omits the rules
+  ---
+  duration_ms: 12.999061
+  type: 'test'
+  ...
+# Subtest: a policy that fails to apply refuses the run before upload and discards the unverified Sprite
+ok 8 - a policy that fails to apply refuses the run before upload and discards the unverified Sprite
+  ---
+  duration_ms: 5.719529
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.284 +0000] [32mINFO[39m: [36mSQLite database connection established successfully[39m
+#     filename: "/home/node/workspace/.propr/spritesNetworkPolicy-TFvjQ6/propr.test.sqlite"
+#     environment: "test"
+# [2026-11-25 00:55:11.296 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-cd38f521-e3bc-4051-ad98-78fa0d14197a"
+# [2026-11-25 00:55:11.339 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-cd38f521-e3bc-4051-ad98-78fa0d14197a"
+# [2026-11-25 00:55:11.340 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-1e81faaa-3f5a-4391-acb1-0591a4759f36"
+# [2026-11-25 00:55:11.340 +0000] [33mWARN[39m: [36mSprite release failed, discarding Sprite[39m
+#     sprite: "propr-cd38f521-e3bc-4051-ad98-78fa0d14197a"
+#     run: "net"
+#     step: "clear network policy"
+#     error: "policy update failed"
+# [2026-11-25 00:55:11.343 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-b41bb9f2-3536-4034-87a1-31f24b7a0df3"
+# [2026-11-25 00:55:11.353 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-b41bb9f2-3536-4034-87a1-31f24b7a0df3"
+# [2026-11-25 00:55:11.353 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-fd8abdc4-69be-4f63-bcbd-0b1688e98181"
+# [2026-11-25 00:55:11.353 +0000] [33mWARN[39m: [36mSprite release failed, discarding Sprite[39m
+#     sprite: "propr-b41bb9f2-3536-4034-87a1-31f24b7a0df3"
+#     run: "net"
+#     step: "verify cleared network policy"
+#     error: "Sprite did not verify the cleared network policy"
+# [2026-11-25 00:55:11.354 +0000] [33mWARN[39m: [36mFailed to replace discarded Sprite[39m
+#     sprite: "propr-fd8abdc4-69be-4f63-bcbd-0b1688e98181"
+#     error: "AbortError: This operation was aborted"
+# [2026-11-25 00:55:11.356 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-b857b0ba-ecb1-41db-bc7e-935e74da84cf"
+# [2026-11-25 00:55:11.362 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-e1b1314c-f6f2-43c6-b44f-b61cddb6399c"
+# [2026-11-25 00:55:11.378 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-e1b1314c-f6f2-43c6-b44f-b61cddb6399c"
+# [2026-11-25 00:55:11.378 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-002f7852-8985-4fcb-8040-71051b7e2b55"
+# [2026-11-25 00:55:11.378 +0000] [33mWARN[39m: [36mFailed to replace discarded Sprite[39m
+#     sprite: "propr-002f7852-8985-4fcb-8040-71051b7e2b55"
+#     error: "AbortError: This operation was aborted"
+# [2026-11-25 00:55:11.383 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-e1ced8c4-da12-4b7c-b92b-0fa2187c0cbe"
+# Subtest: a restricted Sprite whose cleanup fails is discarded with egress still restricted
+ok 9 - a restricted Sprite whose cleanup fails is discarded with egress still restricted
+  ---
+  duration_ms: 28.352964
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.388 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-e1ced8c4-da12-4b7c-b92b-0fa2187c0cbe"
+# [2026-11-25 00:55:11.388 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-1d0b5e93-733f-42a3-8772-170a360b2aff"
+# [2026-11-25 00:55:11.388 +0000] [33mWARN[39m: [36mFailed to replace discarded Sprite[39m
+#     sprite: "propr-1d0b5e93-733f-42a3-8772-170a360b2aff"
+#     error: "AbortError: This operation was aborted"
+# [2026-11-25 00:55:11.394 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-b190f213-bdb2-480c-8806-f4dfdcadf710"
+# Subtest: restricted environment defaults preserve explicit values and stay out of open runs
+ok 10 - restricted environment defaults preserve explicit values and stay out of open runs
+  ---
+  duration_ms: 16.116478
+  type: 'test'
+  ...
+# Subtest: release records a changed policy against the lease and discards before cleanup, even during shutdown
+ok 11 - release records a changed policy against the lease and discards before cleanup, even during shutdown
+  ---
+  duration_ms: 9.500342
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.407 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-ec0790c3-422f-497e-996b-26003e468509"
+# [2026-11-25 00:55:11.410 +0000] [33mWARN[39m: [36mSprite release failed, discarding Sprite[39m
+#     sprite: "propr-ec0790c3-422f-497e-996b-26003e468509"
+#     run: "net"
+#     step: "check applied network policy"
+#     error: "Network policy mismatch at release for run net on Sprite propr-ec0790c3-422f-497e-996b-26003e468509"
+# [2026-11-25 00:55:11.411 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-da608c3d-745f-4f0b-a02a-e348fd716adf"
+# [2026-11-25 00:55:11.413 +0000] [33mWARN[39m: [36mSprite release failed, discarding Sprite[39m
+#     sprite: "propr-da608c3d-745f-4f0b-a02a-e348fd716adf"
+#     run: "net"
+#     step: "check applied network policy"
+#     error: "Network policy mismatch at release for run net on Sprite propr-da608c3d-745f-4f0b-a02a-e348fd716adf"
+# [2026-11-25 00:55:11.415 +0000] [32mINFO[39m: [36mSQLite database connection closed[39m
+1..11
+# tests 11
+# suites 0
+# pass 11
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3076.411222

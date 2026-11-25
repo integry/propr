@@ -103,6 +103,23 @@ test('queued runs are served first come, first served and a cancelled wait leave
     await runtime.close();
 });
 
+test('a run that times out in the queue leaves its slot with the holder', { timeout: 5000 }, async () => {
+    const client = new FakeSprites();
+    const store = new MemorySpritePoolStore();
+    const runtime = worker(client, store, { PROPR_SPRITES_MAX: '1' });
+    const holder = runtime.start(spec());
+    await holder.wait();
+    try {
+        await assert.rejects(runtime.start(spec(), { timeout: 30 }).wait(), { name: 'TimeoutError' });
+        assert.equal((await store.read(scope)).waiting.size, 0);
+        assert.equal(client.created.length, 1);
+        assert.equal(client.created[0].launches.length, 1);
+    } finally {
+        await holder.release!();
+        await runtime.close();
+    }
+});
+
 test('a runner failing its health check is destroyed and re-provisioned in its slot', { timeout: 10_000 }, async () => {
     const client = new FakeSprites();
     const store = new MemorySpritePoolStore();
@@ -343,7 +360,8 @@ test('ambiguous restart recovery replaces the runner if a status request hangs p
     const sprite = client.created[0];
     t.mock.method(sprite, 'restart', async () => ({ message: 'restart outcome unknown' }));
     const deadline = new AbortController();
-    const timeout = t.mock.method(AbortSignal, 'timeout', () => deadline.signal);
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    t.mock.method(AbortSignal, 'timeout', (ms: number) => ms === 60_000 ? deadline.signal : timeout(ms));
     const polling = Promise.withResolvers<void>();
     t.mock.method(client, 'getSprite', () => {
         polling.resolve();
@@ -351,7 +369,6 @@ test('ambiguous restart recovery replaces the runner if a status request hangs p
     });
     const release = runtime.release(slot);
     await polling.promise;
-    assert.deepEqual(timeout.mock.calls[0].arguments, [60_000]);
     deadline.abort();
     await release;
     assert.deepEqual(client.deleted, [slot.name]);

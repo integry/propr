@@ -1,0 +1,345 @@
+TAP version 13
+# Subtest: a lease lasts through result retrieval and release wipes the separate tmp disk before restoring the checkpoint once
+ok 1 - a lease lasts through result retrieval and release wipes the separate tmp disk before restoring the checkpoint once
+  ---
+  duration_ms: 39.112906
+  type: 'test'
+  ...
+# Subtest: closing the runtime deletes idle Sprites once and leaves leased Sprites until release
+ok 2 - closing the runtime deletes idle Sprites once and leaves leased Sprites until release
+  ---
+  duration_ms: 17.767633
+  type: 'test'
+  ...
+# Subtest: closing during a failed restore discards the Sprite without provisioning a replacement
+ok 3 - closing during a failed restore discards the Sprite without provisioning a replacement
+  ---
+  duration_ms: 5.560457
+  type: 'test'
+  ...
+# Subtest: a failed or killed run restores before reuse and a failed restore destroys and reprovisions
+ok 4 - a failed or killed run restores before reuse and a failed restore destroys and reprovisions
+  ---
+  duration_ms: 23.991376
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.280 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-41537225-1851-4c54-8567-8a760a56070b"
+# [2026-11-25 00:55:11.281 +0000] [32mINFO[39m: [36mSQLite database connection established successfully[39m
+#     filename: "/home/node/workspace/.propr/spritesRuntime-lKqaSR/propr.test.sqlite"
+#     environment: "test"
+# [2026-11-25 00:55:11.298 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-af2d9ef5-4836-434a-8c9f-3532b69ebc0b"
+# [2026-11-25 00:55:11.308 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-c2a9f526-b134-4b64-8707-48aa42d00ff7"
+# [2026-11-25 00:55:11.312 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-59162794-fe0c-41a7-835f-69b68622ed8f"
+# [2026-11-25 00:55:11.326 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-02af8891-c11e-4b6a-acdc-d8fa97e871ee"
+# [2026-11-25 00:55:11.331 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-79e95565-1c34-4ab3-8ba6-fa5b4a2e8822"
+# [2026-11-25 00:55:11.339 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-79e95565-1c34-4ab3-8ba6-fa5b4a2e8822"
+# [2026-11-25 00:55:11.340 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-6fcc4fc8-2316-49fe-9dd6-f7d2fbde67b3"
+# [2026-11-25 00:55:11.341 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 0
+#     runners: 1
+#     max: 1
+# [2026-11-25 00:55:11.355 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-2e585992-1541-4eca-a8c7-5dff3988b206"
+# [2026-11-25 00:55:11.357 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-2e585992-1541-4eca-a8c7-5dff3988b206"
+# [2026-11-25 00:55:11.357 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-2059df71-c4d4-4985-9100-dbe95a9c6782"
+# [2026-11-25 00:55:11.358 +0000] [32mINFO[39m: [36mEvery Sprites runner is busy; run queued for one[39m
+#     position: 0
+#     runners: 1
+#     max: 1
+# Subtest: a failed tmp wipe discards the Sprite before another lease
+ok 5 - a failed tmp wipe discards the Sprite before another lease
+  ---
+  duration_ms: 25.093085
+  type: 'test'
+  ...
+# Subtest: Sprite setup accepts an explicit sudo denial and refuses grants or unknown output
+ok 6 - Sprite setup accepts an explicit sudo denial and refuses grants or unknown output
+  ---
+  duration_ms: 39.329967
+  type: 'test'
+  ...
+# Subtest: setup failure reports the stderr tail and retains the SDK error
+ok 7 - setup failure reports the stderr tail and retains the SDK error
+  ---
+  duration_ms: 1.876236
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.420 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-9c5711f4-8759-4aac-a2d1-7ee2524a6a99"
+# [2026-11-25 00:55:11.423 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-db0ba70c-198d-45cc-b5fa-5ef20c5b1995"
+# Subtest: credentials use one upload and only checked exports reach the broker. The org token stays off the Sprite and out of output
+ok 8 - credentials use one upload and only checked exports reach the broker. The org token stays off the Sprite and out of output
+  ---
+  duration_ms: 31.037757
+  type: 'test'
+  ...
+# Subtest: the final Claude seed is checked for the organization token after acquisition
+ok 9 - the final Claude seed is checked for the organization token after acquisition
+  ---
+  duration_ms: 3.238347
+  type: 'test'
+  ...
+# Subtest: launcher reader accepts only bounded regular files without following any component
+ok 10 - launcher reader accepts only bounded regular files without following any component
+  ---
+  duration_ms: 249.786575
+  type: 'test'
+  ...
+# Subtest: a non-root credential reader can traverse a 0711 run directory
+ok 11 - a non-root credential reader can traverse a 0711 run directory
+  ---
+  duration_ms: 40.045914
+  type: 'test'
+  ...
+# Subtest: an invalid credential export still restores the checkpoint and releases the lease
+ok 12 - an invalid credential export still restores the checkpoint and releases the lease
+  ---
+  duration_ms: 5.139514
+  type: 'test'
+  ...
+# [2026-11-25 00:55:11.453 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-acb7ecd1-bae5-4212-a554-59e23133293e"
+# [2026-11-25 00:55:11.747 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-50638c19-0887-4226-b7a4-02d844d86adc"
+# [2026-11-25 00:55:11.929 +0000] [32mINFO[39m: [36mPrepared clone-mode workspace[39m
+#     run: "test"
+#     runId: "test"
+#     repository: "example/recovery"
+#     baseCommit: "defe9559ba5fed95389771b85d906f788a58036e"
+# [2026-11-25 00:55:11.931 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-38dc7cb4-1943-4a7f-be2e-7f2b875de148"
+# [2026-11-25 00:55:11.933 +0000] [33mWARN[39m: [36mCould not read a workspace result file from the run[39m
+#     run: "test"
+#     file: "result.bundle"
+#     error: "connection lost"
+# [2026-11-25 00:55:12.057 +0000] [33mWARN[39m: [36mRun result was not applied; kept its recoverable copies[39m
+#     runId: "test"
+#     kept: [
+#       "Sprite propr-38dc7cb4-1943-4a7f-be2e-7f2b875de148 at /opt/propr/result"
+#     ]
+# [2026-11-25 00:55:12.058 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-e065f74a-5ee8-4804-b51d-4cd7fc0f9539"
+# Subtest: clone cleanup keeps the named Sprite when bundle read fails
+ok 13 - clone cleanup keeps the named Sprite when bundle read fails
+  ---
+  duration_ms: 312.848006
+  type: 'test'
+  ...
+# [2026-11-25 00:55:12.257 +0000] [32mINFO[39m: [36mPrepared clone-mode workspace[39m
+#     run: "test"
+#     runId: "test"
+#     repository: "example/recovery"
+#     baseCommit: "319af1b0355105174065a18be741e10e48e498f3"
+# [2026-11-25 00:55:12.258 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-2cb3473d-50cd-458a-a308-8acbb9552568"
+# Subtest: clone cleanup keeps the named Sprite when bundle verification fails
+ok 14 - clone cleanup keeps the named Sprite when bundle verification fails
+  ---
+  duration_ms: 344.266996
+  type: 'test'
+  ...
+# [2026-11-25 00:55:12.401 +0000] [33mWARN[39m: [36mRun result was not applied; kept its recoverable copies[39m
+#     runId: "test"
+#     kept: [
+#       "Sprite propr-2cb3473d-50cd-458a-a308-8acbb9552568 at /opt/propr/result"
+#     ]
+# [2026-11-25 00:55:12.402 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-fd8ab33a-73d6-46f8-acd2-6f0034763a47"
+# [2026-11-25 00:55:12.409 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-868766d9-bc04-42b6-8a51-607531ebcdd2"
+# Subtest: launch delivers explicit extras with file and spec precedence and keeps transport credentials separate
+ok 15 - launch delivers explicit extras with file and spec precedence and keeps transport credentials separate
+  ---
+  duration_ms: 5.228535
+  type: 'test'
+  ...
+# [2026-11-25 00:55:12.417 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-9c847c31-854b-445e-9940-d3312bc1526c"
+# [2026-11-25 00:55:12.420 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-4deaf63a-5c25-4d64-a0a3-c741c6063637"
+# Subtest: stop settles during creation and a late create warms the pool
+ok 16 - stop settles during creation and a late create warms the pool
+  ---
+  duration_ms: 9.531902
+  type: 'test'
+  ...
+# [2026-11-25 00:55:12.423 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-5591c7ed-9c36-4624-b72a-1af79d4e5c5e"
+# Subtest: a short agent deadline starts after slow setup and still stops a running agent
+ok 17 - a short agent deadline starts after slow setup and still stops a running agent
+  ---
+  duration_ms: 123.42946
+  type: 'test'
+  ...
+# Subtest: cancellation during list checkpoints prevents launch and keeps only clean Sprites
+ok 18 - cancellation during list checkpoints prevents launch and keeps only clean Sprites
+  ---
+  duration_ms: 1.974197
+  type: 'test'
+  ...
+# Subtest: cancellation during upload prevents launch and keeps only clean Sprites
+ok 19 - cancellation during upload prevents launch and keeps only clean Sprites
+  ---
+  duration_ms: 2.110398
+  type: 'test'
+  ...
+# Subtest: invalid upload payloads fail before a Sprite is acquired
+ok 20 - invalid upload payloads fail before a Sprite is acquired
+  ---
+  duration_ms: 1.889486
+  type: 'test'
+  ...
+# [2026-11-25 00:55:12.547 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-cf81ae53-5b5d-4769-ba58-31c2a9f3d5de"
+# [2026-11-25 00:55:12.549 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-daf33293-dfd3-4a45-9d72-449b869d07b0"
+# [2026-11-25 00:55:12.557 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-02134180-0784-4d18-82d3-888e390f561f"
+# Subtest: stdout and failing workflow markers arriving after exit are drained through both stream ends
+ok 21 - stdout and failing workflow markers arriving after exit are drained through both stream ends
+  ---
+  duration_ms: 14.878838
+  type: 'test'
+  ...
+# Subtest: reattach drains replay without joining it to a partial provider record
+ok 22 - reattach drains replay without joining it to a partial provider record
+  ---
+  duration_ms: 4.132446
+  type: 'test'
+  ...
+# [2026-11-25 00:55:12.569 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-3e6aae7d-076e-407a-b1b6-23c88beba92b"
+# [2026-11-25 00:55:12.587 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-25dce837-679c-45c1-9b36-c5d888c9c0d6"
+# Subtest: dispatch returns the workspace before reporting incomplete output and unobserved workflow markers
+ok 23 - dispatch returns the workspace before reporting incomplete output and unobserved workflow markers
+  ---
+  duration_ms: 19.231975
+  type: 'test'
+  ...
+# [2026-11-25 00:55:12.589 +0000] [32mINFO[39m: [36mWorkspace transport returned the run result[39m
+#     run: "test"
+#     transport: "clone"
+#     applied: false
+# [2026-11-25 00:55:12.589 +0000] [33mWARN[39m: [36mNo transport captured the repository workflow wrapper reports[39m
+#     baseBranch: "main"
+# [2026-11-25 00:55:12.592 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-41bafacd-3faa-4a38-8076-44fcd15a9ee1"
+# Subtest: failed pool initialization can be retried and cannot interrupt shutdown
+ok 24 - failed pool initialization can be retried and cannot interrupt shutdown
+  ---
+  duration_ms: 3.53004
+  type: 'test'
+  ...
+# Subtest: physical refusal settles while unused-slot deletion is pending and survives cleanup failure
+ok 25 - physical refusal settles while unused-slot deletion is pending and survives cleanup failure
+  ---
+  duration_ms: 8.959567
+  type: 'test'
+  ...
+# [2026-11-25 00:55:12.602 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-dde90606-609b-46f2-837d-e5ad353a619f"
+# [2026-11-25 00:55:12.603 +0000] [31mERROR[39m: [36mCould not delete Sprite[39m
+#     sprite: "propr-dde90606-609b-46f2-837d-e5ad353a619f"
+# [2026-11-25 00:55:12.603 +0000] [33mWARN[39m: [36mFailed to clean up unused Sprite[39m
+#     sprite: "propr-dde90606-609b-46f2-837d-e5ad353a619f"
+#     error: "Error: delete failed"
+# [2026-11-25 00:55:12.604 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-ba67d810-7f0a-422b-845a-3ae6258bf657"
+# Subtest: timeout before spawn settles while unused-slot cleanup is pending
+ok 26 - timeout before spawn settles while unused-slot cleanup is pending
+  ---
+  duration_ms: 32.133286
+  type: 'test'
+  ...
+# Subtest: a run claiming a failed replacement gets one fresh provisioning attempt
+ok 27 - a run claiming a failed replacement gets one fresh provisioning attempt
+  ---
+  duration_ms: 2.693393
+  type: 'test'
+  ...
+# Subtest: a claimed replacement does not start fresh provisioning after cancel
+ok 28 - a claimed replacement does not start fresh provisioning after cancel
+  ---
+  duration_ms: 1.657514
+  type: 'test'
+  ...
+# Subtest: a claimed replacement does not start fresh provisioning after shutdown
+ok 29 - a claimed replacement does not start fresh provisioning after shutdown
+  ---
+  duration_ms: 1.317112
+  type: 'test'
+  ...
+# Subtest: a stalled restore times out and release does not wait for replacement setup
+ok 30 - a stalled restore times out and release does not wait for replacement setup
+  ---
+  duration_ms: 6.036552
+  type: 'test'
+  ...
+# Subtest: ambient extension secrets are redacted from Sprite results and both handle streams
+ok 31 - ambient extension secrets are redacted from Sprite results and both handle streams
+  ---
+  duration_ms: 7.128882
+  type: 'test'
+  ...
+# Subtest: CLI admission reuses Dockerfile pins for the same setup root
+ok 32 - CLI admission reuses Dockerfile pins for the same setup root
+  ---
+  duration_ms: 3.198598
+  type: 'test'
+  ...
+# [2026-11-25 00:55:12.637 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-b5c5e1b8-6bf2-448c-aa69-f888013b257a"
+# [2026-11-25 00:55:12.637 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-b5c5e1b8-6bf2-448c-aa69-f888013b257a"
+# [2026-11-25 00:55:12.638 +0000] [33mWARN[39m: [36mFailed to replace discarded Sprite[39m
+#     sprite: "propr-57e5b385-4634-4fb7-ba0b-53f956adcd82"
+#     error: "Error: transient replacement failure"
+# [2026-11-25 00:55:12.638 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-5beb9b35-def3-4bb2-89c0-133a79ad306a"
+# [2026-11-25 00:55:12.639 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-23316069-33f8-4962-aa4a-0f0eb7f2fbad"
+# [2026-11-25 00:55:12.640 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-23316069-33f8-4962-aa4a-0f0eb7f2fbad"
+# [2026-11-25 00:55:12.640 +0000] [33mWARN[39m: [36mFailed to replace discarded Sprite[39m
+#     sprite: "propr-e9c543e4-90e1-4448-90e0-05c741e63f42"
+#     error: "Error: replacement failed"
+# [2026-11-25 00:55:12.641 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-459dd4fd-84d3-4023-ab0d-072d32ac824d"
+# [2026-11-25 00:55:12.641 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-459dd4fd-84d3-4023-ab0d-072d32ac824d"
+# [2026-11-25 00:55:12.641 +0000] [33mWARN[39m: [36mFailed to replace discarded Sprite[39m
+#     sprite: "propr-b84e6593-d151-4c30-8900-28fa9f8cc2b9"
+#     error: "Error: replacement failed"
+# [2026-11-25 00:55:12.643 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-47c0adc3-306f-4eb1-be93-4f551bafba62"
+# [2026-11-25 00:55:12.646 +0000] [33mWARN[39m: [36mSprites runner could not be reset; re-provisioning it[39m
+#     sprite: "propr-47c0adc3-306f-4eb1-be93-4f551bafba62"
+# [2026-11-25 00:55:12.647 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-81e2b5da-b7e3-4946-a5da-e7b45ab8bc62"
+# [2026-11-25 00:55:12.647 +0000] [33mWARN[39m: [36mFailed to replace discarded Sprite[39m
+#     sprite: "propr-81e2b5da-b7e3-4946-a5da-e7b45ab8bc62"
+#     error: "AbortError: This operation was aborted"
+# [2026-11-25 00:55:12.650 +0000] [32mINFO[39m: [36mWorker created Sprite[39m
+#     sprite: "propr-7dbe1840-d6aa-46ef-b7f7-8e6313096171"
+# [2026-11-25 00:55:12.661 +0000] [32mINFO[39m: [36mSQLite database connection closed[39m
+1..32
+# tests 32
+# suites 0
+# pass 32
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4348.818118
