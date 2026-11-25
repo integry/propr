@@ -197,6 +197,17 @@ jobs:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
           if [[ -s $OUT/hook-id ]]; then gh api -X DELETE "repos/$REPO/hooks/$(cat "$OUT/hook-id")"; fi
+      - name: Dump app logs on failure
+        if: failure() && steps.app.outcome == 'success'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          timeout 60s flyctl logs --app "$APP" --no-tail 2>&1 |
+            perl -pe '
+              s{((?:token|secret|key|password|authorization)\w*"?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|(?:Bearer\s+|Basic\s+)?(?!ENOENT:)[^\s,"]+)}{$1<masked>}gi;
+              s{[A-Za-z0-9+/_=-]{32,}}{<long>}g;
+            ' | tail -n 200 || true
+
       - name: Destroy test app, Machines and volume
         if: always() && steps.app.outcome == 'success'
         env:

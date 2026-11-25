@@ -11,7 +11,6 @@ import {
   buildMachineConfig,
   FLY_DATA_PATH,
   FLY_DB_FILENAME,
-  FLY_GH_PRIVATE_KEY_PATH,
   FLY_GH_PRIVATE_KEY_SECRET,
   FLY_MANAGED_ENV_KEYS,
   renderFlyMachineConfigJson,
@@ -144,11 +143,18 @@ test("each container lists the app secrets it needs; Fly passes no others in a m
   assert.deepEqual(buildContainers(basePlan()).find((c) => c.name === "app")?.secrets, []);
 });
 
-test("GitHub App key is written from a secret, not embedded", () => {
-  const config = buildMachineConfig(basePlan({ githubAppKey: true }));
-  const app = container(config, "app");
-  assert.deepEqual(app.files, [{ guest_path: FLY_GH_PRIVATE_KEY_PATH, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }]);
-  assert.equal((app.env as Record<string, string>).GH_PRIVATE_KEY_PATH, FLY_GH_PRIVATE_KEY_PATH);
+test("Sprites and legacy Docker mount the GitHub App key on the app root filesystem", () => {
+  const keyPath = "/etc/propr/github-app.pem";
+  for (const plan of [
+    basePlan({ githubAppKey: true }),
+    basePlan({ githubAppKey: true, legacyDocker: true, agentRuntime: "docker" }),
+  ]) {
+    for (const config of [buildMachineConfig(plan), JSON.parse(renderFlyMachineConfigJson(plan))]) {
+      const app = container(config, "app");
+      assert.deepEqual(app.files, [{ guest_path: keyPath, secret_name: FLY_GH_PRIVATE_KEY_SECRET, mode: 0o400 }]);
+      assert.equal((app.env as Record<string, string>).GH_PRIVATE_KEY_PATH, keyPath);
+    }
+  }
 });
 
 test("legacy Docker mode adds the daemon container and shares worktree paths", () => {

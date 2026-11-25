@@ -32,7 +32,8 @@ export const FLY_DB_FILENAME = `${FLY_DATA_PATH}/propr.sqlite`;
 export const FLY_REDIS_DIR = `${FLY_DATA_PATH}/redis`;
 export const FLY_API_PORT = 4000;
 export const FLY_REDIS_PORT = 6379;
-export const FLY_GH_PRIVATE_KEY_PATH = "/run/propr/github-app.pem";
+// Keep the secret file on the container root filesystem; Pilot mounts tmpfs at /run.
+export const FLY_GH_PRIVATE_KEY_PATH = "/etc/propr/github-app.pem";
 /** Secret holding the base64 GitHub App private key, written to FLY_GH_PRIVATE_KEY_PATH. */
 export const FLY_GH_PRIVATE_KEY_SECRET = "PROPR_GH_PRIVATE_KEY_B64";
 
