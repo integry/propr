@@ -42,17 +42,19 @@ async function fixture(t: TestContext) {
   const store = new ExtensionLibraryStore(database, { SYSTEM_TASK_SECRET: 'synthetic-remote-custody' });
   const bundle = await store.importSkill('1', skillFiles(), { kind: 'archive', filename: 'skill.tar' });
   const save = async (library: Omit<ExtensionLibraryInput, 'version'>) => store.saveLibrary('1', { version: 1, ...library }, {}, (await store.readLibrary('1')).revision);
-  const run = async (extensions: AgentExtensionRequest, runtimeSupport: ExtensionRuntimeSupport) => {
+  /** Without `runtimeSupport` the run resolves its runtime as the worker does; `fence` is the launch check `runAgent` applies. */
+  const run = async (extensions: AgentExtensionRequest, runtimeSupport?: ExtensionRuntimeSupport, fence?: (launch: ReturnType<typeof currentExtensionLaunch>) => void) => {
     const taskId = randomUUID();
     await database('tasks').insert({ task_id: taskId });
     let launched: { prepared: AgentTaskOptions; launch: ReturnType<typeof currentExtensionLaunch> } | undefined;
     const options: AgentTaskOptions = { extensions, taskId, issueRef: { repoOwner: 'team', repoName: 'repo', number: 1 }, worktreePath: root, prompt: 'Run', githubToken: '' };
     const returned: AgentExecutionResult = await executeWithExtensions(claude, options, async prepared => {
       const launch = currentExtensionLaunch();
+      fence?.(launch);
       if (launch) await launch.beforeLaunch();
       launched = { prepared, launch };
       return result;
-    }, store, { runtimeSupport });
+    }, store, runtimeSupport ? { runtimeSupport } : {});
     const history = await database('task_history').where({ task_id: taskId });
     const entry = history.find(h => JSON.parse(h.metadata).event === 'extensions.resolved');
     return { launched: launched!, returned, event: entry && JSON.parse(entry.metadata), reason: entry?.reason as string | undefined };
@@ -190,4 +192,34 @@ test('a catalog server that does not resolve is unavailable, not a URL server th
   const filtered = await applyRuntimeSupport(set, issueTask(), remote({ remoteMcp: false }), () => 'unavailable');
   assert.equal(filtered.dropped, undefined, 'not dropped as an unsupported class; the launch reports the catalog error as on Docker');
   assert.deepEqual(filtered.set.servers.map(s => s.name), ['gone']);
+});
+
+test('a Docker runtime registered with fewer extension classes drops auto-applied items before launch instead of failing at the launch fence', async t => {
+  const { registerAgentRuntime, getAgentRuntime } = await import('../src/agents/runtime/registry.js');
+  const { DockerRuntime } = await import('../src/agents/runtime/dockerRuntime.js');
+  const { extensionLaunchRefusal } = await import('../src/agents/runtime/extensionCapabilities.js');
+  t.after(() => registerAgentRuntime('docker', () => new DockerRuntime()));
+  registerAgentRuntime('docker', () => {
+    const runtime = new DockerRuntime();
+    return Object.assign(runtime, { capabilities: { ...runtime.capabilities, extensions: { skills: true, remoteMcp: false, packageMcp: true } } });
+  });
+  const support = await extensionRuntimeSupport(claude, 'open', {});
+  assert.deepEqual(support, { kind: 'docker', capabilities: { skills: true, remoteMcp: false, packageMcp: true, catalogMcp: true }, bindMounts: true });
+
+  const { save, run, bundle } = await fixture(t);
+  await save({ servers: [server(), server({ name: 'manual', autoApply: false })], skills: [{ bundleId: bundle.id, enabled: true, repositories: [], agents: [], autoApply: true }] });
+  // The same check runAgent makes at launch, against the registered runtime's own capabilities.
+  const fence = (launch: ReturnType<typeof currentExtensionLaunch>) => {
+    const refusal = launch && extensionLaunchRefusal(getAgentRuntime(claude), launch.requires);
+    if (refusal) throw refusal;
+  };
+  const auto = await run(issueTask(), undefined, fence);
+  assert.deepEqual(auto.launched.launch!.requires, { skills: ['release-notes'], remoteMcp: [], packageMcp: [], catalogMcp: [] });
+  assert.deepEqual(auto.event.skipped, [{ kind: 'server', name: 'docs', reason: 'agent_runtime_unsupported', source: 'auto' }]);
+  assert.match(auto.returned.extensionNotice!, /Agent runtime "docker" cannot run URL MCP servers.*MCP server "docs"/);
+  // Explicitly added: refused during preparation, naming the item, before anything launches.
+  let launched = false;
+  await assert.rejects(run({ ...issueTask(), servers: ['manual'] }, undefined, () => { launched = true; }),
+    (error: Error & { capability?: string }) => error.name === 'AgentRuntimeCapabilityError' && error.capability === 'remote_mcp' && /"manual"/.test(error.message));
+  assert.equal(launched, false);
 });

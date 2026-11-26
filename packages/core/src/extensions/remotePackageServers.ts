@@ -90,14 +90,24 @@ export async function prepareRemotePackageServers(set: ResolvedExtensionSet, req
   };
 }
 
-/** One value for a set of package servers; equal sets of pinned packages give the same digest. */
-export function packageServersDigest(servers: readonly Pick<RemotePackageServer, 'key'>[] = []): string {
+/** What identifies one replayed install: what the sandbox writes and runs, not only the cache key. */
+export type PackageServerIdentity = Pick<RemotePackageServer, 'key' | 'entry' | 'packageJson' | 'lock'>;
+
+/**
+ * One value for a set of replayed package server installs. The cache key names
+ * the package, version and integrity value only; a rebuilt worker install can
+ * resolve a dependency range to another version under the same key, so the
+ * replayed package.json and package-lock.json (and the entry run) are part of
+ * the identity. A warm Sprite is reused only for the exact installs it holds.
+ */
+export function packageServersDigest(servers: readonly PackageServerIdentity[] = []): string {
   if (!servers.length) return 'none';
-  return createHash('sha256').update([...new Set(servers.map(server => server.key))].sort().join('\n')).digest('hex').slice(0, 16);
+  const installs = [...new Set(servers.map(({ key, entry, packageJson, lock }) => JSON.stringify([key, entry, packageJson, lock])))].sort();
+  return createHash('sha256').update(JSON.stringify(installs)).digest('hex').slice(0, 16);
 }
 
 /** Log fields for a package server set: digest and count, package names only for a short list. */
-export function packageServersLogFields(servers: readonly Pick<RemotePackageServer, 'key' | 'package' | 'version'>[] = []) {
+export function packageServersLogFields(servers: readonly (PackageServerIdentity & Pick<RemotePackageServer, 'package' | 'version'>)[] = []) {
   return { packageServersDigest: packageServersDigest(servers), packageServers: servers.length,
     ...(servers.length <= 5 ? { packages: servers.map(server => `${server.package}@${server.version}`) } : {}) };
 }

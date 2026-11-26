@@ -664,9 +664,9 @@ test('abort, timeout and lease expiry stop inventory retries', async t => {
     await inventory.finish(name, 'gone');
 });
 
-const packageSet = (key: string) => ({
+const packageSet = (key: string, lock = '{}') => ({
     registry: 'https://registry.npmjs.org',
-    servers: [{ key: key.repeat(40), package: 'propr-fixture-mcp', version: '1.0.0', integrity: 'sha512-fixture', entry: 'bin/server.js', packageJson: '{}', lock: '{}' }],
+    servers: [{ key: key.repeat(40), package: 'propr-fixture-mcp', version: '1.0.0', integrity: 'sha512-fixture', entry: 'bin/server.js', packageJson: '{}', lock }],
 });
 
 test('idle Sprites are kept per package server set; at the cap the least recently used other set is evicted', async t => {
@@ -717,6 +717,32 @@ test('a background replacement is provisioned with the package servers of the Sp
     assert.equal(provider.created.length, 3);
     await pool.release(other);
     await pool.release(replacement);
+});
+
+test('a warm Sprite is not reused when the package server lock changed under the same cache key', async t => {
+    const provider = new FakeSpriteOrganization();
+    const pool = new SpritePool(provider);
+    t.after(() => pool.close());
+    const signal = new AbortController().signal;
+    // The worker install was rebuilt: same package, version and integrity, but a dependency resolved to another version.
+    const l1 = packageSet('a', JSON.stringify({ packages: { 'node_modules/dep': { version: '1.0.0' } } }));
+    const l2 = packageSet('a', JSON.stringify({ packages: { 'node_modules/dep': { version: '1.1.0' } } }));
+    assert.equal(l1.servers[0].key, l2.servers[0].key);
+    const first = await pool.acquire(signal, undefined, l1);
+    await pool.release(first);
+    const second = await pool.acquire(signal, undefined, l2);
+    assert.notEqual(second.sprite.name, first.sprite.name, 'the warm Sprite holding the old lock is not handed out');
+    assert.notEqual(second.packageServersDigest, first.packageServersDigest);
+    assert.equal(second.packages, l2, 'the new Sprite installs the current lock');
+    // A background replacement for the new Sprite keeps the new lock, and the old Sprite stays with the old one.
+    provider.created.find(sprite => sprite.name === second.sprite.name)!.failWipe = true;
+    await pool.release(second);
+    const replacement = await pool.acquire(signal, undefined, l2);
+    assert.notEqual(replacement.sprite.name, first.sprite.name);
+    assert.equal(replacement.packageServersDigest, second.packageServersDigest);
+    assert.equal(replacement.packages, l2);
+    await pool.release(replacement);
+    assert.equal((await pool.acquire(signal, undefined, l1)).sprite.name, first.sprite.name);
 });
 
 test('a warm Sprite is reused only when both its runtime packages and its package servers match', async t => {

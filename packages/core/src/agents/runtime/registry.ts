@@ -13,7 +13,7 @@ import { SpritesRuntime } from './spritesRuntime.js';
 import { AgentRuntimeCapabilityError, extensionLaunchRefusal, runtimeAppliesAnyExtension, type AgentRuntimeCapability, type ExtensionRuntime } from './extensionCapabilities.js';
 import type { AgentRunConfigSelection, AgentRunNetworkRestriction, AgentRunSpec, AgentRuntime, AgentRuntimeCapabilities } from './types.js';
 
-import { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME, selectedAgentRuntimeName } from './runtimeSelection.js';
+import { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME, noteAgentRuntimeRegistered, selectedAgentRuntimeName } from './runtimeSelection.js';
 export { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME };
 
 /** Every runtime accepts the same launch options and settles with the executor result shape. */
@@ -36,6 +36,7 @@ export function registerAgentRuntime(kind: string, factory: AgentRuntimeFactory)
     if (!RUNTIME_NAME_PATTERN.test(kind)) throw new Error(`Invalid agent runtime name: ${kind}`);
     registrations.set(kind, { factory });
     instances.delete(kind);
+    noteAgentRuntimeRegistered(kind);
 }
 
 export async function closeAgentRuntimes(): Promise<void> {

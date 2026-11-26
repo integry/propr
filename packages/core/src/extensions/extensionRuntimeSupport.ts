@@ -4,7 +4,7 @@ import type { AgentConfig, AgentExtensionRequest } from '../agents/types.js';
 import {
   EXTENSION_CLASSES, EXTENSION_CLASS_INFO, extensionClassRefusal, runtimeExtensionCapabilities, type AgentRuntimeExtensionClass, type ResolvedExtensionCapabilities,
 } from '../agents/runtime/extensionCapabilities.js';
-import { DEFAULT_AGENT_RUNTIME, selectedAgentRuntimeName } from '../agents/runtime/runtimeSelection.js';
+import { DEFAULT_AGENT_RUNTIME, builtInDockerRuntimeSelected, selectedAgentRuntimeName } from '../agents/runtime/runtimeSelection.js';
 import type { AgentNetworkMode } from '../network/networkPolicy.js';
 import { tryExtensionGatewayBaseUrl } from './extensionGateway.js';
 
@@ -32,12 +32,14 @@ const DOCKER_SUPPORT: ExtensionRuntimeSupport = Object.freeze({
 });
 
 /**
- * The runtime the agent configuration selects and what it applies. Docker is
- * answered without loading any runtime module; other runtimes are loaded
- * lazily, as `runAgent` does at launch.
+ * The runtime the agent configuration selects and what it applies. The
+ * built-in Docker runtime is answered without loading any runtime module;
+ * other runtimes, and a replacement registered as `docker`, are loaded lazily
+ * and read for their declared capabilities, as `runAgent` does at launch, so
+ * an auto-applied item the launch would refuse is dropped here instead.
  */
 export async function extensionRuntimeSupport(config: Pick<AgentConfig, 'runtime'>, networkMode: AgentNetworkMode = 'open', environment: NodeJS.ProcessEnv = process.env): Promise<ExtensionRuntimeSupport> {
-  if (selectedAgentRuntimeName(config, environment) === DEFAULT_AGENT_RUNTIME) return DOCKER_SUPPORT;
+  if (selectedAgentRuntimeName(config, environment) === DEFAULT_AGENT_RUNTIME && builtInDockerRuntimeSelected()) return DOCKER_SUPPORT;
   const { getAgentRuntime } = await import('../agents/runtime/registry.js');
   const runtime = getAgentRuntime(config, environment);
   const capabilities = { ...runtimeExtensionCapabilities(runtime) };

@@ -225,8 +225,9 @@ export async function executeWithExtensions(config: AgentConfig, options: AgentT
     const requires = { skills: skillBundles.map(b => b.name), remoteMcp: servers.map(s => s.name),
       packageMcp: localMcpServers.filter(s => packageNames.has(s.name)).map(s => s.name), catalogMcp: localMcpServers.filter(s => !packageNames.has(s.name)).map(s => s.name) };
     const packageInstall = remotePackages.length ? { registry: npmRegistryUrl(store.environment).url, servers: remotePackages } : undefined;
-    // One line per run for operators: what the run carries on which runtime.
-    logger.info(extensionApplicationLog({ taskId: options.taskId, runtime: support.kind, revision: snapshot.revision, set, requires, packageFields: packageServersLogFields(launchServers.filter(isPackageServer).map(s => ({ key: packageCache.key(s), package: s.package, version: s.version }))) }), 'Extension Library items applied to this run');
+    // One line per run for operators: what the run carries on which runtime. The package
+    // server digest is the replayed installs' identity, the one Sprites and Fly log at install.
+    logger.info(extensionApplicationLog({ taskId: options.taskId, runtime: support.kind, revision: snapshot.revision, set, requires, packageFields: packageInstall ? packageServersLogFields(packageInstall.servers) : {} }), 'Extension Library items applied to this run');
     return await withNotice(launchContext.run({ taskId: options.taskId, secrets: [...operatorSecrets, ...launchOptions.toolPolicy.mcpServers.map(s => s.bearerToken)], mounts,
       requires, skillFiles, ...(baseUrl ? { gatewayUrl: baseUrl } : {}), ...(packageInstall ? { packageInstall } : {}), beforeLaunch: async (window = {}, validateResources = true) => {
       // Runs after network setup and capacity admission, at the physical launch
