@@ -79,10 +79,10 @@ export class SpritePool {
     private async provision(signal: AbortSignal, name: string, packages: readonly string[]): Promise<Slot> {
         // Never discover or adopt a machine by name. Another worker, including an earlier
         // incarnation of this worker, can still have a live run on one it created.
+        // Provisioning time (setup, package installs, checkpoint) is under the reservation's lease,
+        // which the inventory renews every few seconds; only the create request has its own window.
         const started = Date.now();
         try {
-            // Only a new Sprite installs anything; warm and recycled ones keep their checkpoint's packages.
-            await startupStep(signal, () => checkAgentRuntimePackagesBeforeInstall(this.loadPackages, packages, signal));
             signal.throwIfAborted();
             this.inventory?.checkCreate(name);
         } catch (error) {
@@ -136,12 +136,15 @@ export class SpritePool {
             const stderr = cause instanceof Error && 'stderr' in cause ? String(cause.stderr).slice(-4096).trim() : '';
             const detail = stderr || (cause instanceof Error ? cause.message : String(cause));
             const failure = new Error(`Failed to provision the clean Sprite checkpoint: ${detail}`, { cause });
+            // Decide before the discard: deleting the Sprite releases its lease, which is part of
+            // `signal`, so checking afterwards would report every failure as "Sprite lease expired".
+            const cancelled = signal.aborted ? signal.reason : undefined;
             try {
                 await this.discard(sprite);
             } catch (cleanupError) {
                 throw new AggregateError([failure, cleanupError], `${failure.message} (also failed to delete Sprite ${sprite.name})`);
             }
-            signal.throwIfAborted();
+            if (cancelled !== undefined) throw cancelled;
             throw failure;
         }
     }
@@ -246,6 +249,9 @@ export class SpritePool {
                 }
             }
             if (!slot) {
+                // Only a new Sprite installs anything; warm and recycled ones keep their checkpoint's packages.
+                // Checked before the reservation, so a slow index download never eats into its create window.
+                await startupStep(signal, () => checkAgentRuntimePackagesBeforeInstall(this.loadPackages, packages, signal));
                 const name = (this.inventory?.prefix ?? 'propr-') + randomUUID();
                 if (!await reserveForRun(name)) continue;
                 queueMs = elapsedQueueMs();
@@ -313,17 +319,19 @@ export class SpritePool {
     }
 
     private async replaceInBackground() {
+        let packages: readonly string[];
+        try {
+            packages = await this.loadPackages();
+            await checkAgentRuntimePackagesBeforeInstall(this.loadPackages, packages, this.shutdown.signal);
+        } catch (error) {
+            // Nothing was reserved or created; the next run provisions its own Sprite.
+            if (!this.closed) logger.warn({ error: error instanceof Error ? error.message : String(error) }, 'Could not read or verify agent runtime packages for a replacement Sprite');
+            return;
+        }
+        if (this.closed) return;
         const name = (this.inventory?.prefix ?? 'propr-') + randomUUID();
         if (this.inventory && !await this.inventory.reserve(name, true)) return;
         if (this.closed) {
-            await this.inventory?.finish(name, 'gone');
-            return;
-        }
-        let packages: readonly string[];
-        try { packages = await this.loadPackages(); }
-        catch (error) {
-            // No create request was sent; the next run provisions its own Sprite.
-            logger.warn({ error: error instanceof Error ? error.message : String(error) }, 'Could not read agent runtime packages for a replacement Sprite');
             await this.inventory?.finish(name, 'gone');
             return;
         }
