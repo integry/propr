@@ -22,9 +22,11 @@ const markerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-runtime-'));
 const installationDir = () => fs.mkdtempSync(path.join(markerDir, 'install-'));
 after(() => fs.rmSync(markerDir, { recursive: true, force: true }));
 const token = 'test-org-secret';
+// No configured runtime packages; the real loader would read the (unmigrated) test database.
+const noPackages = async () => [];
 function fixture() {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: token });
+    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: token }, undefined, noPackages);
     const builder = new AgentRunSpecBuilder({
         name: 'test', stdin: true, agentType: 'antigravity', image: 'test', network: agentRunNetwork('bridge'), user: '0:0',
         workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',
@@ -59,7 +61,7 @@ test('a lease lasts through result retrieval and release wipes the separate tmp 
 test('a run at the shared cap reports its wait and excludes it from compute usage', { timeout: 5000 }, async t => {
     const { builder } = fixture();
     const provider = new FakeSpriteOrganization();
-    const runtime = new SpritesRuntime(provider, { DATA_DIR: installationDir(), PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: '1' }, new Redis());
+    const runtime = new SpritesRuntime(provider, { DATA_DIR: installationDir(), PROPR_SPRITES_TOKEN: token, PROPR_SPRITES_MAX: '1' }, new Redis(), noPackages);
     t.after(() => runtime.close());
     let now = Date.now();
     t.mock.method(Date, 'now', () => now);
@@ -112,8 +114,8 @@ test('lease loss stops the holder while a concurrent sweep preserves its running
     };
     const redis = new Redis({ port: 9001 });
     const environment = { DATA_DIR: installationDir(), PROPR_SPRITES_TOKEN: token };
-    const holder = new SpritesRuntime(provider, environment, redis);
-    const cleaner = new SpritesRuntime(provider, environment, redis);
+    const holder = new SpritesRuntime(provider, environment, redis, noPackages);
+    const cleaner = new SpritesRuntime(provider, environment, redis, noPackages);
     t.after(() => Promise.all([holder.close(), cleaner.close()]));
     const run = holder.start(builder.build());
     await launched.promise;
@@ -595,7 +597,7 @@ test('failed pool initialization can be retried and cannot interrupt shutdown', 
     const runtime = new SpritesRuntime(async key => {
         if (++loads === 1 || key !== token) throw new Error('SDK unavailable');
         return client;
-    }, env);
+    }, env, undefined, noPackages);
     await assert.rejects(runtime.start(builder.build()).wait(), /SDK unavailable/);
     const warm = runtime.start(builder.build());
     await warm.wait();
@@ -748,7 +750,7 @@ test('a result read completing after the local lease deadline returns no data', 
     const { builder } = fixture();
     const provider = new FakeSpriteOrganization();
     const redis = new Redis({ port: 9010 });
-    const runtime = new SpritesRuntime(provider, { DATA_DIR: installationDir(), PROPR_SPRITES_TOKEN: token }, redis);
+    const runtime = new SpritesRuntime(provider, { DATA_DIR: installationDir(), PROPR_SPRITES_TOKEN: token }, redis, noPackages);
     t.after(() => runtime.close());
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const run = runtime.start(builder.build());

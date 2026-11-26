@@ -155,7 +155,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         const destroy = () => {
             const machine = id;
             if (machine && workspaceSafeToDestroy && !credentialsPending)
-                return destroyed ??= retryCleanup(machine, 'destroy', () => api.destroy(machine));
+                // The capacity slot is freed by the deletion that succeeds, including a background
+                // retry after the run settled, so a Machine still awaiting deletion keeps counting.
+                return destroyed ??= retryCleanup(machine, 'destroy', async () => { await api.destroy(machine); releaseSlot(); });
         };
         let mayHaveStarted = false;
         const requestStop = (signal: NodeJS.Signals = 'SIGTERM', grace = 10_000) => {
@@ -382,7 +384,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             external.removeEventListener('abort', abort);
             logs.abort();
             output.end();
-            try { await destroy(); } finally { releaseSlot(); }
+            // Without a Machine, or with one kept for recovery that this worker will never delete,
+            // free the slot now; otherwise the confirmed deletion above frees it.
+            try { await destroy(); } finally { if (!destroyed) releaseSlot(); }
         }).catch(async error => {
             // Transport cleanup calls release even when wait rejected before complete.
             keepLocalBundle = workspace.hasBundle;

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import type { Knex } from 'knex';
 import type { AgentConfig } from '../types.js';
 import { dockerAgentRuntimeInUse, FLY_MACHINES_AGENT_RUNTIME, selectedAgentRuntimeName, SPRITES_AGENT_RUNTIME } from './runtimeSelection.js';
 
@@ -42,13 +43,15 @@ export function validateAgentRuntimePackages(packages: unknown): RuntimePackageV
 /**
  * The package list configured in Settings (normalized and sorted). Read-only:
  * unlike `loadAgentRuntimePackageState` it never writes the state back. An
- * invalid persisted list is an error rather than an empty list, so a run is
- * never started without packages it was configured to have.
+ * invalid persisted list, a failed read or an unparsable stored value is an
+ * error rather than an empty list, so a run is never started without packages
+ * it was configured to have. Only a genuinely absent setting yields `[]`.
  */
-export async function loadConfiguredAgentRuntimePackages(): Promise<string[]> {
-    // Imported lazily: the config store opens the database.
-    const { getConfig } = await import('../../config/configStore.js');
-    const raw = await getConfig<unknown>(AGENT_RUNTIME_PACKAGES_CONFIG_KEY, null);
+export async function loadConfiguredAgentRuntimePackages(client?: Knex): Promise<string[]> {
+    // Imported lazily: the config store opens the database. Strict: a failed read or parse throws.
+    const store = await import('../../config/configStore.js');
+    const raw = client ? await store.getConfigWithClient<unknown>(AGENT_RUNTIME_PACKAGES_CONFIG_KEY, null, client, true)
+        : await store.getConfigStrict<unknown>(AGENT_RUNTIME_PACKAGES_CONFIG_KEY, null);
     const packages = raw && typeof raw === 'object' ? (raw as { packages?: unknown }).packages : undefined;
     if (packages === undefined || packages === null) return [];
     const validation = validateAgentRuntimePackages(packages);

@@ -69,7 +69,7 @@ class FakeMachines implements MachinesApi {
 }
 function fixture() {
     const api = new FakeMachines();
-    const runtime = new FlyMachinesRuntime(api, env);
+    const runtime = new FlyMachinesRuntime(api, env, async () => []);
     const builder = new AgentRunSpecBuilder({
         agentType: 'claude', image: 'propr/agent', name: 'task', stdin: true, user: '0:0', network: agentRunNetwork('bridge'),
         workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',
@@ -118,7 +118,7 @@ test('boot timeout and cancellation during create or readiness destroy an unstar
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     for (const boundary of ['create', 'ready', 'timeout']) {
         const { api, builder } = fixture();
-        const runtime = new FlyMachinesRuntime(api, { ...env, PROPR_FLY_BOOT_TIMEOUT: '1' });
+        const runtime = new FlyMachinesRuntime(api, { ...env, PROPR_FLY_BOOT_TIMEOUT: '1' }, async () => []);
         const controller = new AbortController();
         const pending = Promise.withResolvers<void>();
         const resume = Promise.withResolvers<void>();

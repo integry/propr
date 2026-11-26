@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
+import knex from 'knex';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
 import {
     AgentRuntimeCapabilityError, assertRuntimePackagesSupported, runtimePackagesRefusal,
@@ -9,7 +10,7 @@ import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachi
 import { SpritesRuntime } from '../packages/core/src/agents/runtime/spritesRuntime.ts';
 import { SpritePool } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts';
 import {
-    agentRuntimePackageInstallCommand, agentRuntimePackagesDigest,
+    AGENT_RUNTIME_PACKAGES_CONFIG_KEY, agentRuntimePackageInstallCommand, agentRuntimePackagesDigest, loadConfiguredAgentRuntimePackages,
 } from '../packages/core/src/agents/runtime/agentRuntimePackageProfile.ts';
 import { FakeSprites, type FakeSprite } from './helpers/fakeSprites.ts';
 
@@ -129,4 +130,23 @@ test('an apt failure fails provisioning with the apt error and deletes the Sprit
         /Failed to provision the clean Sprite checkpoint: E: Unable to locate package postgresql-clent/);
     assert.deepEqual(client.deleted, [client.created[0].name]);
     await pool.close();
+});
+
+test('the configured package loader refuses a failed read or an unparsable stored value instead of returning no packages', async () => {
+    const store = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
+    try {
+        // Read failure: the config table cannot be queried.
+        await assert.rejects(loadConfiguredAgentRuntimePackages(store), /system_configs/);
+        await store.schema.createTable('system_configs', table => { table.string('key').primary(); table.text('value'); });
+        assert.deepEqual(await loadConfiguredAgentRuntimePackages(store), [], 'an absent setting means no packages');
+        await store('system_configs').insert({ key: AGENT_RUNTIME_PACKAGES_CONFIG_KEY, value: '{"packages": ["postgresql-client"' });
+        await assert.rejects(loadConfiguredAgentRuntimePackages(store), SyntaxError);
+        await store('system_configs').where({ key: AGENT_RUNTIME_PACKAGES_CONFIG_KEY }).update({ value: JSON.stringify({ packages: ['postgresql-client'] }) });
+        assert.deepEqual(await loadConfiguredAgentRuntimePackages(store), ['postgresql-client']);
+        // Through the launch check, an unreadable list refuses the run (not a capability error, not a launch).
+        await store('system_configs').where({ key: AGENT_RUNTIME_PACKAGES_CONFIG_KEY }).update({ value: 'not json' });
+        await assert.rejects(assertRuntimePackagesSupported(custom, { name: 'run' }, () => loadConfiguredAgentRuntimePackages(store)), SyntaxError);
+    } finally {
+        await store.destroy();
+    }
 });

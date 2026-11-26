@@ -253,7 +253,7 @@ test('a runtime that reports its own cost keeps it; one reporting nothing is pri
     const reported = { runtime: 'metered', wallTimeMs: 60_000, cpuSeconds: 30, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: 0.12, costSource: 'runtime' as const };
     const runtimeReturning = (computeUsage?: typeof reported) => () => ({
         kind: 'metered',
-        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork: true, supportsMcpPrivateNetwork: true, reattach: false },
+        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork: true, supportsMcpPrivateNetwork: true, reattach: false, supportsRuntimePackages: true },
         start: (runSpec: ReturnType<typeof spec>) => ({ spec: runSpec, wait: async () => ({ ...ok(), ...(computeUsage && { computeUsage }) }) }),
     }) as any;
     process.env[COMPUTE_RATES_ENV] = '{"metered":{"perHourUsd":60}}';

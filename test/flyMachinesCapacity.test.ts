@@ -118,3 +118,49 @@ test('a queued run that is stopped never creates a Machine and frees its place',
     assert.deepEqual(api.created, ['m0', 'm1']);
     await Promise.all([first, queued, next].map(run => run.release!()));
 });
+
+/** The first deletion of each Machine fails; later attempts are held like `Machines`. */
+class FailingFirstDestroy extends Machines {
+    failed = new Set<string>();
+    override destroy(id: string) {
+        if (!this.failed.has(id)) { this.failed.add(id); return Promise.reject(new Error('Fly API 503')); }
+        return super.destroy();
+    }
+}
+
+test('a Machine whose deletion is retried in the background keeps its slot until deletion succeeds', async () => {
+    const api = new FailingFirstDestroy();
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'retried', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const first = runtime.start(spec('first'));
+    const queued = runtime.start(spec('queued'));
+    // The first deletion failed after collection: the result is returned while deletion retries in the background.
+    assert.equal((await first.wait()).exitCode, 0);
+    assert.ok(api.failed.has('m0'));
+    await delay(50);
+    assert.deepEqual(api.created, ['m0'], 'the queued run must not create a Machine while m0 still exists');
+    await until(() => api.destroys.length === 1); // the background retry (after 5 s) is in flight
+    assert.deepEqual(api.created, ['m0']);
+    api.destroys.shift()!();
+    await until(() => api.created.length === 2);
+    assert.equal(api.peak, 1);
+    await until(() => api.failed.has('m1'));
+    await until(() => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    await Promise.all([first, queued].map(run => run.release!()));
+});
+
+test('a run that fails before creating a Machine frees its slot at once', async () => {
+    const api = new Machines();
+    let reads = 0;
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'unread', PROPR_FLY_MACHINES_MAX: '1' },
+        async () => { if (reads++ === 0) throw new Error('packages unreadable'); return []; });
+    const failed = runtime.start(spec('failed'));
+    await assert.rejects(failed.wait(), /packages unreadable/);
+    const next = runtime.start(spec('next'));
+    await until(() => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await next.wait()).exitCode, 0);
+    assert.deepEqual(api.created, ['m0']);
+    await Promise.all([failed, next].map(run => run.release!()));
+});
