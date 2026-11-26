@@ -37,7 +37,7 @@ ANTIGRAVITY_CLI_VERSION="${ANTIGRAVITY_CLI_VERSION:-1.5.15}"
 ANTIGRAVITY_CLI_RELEASE_ID="${ANTIGRAVITY_CLI_RELEASE_ID:-5514532022517760}"
 ANTIGRAVITY_CLI_SHA512="${ANTIGRAVITY_CLI_SHA512:-af3f0be58b8475940d79f9abea19e762ecc3d265ea9f56cff8dd805e27ba299b44a305a79504a7ffe6ebdfa29a294c56edc4caed1875990bfaf2fef1508ec8b0}"
 OPENCODE_CLI_VERSION="${OPENCODE_CLI_VERSION:-1.19.6}"
-VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-2.25.8}"
+VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-3.1.5}"
 # Keep this default identical to the ARG default in Dockerfile.agent: only the
 # Dockerfile literal participates in the agent bundle content hash, so a
 # mismatch here would ship a different Agent Tank build under an existing tag.

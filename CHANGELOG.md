@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Upgraded bundled Mistral Vibe from 2.25.8 to 3.1.5. Tasks use native prompt files and stream Vibe’s structured responses. [PyPI release](https://pypi.org/project/mistral-vibe/3.1.5/)
+
 - **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)
   - npm reported Claude Code 2.1.330 as `latest` and 2.1.323 as `stable`.
     All four Claude tool-policy runtime tests passed with the installed

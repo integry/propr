@@ -177,6 +177,30 @@ describe('parseVibeOutput', () => {
         assert.strictEqual(parseVibeOutput(output).summary, 'Final response');
     });
 
+    test('parses Vibe 3 history arrays and streamed entries', () => {
+        const base = { sessionId: 'session-3', generationStatus: 'completed' };
+        const entries = [
+            { ...base, id: 'thought', type: 'reasoning', text: 'Inspect the file' },
+            { ...base, id: 'action', type: 'effect', toolCallId: 'call',
+                detail: { toolName: 'read_file', input: { path: 'index.ts' } },
+                state: { status: 'failed', error: { message: 'Missing file' } } },
+            { ...base, id: 'answer', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Finished' }] },
+            { ...base, id: 'draft', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Draft' }],
+                outcome: { type: 'discarded' } }
+        ];
+        for (const output of [JSON.stringify(entries), entries.map(entry => JSON.stringify(entry)).join('\n')]) {
+            assert.equal(parseVibeOutput(output).summary, 'Finished');
+            const log = parseVibeConversationLog(output);
+            assert.equal(log.length, 4);
+            assert.equal(log[0].message.content[0].internalReasoning, true);
+            assert.deepEqual(log[1].message.content[0], { type: 'tool_use', id: 'call', name: 'read_file', input: { path: 'index.ts' } });
+            assert.deepEqual(log[2].message.content[0], { type: 'tool_result', tool_use_id: 'call', content: 'Missing file', is_error: true });
+            assert.equal(log[3].message.id, 'answer');
+        }
+        assert.equal(parseVibeOutput(JSON.stringify(entries.slice(-1))).incomplete, true);
+        assert.equal(isSuccessfulVibeResult(0, parseVibeOutput('[]')), false);
+    });
+
     test('treats assistant transcript arrays as complete Vibe output', () => {
         const parsed = parseVibeOutput(JSON.stringify([
             { role: 'system', content: 'System prompt should not be selected' },
@@ -518,7 +542,7 @@ describe('VibeAgent Docker args', () => {
         assert.match(script, /normalize_vibe_config_paths/);
         assert.match(script, /ensure_runtime_dirs/);
         assert.match(script, /chown -R node:node "\$RUNTIME_VIBE_HOME"/);
-        assert.match(script, /bypass_tool_permissions = true/);
+        assert.match(script, /export VIBE_BYPASS_TOOL_PERMISSIONS=true/);
         assert.match(
             script,
             /if \[ -n "\$VIBE_PROMPT_FILE_TO_INJECT" \]; then\s+exec env PROPR_VIBE_PROMPT_FILE="\$VIBE_PROMPT_FILE_TO_INJECT" "\$@"\s+fi\s+exec "\$@"/
@@ -571,7 +595,7 @@ describe('VibeAgent Docker args', () => {
             const imageIndex = args.indexOf('propr/agent:bundle-test');
             assert.deepStrictEqual(
                 args.slice(imageIndex + 4),
-                ['--output', 'json']
+                ['--output', 'streaming']
             );
         });
     });
@@ -616,7 +640,7 @@ test('GLM selection supplies a Mistral preset for execution and read-only analys
 
 // Optional contract check against the actual pinned PyPI package (no API calls).
 // PROPR_VIBE_PYTHON=/path/to/venv/bin/python npx tsx --test test/vibeAgent.test.ts
-// Install mistral-vibe==2.25.8 in that venv first.
+// Install mistral-vibe==3.1.5 in that venv first.
 test('installed Vibe resolves Docker model overrides and preserves user models', {
     skip: !process.env.PROPR_VIBE_PYTHON,
 }, () => {
@@ -625,7 +649,7 @@ test('installed Vibe resolves Docker model overrides and preserves user models',
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-contract-'));
         try {
             fs.writeFileSync(path.join(home, 'config.toml'),
-                'active_model = "local"\n[[models]]\nname = "private-model"\nprovider = "llamacpp"\nalias = "private"\n');
+                'active_model = "private"\n[[models]]\nname = "private-model"\nprovider = "llamacpp"\nalias = "private"\n');
             for (const modelName of ['mistral-medium-3.5', 'zai-glm-5-3', 'zai-glm-5-2']) {
                 const args = buildArgs(createAgent(), { modelName, mode: 'analysis' });
                 const env = { ...process.env, VIBE_HOME: home };
@@ -642,12 +666,12 @@ import asyncio, json
 from importlib.metadata import version
 from vibe.core.config.harness_files import init_harness_files_manager
 from vibe.core.config.default_orchestrator import build_default_orchestrator
-assert version("mistral-vibe") == "2.25.8"
+assert version("mistral-vibe") == "3.1.5"
 init_harness_files_manager("user")
 async def main():
     config = (await build_default_orchestrator()).config
     model = config.get_active_model()
-    assert "private" in config.models and "local" in config.models
+    assert "private" in config.models and "mistral-large-4-0" in config.models
     assert config.get_provider_for_model(model).api_key_env_var == "MISTRAL_API_KEY"
     print(json.dumps({"alias": model.alias, "name": model.name, "provider": model.provider}))
 asyncio.run(main())
