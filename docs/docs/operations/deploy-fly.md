@@ -13,20 +13,16 @@ description: "propr deploy fly runs the slim control plane and Redis on one smal
 
 The published `propr/app` image from the CLI's launcher manifest is deployed as it is. Remote agent runtimes run without a Docker daemon on the control-plane Machine.
 
-:::warning[Remote runtimes require the configuration builder on this branch]
-
-Live runs have verified that the worker can run agents on both Sprites and Fly Machines. See the [runtime capabilities matrix](../architecture/agent-runtime.md) for supported agents and network policies.
-
-On this branch, `propr deploy fly` rejects both `--agent-runtime sprites` (the default) and `--agent-runtime fly-machines`, even with `--dry-run`. For either remote runtime, follow [Run ProPR on Fly](../tutorials/setup-fly.md#deploy-the-machine) to render the Machine configuration with the configuration builder. For Docker agents, use the CLI with [`--legacy-docker`](#legacy-mode-docker-in-the-machine).
-
-:::
+Agents run on Sprites by default. Select `--agent-runtime fly-machines` for a separate Fly agent app, or `--legacy-docker` to run Docker agents on the control-plane Machine. Set `PROPR_ADMIN_USERS` to at least one administrator’s GitHub login in the stack `.env` or shell environment. See [Run ProPR on Fly](../tutorials/setup-fly.md#deploy-the-machine) for runtime credentials and repository setup.
 
 ```bash
-propr deploy fly --app my-propr --legacy-docker \
+propr deploy fly --app my-propr \
   --tunnel-token <connector-token> --tunnel-url https://t-<id>.propr.dev
 ```
 
 The API is then at `https://my-propr.fly.dev`, and you sign in from the hosted UI at `https://app.propr.dev` through ProPR Connect (see [Browser sign-in](#browser-sign-in)). Run `propr remote https://my-propr.fly.dev` to point the CLI at it.
+
+On a fresh volume, add and enable an agent in **Settings → Agents** before labeling an issue. For headless Claude, [install its settings after deployment](../tutorials/setup-fly.md#install-headless-claude-credentials) so the file lands on the mounted volume.
 
 ## Browser sign-in
 
@@ -42,7 +38,7 @@ A relay token alone does not sign browsers in on Fly: the automatic Connect sign
 
 ```bash
 # GitHub OAuth instead of Connect: GH_OAUTH_CLIENT_ID and GH_OAUTH_CLIENT_SECRET in the stack .env
-propr deploy fly --app my-propr --legacy-docker
+propr deploy fly --app my-propr
 ```
 
 ## How it reaches Fly
@@ -81,7 +77,7 @@ In a multi-container Machine, Fly passes app secrets only to the containers that
 | `GH_AUTH_MODE`, `PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN`, `GH_INSTALLATION_ID` | The GitHub relay enrollment (below). |
 | `GITHUB_EVENT_INTAKE_MODE` | Written on every run, see [GitHub event intake](#github-event-intake). |
 | `SPRITES_TOKEN` | `--sprites-token` or `SPRITES_TOKEN`. Without it agent runs on Sprites fail, and the command says so. |
-| `FLY_API_TOKEN` | `--agent-fly-token`, for the Fly Machines agent runtime. The deploy token is never reused for agents. |
+| `PROPR_FLY_API_TOKEN` | `--agent-fly-token`, for the Fly Machines agent runtime. The deploy token is never reused for agents. |
 | `PROPR_UI_TUNNEL_TOKEN`, `TUNNEL_TOKEN` | `--tunnel-token`. A tunnel token in the stack `.env` is **not** copied: two connectors on one tunnel would split traffic, so moving the tunnel to Fly is explicit. |
 
 ## GitHub relay and Connect
@@ -191,7 +187,7 @@ The command checks the cap before it creates anything: with a `--volume-size` ov
 | `--memory <mb>` / `--cpus <n>` | `1024` / `1` | Machine size (shared CPU) |
 | `--volume <name>` / `--volume-size <gb>` | `propr_data` / `1` | Volume for SQLite and Redis; at most 5 GB on the Fly Free plan |
 | `--image <ref>` | manifest `images.app` | Deploy a different app image |
-| `--agent-runtime <runtime>` | `sprites` | `sprites`, `fly-machines`, or `docker` (with `--legacy-docker`). The CLI on this branch accepts only `docker` (see the warning above) |
+| `--agent-runtime <runtime>` | `sprites` | `sprites`, `fly-machines`, or `docker` (with `--legacy-docker`) |
 | `--sprites-token`, `--agent-fly-token` | — | Agent runtime credentials, stored as secrets |
 | `--root`, `--env-file`, `--no-env-file` | stack `.env` | Where secrets come from |
 | `--github-app-key <path>` | `HOST_GH_PRIVATE_KEY` | Own GitHub App private key |
@@ -208,6 +204,6 @@ The command checks the cap before it creates anything: with a `--volume-size` ov
 ## Troubleshooting
 
 - **First boot is slow.** The first start pulls the app image, which can take a few minutes; the Machines API backend waits up to 5 minutes. Watch it with `fly logs --app <app>`.
-- **Agent runs fail at once.** Check the agent runtime credential: `SPRITES_TOKEN` for Sprites, `FLY_API_TOKEN` for Fly Machines.
+- **Agent runs fail at once.** Check the agent runtime credential: `SPRITES_TOKEN` for Sprites, `PROPR_FLY_API_TOKEN` for Fly Machines.
 - **A container crash-loops after a redeploy that changed the layout.** `flyctl deploy` merges `propr-machine.json` into the Machine's live config and keeps keys the file leaves out. The file therefore sends Machine `volumes` and every container's `mounts` as `[]`, which clears them. After deploying, the command checks the Machine. If any of those keys are still there, it destroys the Machine, waits for the data volume to detach and deploys again, so the new Machine attaches the same volume with SQLite and Redis intact. A stale key that survives even that stops the deploy with an error. To inspect the live config, use `fly machine status <machine-id> --app <app> --display-config`.
 - **Sign-in redirects to the wrong host.** The URLs follow the deploy: `https://<app>.fly.dev` without a tunnel, or `https://t-<id>.propr.dev` with Connect. Redeploy after you add or remove the tunnel flags.

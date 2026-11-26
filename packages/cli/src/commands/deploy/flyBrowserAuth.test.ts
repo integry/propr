@@ -15,7 +15,7 @@ const TUNNEL_FLAGS = { tunnelToken: "cf-token", tunnelUrl: "https://t-abc123.pro
 const OAUTH_ENV = { GH_OAUTH_CLIENT_ID: "Iv1.client", GH_OAUTH_CLIENT_SECRET: "oauth-secret" };
 
 function prepare(flags: Omit<DeployFlyOptions, "app">, envFile: Record<string, string>, githubToken: string | undefined = "gh") {
-  return prepareFlyDeploy({ app: "my-propr", legacyDocker: true, ...flags }, IMAGES, envFile, githubToken);
+  return prepareFlyDeploy({ app: "my-propr", legacyDocker: true, ...flags }, IMAGES, { PROPR_ADMIN_USERS: "owner", ...envFile }, githubToken);
 }
 
 test("default deploy without Connect or a GitHub OAuth client is refused before provisioning", () => {

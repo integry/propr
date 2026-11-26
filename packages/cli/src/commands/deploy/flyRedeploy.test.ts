@@ -56,7 +56,7 @@ const relayDeps: FlyRelayDeps = {
 /** One run, sequenced as runDeployFly sequences it. */
 async function deploy(app: ReturnType<typeof flyApp>, flags: Omit<DeployFlyOptions, "app">, envFile: Record<string, string>, githubToken?: string, deps: FlyRelayDeps = relayDeps) {
   const options = { app: "my-propr", legacyDocker: true, ...flags };
-  const prepared = prepareFlyDeploy(options, IMAGES, envFile, githubToken, () => "-----BEGIN KEY-----\n");
+  const prepared = prepareFlyDeploy(options, IMAGES, { PROPR_ADMIN_USERS: "owner", ...envFile }, githubToken, () => "-----BEGIN KEY-----\n");
   const context = { githubToken, label: "fly:my-propr@h", generatedSecrets: { SESSION_SECRET: "s" } };
   await deployPreparedFly(prepared, options, app.target, context, () => {}, deps);
   return app.machineEnv();
@@ -312,7 +312,7 @@ test("a dry run selects the GitHub auth and intake a real first deploy sets, own
   ];
   for (const [label, flags, envFile] of cases) {
     const options = { app: "my-propr", legacyDocker: true, ...flags };
-    const prepared = prepareFlyDeploy(options, IMAGES, envFile, "gh", () => "-----BEGIN KEY-----\n");
+    const prepared = prepareFlyDeploy(options, IMAGES, { PROPR_ADMIN_USERS: "owner", ...envFile }, "gh", () => "-----BEGIN KEY-----\n");
     assert.equal(prepared.relayPlan.kind === "enroll", false, label);
     const generatedSecrets = { SESSION_SECRET: "s" };
     const dryRun = planFlyDryRunSecrets(prepared, generatedSecrets);
