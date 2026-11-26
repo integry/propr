@@ -15,10 +15,35 @@ RESULT = Path('/opt/propr/result')
 LIMIT = 1024 * 1024
 PYTHON = '/usr/bin/python3'
 LAUNCHER = '/opt/propr/launcher.py'
+EXTENSIONS = Path('/opt/propr/extensions')
 
 
 def write_json(path, value):
     path.write_text(json.dumps(value))
+
+
+def install_extensions(files):
+    # Library skill bundles: root-owned and read-only for the agent, like
+    # Docker's read-only mount. Paths were validated by the worker; check again.
+    if EXTENSIONS.is_symlink() or EXTENSIONS.is_file():
+        EXTENSIONS.unlink()
+    elif EXTENSIONS.exists():
+        shutil.rmtree(EXTENSIONS)
+    if not files:
+        return
+    EXTENSIONS.mkdir()
+    for relative, content in files:
+        parts = relative.split('/')
+        if relative.startswith('/') or any(part in ('', '.', '..') for part in parts):
+            raise ValueError('Invalid extension skill bundle path')
+        target = EXTENSIONS.joinpath(*parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(content))
+        os.chown(target, 0, 0)
+        target.chmod(0o444)
+    for directory, _, _ in os.walk(EXTENSIONS):
+        os.chown(directory, 0, 0)
+        os.chmod(directory, 0o555)
 
 
 def install_and_launch(upload):
@@ -47,6 +72,7 @@ def install_and_launch(upload):
     for directory, _, _ in os.walk(source):
         os.chown(directory, 0, node.pw_gid)
         os.chmod(directory, 0o750)
+    install_extensions(run.get('extensions', []))
     export = ROOT / 'export'
     export.mkdir()
     os.chown(export, int(os.environ['SUDO_UID']), -1)

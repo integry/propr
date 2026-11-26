@@ -373,6 +373,9 @@ export interface AgentExecutionResult {
     /** What the agent's sandbox consumed (wall time, CPU, memory, compute cost), reported by its runtime. */
     computeUsage?: AgentRunComputeUsage;
 
+    /** Markdown note for the run's issue or pull request comment: auto-applied library items the agent runtime could not apply. */
+    extensionNotice?: string;
+
     // Additional fields for compatibility with existing ClaudeCodeResponse
     rawOutput?: string;
     exitCode?: number | null;

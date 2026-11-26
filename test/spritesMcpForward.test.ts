@@ -637,6 +637,63 @@ test('a forward that cannot start fails the run before the agent launches', asyn
     await runtime.close();
 });
 
+const GATEWAY_URL = `http://127.0.0.1:${SPRITES_MCP_FORWARD_PORT}/api/extensions/mcp`;
+
+/** A run without a ProPR MCP grant whose URL MCP servers go through the extension gateway. */
+function gatewaySpec(network = agentRunNetwork('bridge')) {
+    const spec = forwardSpec(network);
+    delete spec.mcpGrant;
+    return spec;
+}
+
+async function inGatewayLaunch<T>(gatewayUrl: string, body: () => Promise<T>): Promise<T> {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    return launchContext.run({ taskId: 'ext', secrets: [], mounts: [], requires: { remoteMcp: ['docs'] }, gatewayUrl, beforeLaunch: async () => {} }, body);
+}
+
+test('URL MCP servers of a run without a ProPR MCP grant reach the extension gateway through the forward', async () => {
+    const { client, runtime, daemons } = runtimeFixture(sprite => { sprite.hold = true; });
+    await inGatewayLaunch(GATEWAY_URL, async () => {
+        const run = runtime.start(gatewaySpec(), { taskId: 'ext', extensionAgentLaunch: true });
+        await until(() => !!client.created[0]);
+        const sprite = client.created[0];
+        await sprite.launched.promise;
+        assert.deepEqual(sprite.events.filter(event => ['forward-start', 'launch'].includes(event)), ['forward-start', 'launch']);
+        // The relay targets PROPR_INTERNAL_API_URL, so the gateway path reaches the API with no extra listener.
+        const port = await daemons[0].listenPort!;
+        const status = await new Promise<number>((resolve, reject) => {
+            const req = http.request({ host: '127.0.0.1', port, path: '/api/extensions/mcp/docs', method: 'POST',
+                headers: { Authorization: `Bearer ${GRANT_TOKEN}`, Accept: 'application/json', 'Content-Type': 'application/json' } }, res => {
+                res.resume();
+                res.on('end', () => resolve(res.statusCode ?? 0));
+            });
+            req.on('error', reject);
+            req.end('{"jsonrpc":"2.0","id":1,"method":"tools/list"}');
+        });
+        assert.equal(status, 200);
+        assert.ok(apiRequests.some(request => request.url === '/api/extensions/mcp/docs'));
+        await run.stop();
+        assert.ok(sprite.events.includes('forward-stop'));
+        await run.release!();
+    });
+    await runtime.close();
+});
+
+test('a restricted Sprite adds no gateway host for the forward; a gateway URL that is not the forward listener is refused', async () => {
+    const restriction = { mode: 'restricted' as const, source: 'instance' as const, allow: ['example.com'], instanceAllow: [] };
+    const spec = gatewaySpec({ ...agentRunNetwork('bridge'), restriction, policy: agentRunNetworkPolicy('antigravity', restriction) });
+    const policy = spriteNetworkPolicy(spec, [GATEWAY_URL]);
+    assert.deepEqual(policy, spriteNetworkPolicy(spec), 'loopback needs no allowlist entry');
+    assert.ok(!policy?.rules.some(rule => rule.domain?.includes('127.0.0.1')));
+    // Another loopback URL is not the forward: nothing in the Sprite listens there.
+    assert.throws(() => spriteNetworkPolicy(spec, ['http://127.0.0.1:4000/api/extensions/mcp']), /public HTTPS URL/);
+    const { runtime } = runtimeFixture();
+    await inGatewayLaunch(`http://127.0.0.1:${SPRITES_MCP_FORWARD_PORT}/other/api/extensions/mcp`, async () => {
+        assert.throws(() => runtime.start(gatewaySpec(), { taskId: 'ext', extensionAgentLaunch: true }), /extension gateway URL does not match/);
+    });
+    await runtime.close();
+});
+
 test('a forward grant whose URL does not match the runtime forward listener is refused at start', () => {
     const { runtime } = runtimeFixture();
     assert.throws(() => runtime.start(forwardSpec(agentRunNetwork('bridge'), `http://127.0.0.1:${SPRITES_MCP_FORWARD_PORT}/other/api/mcp`)), /does not match/);

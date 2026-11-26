@@ -199,3 +199,28 @@ test('after a long install, ready opens a fresh boot window for the start gate, 
         await run.release!();
     } finally { Date.now = realNow; }
 });
+
+test('a Machine installing both runtime packages and package MCP servers reports whichever install failed', async () => {
+    const { FlyStartInstalls } = await import('../packages/core/src/agents/runtime/fly/startInstalls.ts');
+    const server = { key: 'b'.repeat(40), package: 'propr-fixture-mcp', version: '1.0.0', integrity: 'sha512-fixture',
+        entry: 'node_modules/propr-fixture-mcp/bin/server.js', packageJson: '{}', lock: '{}' };
+    const machine = (records: Record<string, object>) => {
+        const touched: string[] = [];
+        const api = { exec: async (_id: string, args: string[]) => {
+            if (args[0] === '/usr/bin/touch') { touched.push(args[1]); return { stdout: '', exit_code: 0 }; }
+            const record = records[args[1]];
+            return record ? { stdout: JSON.stringify(record), exit_code: 0 } : { stdout: '', exit_code: 1 };
+        } } as unknown as MachinesApi;
+        return { api, touched };
+    };
+    const installs = new FlyStartInstalls('run', ['figlet'], [server]);
+    assert.equal(installs.installDeadline(1000), 1000 + 15 * 60_000 + 15_000 + 10 * 60_000 + 60_000 + 15_000, 'both install budgets extend the boot deadline');
+
+    const runtimeFailed = machine({ [RUN + '/packages-result']: { ms: 3000, code: 100, tail: 'E: Unable to locate package figlet' } });
+    assert.match((await installs.failure(runtimeFailed.api, 'm1')).message, /could not install the agent runtime packages .*apt exited with code 100[\s\S]*Unable to locate package figlet/);
+    assert.deepEqual(runtimeFailed.touched, [RUN + '/packages-read']);
+
+    const serversFailed = machine({ [RUN + '/packages-result']: { ms: 3000, code: 0, tail: '' }, [RUN + '/package-servers-result']: { ms: 2000, code: 1, tail: 'npm error 404' } });
+    assert.match((await installs.failure(serversFailed.api, 'm2')).message, /could not install the run's package MCP servers \(propr-fixture-mcp@1\.0\.0[\s\S]*npm error 404/);
+    assert.deepEqual(serversFailed.touched, [RUN + '/package-servers-read']);
+});

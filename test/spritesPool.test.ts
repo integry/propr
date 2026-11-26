@@ -663,3 +663,113 @@ test('abort, timeout and lease expiry stop inventory retries', async t => {
     assert.equal(calls, errors.length);
     await inventory.finish(name, 'gone');
 });
+
+const packageSet = (key: string, lock = '{}') => ({
+    registry: 'https://registry.npmjs.org',
+    servers: [{ key: key.repeat(40), package: 'propr-fixture-mcp', version: '1.0.0', integrity: 'sha512-fixture', entry: 'bin/server.js', packageJson: '{}', lock }],
+});
+
+test('idle Sprites are kept per package server set; at the cap the least recently used other set is evicted', async t => {
+    for (const cap of ['1', '2']) {
+        const { start, provider } = fixture();
+        const inventory = await start({ PROPR_SPRITES_MAX: cap });
+        await inventory.sweep();
+        const pool = new SpritePool(provider, inventory);
+        t.after(() => pool.close());
+        const signal = new AbortController().signal;
+        const run = async (packages?: ReturnType<typeof packageSet>) => {
+            const slot = await pool.acquire(signal, undefined, packages);
+            await pool.release(slot);
+            return slot.sprite.name;
+        };
+        const a = await run(packageSet('a'));
+        const b = await run();
+        if (cap === '1') {
+            // No room for a second Sprite: the idle one built for the other set makes room.
+            assert.deepEqual(provider.deleted, [a]);
+            assert.equal(await run(packageSet('a')) === a, false);
+            assert.deepEqual(provider.deleted, [a, b]);
+        } else {
+            // A, B, A, B: each set reuses its own warm Sprite.
+            assert.equal(await run(packageSet('a')), a);
+            assert.equal(await run(), b);
+            assert.equal(provider.created.length, 2);
+            assert.deepEqual(provider.deleted, []);
+        }
+    }
+});
+
+test('a background replacement is provisioned with the package servers of the Sprite it replaces', async t => {
+    const provider = new FakeSpriteOrganization();
+    const pool = new SpritePool(provider);
+    t.after(() => pool.close());
+    const signal = new AbortController().signal;
+    const first = await pool.acquire(signal, undefined, packageSet('a'));
+    provider.created[0].failWipe = true;
+    await pool.release(first);
+    assert.deepEqual(provider.deleted, [first.sprite.name]);
+    // A run with another set does not take the replacement built for set A.
+    const other = await pool.acquire(signal);
+    assert.equal(other.packageServersDigest, 'none');
+    const replacement = await pool.acquire(signal, undefined, packageSet('a'));
+    assert.equal(replacement.packageServersDigest, first.packageServersDigest);
+    assert.equal(typeof replacement.packageServerInstallMs, 'number', 'the replacement installed set A');
+    assert.equal(provider.created.length, 3);
+    await pool.release(other);
+    await pool.release(replacement);
+});
+
+test('a warm Sprite is not reused when the package server lock changed under the same cache key', async t => {
+    const provider = new FakeSpriteOrganization();
+    const pool = new SpritePool(provider);
+    t.after(() => pool.close());
+    const signal = new AbortController().signal;
+    // The worker install was rebuilt: same package, version and integrity, but a dependency resolved to another version.
+    const l1 = packageSet('a', JSON.stringify({ packages: { 'node_modules/dep': { version: '1.0.0' } } }));
+    const l2 = packageSet('a', JSON.stringify({ packages: { 'node_modules/dep': { version: '1.1.0' } } }));
+    assert.equal(l1.servers[0].key, l2.servers[0].key);
+    const first = await pool.acquire(signal, undefined, l1);
+    await pool.release(first);
+    const second = await pool.acquire(signal, undefined, l2);
+    assert.notEqual(second.sprite.name, first.sprite.name, 'the warm Sprite holding the old lock is not handed out');
+    assert.notEqual(second.packageServersDigest, first.packageServersDigest);
+    assert.equal(second.packages, l2, 'the new Sprite installs the current lock');
+    // A background replacement for the new Sprite keeps the new lock, and the old Sprite stays with the old one.
+    provider.created.find(sprite => sprite.name === second.sprite.name)!.failWipe = true;
+    await pool.release(second);
+    const replacement = await pool.acquire(signal, undefined, l2);
+    assert.notEqual(replacement.sprite.name, first.sprite.name);
+    assert.equal(replacement.packageServersDigest, second.packageServersDigest);
+    assert.equal(replacement.packages, l2);
+    await pool.release(replacement);
+    assert.equal((await pool.acquire(signal, undefined, l1)).sprite.name, first.sprite.name);
+});
+
+test('a warm Sprite is reused only when both its runtime packages and its package servers match', async t => {
+    const { start, provider } = fixture();
+    const inventory = await start({ PROPR_SPRITES_MAX: '3' });
+    await inventory.sweep();
+    let packages = ['postgresql-client'];
+    const pool = new SpritePool(provider, inventory, async () => packages);
+    t.after(() => pool.close());
+    const signal = new AbortController().signal;
+    const run = async (servers?: ReturnType<typeof packageSet>) => {
+        const slot = await pool.acquire(signal, undefined, servers);
+        await pool.release(slot);
+        return slot;
+    };
+    const a = await run(packageSet('a'));
+    const b = await run();
+    // Same runtime packages: each package server set keeps its own warm Sprite.
+    assert.equal((await run(packageSet('a'))).sprite.name, a.sprite.name);
+    assert.equal((await run()).sprite.name, b.sprite.name);
+    assert.equal(provider.created.length, 2);
+    // Same package servers, other runtime packages: no reuse, and the superseded Sprites are retired.
+    packages = ['jq'];
+    const fresh = await run(packageSet('a'));
+    assert.notEqual(fresh.sprite.name, a.sprite.name);
+    assert.equal(fresh.packageServersDigest, a.packageServersDigest);
+    assert.notEqual(fresh.packagesDigest, a.packagesDigest);
+    await pool.close();
+    assert.ok(provider.deleted.includes(a.sprite.name) && provider.deleted.includes(b.sprite.name));
+});

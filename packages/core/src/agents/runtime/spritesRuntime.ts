@@ -1,5 +1,6 @@
 import { assertNativeLogAdmission } from '../../diagnostics/managedLogRuntime.js';
 import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.js';
+import { extensionLaunchRefusal } from './extensionCapabilities.js';
 import { randomUUID } from 'node:crypto';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { getExecutionOwnershipContext } from '../../claude/docker/dockerExecutionOwnership.js';
@@ -20,21 +21,35 @@ import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntim
 import logger from '../../utils/logger.js';
 import { LiveOutputLog } from '../impl/utils/liveOutputLog.js';
 import { SpriteInventory, type SpritePoolRedis } from './sprites/spritesInventory.js';
-import { spritesMcpForwardTarget, type SpritesMcpForwardTarget } from './sprites/spritesMcpForwardConfig.js';
+import { isSpritesMcpForwardUrl, spritesMcpForwardTarget, type SpritesMcpForwardTarget } from './sprites/spritesMcpForwardConfig.js';
 import type { SpritesMcpForward } from './sprites/spritesMcpForward.js';
 
-/** The forward target a run's `ssh-reverse-forward` MCP grant needs, or undefined for any other grant. */
-function mcpForwardTarget(spec: AgentRunSpec, environment: NodeJS.ProcessEnv): SpritesMcpForwardTarget | undefined {
-    if (spec.mcpGrant?.transport !== 'ssh-reverse-forward') return undefined;
+/**
+ * The per-run SSH reverse forward a run needs: for a ProPR MCP grant over the
+ * forward, or for an extension gateway on the forward listener (URL MCP servers
+ * of a run without a public MCP URL, which may carry no ProPR MCP grant).
+ */
+function mcpForwardTarget(spec: AgentRunSpec, environment: NodeJS.ProcessEnv, gatewayUrl?: string): SpritesMcpForwardTarget | undefined {
+    const grant = spec.mcpGrant?.transport === 'ssh-reverse-forward' ? spec.mcpGrant : undefined;
+    const gateway = gatewayUrl && isSpritesMcpForwardUrl(gatewayUrl) ? gatewayUrl : undefined;
+    if (!grant && !gateway) return undefined;
     const target = spritesMcpForwardTarget(environment);
     if ('reason' in target) throw new Error(`Sprites cannot start the ProPR MCP SSH reverse forward: ${target.reason}`);
-    if (spec.mcpGrant.url !== target.url) throw new Error('The ProPR MCP grant URL does not match the Sprites SSH reverse forward listener');
+    if (grant && grant.url !== target.url) throw new Error('The ProPR MCP grant URL does not match the Sprites SSH reverse forward listener');
+    if (gateway && gateway.replace(/\/+$/, '') !== target.url.replace(/\/api\/mcp$/, '/api/extensions/mcp')) {
+        throw new Error('The extension gateway URL does not match the Sprites SSH reverse forward listener');
+    }
     return target;
 }
 
+// Operator catalog executables are not part of a Sprite: those servers stay refused (explicit) or dropped (auto-applied).
+const SPRITES_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false });
+
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
-    static readonly capabilities = { supportsExtensions: false, supportsRuntimePackages: true, supportsBindMounts: false, supportsRestrictedNetwork: true,
+    // Skill bundles travel with the run's upload and URL MCP servers through the extension gateway.
+    // Runtime packages and package servers are installed while the Sprite is provisioned, in its clean checkpoint.
+    static readonly capabilities = { extensions: SPRITES_EXTENSION_CAPABILITIES, supportsRuntimePackages: true, supportsBindMounts: false, supportsRestrictedNetwork: true,
         restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
         supportsMcpReachableUrl: true, supportsMcpReverseForward: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly capabilities = SpritesRuntime.capabilities;
@@ -94,13 +109,17 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     }
 
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {
-        if (extensionLaunchForRun(this.kind, [], { ...options, agentRun: { spec } })) throw new Error('Sprites runtime does not support extensions');
+        // Library items arrive filtered for this runtime; refuse a launch that still carries a class it cannot apply.
+        const extension = extensionLaunchForRun(this.kind, [], { ...options, agentRun: { spec } });
+        const extensionRefusal = extension && extensionLaunchRefusal(this, extension.requires);
+        if (extensionRefusal) throw extensionRefusal;
         assertNativeLogAdmission(options.diagnostics);
         const token = this.environment.PROPR_SPRITES_TOKEN || this.environment.SPRITES_TOKEN;
         if (!token) throw new Error('Set PROPR_SPRITES_TOKEN on the worker to run agents on Sprites');
         // Named networks, private MCP endpoints and malformed policies stay refused.
-        const networkPolicy = spriteNetworkPolicy(spec);
-        const forwardTarget = mcpForwardTarget(spec, this.environment);
+        // URL MCP servers go through the extension gateway: a restricted Sprite allows its host too.
+        const networkPolicy = spriteNetworkPolicy(spec, extension?.gatewayUrl ? [extension.gatewayUrl] : []);
+        const forwardTarget = mcpForwardTarget(spec, this.environment, extension?.gatewayUrl);
         process.env.SPRITES_CLIENT_SIGNALS ??= '0';
         if (this.closing) throw new Error('Sprites runtime is closed');
         const pool = this.getPool(token);
@@ -134,15 +153,15 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const refusal = await startupStep(signal, () => admitCostExecution('sprites', [], { ...options, agentRun: { spec } }));
             if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
             const inputPath = `/opt/propr/inbox/${randomUUID()}.json`;
-            const launch = { spec, options, token, inputPath };
+            const launch = { spec, options, token, inputPath, skillFiles: extension?.skillFiles };
             const validated = validateSpriteRun(launch, envDefaults);
             const ready = await startupStep(signal, () => pool);
-            const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs, packageInstallMs } = await startupStep(signal, async () => {
+            const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs, packageInstallMs, packageServerInstallMs } = await startupStep(signal, async () => {
                 const acquired = await ready.acquire(signal, () => {
                     diagnostics.push('Waiting for a Sprite');
                     announce('Waiting for a Sprite');
                     logger.info({ taskId: options.taskId, run: spec.name }, 'Waiting for a Sprite');
-                });
+                }, extension?.packageInstall);
                 const checkedOutAt = Date.now();
                 if (acquired.lease) signal = AbortSignal.any([signal, acquired.lease]);
                 const waitIndex = diagnostics.indexOf('Waiting for a Sprite');
@@ -155,13 +174,15 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                         acquired.restricted = { policy: networkPolicy, run: spec.name, recordDiagnostic };
                     }
                     signal.throwIfAborted();
+                    // The physical launch boundary: revalidates the library items and activates the run's gateway grant.
+                    if (extension) await startupStep(signal, () => extension.beforeLaunch());
                     const payload = prepareSpriteRun(launch, validated, envDefaults);
                     prepared = payload;
                     await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => payload.upload(acquired.sprite));
                     signal.throwIfAborted();
                     slot = acquired;
                     return { sprite: acquired.sprite, prepared: payload, checkedOutAt, queueMs: acquired.queueMs, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs,
-                        packageInstallMs: acquired.packageInstallMs };
+                        packageInstallMs: acquired.packageInstallMs, packageServerInstallMs: acquired.packageServerInstallMs };
                 } catch (error) {
                     // An interrupted policy change or upload can still write to the Sprite.
                     if (prepared || (networkPolicy && !acquired.restricted)) await ready.discard(acquired.sprite);
@@ -174,7 +195,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             try {
                 signal.throwIfAborted();
                 if (forwardTarget) {
-                    // Before the agent starts: its ProPR MCP config names the loopback listener.
+                    // Before the agent starts: its ProPR MCP or extension gateway config names the loopback listener.
                     const starting = import('./sprites/spritesMcpForward.js').then(({ SpritesMcpForward }) => SpritesMcpForward.start({
                         sprite, target: forwardTarget, signal, run: spec.name,
                         onLost: error => {
@@ -197,7 +218,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
                 });
                 return { ...executed, computeUsage: { runtime: 'sprites', wallTimeMs: Date.now() - checkedOutAt + provisioningMs + restoreMs,
-                    queueMs, provisioningMs, restoreMs, ...(packageInstallMs !== undefined && { packageInstallMs }), cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
+                    queueMs, provisioningMs, restoreMs, ...(packageInstallMs !== undefined && { packageInstallMs }),
+                    ...(packageServerInstallMs !== undefined && { packageServerInstallMs }), cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
                     costUsd: null, costSource: null } };
             } finally {
                 // Torn down with the run: success, failure, cancellation, timeout or a lost reattach.

@@ -21,7 +21,7 @@ export const UNRELEASED_RUN_REMOVAL_MS = 10 * 60_000;
 const REMOVE_TIMEOUT_MS = 30_000;
 
 export const DOCKER_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.freeze({
-    supportsExtensions: true,
+    extensions: Object.freeze({ skills: true, remoteMcp: true, packageMcp: true }),
     supportsRuntimePackages: true,
     supportsBindMounts: true,
     supportsRestrictedNetwork: true,

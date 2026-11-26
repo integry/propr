@@ -3,6 +3,9 @@
 export const RUN = '/root/propr-run';
 export const WRAPPER = '/opt/propr/fly-run.py';
 export const AGENT = '/opt/propr/fly-agent.json';
+/** Where the wrapper finds the package server installer and its input; it records the outcome next to them. */
+export const PACKAGE_SERVERS = { installer: '/opt/propr/fly-package-servers.py', spec: RUN + '/package-servers.json',
+    result: RUN + '/package-servers-result', read: RUN + '/package-servers-read' } as const;
 export const wrapper = String.raw`
 import base64, errno, json, os, pwd, signal, stat, subprocess, sys, threading, time
 from pathlib import Path
@@ -75,10 +78,39 @@ def install_packages(spec):
         time.sleep(.2)
     return False
 
+def install_package_servers():
+    # Before dropping to node and before reporting ready: the agent never starts
+    # without its package MCP servers. The installer bounds npm and records
+    # {ms, code, tail}; only trusted values form its environment.
+    spec = Path('${PACKAGE_SERVERS.spec}')
+    if not spec.exists():
+        return True
+    status('installing')
+    result = Path('${PACKAGE_SERVERS.result}')
+    try:
+        subprocess.run([python, '-I', '${PACKAGE_SERVERS.installer}', str(spec), str(result)], env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8'},
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=json.loads(spec.read_bytes())['timeout'] / 1000 + 60)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if json.loads(result.read_bytes()).get('code') == 0:
+            return True
+    except (OSError, ValueError):
+        pass
+    status('install-failed')
+    # Keep the Machine for the worker to read the failure, then exit (auto_destroy).
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline and not Path('${PACKAGE_SERVERS.read}').exists():
+        time.sleep(.2)
+    return False
+
 def launch():
     run.chmod(0o700)
+    # Runtime packages first: package MCP servers may depend on them.
     packages = run / 'packages.json'
     if packages.exists() and not install_packages(json.loads(packages.read_bytes())):
+        return
+    if not install_package_servers():
         return
     data = json.loads((run / 'input').read_bytes())
     node = pwd.getpwnam('node')
@@ -90,6 +122,14 @@ def launch():
         subprocess.run(['/bin/mount', '-t', 'tmpfs', '-o', 'rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=%d,gid=%d' % (node.pw_uid, node.pw_gid), 'tmpfs', target], check=True)
     for file in data['owned']:
         os.chown(file, node.pw_uid, node.pw_gid)
+    extensions = Path('/opt/propr/extensions')
+    if data.get('extensions') and extensions.is_dir() and not extensions.is_symlink():
+        for directory, _, names in os.walk(extensions):
+            os.chown(directory, 0, 0)
+            os.chmod(directory, 0o555)
+            for name in names:
+                os.chown(Path(directory) / name, 0, 0)
+                os.chmod(Path(directory) / name, 0o444)
     os.chown(agent, 0, node.pw_gid)
     os.chmod(agent, 0o640)
     child = None

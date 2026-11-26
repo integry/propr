@@ -11,7 +11,7 @@ import { configuredExtensionRefusal, getAgentRuntime } from '../packages/core/sr
 import { agentRunMcpTransportFor } from '../packages/core/src/agents/runtime/agentRunMcpTransport.ts';
 import { dockerAgentRuntimeInUse } from '../packages/core/src/agents/runtime/runtimeSelection.ts';
 import type { MachineLaunch, MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
-import { RUN, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
+import { PACKAGE_SERVERS, RUN, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { buildAgentRunRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.ts';
 import { executeWithRepositoryWorkflow, repositoryWorkflowExecution } from '../packages/core/src/workflow/workflowExecution.ts';
@@ -251,11 +251,11 @@ for value in ('running', 'exited 143'):
 `, 'test', root]);
 });
 
-test('Fly selection skips Docker preparation, refuses extensions and restricted networks, and resolves MCP', () => {
+test('Fly selection skips Docker preparation, admits extensions, refuses restricted networks, and resolves MCP', () => {
     const { runtime, builder } = fixture();
     assert.equal(getAgentRuntime({ runtime: 'fly-machines' }).kind, runtime.kind);
     assert.equal(dockerAgentRuntimeInUse([], { PROPR_AGENT_RUNTIME: runtime.kind }), false);
-    assert.match(configuredExtensionRefusal(runtime.kind)!, /does not support extensions/);
+    assert.equal(configuredExtensionRefusal(runtime.kind), undefined, 'skill bundles and URL MCP servers run on Fly');
     builder.spec.network.policy = { mode: 'restricted', allow: [], privateAddressAllow: [] };
     assert.throws(() => runtime.start(builder.build()), /open networking/);
     const plan = (env: NodeJS.ProcessEnv) => agentRunMcpTransportFor({ runtime: runtime.kind }, env);
@@ -522,12 +522,193 @@ test('the unprivileged hook loads the resolved setup and agent environment', asy
     await run.release!();
 });
 
-test('extension admission refuses Fly before workspace preparation', async () => {
+test('extension admission refuses operator catalog stdio servers on Fly before workspace preparation', async () => {
     const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
     const { runAgent } = await import('../packages/core/src/agents/runtime/registry.ts');
-    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], beforeLaunch: async () => {} }, async () => {
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { catalogMcp: ['operator-tool'] }, beforeLaunch: async () => {} }, async () => {
         await assert.rejects(runAgent({ runtime: 'fly-machines' }, fixture().builder.build(), { taskId: 'ext', extensionAgentLaunch: true }),
-            { name: 'AgentRuntimeCapabilityError', capability: 'extensions' });
+            (error: Error & { capability?: string }) => error.name === 'AgentRuntimeCapabilityError' && error.capability === 'catalog_mcp' && /"operator-tool"/.test(error.message));
+    });
+});
+
+const packageInstall = {
+    registry: 'https://registry.npmjs.org',
+    servers: [{ key: 'a'.repeat(40), package: 'propr-fixture-mcp', version: '1.0.0', integrity: 'sha512-fixture', entry: 'node_modules/propr-fixture-mcp/bin/server.js',
+        packageJson: '{"dependencies":{"propr-fixture-mcp":"1.0.0"}}', lock: '{"packages":{}}' }],
+};
+
+/** A Machine that reports `installing` until polled a few times, then the given install outcome. */
+function installingMachine(api: FakeMachines, outcome: { code: number | 'timeout'; tail?: string }) {
+    let polls = 0;
+    const reads: string[] = [];
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => {
+        if (args[0] === '/bin/cat') { reads.push(args[1]); return { stdout: JSON.stringify({ ms: 4200, tail: '', ...outcome }), exit_code: 0 }; }
+        if (args[0] === '/usr/bin/touch' && args[1].endsWith('/package-servers-read')) { reads.push(args[1]); return { stdout: '', exit_code: 0 }; }
+        if (args[3] === 'probe' && !api.started && polls++ < 2) return { stdout: 'installing\n0', exit_code: 0 };
+        if (args[3] === 'probe' && !api.started && outcome.code !== 0) return { stdout: 'install-failed\n0', exit_code: 0 };
+        return exec(id, args);
+    };
+    return reads;
+}
+
+test('package MCP servers are installed at Machine start before the agent; the install time is recorded in compute usage', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { PACKAGE_SERVER_INSTALLER } = await import('../packages/core/src/extensions/remotePackageServers.ts');
+    const { runtime, api, builder } = fixture();
+    const reads = installingMachine(api, { code: 0 });
+    let result;
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { packageMcp: ['local-tools'] }, packageInstall, beforeLaunch: async () => {} }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        result = await run.wait();
+        await run.release!();
+    });
+    assert.equal(result!.exitCode, 0);
+    assert.equal(result!.computeUsage?.packageServerInstallMs, 4200);
+    // As for runtime packages, provisioning lasts until the agent starts, so it includes the install reported on its own.
+    assert.ok(result!.computeUsage!.provisioningMs! >= 0, 'provisioning is measured up to the agent start');
+    assert.equal(result!.computeUsage?.packageInstallMs, undefined, 'no runtime packages are configured');
+    assert.equal(typeof result!.computeUsage?.wallTimeMs, 'number');
+    assert.deepEqual(reads, [RUN + '/package-servers-result']);
+    const files = new Map(api.launch!.config.files.map(f => [f.guest_path, f]));
+    assert.equal(Buffer.from(files.get('/opt/propr/fly-package-servers.py')!.raw_value, 'base64').toString(), PACKAGE_SERVER_INSTALLER);
+    const spec = JSON.parse(Buffer.from(files.get(RUN + '/package-servers.json')!.raw_value, 'base64').toString());
+    assert.deepEqual(spec.servers, packageInstall.servers);
+    assert.equal(spec.root, '/opt/propr/packages');
+    assert.equal(files.get(RUN + '/package-servers.json')!.mode, 0o600);
+    assert.ok(wrapper.includes(`'${PACKAGE_SERVERS.installer}'`), 'the wrapper runs the installer the launch stages');
+});
+
+test('without package MCP servers the Machine has no install step', async () => {
+    const { runtime, api, builder } = fixture();
+    const run = runtime.start(builder.build());
+    const usage = (await run.wait()).computeUsage;
+    // Wall time is measured on the same basis as for runs with package servers.
+    assert.equal(usage?.runtime, 'fly-machines');
+    assert.equal(typeof usage?.wallTimeMs, 'number');
+    assert.equal(usage?.packageServerInstallMs, undefined);
+    assert.equal(typeof usage?.provisioningMs, 'number');
+    await run.release!();
+    assert.ok(!api.launch!.config.files.some(f => /package-servers/.test(f.guest_path)));
+});
+
+test('a failed package MCP server install fails the run with the end of npm\'s output and never starts the agent', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, api, builder } = fixture();
+    const reads = installingMachine(api, { code: 1, tail: 'npm error 404 Not Found - GET https://registry.npmjs.org/propr-fixture-mcp' });
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { packageMcp: ['local-tools'] }, packageInstall, beforeLaunch: async () => {} }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        await assert.rejects(run.wait(), (error: Error) => /could not install the run's package MCP servers \(propr-fixture-mcp@1\.0\.0; digest [0-9a-f]{16}\): npm exited with code 1 after 4s/.test(error.message)
+            && /npm error 404 Not Found/.test(error.message));
+        await run.release!();
+    });
+    assert.equal(api.started, false, 'the start gate never opened');
+    assert.equal(api.destroyed, 1);
+    assert.ok(reads.includes(RUN + '/package-servers-read'), 'the Machine is told it may exit');
+});
+
+test('a long install with an exec outage still starts the agent, which gets a fresh boot window after the install', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { api, builder } = fixture();
+    const runtime = new FlyMachinesRuntime(api, { ...env, PROPR_FLY_BOOT_TIMEOUT: '2' }, async () => []);
+    const started = Date.now();
+    const states: string[] = [];
+    let touches = 0;
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => {
+        if (args[0] === '/bin/cat') return { stdout: JSON.stringify({ ms: 2500, code: 0, tail: '' }), exit_code: 0 };
+        if (args[3] === 'probe' && !api.started) {
+            const elapsed = Date.now() - started;
+            // Installing past the 2 s boot window, with a 2.4 s exec outage in the middle.
+            if (elapsed < 4500) {
+                if (elapsed > 300 && elapsed < 2700) { states.push('outage'); throw new Error('exec unavailable'); }
+                states.push('installing');
+                return { stdout: 'installing\n0', exit_code: 0 };
+            }
+            states.push('ready');
+        }
+        // The first start request after the install fails transiently.
+        if (args[0] === '/usr/bin/touch' && touches++ === 0) return { stdout: '', exit_code: 1 };
+        return exec(id, args);
+    };
+    let result;
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { packageMcp: ['local-tools'] }, packageInstall, beforeLaunch: async () => {} }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        result = await run.wait();
+        await run.release!();
+    });
+    assert.ok(states.includes('outage') && states.includes('ready'), states.join());
+    assert.equal(api.started, true, 'the agent started after the install');
+    assert.equal(result!.exitCode, 0);
+    assert.equal(result!.computeUsage?.packageServerInstallMs, 2500);
+});
+
+test('a Machine configuration over 4 MiB is refused before the Machine is created, naming what it carries', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, api, builder } = fixture();
+    let created = false;
+    api.create = async () => { created = true; return 'machine'; };
+    const large = Buffer.alloc(3.5 * 1024 * 1024, 'a');
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { skills: ['Big'] },
+        skillFiles: [{ path: 'bundle-1/SKILL.md', content: large }], beforeLaunch: async () => {} }, async () => {
+        assert.throws(() => runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true }),
+            /Fly Machine configuration is 4\.\d MiB, over the 4\.0 MiB limit for one Machine create request\. It carries 3\.5 MiB of skill bundle files and 0\.0 MiB of package server lock files/);
+    });
+    assert.equal(created, false);
+});
+
+test('the Fly wrapper installs package servers before reporting ready, and reports install-failed otherwise', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-install-'));
+    try {
+        const installer = path.join(root, 'installer.py');
+        assert.ok(wrapper.includes(`run = Path('${RUN}')`) && wrapper.includes(`'${PACKAGE_SERVERS.installer}'`));
+        // The wrapper names the paths the launch stages; point them all at the temporary run directory.
+        const script = wrapper.replace(`'${PACKAGE_SERVERS.installer}'`, JSON.stringify(installer)).replaceAll(RUN, root)
+            .replace(/\nif __name__ == '__main__':[\s\S]*$/, '\n') + '\nprint(install_package_servers())\n';
+        fs.writeFileSync(path.join(root, 'package-servers.json'), JSON.stringify({ timeout: 5000 }));
+        // Already acknowledged, so a failed install does not wait for the worker.
+        fs.writeFileSync(path.join(root, 'package-servers-read'), '');
+        for (const [code, expected, state] of [[0, 'True', 'installing'], [1, 'False', 'install-failed']] as const) {
+            fs.writeFileSync(installer, `import json, sys\njson.dump({'ms': 5, 'code': ${code}, 'tail': ''}, open(sys.argv[2], 'w'))\n`);
+            assert.equal(execFileSync('python3', ['-I', '-c', script], { encoding: 'utf8' }).trim(), expected);
+            assert.equal(fs.readFileSync(path.join(root, 'status'), 'utf8').trim(), state);
+        }
+        fs.rmSync(path.join(root, 'package-servers.json'));
+        assert.equal(execFileSync('python3', ['-I', '-c', script], { encoding: 'utf8' }).trim(), 'True', 'nothing configured: no install step');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('library skill bundles reach the Machine read-only and the grant activates before the Machine is created', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, api, builder } = fixture();
+    const secret = 'extension-grant-token-for-fly';
+    const events: string[] = [];
+    const create = api.create.bind(api);
+    api.create = async launch => { events.push('create'); return create(launch); };
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [secret], requires: { skills: ['Review'], remoteMcp: ['docs'] },
+        skillFiles: [{ path: 'bundle-1/SKILL.md', content: Buffer.from('# Review') }, { path: 'bundle-1/ref/notes.md', content: Buffer.from('notes') }],
+        gatewayUrl: 'https://propr.example/api/extensions/mcp', beforeLaunch: async () => { events.push('beforeLaunch'); } }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+    });
+    assert.deepEqual(events, ['beforeLaunch', 'create']);
+    const files = new Map(api.launch!.config.files.map(f => [f.guest_path, f]));
+    const skill = files.get('/opt/propr/extensions/bundle-1/SKILL.md')!;
+    assert.equal(Buffer.from(skill.raw_value, 'base64').toString(), '# Review');
+    assert.equal(skill.mode, 0o444);
+    assert.ok(files.has('/opt/propr/extensions/bundle-1/ref/notes.md'));
+    const input = JSON.parse(Buffer.from(files.get(RUN + '/input')!.raw_value, 'base64').toString());
+    assert.equal(input.extensions, true);
+    assert.ok(input.secrets.includes(secret), 'the wrapper redacts the extension grant token from live output');
+});
+
+test('a skill bundle path that could leave the extension root is refused', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, builder } = fixture();
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { skills: ['Bad'] },
+        skillFiles: [{ path: 'bundle/../../etc/passwd', content: Buffer.from('x') }], beforeLaunch: async () => {} }, async () => {
+        assert.throws(() => runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true }), /Invalid extension skill bundle path/);
     });
 });
 

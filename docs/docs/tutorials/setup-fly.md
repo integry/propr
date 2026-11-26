@@ -110,6 +110,24 @@ To check idle wake, close the UI, wait until `fly machine list --app "$APP"` sho
 
 When tearing down an installation with idle shutdown enabled, find the ID of the stop token (named `propr idle stop` when created by the CLI) with `fly tokens list --app "$APP"` and run `fly tokens revoke <id>` before destroying the app. The deploy token stays active after app deletion.
 
+### Extensions on Fly runtimes
+
+Agents on Sprites and Fly Machines get these extensions:
+
+| What the agent gets | Sprites | Fly Machines |
+| --- | --- | --- |
+| Skills, commands, agents and instruction files in the provider config directory | Yes | Yes |
+| Repository skills, `AGENTS.md` and `CLAUDE.md` | Yes | Yes |
+| Library skill bundles | Yes | Yes |
+| Library URL MCP servers | Yes, through the ProPR extension gateway (over the SSH reverse forward without a public URL) | Yes, through the ProPR extension gateway |
+| Library package (stdio) MCP servers | Yes, installed while the Sprite is provisioned | Yes, installed at Machine start |
+| Operator catalog stdio servers | No | No |
+| ProPR MCP | Yes, at the reachable URL or over the SSH reverse forward | Yes, at the reachable URL |
+
+Package servers are installed inside the Sprite or Machine from the worker's verified install, with `npm ci` and no lifecycle scripts, so the Sprite or Machine must reach the npm registry. A Sprite is provisioned with the run's package servers before its clean checkpoint. Warm Sprites are kept per package-server set: a run reuses one built for its set, and at `PROPR_SPRITES_MAX` the least recently used idle Sprite built for another set is deleted to make room. A Fly Machine installs them before the agent starts, within 10 minutes. A failed install fails the run with the end of npm's output. Runs report the install time as `packageServerInstallMs` in compute usage.
+
+An auto-applied operator catalog stdio server is dropped from a Fly run. The task timeline and the issue or pull request comment name the dropped server. A run that adds one explicitly is refused with an error naming the server. To use them, run that agent on Docker. See [Extensions by runtime](../architecture/agent-runtime.md#extensions-by-runtime).
+
 ## Who can access the work
 
 You control the Fly organization, volume, GitHub installation and model credentials. Fly hosts the repository contents and credentials needed during a run. A cloud agent receives a scoped workspace clone and per-run provider credentials. The worker retrieves the result, handles credential refresh and publishes the PR. Sprites restore a clean checkpoint between leases. Fly Machines are destroyed after result collection. Limit GitHub installation access to intended repositories, use separate agent and control-plane tokens, and treat users who can trigger tasks as able to run code on your account. ProPR Connect can relay events and wake requests. It does not supply the agent compute.
@@ -132,3 +150,16 @@ Install a dedicated fixture GitHub App with access to read the issue and write t
 The nightly run uses Sprites. A manual dispatch can set the `agent_runtime` input to `fly-machines` instead. That run also creates a disposable agent app, builds and pushes `Dockerfile.agent` to it, and gives the control plane a deploy token scoped to that app.
 
 Each run points the App webhook at the disposable Machine and sets a fresh signing secret. Before idle shutdown, it configures the runtime package `figlet`, which the agent image lacks, the same way Settings applies a package list, and records the list’s digest. The fixture issue asks for a file whose first line is the app name and whose second line is the output of `figlet -v | head -1`. After confirming delivery of the new fixture issue, the workflow waits for idle shutdown and adds the `AI` label. It reports the wake record’s redelivery count and verifies the linked PR, the figlet banner on the file’s second line, and the install log after the stop with the same digest (`Installed agent runtime packages on Sprite`, or `… at Fly Machine start` for Fly Machines). It prints that log’s `packagesDigest`, `packageCount` and `installMs`, and checks for a successful execution on the selected `compute_runtime`. Teardown restores the placeholder URL, closes the fixture issue and PR, and deletes the temporary compute, including the agent app.
+
+### Extension Library check
+
+Dispatch the workflow with the **extensions** input checked to also verify Extension Library items on the remote runtime. For nightly runs, set the repository variable `FLY_E2E_NIGHTLY_EXTENSIONS` to `true`. The check runs on the selected `agent_runtime` (Sprites or Fly Machines).
+
+Before the idle stop, the workflow adds the `FLY_E2E_GITHUB_TOKEN` user to `PROPR_ADMIN_USERS`, claims the administrator role and calls the same API as **Settings → Extensions**. It adds two items, each auto-applied to issue tasks in the fixture repository:
+
+- a skill bundle with one `SKILL.md` that gives a token unique to the run;
+- the package MCP server `@modelcontextprotocol/server-everything` 2.3.1, pinned in the workflow by version and integrity value. The run fails if the registry resolves another integrity value. The agent calls its `echo` tool.
+
+The fixture has no URL MCP server of its own, so none is added. The step summary says so.
+
+In this mode the fixture issue asks for a four-line file: the app name, the `figlet` banner, the skill token and the `echo` output (`Echo: MCP-OK-<run>`). The verify step checks all four lines. It also finds the `Extension Library items applied to this run` log record with `skills` and `packageServers` of at least 1, and the matching `Installed package MCP servers on Sprite` record (`… at Fly Machine start` on Fly Machines). The step summary shows `extensionDigest`, `packageServersDigest` and the install time.

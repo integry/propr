@@ -5,6 +5,20 @@ export const DEFAULT_AGENT_RUNTIME = 'docker';
 export const FLY_MACHINES_AGENT_RUNTIME = 'fly-machines';
 export const SPRITES_AGENT_RUNTIME = 'sprites';
 
+let defaultDockerRuntimeReplaced = false;
+
+/**
+ * Whether the `docker` runtime is still the built-in implementation. A
+ * replacement registered under that name may declare other capabilities, so
+ * callers that answer Docker without loading the registry must check this
+ * first. Set by `registerAgentRuntime`; never cleared, as the replacement's
+ * factory cannot be compared with the built-in one.
+ */
+export const builtInDockerRuntimeSelected = () => !defaultDockerRuntimeReplaced;
+export function noteAgentRuntimeRegistered(kind: string): void {
+    if (kind === DEFAULT_AGENT_RUNTIME) defaultDockerRuntimeReplaced = true;
+}
+
 /**
  * Which runtime agents select, without loading any runtime (image
  * preparation and Docker sweeps import this). Unknown names count as Docker

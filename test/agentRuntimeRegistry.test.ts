@@ -51,16 +51,30 @@ test('registered Docker runtimes retain extension support unless explicitly disa
     const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
     t.after(() => registerAgentRuntime('docker', () => new DockerRuntime()));
     await launchContext.run({ taskId: 'ext', secrets: [], mounts: [], beforeLaunch: async () => {} }, async () => {
-        for (const supportsExtensions of [undefined, false]) {
+        for (const extensions of [undefined, { skills: false, remoteMcp: false, packageMcp: false }]) {
             registerAgentRuntime('docker', () => {
                 const runtime = new DockerRuntime();
-                return Object.assign(runtime, { capabilities: { ...runtime.capabilities, supportsExtensions } });
+                return Object.assign(runtime, { capabilities: { ...runtime.capabilities, extensions } });
             });
             const run = runAgent({ runtime: 'docker' }, spec(), { taskId: 'ext', extensionAgentLaunch: true });
-            if (supportsExtensions === false) await assert.rejects(run, { name: 'AgentRuntimeCapabilityError', capability: 'extensions' });
+            if (extensions) await assert.rejects(run, { name: 'AgentRuntimeCapabilityError', capability: 'skills' });
             else assert.equal((await run).exitCode, 0);
         }
     });
+});
+
+test('the launch fence refuses only the extension classes a runtime lacks, naming the items', async t => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    t.after(() => registerAgentRuntime('docker', () => new DockerRuntime()));
+    registerAgentRuntime('docker', () => {
+        const runtime = new DockerRuntime();
+        return Object.assign(runtime, { capabilities: { ...runtime.capabilities, extensions: { skills: true, remoteMcp: true, packageMcp: false } } });
+    });
+    const launch = (requires: Record<string, string[]>) => launchContext.run({ taskId: 'ext', secrets: [], mounts: [], requires, beforeLaunch: async () => {} },
+        () => runAgent({ runtime: 'docker' }, spec(), { taskId: 'ext', extensionAgentLaunch: true }));
+    assert.equal((await launch({ skills: ['Review'], remoteMcp: ['docs'], packageMcp: [] })).exitCode, 0);
+    await assert.rejects(launch({ skills: [], remoteMcp: [], packageMcp: ['local-files'] }),
+        (error: Error & { capability?: string }) => error.name === 'AgentRuntimeCapabilityError' && error.capability === 'package_mcp' && /"local-files"/.test(error.message));
 });
 
 test('docker runtime launches the rendered argv and marks the launch as an agent run', async () => {

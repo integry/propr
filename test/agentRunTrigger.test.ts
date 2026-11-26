@@ -336,8 +336,12 @@ describe('validateAgentDefinitionRuntime', () => {
           ...sprites, loadAgents: async () => [agent({ runtime })],
         }), null);
       }
-      assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, ...selection }, sprites) ?? '', /sprites.*does not support extensions/);
+      // Sprites applies skill bundles and URL servers; the worker refuses an added package server by name at launch.
+      assert.equal(await validateAgentDefinitionRuntime({ ...base, extensions, ...selection }, sprites), null);
     }
+    const { extensionRuntimeRefusal } = await import('../packages/core/src/agents/runtime/registry.ts');
+    assert.match(extensionRuntimeRefusal({ kind: 'bare', capabilities: {} }) ?? '', /bare.*does not support extensions/);
+    assert.equal(extensionRuntimeRefusal({ kind: 'sprites', capabilities: { extensions: { skills: true, remoteMcp: true, packageMcp: false } } }), undefined);
     assert.match(await check({ extensions, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude or Codex/);
     assert.match(await check({ extensions, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude or Codex/);
     assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude or Codex/);

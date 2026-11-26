@@ -7,7 +7,7 @@ import type { AgentRunSpec, AgentRuntimeRestrictedNetworkEnforcement } from '../
 
 export const SPRITES_RESTRICTED_NETWORK_ENFORCEMENT: AgentRuntimeRestrictedNetworkEnforcement = Object.freeze({
     method: 'sprites-dns-allowlist',
-    description: 'The Sprite gets a DNS allowlist network policy covering the run\'s allowed hosts and the granted ProPR MCP host (none when MCP arrives over the loopback SSH reverse forward), with every other domain denied. The policy is applied before the agent starts and cleared after checkpoint restoration and before reuse. Ports are not confined, raw IP connections are denied, and private addresses are never reachable.',
+    description: 'The Sprite gets a DNS allowlist network policy covering the run\'s allowed hosts, the granted ProPR MCP host and the extension gateway host (neither when they arrive over the loopback SSH reverse forward), with every other domain denied. The policy is applied before the agent starts and cleared after checkpoint restoration and before reuse. Ports are not confined, raw IP connections are denied, and private addresses are never reachable.',
 });
 
 /** Sprites' unrestricted state: no rules, no enforcement. */
@@ -73,7 +73,7 @@ export function isLoopbackMcpUrl(url: string): boolean {
  * literal rules are dropped (Sprites denies raw IPs that were not resolved
  * from an allowed domain, and never reaches private addresses).
  */
-export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefined {
+export function spriteNetworkPolicy(spec: AgentRunSpec, gatewayUrls: readonly string[] = []): NetworkPolicy | undefined {
     if (spec.network.mode === 'named') throw new Error(`Sprites cannot join network "${spec.network.name}"`);
     const mcpHost = spriteMcpGrantHost(spec.mcpGrant);
     const { restriction, policy } = spec.network;
@@ -93,6 +93,7 @@ export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefin
         if ('reason' in mcpHost) throw new Error(mcpHost.reason);
         allowed.add(mcpHost.host);
     }
+    for (const host of restrictedSpriteGatewayHosts(gatewayUrls)) allowed.add(host);
     const wildcardZones = [...zones];
     const denied = wildcardZones.filter(zone => !allowed.has(zone)
         && !wildcardZones.some(parent => zone.endsWith(`.${parent}`)));
@@ -103,6 +104,18 @@ export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefin
             { domain: '*', action: 'deny' },
         ],
     };
+}
+
+/**
+ * The extension gateway host a run's URL MCP servers are reached through:
+ * none for the loopback SSH reverse forward listener, which never leaves the Sprite.
+ */
+function restrictedSpriteGatewayHosts(gatewayUrls: readonly string[]): string[] {
+    return gatewayUrls.filter(url => !!url && !isSpritesMcpForwardUrl(url)).map(url => {
+        const endpoint = restrictedSpriteMcpEndpoint(url);
+        if ('reason' in endpoint) throw new Error(endpoint.reason);
+        return endpoint.host;
+    });
 }
 
 const ruleKey = (rule: PolicyRule) => `${rule.include ?? ''}|${rule.domain ?? ''}|${rule.action ?? 'allow'}`;

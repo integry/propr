@@ -2,6 +2,7 @@ import type { Sprite } from '@fly/sprites';
 import logger from '../../../utils/logger.js';
 import { checkAgentRuntimePackagesBeforeInstall, type AgentRuntimePackageLoader } from '../agentRuntimePackageIndex.js';
 import { startupStep } from '../startupStep.js';
+import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, agentRuntimePackageInstallCommand, agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
 
 /**
  * Reads the Sprites runtime package list (normalized); a Sprite is provisioned with exactly these installed.
@@ -25,4 +26,21 @@ export async function detectSpritePackageBaseBeforeInstall(source: SpritePackage
         return false;
     });
     if (changed) await startupStep(signal, () => checkAgentRuntimePackagesBeforeInstall(source, packages, signal));
+}
+
+/**
+ * Installs the runtime packages on a Sprite being provisioned (after checking its base), returning the
+ * install time, or undefined without packages. An apt failure fails provisioning with its stderr, like a
+ * failed derived-image build. The apt lists stay in the checkpoint, so `.propr/setup.sh` can still install
+ * without `apt-get update`.
+ */
+export async function installSpriteRuntimePackages(source: SpritePackageSource, sprite: Sprite, packages: readonly string[], signal: AbortSignal): Promise<number | undefined> {
+    await detectSpritePackageBaseBeforeInstall(source, sprite, packages, signal);
+    if (packages.length === 0) return undefined;
+    const installing = Date.now();
+    await startupStep(signal, () => sprite.execFile('sudo', ['-n', ...agentRuntimePackageInstallCommand(packages, { keepAptLists: true })],
+        { signal, timeout: AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS }));
+    const installMs = Date.now() - installing;
+    logger.info({ sprite: sprite.name, ...agentRuntimePackagesLogFields(packages), installMs }, 'Installed agent runtime packages on Sprite');
+    return installMs;
 }

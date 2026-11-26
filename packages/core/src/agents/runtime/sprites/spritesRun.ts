@@ -7,6 +7,7 @@ import { credentialRunRoot, envFileValues } from '../../credentials/hostCredenti
 import { CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
 import type { AgentRunOptions } from '../dockerRuntime.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
+import type { ExtensionSkillFile } from '../../../extensions/extensionLaunchContext.js';
 
 const PATH = '/opt/propr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const antigravityHome = '/opt/propr/run/tmp/propr-antigravity-home';
@@ -14,6 +15,14 @@ const stores = { claude: '/home/node/.claude', codex: '/home/node/.codex', antig
 export const spriteLauncher = '/opt/propr/launcher.py';
 const python = ['/usr/bin/python3', '-I', spriteLauncher];
 type Bind = Extract<AgentRunMount, { type: 'bind' }>;
+
+/** A skill bundle file's path below the extension skills root; anything that could leave it is refused. */
+export function extensionSkillPath(relative: string): string {
+    const normalized = path.posix.normalize(relative);
+    if (!relative || normalized !== relative || path.posix.isAbsolute(relative) || normalized.split('/').some(part => !part || part === '.' || part === '..'))
+        throw new Error('Invalid extension skill bundle path');
+    return relative;
+}
 
 export function unsupportedMount(mount: Bind): string | undefined {
     if (mount.credentialStore?.perRun && mount.credentialStore.store === 'config') return;
@@ -77,7 +86,11 @@ function claudeSeed(binds: Bind[], token: string): string | undefined {
     return read.content.toString('base64');
 }
 
-export type SpriteLaunch = { spec: AgentRunSpec; options: AgentRunOptions; token: string; inputPath: string };
+export type SpriteLaunch = {
+    spec: AgentRunSpec; options: AgentRunOptions; token: string; inputPath: string;
+    /** Validated library skill bundle files, installed read-only under the extension skills root. */
+    skillFiles?: readonly ExtensionSkillFile[];
+};
 function writableClone(spec: AgentRunSpec) {
     const { clone, mode, readOnly, containerPath } = spec.workspace;
     if (mode !== 'clone' || readOnly || containerPath !== '/home/node/workspace' ||
@@ -135,10 +148,14 @@ export function prepareSpriteRun(launch: SpriteLaunch,
     const directories = [home, ...validated.directories,
         ...(store?.directories.map(dir => path.join(liveStore, dir)) ?? [])];
     const environment = { ...Object.fromEntries(env), ...bundle.secretEnv };
+    const extensions = (launch.skillFiles ?? []).map(file => {
+        if (file.content.includes(token)) throw new Error('Sprites org credential found in an extension skill bundle');
+        return [extensionSkillPath(file.path), file.content.toString('base64')];
+    });
     const upload = JSON.stringify({
         transport: ['/bin/bash', '-c', WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, ...python, 'agent'],
         transportEnv: { ...validated.transportEnv, [WORKSPACE_TRANSPORT_TOKEN_ENV]: transportToken },
-        stdin: validated.stdin, files,
+        stdin: validated.stdin, files, extensions,
         agent: { env: environment, argv, directories, claudeSeed: claudeSeed(binds, token),
             store: store ? liveStore : null, outputs: store?.outputs ?? [] },
     });
