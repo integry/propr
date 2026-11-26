@@ -272,6 +272,12 @@ export interface AgentRuntimeCapabilities {
      * class are dropped for that run with a visible note instead.
      */
     extensions?: AgentRuntimeExtensionCapabilities;
+    /**
+     * The runtime installs the instance runtime packages (Settings → runtime
+     * packages) before a run. A runtime without it is refused every run while
+     * packages are configured. Absent counts as supported only for Docker.
+     */
+    supportsRuntimePackages?: boolean;
     /** Host paths can be bind-mounted (workspace, git metadata, credentials). */
     supportsBindMounts: boolean;
     /**

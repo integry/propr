@@ -41,6 +41,8 @@ async function waitForBuild(buildId: string, json: boolean): Promise<AgentRuntim
 }
 
 async function finishUpdate(state: AgentRuntimePackageState, options: { wait?: boolean; json?: boolean }): Promise<void> {
+  // The save went through, but e.g. package availability could not be verified: say so before waiting.
+  for (const warning of state.warnings ?? []) console.error(`Warning: ${warning}`);
   const finalState = options.wait && state.buildId
     ? await waitForBuild(state.buildId, Boolean(options.json))
     : state;

@@ -3,7 +3,7 @@ import { DEFAULT_AGENT_RUNTIME } from './runtimeSelection.js';
 
 export type AgentRuntimeExtensionClass = keyof AgentRuntimeExtensionCapabilities;
 
-export type AgentRuntimeCapability = 'skills' | 'remote_mcp' | 'package_mcp' | 'catalog_mcp' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'mcp_reverse_forward' | 'agent_config';
+export type AgentRuntimeCapability = 'skills' | 'remote_mcp' | 'package_mcp' | 'catalog_mcp' | 'runtime_packages' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'mcp_reverse_forward' | 'agent_config';
 
 /**
  * A run refused before launch because its runtime cannot provide what the

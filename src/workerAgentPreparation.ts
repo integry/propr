@@ -11,6 +11,16 @@ export async function prepareAgentRegistryAtStartup(options: { signal?: AbortSig
     const { signal } = options;
     signal?.throwIfAborted();
     logger.info('Preparing agent Docker images and initializing agent registry...');
+    // The API process may run without PROPR_AGENT_RUNTIME: publish this worker's default runtime so
+    // Settings validates runtime packages the way the agents here run (no Docker for remote runtimes).
+    void import('@propr/core')
+        .then(core => (core as { publishWorkerAgentRuntime?: () => Promise<void> }).publishWorkerAgentRuntime?.())
+        .catch(error => logger.warn({ error: (error as Error).message }, 'Could not publish the worker agent runtime'));
+    // Remote runtimes check package names against their package index before each new install;
+    // start the download now so the first run (or Settings check) does not wait on it.
+    void import('@propr/core')
+        .then(core => (core as { warmRemoteAgentRuntimePackageIndexes?: () => Promise<void> }).warmRemoteAgentRuntimePackageIndexes?.())
+        .catch(error => logger.warn({ error: (error as Error).message }, 'Could not warm the agent runtime package index'));
     const registry = AgentRegistry.getInstance();
     registry.setImagePreparationOwner(true);
     try {

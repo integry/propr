@@ -69,7 +69,7 @@ class FakeMachines implements MachinesApi {
 }
 function fixture() {
     const api = new FakeMachines();
-    const runtime = new FlyMachinesRuntime(api, env);
+    const runtime = new FlyMachinesRuntime(api, env, async () => []);
     const builder = new AgentRunSpecBuilder({
         agentType: 'claude', image: 'propr/agent', name: 'task', stdin: true, user: '0:0', network: agentRunNetwork('bridge'),
         workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',
@@ -118,7 +118,7 @@ test('boot timeout and cancellation during create or readiness destroy an unstar
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     for (const boundary of ['create', 'ready', 'timeout']) {
         const { api, builder } = fixture();
-        const runtime = new FlyMachinesRuntime(api, { ...env, PROPR_FLY_BOOT_TIMEOUT: '1' });
+        const runtime = new FlyMachinesRuntime(api, { ...env, PROPR_FLY_BOOT_TIMEOUT: '1' }, async () => []);
         const controller = new AbortController();
         const pending = Promise.withResolvers<void>();
         const resume = Promise.withResolvers<void>();
@@ -565,7 +565,9 @@ test('package MCP servers are installed at Machine start before the agent; the i
     });
     assert.equal(result!.exitCode, 0);
     assert.equal(result!.computeUsage?.packageServerInstallMs, 4200);
-    assert.equal(result!.computeUsage?.provisioningMs, undefined, 'the install is counted once, in packageServerInstallMs');
+    // As for runtime packages, provisioning lasts until the agent starts, so it includes the install reported on its own.
+    assert.ok(result!.computeUsage!.provisioningMs! >= 0, 'provisioning is measured up to the agent start');
+    assert.equal(result!.computeUsage?.packageInstallMs, undefined, 'no runtime packages are configured');
     assert.equal(typeof result!.computeUsage?.wallTimeMs, 'number');
     assert.deepEqual(reads, [RUN + '/package-servers-result']);
     const files = new Map(api.launch!.config.files.map(f => [f.guest_path, f]));
@@ -585,7 +587,7 @@ test('without package MCP servers the Machine has no install step', async () => 
     assert.equal(usage?.runtime, 'fly-machines');
     assert.equal(typeof usage?.wallTimeMs, 'number');
     assert.equal(usage?.packageServerInstallMs, undefined);
-    assert.equal(usage?.provisioningMs, undefined);
+    assert.equal(typeof usage?.provisioningMs, 'number');
     await run.release!();
     assert.ok(!api.launch!.config.files.some(f => /package-servers/.test(f.guest_path)));
 });
@@ -608,7 +610,7 @@ test('a failed package MCP server install fails the run with the end of npm\'s o
 test('a long install with an exec outage still starts the agent, which gets a fresh boot window after the install', async () => {
     const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
     const { api, builder } = fixture();
-    const runtime = new FlyMachinesRuntime(api, { ...env, PROPR_FLY_BOOT_TIMEOUT: '2' });
+    const runtime = new FlyMachinesRuntime(api, { ...env, PROPR_FLY_BOOT_TIMEOUT: '2' }, async () => []);
     const started = Date.now();
     const states: string[] = [];
     let touches = 0;

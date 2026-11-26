@@ -22,6 +22,7 @@ const REMOVE_TIMEOUT_MS = 30_000;
 
 export const DOCKER_RUNTIME_CAPABILITIES: AgentRuntimeCapabilities = Object.freeze({
     extensions: Object.freeze({ skills: true, remoteMcp: true, packageMcp: true }),
+    supportsRuntimePackages: true,
     supportsBindMounts: true,
     supportsRestrictedNetwork: true,
     restrictedNetworkEnforcement: DOCKER_RESTRICTED_NETWORK_ENFORCEMENT,

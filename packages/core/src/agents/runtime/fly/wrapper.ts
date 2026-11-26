@@ -47,6 +47,37 @@ def live(stream, secrets, done):
                 pending = b''
                 dropping = False
 
+def install_packages(spec):
+    # Before dropping to node and before reporting ready: the run never starts
+    # without its packages. The argv carries the specs as arguments, never as
+    # shell text; only trusted values form the environment.
+    status('installing')
+    started = time.monotonic()
+    child = subprocess.Popen(spec['argv'], env={'PATH': spec['path'], 'HOME': '/root', 'LANG': 'C.UTF-8'}, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        output, _ = child.communicate(timeout=spec['timeout'] / 1000)
+        code = child.returncode
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        output, _ = child.communicate()
+        code = 'timeout'
+    result = {'ms': round((time.monotonic() - started) * 1000), 'code': code, 'tail': output[-4096:].decode('utf8', 'replace')}
+    tmp = run / 'packages-result.tmp'
+    tmp.write_text(json.dumps(result))
+    tmp.replace(run / 'packages-result')
+    if code == 0:
+        return True
+    status('install-failed')
+    # Keep the Machine for the worker to read the failure, then exit (auto_destroy).
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline and not (run / 'packages-read').exists():
+        time.sleep(.2)
+    return False
+
 def install_package_servers():
     # Before dropping to node and before reporting ready: the agent never starts
     # without its package MCP servers. The installer bounds npm and records
@@ -75,6 +106,10 @@ def install_package_servers():
 
 def launch():
     run.chmod(0o700)
+    # Runtime packages first: package MCP servers may depend on them.
+    packages = run / 'packages.json'
+    if packages.exists() and not install_packages(json.loads(packages.read_bytes())):
+        return
     if not install_package_servers():
         return
     data = json.loads((run / 'input').read_bytes())

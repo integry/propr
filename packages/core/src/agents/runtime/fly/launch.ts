@@ -15,9 +15,9 @@ import type { MachineLaunch, MachinesApi } from './api.js';
 import type { FlyConfig } from './config.js';
 import { RUN, AGENT, WRAPPER, PACKAGE_SERVERS, wrapper } from './wrapper.js';
 import { PACKAGE_SERVER_INSTALLER, packageServerInstallSpec, type RemotePackageInstall } from '../../../extensions/remotePackageServers.js';
+import { FLY_PATH as PATH, flyPackageInstallSpec } from './packages.js';
 
 export const helper = ['/usr/bin/python3', '-I', WRAPPER];
-const PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const shim = '/opt/propr/fly-provider';
 type Bind = Extract<AgentRunMount, { type: 'bind' }>;
 export function unsupportedFlyMount(m: Bind) {
@@ -189,6 +189,11 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     assertMachineConfigSize(Buffer.byteLength(serialized), extension);
     return { launch, credentialPath, secrets: [...new Set([config.token, ...secrets].filter(Boolean))], packageServers: extensionStaged.packageServers,
         markerArgs: transportEnv.PROPR_REPO_SETUP === '0' || !setup ? [] : [setup.script],
+        /** Have the Machine install the instance runtime packages as root before the agent starts (none: no apt step at all). */
+        installPackages(packages: readonly string[]) {
+            if (packages.length === 0) return;
+            add(RUN + '/packages.json', JSON.stringify(flyPackageInstallSpec(packages)));
+        },
         async commit(api: MachinesApi, id: string) {
             if (!store) return;
             const returned: ReturnedCredentialFile[] = [];

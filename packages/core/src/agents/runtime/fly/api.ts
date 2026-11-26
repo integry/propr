@@ -2,6 +2,8 @@ import { calculateDelay } from '../../../utils/retryHandler.js';
 import { constants } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { FlyConfig } from './config.js';
+import { ExtensionStreamRedactor } from '../../../extensions/extensionOutput.js';
+import { redactSecrets } from '../../../utils/secretRedaction.js';
 
 export interface MachineLaunch {
     name: string;
@@ -43,16 +45,56 @@ interface RequestOptions {
     timeout?: number;
 }
 
+const ERROR_BODY_LIMIT = 64 * 1024;
+export const ERROR_DETAIL_LIMIT = 300;
+
 class MachinesHttpError extends Error {
-    constructor(method: string, readonly status: number) {
-        super(`Fly Machines API ${method} returned HTTP ${status}`);
+    constructor(method: string, readonly status: number, detail?: string) {
+        super(`Fly Machines API ${method} returned HTTP ${status}` + (detail ? ': ' + detail : ''));
     }
+}
+
+async function readBounded(response: Response) {
+    const reader = response.body?.getReader();
+    if (!reader) return '';
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+        while (size < ERROR_BODY_LIMIT) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            size += value.length;
+        }
+    } finally { await reader.cancel().catch(() => {}); }
+    return Buffer.concat(chunks).subarray(0, ERROR_BODY_LIMIT).toString('utf8');
+}
+
+/**
+ * Fly's validation message from an error body, or undefined. A create or exec
+ * error body may echo the submitted configuration, so only the JSON `error`
+ * string is kept: known secrets (and their base64, hex and URL spellings),
+ * secret-shaped values and long opaque blobs such as file `raw_value`s are
+ * redacted before it is truncated.
+ */
+export function flyErrorDetail(body: string, secrets: readonly string[] = []): string | undefined {
+    let message: unknown;
+    try { message = (JSON.parse(body) as { error?: unknown })?.error; } catch { return; }
+    if (typeof message !== 'string') return;
+    const redactor = new ExtensionStreamRedactor([...secrets]);
+    let detail = redactSecrets(redactor.push(message) + redactor.finish())
+        .replace(/[A-Za-z0-9+/_-]{80,}={0,2}/g, '[REDACTED]')
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+    if (detail.length > ERROR_DETAIL_LIMIT) detail = detail.slice(0, ERROR_DETAIL_LIMIT - 1) + '…';
+    return detail || undefined;
 }
 
 export class MachinesClient implements MachinesApi {
     private readonly url: string;
     private readonly authorization: string;
-    constructor(private readonly config: FlyConfig) {
+    /** `secrets` are redacted from any Fly error message surfaced in a run failure. */
+    constructor(private readonly config: FlyConfig, private readonly secrets: readonly string[] = []) {
         this.url = 'https://api.machines.dev/v1/apps/' + config.app + '/machines';
         this.authorization = config.token.startsWith('FlyV1 ') ? config.token : 'Bearer ' + config.token;
     }
@@ -63,10 +105,11 @@ export class MachinesClient implements MachinesApi {
             headers: { Authorization: this.authorization, 'Content-Type': 'application/json' },
             body: body === undefined ? undefined : JSON.stringify(body),
             signal: signal ? AbortSignal.any([deadline, signal]) : deadline });
-        // A create or exec error body may echo the submitted configuration.
+        // A create or exec error body may echo the submitted configuration:
+        // surface only Fly's redacted, truncated `error` string.
         if (!response.ok && !(method === 'DELETE' && response.status === 404)) {
-            await response.body?.cancel();
-            throw new MachinesHttpError(method, response.status);
+            const body = await readBounded(response).catch(() => '');
+            throw new MachinesHttpError(method, response.status, flyErrorDetail(body, [this.config.token, ...this.secrets]));
         }
         return response;
     }

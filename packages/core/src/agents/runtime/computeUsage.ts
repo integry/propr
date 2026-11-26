@@ -20,6 +20,8 @@ export interface AgentRunComputeUsage {
     queueMs?: number;
     provisioningMs?: number;
     restoreMs?: number;
+    /** Time spent installing the instance runtime packages for this run (Fly Machine start, or a Sprite provisioned for it). */
+    packageInstallMs?: number;
     /** Time spent installing the run's package MCP servers (Fly Machine start, or a Sprite provisioned for it). */
     packageServerInstallMs?: number;
     /** CPU time the sandbox consumed; null when the runtime could not measure it. */
@@ -140,6 +142,7 @@ export function normalizeComputeUsage(value: unknown): AgentRunComputeUsage | nu
         ...(finiteOrNull(record.queueMs) !== null && { queueMs: Number(record.queueMs) }),
         ...(finiteOrNull(record.provisioningMs) !== null && { provisioningMs: Number(record.provisioningMs) }),
         ...(finiteOrNull(record.restoreMs) !== null && { restoreMs: Number(record.restoreMs) }),
+        ...(finiteOrNull(record.packageInstallMs) !== null && { packageInstallMs: Number(record.packageInstallMs) }),
         ...(finiteOrNull(record.packageServerInstallMs) !== null && { packageServerInstallMs: Number(record.packageServerInstallMs) }),
         cpuSeconds: finiteOrNull(record.cpuSeconds),
         peakMemoryBytes: finiteOrNull(record.peakMemoryBytes),
@@ -182,6 +185,7 @@ export function formatComputeCost(costUsd: number): string {
 export function formatComputeUsage(usage: AgentRunComputeUsage): string {
     const parts = [usage.runtime, `${formatComputeDuration(usage.wallTimeMs)} wall`];
     if (usage.queueMs) parts.push(`${formatComputeDuration(usage.queueMs)} queued`);
+    if (usage.packageInstallMs) parts.push(`${formatComputeDuration(usage.packageInstallMs)} installing packages`);
     if (usage.packageServerInstallMs) parts.push(`${formatComputeDuration(usage.packageServerInstallMs)} installing MCP packages`);
     if (usage.cpuSeconds !== null) parts.push(`${usage.cpuSeconds.toFixed(1)} CPU-s`);
     if (usage.peakMemoryBytes !== null) {

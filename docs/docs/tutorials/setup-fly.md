@@ -31,7 +31,11 @@ The live Sprite checks provide a baseline for interpreting the first run’s cos
 
 These are individual test runs. A real issue also spends time running the agent and its tests. [Sprite timing measurements](https://github.com/integry/propr/issues/3765) · [Small-edit measurements](https://github.com/integry/propr/issues/3764)
 
-On the **personal Free plan**, adding a card gives $5 monthly usage, up to three Machines, three Sprites and 5 GB per volume. Count stopped Machines too when planning capacity, to be safe. One control plane leaves at most two Machine slots for agents. Set worker concurrency accordingly or set `PROPR_SPRITES_MAX=1` to start with one Sprite. Exhausting the $5 automatically switches the organization to Pay As You Go and bills the **whole month from the first cent**. A manual upgrade has the same billing effect. Check Billing for other workloads sharing that allowance. [Fly Free plan](https://docs.fly.io/about/free-plan)
+On the **personal Free plan**, adding a card gives $5 monthly usage, up to three Machines, three Sprites and 5 GB per volume. Count stopped Machines too when planning capacity, to be safe. One control plane leaves at most two Machine slots for agents. Set worker concurrency accordingly or set `PROPR_SPRITES_MAX=1` to start with one Sprite.
+
+> **Fly Machines on the Free Plan.** An organization can have **3 Machines, stopped ones included**. With the Fly Machines runtime every agent run creates a Machine, so beside the control plane at most **2 agent runs** can run at once, fewer if other apps in the organization have Machines. When the limit is hit, the run fails with `HTTP 422: Your organization has reached its machine limit`. On the Free Plan use Sprites (`RUNTIME=sprites`), or keep worker concurrency within the free Machine slots. [Fly Machines capacity](../architecture/agent-runtime.md#fly-machines)
+
+Exhausting the $5 automatically switches the organization to Pay As You Go and bills the **whole month from the first cent**. A manual upgrade has the same billing effect. Check Billing for other workloads sharing that allowance. [Fly Free plan](https://docs.fly.io/about/free-plan)
 
 ## Deploy the Machine
 
@@ -48,6 +52,8 @@ Set `PROPR_ADMIN_USERS` to your GitHub login or a comma-separated list of admini
 - **ProPR Connect.** Install the shared ProPR App on the repository, sign in with `propr login` and pass the Connect tunnel flags when deploying. The CLI can enroll the relay token and configure browser sign-in and event delivery. [GitHub relay and Connect](../operations/deploy-fly.md#github-relay-and-connect)
 
 For **Sprites**, set `SPRITES_TOKEN` for your organization. For **Fly Machines**, set `RUNTIME=fly-machines` in your shell and add the separate agent app name (`PROPR_FLY_APP`), its deploy token (`PROPR_FLY_API_TOKEN`) and the unified agent image digest (`PROPR_FLY_IMAGE`) to the file. [Fly Machines runtime requirements](../architecture/agent-runtime.md#fly-machines)
+
+Instance runtime packages (Settings → Agent runtime packages) are installed on each Sprite when it is provisioned, and changing the list replaces warm Sprites. Fly Machines install them at every Machine start, before the agent runs, so each run pays the install time; if that is slow, Sprites install them once per warm Sprite. A derived Fly Machine image that installs them once is planned in [#3821](https://github.com/integry/propr/pull/3821). Package names are checked against the agent image's Debian package index when the list is saved, and again before each Fly Machine start-time install and before a new Sprite is provisioned, so a misspelled name is refused without starting a Machine or Sprite. A warm Sprite already built with the list keeps being used even if the archive later drops a name or pinned version. For tools a single repository needs, install them in `.propr/setup.sh` instead, which runs before every run on both runtimes. [Runtime packages per runtime](../architecture/agent-runtime.md#runtime-packages)
 
 For headless Claude, optionally add `CLAUDE_SETTINGS_B64` to the file. Use single-line base64 of a settings JSON containing an `env` object with a dedicated `ANTHROPIC_API_KEY`.
 
@@ -133,7 +139,7 @@ The **Fly end-to-end smoke** GitHub Actions workflow runs on manual dispatch by 
 | Secret | Fixture access |
 | --- | --- |
 | `FLY_E2E_TOKEN` | Fly organization token from `fly tokens create org -o <test-org>`. The workflow derives a Machine stop token locally, scoped to the disposable app and valid for at most two hours. |
-| `FLY_E2E_SPRITES_TOKEN` | Test Sprites org access to create, run and delete Sprites |
+| `FLY_E2E_SPRITES_TOKEN` | Test Sprites org access to create, run and delete Sprites. Not needed for a `fly-machines` run. |
 | `FLY_E2E_GITHUB_TOKEN` | Fine-grained fixture repository PAT with read and write access to Issues and Pull requests. No Contents access is required. The fixture App reads the generated file and deletes test branches. |
 | `FLY_E2E_APP_ENV` | Private environment file containing `PROPR_ADMIN_USERS` (fixture administrator’s GitHub login), `GH_APP_ID`, `GH_INSTALLATION_ID`, `PROPR_GH_PRIVATE_KEY_B64` and `CLAUDE_SETTINGS_B64` containing the test account’s API-key settings described above |
 | `FLY_E2E_GH_OAUTH_CLIENT_ID` | The fixture GitHub App’s client ID. The workflow writes it to the env file as `GH_OAUTH_CLIENT_ID` so `propr deploy fly` has a browser sign-in method. |
@@ -141,11 +147,13 @@ The **Fly end-to-end smoke** GitHub Actions workflow runs on manual dispatch by 
 
 Install a dedicated fixture GitHub App with access to read the issue and write the branch and PR. In the App registration, select **Webhook → Active**, set the placeholder URL to `https://example.invalid/webhook` and save. Under **Permissions & events → Subscribe to events**, select **Issues** and **Pull request** and save. Complete this once before running the workflow. [GitHub App registration settings](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration)
 
-Each run points the App webhook at the disposable Machine and sets a fresh signing secret. After confirming delivery of the new fixture issue, the workflow waits for idle shutdown and adds the `AI` label. It reports the wake record’s redelivery count and verifies the linked PR and its Sprites execution. Teardown restores the placeholder URL, closes the fixture issue and PR, and deletes the temporary compute.
+The nightly run uses Sprites. A manual dispatch can set the `agent_runtime` input to `fly-machines` instead. That run also creates a disposable agent app, builds and pushes `Dockerfile.agent` to it, and gives the control plane a deploy token scoped to that app.
+
+Each run points the App webhook at the disposable Machine and sets a fresh signing secret. Before idle shutdown, it configures the runtime package `figlet`, which the agent image lacks, the same way Settings applies a package list, and records the list’s digest. The fixture issue asks for a file whose first line is the app name and whose second line is the output of `figlet -v | head -1`. After confirming delivery of the new fixture issue, the workflow waits for idle shutdown and adds the `AI` label. It reports the wake record’s redelivery count and verifies the linked PR, the figlet banner on the file’s second line, and the install log after the stop with the same digest (`Installed agent runtime packages on Sprite`, or `… at Fly Machine start` for Fly Machines). It prints that log’s `packagesDigest`, `packageCount` and `installMs`, and checks for a successful execution on the selected `compute_runtime`. Teardown restores the placeholder URL, closes the fixture issue and PR, and deletes the temporary compute, including the agent app.
 
 ### Extension Library check
 
-Dispatch the workflow with the **extensions** input checked to also verify Extension Library items on the remote runtime. For nightly runs, set the repository variable `FLY_E2E_NIGHTLY_EXTENSIONS` to `true`. The check runs on Sprites only for now.
+Dispatch the workflow with the **extensions** input checked to also verify Extension Library items on the remote runtime. For nightly runs, set the repository variable `FLY_E2E_NIGHTLY_EXTENSIONS` to `true`. The check runs on the selected `agent_runtime` (Sprites or Fly Machines).
 
 Before the idle stop, the workflow adds the `FLY_E2E_GITHUB_TOKEN` user to `PROPR_ADMIN_USERS`, claims the administrator role and calls the same API as **Settings → Extensions**. It adds two items, each auto-applied to issue tasks in the fixture repository:
 
@@ -154,4 +162,4 @@ Before the idle stop, the workflow adds the `FLY_E2E_GITHUB_TOKEN` user to `PROP
 
 The fixture has no URL MCP server of its own, so none is added. The step summary says so.
 
-The fixture issue asks for a three-line file: the app name, the skill token and the `echo` output (`Echo: MCP-OK-<run>`). The verify step checks all three lines. It also finds the `Extension Library items applied to this run` log record with `skills` and `packageServers` of at least 1, and the matching `Installed package MCP servers on Sprite` record. The step summary shows `extensionDigest`, `packageServersDigest` and the install time.
+In this mode the fixture issue asks for a four-line file: the app name, the `figlet` banner, the skill token and the `echo` output (`Echo: MCP-OK-<run>`). The verify step checks all four lines. It also finds the `Extension Library items applied to this run` log record with `skills` and `packageServers` of at least 1, and the matching `Installed package MCP servers on Sprite` record (`… at Fly Machine start` on Fly Machines). The step summary shows `extensionDigest`, `packageServersDigest` and the install time.

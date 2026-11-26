@@ -17,6 +17,8 @@ import { executeWithNetworkPolicy } from '../packages/core/src/network/egressExe
 import logger from '../packages/core/src/utils/logger.ts';
 import { FakeSprites } from './helpers/fakeSprites.ts';
 
+// No configured runtime packages; the real loader would read the (unmigrated) test database.
+const noPackages = async () => [];
 const restriction = { mode: 'restricted' as const, source: 'instance' as const, allow: ['*.example.com', 'docs.example.org:8443', '203.0.113.9'], instanceAllow: ['10.0.0.5'] };
 
 function build(network = agentRunNetwork('bridge'), mcpUrl?: string): AgentRunSpec {
@@ -88,7 +90,7 @@ test('Sprites still refuses what it cannot enforce', () => {
     }
     for (const url of ['http://propr.example.net/api/mcp', 'https://api:4000/api/mcp', 'https://1.1.1.1/api/mcp', 'https://[2001:db8::1]/api/mcp',
         ...['LOCAL.', 'lan', 'home.arpa', 'svc.cluster.local', 'internal'].map(zone => `https://service.${zone}/api/mcp`)]) {
-        const plan = planAgentRunMcpTransport(new SpritesRuntime(new FakeSprites(), {}), { PROPR_SPRITES_MCP_URL: url }, 'restricted');
+        const plan = planAgentRunMcpTransport(new SpritesRuntime(new FakeSprites(), {}, undefined, noPackages), { PROPR_SPRITES_MCP_URL: url }, 'restricted');
         assert.equal(plan.transport, 'unavailable');
         assert.match(plan.reason, /public HTTPS URL/);
         assert.equal(spriteNetworkPolicy(build(undefined, url)), undefined, url);
@@ -100,7 +102,7 @@ test('Sprites still refuses what it cannot enforce', () => {
 });
 
 test('admission accepts restricted Sprites runs, and the Sprites MCP URL wins over the generic fallback', () => {
-    const runtime = new SpritesRuntime(new FakeSprites(), {});
+    const runtime = new SpritesRuntime(new FakeSprites(), {}, undefined, noPackages);
     assert.doesNotThrow(() => assertAgentRuntimeSupports(runtime, restricted()));
     assert.equal(runtime.capabilities.restrictedNetworkEnforcement.method, 'sprites-dns-allowlist');
     const plan = planAgentRunMcpTransport(runtime, { PROPR_SPRITES_MCP_URL: ' https://gateway.example.net/api/mcp ', API_PUBLIC_URL: 'https://propr.example.net', PROPR_AGENT_MCP_URL: 'http://api:4000/api/mcp' }, 'restricted');
@@ -112,7 +114,7 @@ test('admission accepts restricted Sprites runs, and the Sprites MCP URL wins ov
 
 test('the policy is applied before upload and launch, cleared after restore, and a Sprite that keeps it is discarded', async t => {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' }, undefined, noPackages);
     const run = runtime.start(restricted('https://propr.example.net/api/mcp'));
     await run.wait();
     const sprite = client.created[0];
@@ -155,7 +157,7 @@ test('the policy is applied before upload and launch, cleared after restore, and
 
 test('release logs the verification step and replaces a Sprite when clear read-back omits the rules', async t => {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' }, undefined, noPackages);
     const run = runtime.start(restricted());
     await run.wait();
     const sprite = client.created[0];
@@ -172,7 +174,7 @@ test('release logs the verification step and replaces a Sprite when clear read-b
 
 test('a policy that fails to apply refuses the run before upload and discards the unverified Sprite', async () => {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' }, undefined, noPackages);
     const first = runtime.start(build());
     await first.wait();
     await first.release!();
@@ -189,7 +191,7 @@ test('a policy that fails to apply refuses the run before upload and discards th
 test('a restricted Sprite whose cleanup fails is discarded with egress still restricted', async () => {
     for (const failure of ['failWipe', 'failRestore'] as const) {
         const client = new FakeSprites();
-        const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+        const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' }, undefined, noPackages);
         const run = runtime.start(restricted());
         await run.wait();
         const sprite = client.created[0];
@@ -203,7 +205,7 @@ test('a restricted Sprite whose cleanup fails is discarded with egress still res
 
 test('restricted environment defaults preserve explicit values and stay out of open runs', async t => {
     const client = new FakeSprites();
-    const subject = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const subject = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' }, undefined, noPackages);
     const key = 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC';
     const inherited = restricted();
     inherited.env.push({ name: key, order: 0 });
@@ -225,7 +227,7 @@ test('restricted environment defaults preserve explicit values and stay out of o
 
 test('release records a changed policy against the lease and discards before cleanup, even during shutdown', async t => {
     const client = new FakeSprites();
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' });
+    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-token' }, undefined, noPackages);
     const warn = t.mock.method(logger, 'warn');
     const store = mkdtempSync(path.join(tmpdir(), 'sprite-tamper-'));
     t.after(() => rmSync(store, { recursive: true, force: true }));

@@ -30,7 +30,7 @@ function spec() {
 }
 
 const capabilities = (overrides: Record<string, unknown> = {}) => ({
-    supportsBindMounts: true, supportsRestrictedNetwork: false, supportsMcpPrivateNetwork: false, reattach: false, ...overrides,
+    supportsBindMounts: true, supportsRestrictedNetwork: false, supportsMcpPrivateNetwork: false, reattach: false, supportsRuntimePackages: true, ...overrides,
 });
 
 function standIn(kind: string, caps: ReturnType<typeof capabilities>) {

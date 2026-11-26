@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mock, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 
 type Call = { command: string; args: string[]; options: Record<string, any> };
 const calls: Call[] = [];
@@ -17,6 +17,9 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
 });
 
 process.env.PROPR_COMPUTE_USAGE_SAMPLE_MS = '15';
+// Runs on runtimes without runtime-package support read the configured package list (opens the database).
+const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+after(closeConnection);
 
 const { runAgent, registerAgentRuntime } = await import('../packages/core/src/agents/runtime/registry.ts');
 const { DockerRuntime } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
@@ -250,7 +253,7 @@ test('a runtime that reports its own cost keeps it; one reporting nothing is pri
     const reported = { runtime: 'metered', wallTimeMs: 60_000, cpuSeconds: 30, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: 0.12, costSource: 'runtime' as const };
     const runtimeReturning = (computeUsage?: typeof reported) => () => ({
         kind: 'metered',
-        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork: true, supportsMcpPrivateNetwork: true, reattach: false },
+        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork: true, supportsMcpPrivateNetwork: true, reattach: false, supportsRuntimePackages: true },
         start: (runSpec: ReturnType<typeof spec>) => ({ spec: runSpec, wait: async () => ({ ...ok(), ...(computeUsage && { computeUsage }) }) }),
     }) as any;
     process.env[COMPUTE_RATES_ENV] = '{"metered":{"perHourUsd":60}}';
