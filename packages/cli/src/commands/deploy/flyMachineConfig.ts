@@ -27,6 +27,7 @@ import {
   LEGACY_DOCKER_DEFAULT_ROOTFS_GB,
   LEGACY_DOCKER_SHARED_ENV,
 } from "./flyLegacyDocker.js";
+import { flyMcpInstanceId } from "./flyGeneratedSecrets.js";
 
 export const FLY_DATA_PATH = "/usr/src/app/data";
 export const FLY_DB_FILENAME = `${FLY_DATA_PATH}/propr.sqlite`;
@@ -101,6 +102,11 @@ export interface FlyDeployPlan {
   rootfsSizeGb?: number;
   /** A GitHub App private key was supplied (as the FLY_GH_PRIVATE_KEY_SECRET secret). */
   githubAppKey: boolean;
+  /**
+   * Turn the ProPR MCP server on at the public URL (MCP_ENABLED, MCP_PUBLIC_ORIGIN,
+   * MCP_INSTANCE_ID; the key is a generated secret). See flyDeployEnablesMcp.
+   */
+  mcp?: boolean;
   /** Extra plain (non-secret) env for the app container. */
   extraEnv?: Record<string, string>;
   /**
@@ -164,7 +170,18 @@ export function buildAppEnv(plan: FlyDeployPlan): Record<string, string> {
     GH_OAUTH_CALLBACK_URL: `${publicUrl}/api/auth/github/callback`,
     PROPR_TRUSTED_PROXY_PEERS: FLY_PROXY_PEERS,
     PROPR_AGENT_RUNTIME: plan.agentRuntime,
+    // The worker's internal API calls (MCP grants, the Sprites MCP forward's
+    // target) go to the API in the same container; the default http://api:4000
+    // is a Compose service name that does not resolve in the Machine.
+    PROPR_INTERNAL_API_URL: `http://127.0.0.1:${FLY_API_PORT}`,
   };
+  if (plan.mcp) {
+    // Not owned by the deploy (they are absent from FLY_MANAGED_ENV_KEYS): a
+    // stack .env that sets them turns these defaults off instead.
+    env.MCP_ENABLED = "true";
+    env.MCP_PUBLIC_ORIGIN = new URL(publicUrl).origin;
+    env.MCP_INSTANCE_ID = flyMcpInstanceId(plan.app);
+  }
   if (plan.agentRuntime === "sprites") env.SPRITES_CLIENT_SIGNALS = "0";
   if (plan.tunnel) {
     // Same derivation as `propr tunnel setup`: the hosted UI drives this

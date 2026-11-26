@@ -162,6 +162,23 @@ test("secrets: stack .env minus tunnel tokens, GitHub key as base64, Connect tun
   assert.ok(notes.some((n) => n.includes("PROPR_UI_TUNNEL_TOKEN")));
 });
 
+test("ProPR MCP is on by default for a GitHub sign-in deploy, and left to the stack .env when it configures MCP", () => {
+  const oauth = { PROPR_ADMIN_USERS: "octocat", GH_OAUTH_CLIENT_ID: "id", GH_OAUTH_CLIENT_SECRET: "secret" };
+  const { plan } = prepareFlyDeploy({ app: "my-propr" }, IMAGES, oauth, "gh");
+  assert.equal(plan.mcp, true);
+  assert.equal(buildAppEnv(plan).MCP_ENABLED, "true");
+  for (const key of ["MCP_ENABLED", "MCP_PUBLIC_ORIGIN", "MCP_INSTANCE_ID"]) {
+    const own = prepareFlyDeploy({ app: "my-propr" }, IMAGES, { ...oauth, [key]: key === "MCP_ENABLED" ? "false" : "x" }, "gh");
+    assert.equal(own.plan.mcp, false, key);
+    assert.equal(buildAppEnv(own.plan).MCP_ENABLED, undefined, key);
+  }
+  // Connect derives MCP itself; demo mode refuses MCP_ENABLED=true at startup.
+  const connect = prepareFlyDeploy({ app: "my-propr", tunnelToken: "t", tunnelUrl: "https://t-abc123.propr.dev" }, IMAGES, { PROPR_ADMIN_USERS: "octocat", PROPR_GH_RELAY_TOKEN: "rt" }, "gh");
+  assert.equal(connect.plan.mcp, false);
+  const demo = prepareFlyDeploy({ app: "my-propr" }, IMAGES, { PROPR_ADMIN_USERS: "octocat", PROPR_DEMO_MODE: "true" }, undefined);
+  assert.equal(demo.plan.mcp, false);
+});
+
 test("a base64 GitHub App key already in the stack .env wires the key file without a key path", () => {
   const plan = resolveFlyDeployPlan({ app: "my-propr" }, IMAGES);
   const b64 = Buffer.from("-----BEGIN KEY-----\n").toString("base64");

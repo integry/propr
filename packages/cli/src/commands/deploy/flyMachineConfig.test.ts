@@ -92,6 +92,18 @@ test("app env: SQLite on the volume, Redis on loopback, served UI, Sprites agent
   assert.equal(env.SPRITES_CLIENT_SIGNALS, "0");
   assert.equal(env.PROPR_IDLE_SHUTDOWN, undefined);
   assert.equal(env.DOCKER_HOST, undefined);
+  assert.equal(env.PROPR_INTERNAL_API_URL, "http://127.0.0.1:4000", "the worker reaches the API in the same container");
+  assert.equal(env.MCP_ENABLED, undefined);
+});
+
+test("app env: a plan with MCP serves it at the public origin under a stable instance id", () => {
+  const env = buildAppEnv(basePlan({ app: "ab", mcp: true }));
+  assert.equal(env.MCP_ENABLED, "true");
+  assert.equal(env.MCP_PUBLIC_ORIGIN, "https://ab.fly.dev");
+  assert.match(env.MCP_INSTANCE_ID, /^[a-zA-Z0-9_-]{8,128}$/);
+  assert.equal(env.MCP_INSTANCE_ID, "propr-fly-ab");
+  // The stack .env can still configure MCP itself (see flyDeployEnablesMcp).
+  for (const key of ["MCP_ENABLED", "MCP_PUBLIC_ORIGIN", "MCP_INSTANCE_ID", "MCP_ENCRYPTION_KEY"]) assert.equal(FLY_MANAGED_ENV_KEYS.has(key), false, key);
 });
 
 test("idle shutdown is opt-in: on-failure restart, proxy autostop off, autostart on", () => {

@@ -10240,6 +10240,7 @@ components:
               enum:
                 - private-network
                 - reachable-url
+                - ssh-reverse-forward
                 - unavailable
               description: How runs granted ProPR MCP reach it on this runtime.
             reason:
