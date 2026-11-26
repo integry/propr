@@ -1,0 +1,8 @@
+{
+  "name": "Fly smoke ProPR MCP",
+  "prompt": "This is a ProPR MCP transport smoke test. Call the ProPR MCP tool list_repositories exactly once, with no arguments. Your report must start with one line: \"PROPR_MCP_REPOSITORIES: \" followed by the repository names the tool returned, comma-separated and in the order returned. Do not guess or take the names from anywhere else. If the tool call fails, start the report with \"PROPR_MCP_ERROR: \" and the error instead.",
+  "repositories": [],
+  "capabilities": ["repository_read", "propr_mcp"],
+  "autonomy": "dry_run",
+  "agentId": "claude"
+}

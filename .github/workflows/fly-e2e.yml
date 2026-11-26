@@ -271,7 +271,8 @@ jobs:
           # Record the owner's GitHub grant (a browser sign-in does this); agent-run MCP grants require it.
           seed=$(base64 -w0 <<'JS'
           const { githubUserGrantService } = await import('/usr/src/app/dist/packages/api/githubUserGrantService.js');
-          const { closeConnection } = await import('@propr/core');
+          const { closeConnection, getReposFromEnv, loadMonitoredReposRaw, saveMonitoredRepos } = await import('@propr/core');
+          const { randomUUID } = await import('node:crypto');
           const token = process.env.PROPR_E2E_MCP_OWNER_TOKEN;
           const response = await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'propr-fly-e2e' } });
           if (!response.ok) throw new Error(`GitHub /user returned ${response.status}`);
@@ -280,22 +281,29 @@ jobs:
             email: null, avatarUrl: null, accessToken: token, oauthSource: 'github' });
           if (!captured) throw new Error('The GitHub user grant was not recorded');
           console.log(`Recorded the GitHub grant for ${login}`);
+          // The daemon monitors GITHUB_REPOS_TO_MONITOR, but automation admission and list_repositories
+          // read the persisted repository configuration, which a fresh instance leaves empty.
+          const configured = await loadMonitoredReposRaw();
+          const missing = getReposFromEnv().filter(name => !configured.some(repo => repo.enabled && repo.name.toLowerCase() === name.toLowerCase()));
+          for (const name of missing) {
+            const repo = await fetch(`https://api.github.com/repos/${name}`, { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'propr-fly-e2e' } });
+            if (!repo.ok) throw new Error(`GitHub /repos/${name} returned ${repo.status}`);
+            configured.push({ id: randomUUID(), name, enabled: true, baseBranch: (await repo.json()).default_branch });
+          }
+          await saveMonitoredRepos(configured);
+          console.log(`Persisted monitored repositories: ${configured.filter(repo => repo.enabled).map(repo => repo.name).join(', ')}`);
           await closeConnection();
           process.exit(0);
           JS
           )
           flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $seed | base64 -d | node --input-type=module'"
-          api() {
-            curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -H "Authorization: Bearer $GH_TOKEN" \
-              -H 'Content-Type: application/json' "https://$APP.fly.dev/api$1" "${@:2}"
-          }
-          prompt='This is a ProPR MCP transport smoke test. Call the ProPR MCP tool list_repositories exactly once, with no arguments. Your report must start with one line: "PROPR_MCP_REPOSITORIES: " followed by the repository names the tool returned, comma-separated and in the order returned. Do not guess or take the names from anywhere else. If the tool call fails, start the report with "PROPR_MCP_ERROR: " and the error instead.'
-          definition=$(jq -n --arg repo "$REPO" --arg prompt "$prompt" '{
-              name: "Fly smoke ProPR MCP", prompt: $prompt, repositories: [$repo],
-              capabilities: ["repository_read", "propr_mcp"], autonomy: "dry_run", agentId: "claude"
-            }' | api /automation-definitions -X POST --data-binary @- | jq -er '.definition.id | strings')
+          source .github/fly-e2e/propr-api.sh
+          # The same payload test/flyE2eMcpAutomation.test.ts pushes through the real route handlers.
+          definition=$(jq --arg repo "$REPO" '.repositories = [$repo]' .github/fly-e2e/mcp-automation-definition.json |
+            propr_api POST /automation-definitions --data-binary @- | jq -er '.definition.id | strings')
+          echo "Created automation definition $definition"
           echo "MCP_TRIGGERED_AT=$(( $(date +%s) * 1000 ))" >> "$GITHUB_ENV"
-          run=$(api "/automation-definitions/$definition/runs" -X POST -H "Idempotency-Key: $APP-mcp" --data '{"source":"fly-e2e"}' |
+          run=$(propr_api POST "/automation-definitions/$definition/runs" -H "Idempotency-Key: $APP-mcp" --data '{"source":"fly-e2e"}' |
             jq -er '.run.id | strings')
           echo "Started automation run $run"
           echo "AUTOMATION_RUN=$run" >> "$GITHUB_ENV"
@@ -361,12 +369,9 @@ jobs:
         run: |
           set -euo pipefail
           : "${AUTOMATION_RUN:?The automation run was not started}"
-          api() {
-            curl --fail-with-body --silent --show-error --retry 3 --retry-connrefused -H "Authorization: Bearer $GH_TOKEN" \
-              "https://$APP.fly.dev/api$1"
-          }
+          source .github/fly-e2e/propr-api.sh
           for _ in {1..110}; do
-            run=$(api "/automation-runs/$AUTOMATION_RUN" | jq -ec '.run | objects')
+            run=$(propr_api GET "/automation-runs/$AUTOMATION_RUN" | jq -ec '.run | objects')
             state=$(jq -r .state <<< "$run")
             case $state in completed|failed|skipped|rejected|cancelled) break ;; esac
             sleep 15
