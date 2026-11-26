@@ -318,6 +318,60 @@ describe('readLatestVibeSessionTokenUsage', () => {
             fs.rmSync(runtimeHome, { recursive: true, force: true });
         }
     });
+    test('reads Vibe 3 export.json usage when an absolute session_logging.save_dir sends sessions outside the runtime home', () => {
+        const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-export-test-'));
+        const hostSessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-host-sessions-'));
+        try {
+            // Real Vibe-written configs pin save_dir to the user's absolute host path, which the entrypoint does not rewrite.
+            fs.writeFileSync(path.join(runtimeHome, 'config.toml'), `[session_logging]\nsave_dir = "${hostSessionDir}"\n`);
+            const sessionId = 'f0e1d2c3-b4a5-4697-8899-aabbccddeeff';
+            const unifiedDir = path.join(hostSessionDir, 'unified', sessionId);
+            fs.mkdirSync(path.join(unifiedDir, 'generations', '0000000000000001'), { recursive: true });
+            fs.writeFileSync(path.join(unifiedDir, 'CURRENT'), JSON.stringify({ generation: '0000000000000001' }));
+            fs.writeFileSync(path.join(unifiedDir, 'generations', '0000000000000001', 'projection-state.json'), JSON.stringify({
+                snapshot: { session: { tokenUsage: { inputTokens: 1, outputTokens: 1 } } }
+            }));
+
+            assert.strictEqual(readLatestVibeSessionTokenUsage(runtimeHome, sessionId), undefined);
+
+            fs.mkdirSync(path.join(runtimeHome, 'propr-export'));
+            fs.writeFileSync(path.join(runtimeHome, 'propr-export', 'export.json'), JSON.stringify({
+                outcome: 'completed',
+                stop_reason: 'end_turn',
+                usage: { input_tokens: 8211, output_tokens: 2, cached_input_tokens: 3200, total_tokens: 8213 }
+            }));
+
+            assert.deepStrictEqual(readLatestVibeSessionTokenUsage(runtimeHome, sessionId), {
+                input_tokens: 8211,
+                output_tokens: 2
+            });
+        } finally {
+            fs.rmSync(runtimeHome, { recursive: true, force: true });
+            fs.rmSync(hostSessionDir, { recursive: true, force: true });
+        }
+    });
+
+    test('falls back to the runtime-home session store when export.json has no usable usage', () => {
+        const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-export-fallback-test-'));
+        try {
+            fs.mkdirSync(path.join(runtimeHome, 'propr-export'));
+            fs.writeFileSync(path.join(runtimeHome, 'propr-export', 'export.json'), JSON.stringify({ outcome: 'error' }));
+            const sessionId = 'session-fallback';
+            const unifiedDir = path.join(runtimeHome, 'logs', 'session', 'unified', sessionId);
+            fs.mkdirSync(path.join(unifiedDir, 'generations', '0000000000000002'), { recursive: true });
+            fs.writeFileSync(path.join(unifiedDir, 'CURRENT'), JSON.stringify({ generation: '0000000000000002' }));
+            fs.writeFileSync(path.join(unifiedDir, 'generations', '0000000000000002', 'projection-state.json'), JSON.stringify({
+                snapshot: { session: { tokenUsage: { inputTokens: 120, outputTokens: 7 } } }
+            }));
+
+            assert.deepStrictEqual(readLatestVibeSessionTokenUsage(runtimeHome, sessionId), {
+                input_tokens: 120,
+                output_tokens: 7
+            });
+        } finally {
+            fs.rmSync(runtimeHome, { recursive: true, force: true });
+        }
+    });
 });
 
 describe('Vibe CLI args', () => {
@@ -464,6 +518,29 @@ describe('VibeAgent Docker args', () => {
             assert.ok(args.includes('/host/propr-vibe-prompts/propr-vibe-runtime/task-home:/tmp/propr-vibe-home:rw'));
             assert.ok(args.includes('VIBE_RUNTIME_HOME=/tmp/propr-vibe-home'));
             assert.ok(args.includes('HOME=/tmp/propr-vibe-home'));
+        });
+    });
+
+    test('asks Vibe 3 to write export.json into the runtime home mount', () => {
+        withRestoredEnv(() => {
+            process.env.MISTRAL_API_KEY = 'test-key';
+            const runtimeHomePath = '/tmp/propr-vibe-runtime/task-home';
+
+            const args = buildArgs(createAgent({ cliVersionResolved: '3.1.5' }), { runtimeHomePath });
+            const outputDirIndex = args.indexOf('--output-dir');
+            assert.notStrictEqual(outputDirIndex, -1);
+            assert.strictEqual(args[outputDirIndex + 1], '/tmp/propr-vibe-home/propr-export');
+
+            const analysisArgs = buildArgs(createAgent({ cliVersionResolved: '3.1.5' }), { runtimeHomePath, issueNumber: 0, mode: 'analysis' });
+            assert.strictEqual(analysisArgs[analysisArgs.indexOf('--output-dir') + 1], '/tmp/propr-vibe-home/propr-export');
+
+            assert.ok(!buildArgs(createAgent({ cliVersionResolved: '3.1.5' })).includes('--output-dir'));
+            assert.ok(!buildArgs(createAgent({ cliVersionResolved: '2.25.8' }), { runtimeHomePath }).includes('--output-dir'));
+
+            process.env.VIBE_CLI_ARGS = 'vibe --output json --output-dir /tmp/custom-export';
+            const customArgs = buildArgs(createAgent({ cliVersionResolved: '3.1.5' }), { runtimeHomePath });
+            assert.strictEqual(customArgs.filter(arg => arg === '--output-dir').length, 1);
+            assert.strictEqual(customArgs[customArgs.indexOf('--output-dir') + 1], '/tmp/custom-export');
         });
     });
 

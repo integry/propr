@@ -31,6 +31,7 @@ Mistral Vibe CLI options and commands for agentic code generation.
 | `--max-turns` | number | — | Maximum assistant turns in programmatic mode |
 | `--max-price` | number | — | Maximum cost in programmatic mode |
 | `--max-tokens` | number | — | Maximum total tokens in programmatic mode |
+| `--output-dir` | path | — | On every exit, write `export.json` (token usage, cost, outcome, stop reason) and a session journal copy |
 | `--setup` | boolean | `false` | Run the interactive setup wizard |
 | `--workdir` | path | current directory | Working directory for file operations |
 | `--add-dir` | path | — | Add another trusted working directory |
@@ -41,6 +42,12 @@ Mistral Vibe CLI options and commands for agentic code generation.
 ProPR mounts each prompt read-only and passes its path through the native
 `--prompt-file` option. For older pinned CLIs without this option, the container
 entrypoint supplies the file through its compatibility runner.
+
+Vibe 3 prints no token counts in `json` or `streaming` output. ProPR passes
+`--output-dir /tmp/propr-vibe-home/propr-export` and reads the top-level `usage`
+field of `export.json` from the per-run runtime home. This works even when the
+user's `session_logging.save_dir` is an absolute host path outside that home.
+The session store is the fallback.
 
 ## Commands
 

@@ -13,7 +13,7 @@ import { resolveConfigPath, loadSettings, AgentConfigPathUnavailableError } from
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import { buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
-import { getAnalysisSandboxArgs, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath, getMistralApiKeyFromSettings, readLatestVibeSessionMessages, readLatestVibeSessionTokenUsage, ensureAnalysisWorkspace, prepareRuntimeHome, cleanupRuntimeHome, hasUsableVibeConfigDir, hasStructuredOutputArg } from './utils/vibeAgentHelpers.js';
+import { getAnalysisSandboxArgs, isSuccessfulVibeResult, splitVibeCliArgs, getDefaultVibeCliArgs, buildPromptWithRetryContext, buildLogMetadata, buildVibeFailureMessage, writeVibePromptFile, writeVibeSecretEnvFile, cleanupTempFile, buildVibeContainerName, resolveHostBindPath, getMistralApiKeyFromSettings, readLatestVibeSessionMessages, readLatestVibeSessionTokenUsage, ensureAnalysisWorkspace, prepareRuntimeHome, cleanupRuntimeHome, hasUsableVibeConfigDir, hasStructuredOutputArg, appendVibeExportDirArg, VIBE_CONTAINER_RUNTIME_HOME } from './utils/vibeAgentHelpers.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { AGENT_DEFAULT_VERSIONS } from '../version/types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
@@ -401,8 +401,9 @@ export class VibeAgent implements Agent {
         return { configPath, resolvedApiKey, hasUsableConfig, configMountArgs: hasUsableConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [] };
     }
 
-    private buildCliAndPromptArgs(repositoryInspection: boolean, mode: string, maxTurns: number, promptFilePath?: string): { cliArgs: string[]; promptMountArgs: string[] } {
+    private buildCliAndPromptArgs({ repositoryInspection, mode, maxTurns, promptFilePath, runtimeHomePath }: { repositoryInspection: boolean; mode: string; maxTurns: number; promptFilePath?: string; runtimeHomePath?: string }): { cliArgs: string[]; promptMountArgs: string[] } {
         const cliArgs = this.getCliArgs(repositoryInspection, mode === 'execute' && this.usesVibe3());
+        appendVibeExportDirArg(cliArgs, !!runtimeHomePath && this.usesVibe3());
         if (!promptFilePath) return { cliArgs, promptMountArgs: [] };
         if (!cliArgs.some(arg => arg === '--max-turns' || arg.startsWith('--max-turns='))) cliArgs.push('--max-turns', String(maxTurns));
         const containerPromptPath = '/home/node/propr-prompt.txt';
@@ -420,8 +421,8 @@ export class VibeAgent implements Agent {
 
         const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
-        const { cliArgs, promptMountArgs } = this.buildCliAndPromptArgs(repositoryInspection, mode, maxTurns, promptFilePath);
-        const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:/tmp/propr-vibe-home:rw`] : [];
+        const { cliArgs, promptMountArgs } = this.buildCliAndPromptArgs({ repositoryInspection, mode, maxTurns, promptFilePath, runtimeHomePath });
+        const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:${VIBE_CONTAINER_RUNTIME_HOME}:rw`] : [];
         const dockerArgs: string[] = [
             'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
             ...getAnalysisSandboxArgs(mode),

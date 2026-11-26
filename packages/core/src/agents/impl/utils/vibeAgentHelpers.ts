@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { parseVibeOutput } from './vibeOutputParser.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
+import { readVibeExportTokenUsage } from './vibeExportUsage.js';
+export { appendVibeExportDirArg, VIBE_CONTAINER_RUNTIME_HOME } from './vibeExportUsage.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -57,6 +59,8 @@ export function readLatestVibeSessionMessages(runtimeHomePath: string | undefine
 
 export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefined, sessionId?: string): { input_tokens?: number; output_tokens?: number } | undefined {
     if (!runtimeHomePath) return undefined;
+    const exportedUsage = readVibeExportTokenUsage(runtimeHomePath);
+    if (exportedUsage) return exportedUsage;
     if (sessionId && /^[a-zA-Z0-9_-]+$/.test(sessionId)) {
         const sessionDir = path.join(runtimeHomePath, 'logs', 'session', 'unified', sessionId);
         if (fs.existsSync(sessionDir)) {
