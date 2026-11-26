@@ -112,8 +112,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             spec.mcpGrant?.network || spec.mcpGrant?.transport === 'private-network') throw new Error('Fly Machines requires open networking and a reachable MCP URL');
         assertNativeLogAdmission(options.diagnostics);
         const config = flyConfig(this.environment);
-        const api = this.client ?? new MachinesClient(config);
         const prepared = prepareLaunch(spec, options, config);
+        const api = this.client ?? new MachinesClient(config, prepared.secrets);
         const ownership = getExecutionOwnershipContext();
         const external = AbortSignal.any([options.signal, ownership?.signal].filter((s): s is AbortSignal => !!s));
         const workspace = new WorkspaceFiles();
