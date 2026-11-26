@@ -55,6 +55,8 @@ class InstallingMachine implements MachinesApi {
     }
     async signal() {}
     async destroy() { this.destroyed++; }
+    async gone() { return this.destroyed > 0; }
+    async find() { return undefined; }
     file(name: string) {
         const entry = this.launch!.config.files.find(f => f.guest_path === RUN + '/' + name);
         return entry && JSON.parse(Buffer.from(entry.raw_value, 'base64').toString());

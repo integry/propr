@@ -3,9 +3,9 @@ import { after, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachinesRuntime.ts';
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
-import { acquireFlyMachineSlot, flyMachinesMax } from '../packages/core/src/agents/runtime/fly/capacity.ts';
+import { acquireFlyMachineSlot, flyMachinesMax, retainedMachineChecks } from '../packages/core/src/agents/runtime/fly/capacity.ts';
 import { flyConfig } from '../packages/core/src/agents/runtime/fly/config.ts';
-import type { MachineLaunch, MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { MachineCreateUnconfirmedError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
 import { RUN } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
@@ -74,6 +74,11 @@ class Machines implements MachinesApi {
     }
     async signal() {}
     destroy() { return new Promise<void>(resolve => this.destroys.push(() => { this.live--; resolve(); })); }
+    /** Machines Fly no longer lists; a kept Machine leaves it only when the test says so. */
+    vanished = new Set<string>();
+    goneChecks: string[] = [];
+    async gone(id: string) { this.goneChecks.push(id); return this.vanished.has(id); }
+    async find(): Promise<string | undefined> { return undefined; }
 }
 
 function spec(name: string) {
@@ -163,4 +168,82 @@ test('a run that fails before creating a Machine frees its slot at once', async 
     assert.equal((await next.wait()).exitCode, 0);
     assert.deepEqual(api.created, ['m0']);
     await Promise.all([failed, next].map(run => run.release!()));
+});
+
+/** m0's workspace result cannot be retrieved, so its run keeps the Machine for recovery. */
+class KeptForRecovery extends Machines {
+    override async exec(id: string, args: string[]) {
+        if (id === 'm0' && args[4] === RUN + '/workspace/result.bundle') throw new Error('Fly API 503');
+        return super.exec(id, args);
+    }
+}
+
+test('a Machine kept for recovery holds its slot until Fly confirms it is gone', async t => {
+    Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20 });
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000 }));
+    const api = new KeptForRecovery();
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'kept', PROPR_FLY_MACHINES_MAX: '1', PROPR_FLY_CREDENTIAL_RETENTION_SECONDS: '1' }, async () => []);
+    const kept = runtime.start(spec('kept'));
+    const queued = runtime.start(spec('queued'));
+    const outcome = await kept.wait().then(result => result.outputIncomplete ?? '', (error: Error) => error.message);
+    assert.match(outcome, /Fly workspace result retrieval failed/);
+    assert.equal(kept.recoveryLocation, `Fly app kept, Machine m0, ${RUN}/workspace`);
+    assert.equal(api.destroys.length, 0, 'the recovery Machine is not deleted');
+    await delay(300);
+    assert.deepEqual(api.goneChecks, [], 'no check before the recovery window ends');
+    assert.deepEqual(api.created, ['m0'], 'the queued run waits while the recovery Machine exists');
+    await until(() => api.goneChecks.length >= 3);
+    assert.deepEqual(api.created, ['m0'], 'a Machine Fly still lists keeps its slot');
+    api.vanished.add('m0');
+    api.live--;
+    await until(() => api.created.length === 2);
+    assert.equal(api.peak, 1);
+    await until(() => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    await Promise.all([kept, queued].map(run => run.release!().catch(() => {})));
+});
+
+/** The first create's response and lookup are lost, but Fly did launch m0 under the run's name. */
+class LostCreate extends Machines {
+    lookups = 0;
+    lookupFails = true;
+    deleted: string[] = [];
+    launches: string[] = [];
+    override async create(launch: MachineLaunch) {
+        this.launches.push(launch.name);
+        const id = await super.create(launch);
+        if (id === 'm0') throw new MachineCreateUnconfirmedError('Fly Machines API POST returned HTTP 502');
+        return id;
+    }
+    override async find(name: string) {
+        this.lookups++;
+        if (this.lookupFails) throw new Error('Fly API 503');
+        return name === this.launches[0] ? 'm0' : undefined;
+    }
+    override destroy(id: string) {
+        if (id === 'm0') { this.deleted.push(id); this.live--; return Promise.resolve(); }
+        return super.destroy();
+    }
+}
+
+test('a run whose create outcome is unknown keeps its slot until the Machine is found and deleted or absent', async t => {
+    Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20 });
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000 }));
+    const api = new LostCreate();
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'lost', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const lost = runtime.start(spec('lost'));
+    const queued = runtime.start(spec('queued'));
+    await assert.rejects(lost.wait(), /HTTP 502/);
+    await delay(100);
+    assert.deepEqual(api.created, ['m0'], 'a failed lookup is not evidence that no Machine exists');
+    assert.ok(api.lookups >= 2, 'the lookup is retried');
+    api.lookupFails = false;
+    await until(() => api.created.length === 2);
+    assert.deepEqual(api.deleted, ['m0'], 'the found Machine, whose agent never started, is deleted first');
+    assert.equal(api.peak, 1);
+    await until(() => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
 });

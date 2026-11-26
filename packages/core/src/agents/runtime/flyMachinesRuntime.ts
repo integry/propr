@@ -11,8 +11,8 @@ import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.j
 import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.js';
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
-import { MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
-import { acquireFlyMachineSlot } from './fly/capacity.js';
+import { MachineCreateUnconfirmedError, MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
+import { acquireFlyMachineSlot, releaseUndeletedFlyMachineSlot } from './fly/capacity.js';
 import { flyConfig } from './fly/config.js';
 import { applyOutputDiagnostics, OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
 import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
@@ -126,6 +126,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         let credentialsPending = !!prepared.credentialPath;
         let keepLocalBundle = false;
         let releaseSlot = () => {};
+        // A create whose response and lookup were both lost: a Machine may exist without an ID here.
+        let createUnconfirmed = false;
         const machineLocation = () => `Fly app ${config.app}, Machine ${id}, ${RUN}/workspace`;
         const credentialRecovery = () => `Recover credentials from Fly app ${config.app}, Machine ${id}, ${prepared.credentialPath}`;
         let destroyed: Promise<void> | undefined;
@@ -151,6 +153,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 // retry after the run settled, so a Machine still awaiting deletion keeps counting.
                 return destroyed ??= retryCleanup(machine, 'destroy', async () => { await api.destroy(machine); releaseSlot(); });
         };
+        const releaseUndeletedSlot = () => releaseUndeletedFlyMachineSlot(releaseSlot, api, { config, machine: id, createUnconfirmed, launchName: prepared.launch.name, run: spec.name });
         let mayHaveStarted = false;
         const requestStop = (signal: NodeJS.Signals = 'SIGTERM', grace = 10_000) => {
             if (exited || stopping || settled) return false;
@@ -177,7 +180,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             // Every Machine start installs the list, so it is checked against the package index each time
             // (cached); a name the archive lacks fails the run before any Machine is created.
             await checkAgentRuntimePackagesBeforeInstall(this.loadPackages, packages, signal).catch(beforeCreation);
-            // Over PROPR_FLY_MACHINES_MAX the run queues here; the slot is held until its agent Machine is destroyed.
+            // Over PROPR_FLY_MACHINES_MAX the run queues here; the slot is held until its agent Machine is destroyed or gone.
             releaseSlot = await acquireFlyMachineSlot(config.app, config.maxMachines, signal, spec.name).catch(beforeCreation);
             prepared.installPackages(packages);
             // Compute time is measured from here, after any queueing for a slot.
@@ -290,7 +293,10 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             let exitCode = -1;
             try {
                 let bootStart = Date.now();
-                id = await api.create(prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); });
+                id = await api.create(prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); }).catch(error => {
+                    createUnconfirmed = error instanceof MachineCreateUnconfirmedError;
+                    throw error;
+                });
                 void api.logs(id, display, logs.signal).catch(() => {});
                 let usageFailureSince: number | undefined;
                 const code = stopping ? undefined : await waitForExit(api, id, forced.signal, {
@@ -384,9 +390,10 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             external.removeEventListener('abort', abort);
             logs.abort();
             output.end();
-            // Without a Machine, or with one kept for recovery that this worker will never delete,
-            // free the slot now; otherwise the confirmed deletion above frees it.
-            try { await destroy(); } finally { if (!destroyed) releaseSlot(); }
+            // A confirmed deletion frees the slot (see destroy). Only a run that never created a Machine
+            // frees it now; a Machine kept for recovery, or one a lost create may have launched, keeps
+            // its slot until Fly confirms it is gone.
+            try { await destroy(); } finally { if (!destroyed) releaseUndeletedSlot(); }
         }).catch(async error => {
             // Transport cleanup calls release even when wait rejected before complete.
             keepLocalBundle = workspace.hasBundle;
