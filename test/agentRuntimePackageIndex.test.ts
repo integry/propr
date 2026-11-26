@@ -5,7 +5,7 @@ import { after, afterEach, test } from 'node:test';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
 import {
     AGENT_IMAGE_APT_SOURCES, AgentRuntimePackageUnavailableError, assertAgentRuntimePackagesInIndex, fetchAgentImagePackageIndex,
-    findUnavailableAgentRuntimePackages, getAgentImagePackageIndex, prevalidatedAgentRuntimePackages, setAgentImagePackageIndexLoader,
+    findUnavailableAgentRuntimePackages, getAgentImagePackageIndex, indexCheckedAgentRuntimePackages, setAgentImagePackageIndexLoader,
     validateAgentRuntimePackagesWithIndex, type AgentImagePackageIndex, type FetchLike,
 } from '../packages/core/src/agents/runtime/agentRuntimePackageIndex.ts';
 import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachinesRuntime.ts';
@@ -141,19 +141,22 @@ test('Settings validation lists every unknown name, accepts a virtual package an
     await assertAgentRuntimePackagesInIndex(['figlett']);
 });
 
-test('the runtime package source refuses a list the index rejects', async () => {
-    setAgentImagePackageIndexLoader(async () => index());
-    const source = prevalidatedAgentRuntimePackages(async () => ['figlet', 'figlett']);
-    await assert.rejects(source(), (error: unknown) => {
+test('the runtime package source checks a list against the index before an installation, not on every read', async () => {
+    let loads = 0;
+    setAgentImagePackageIndexLoader(async () => { loads++; return index(); });
+    const source = indexCheckedAgentRuntimePackages(async () => ['figlet', 'figlett']);
+    assert.deepEqual(await source(), ['figlet', 'figlett'], 'reading the list does not consult the index');
+    assert.equal(loads, 0);
+    await assert.rejects(source.checkAvailability!(['figlet', 'figlett']), (error: unknown) => {
         assert.ok(error instanceof AgentRuntimePackageUnavailableError);
         assert.deepEqual(error.unknown, ['figlett']);
         assert.match(error.message, /Unknown package: figlett\. The run was not started/);
         return true;
     });
-    assert.deepEqual(await prevalidatedAgentRuntimePackages(async () => ['figlet'])(), ['figlet']);
-    let loads = 0;
+    await source.checkAvailability!(['figlet']);
+    loads = 0;
     setAgentImagePackageIndexLoader(async () => { loads++; return index(); });
-    assert.deepEqual(await prevalidatedAgentRuntimePackages(async () => [])(), []);
+    await indexCheckedAgentRuntimePackages(async () => [])().then(packages => source.checkAvailability!(packages));
     assert.equal(loads, 0, 'no packages, no index read');
 });
 
@@ -168,7 +171,7 @@ test('a Fly run whose list the index rejects never starts a build or agent Machi
     } as unknown as MachinesApi;
     const registry = new Proxy({}, { get: () => async () => { registryCalls++; throw new Error('unexpected registry call'); } }) as RegistryApi;
     const fly = new FlyMachinesRuntime(api, { PROPR_FLY_APP: 'index', PROPR_FLY_API_TOKEN: 'FlyV1 synthetic', PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' },
-        prevalidatedAgentRuntimePackages(async () => ['figlett']), new FlyPackageImages(() => registry));
+        indexCheckedAgentRuntimePackages(async () => ['figlett']), new FlyPackageImages(() => registry));
     const spec = new AgentRunSpecBuilder({
         agentType: 'claude', image: 'propr/agent', name: 'task', stdin: true, user: '0:0', network: agentRunNetwork('bridge'),
         workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',
@@ -177,14 +180,35 @@ test('a Fly run whose list the index rejects never starts a build or agent Machi
     const run = fly.start(spec);
     await assert.rejects(run.wait(), /Unknown package: figlett/);
     assert.deepEqual(launches, [], 'no build Machine and no agent Machine');
-    assert.equal(registryCalls, 0, 'the base image is not even resolved');
+    // The registry is asked whether a derived image already has the list (here it fails), then the start-time install is refused.
+    assert.ok(registryCalls > 0);
 });
 
 test('a Sprite is never created for a list the index rejects', async () => {
     setAgentImagePackageIndexLoader(async () => index());
     const client = new FakeSprites();
-    const pool = new SpritePool(client, undefined, prevalidatedAgentRuntimePackages(async () => ['figlett']));
+    const pool = new SpritePool(client, undefined, indexCheckedAgentRuntimePackages(async () => ['figlett']));
     await assert.rejects(pool.acquire(new AbortController().signal), /Unknown package: figlett/);
     assert.deepEqual(client.created, []);
+    await pool.close();
+});
+
+test('a warm Sprite keeps serving a pinned version the refreshed index no longer lists; only a new Sprite is refused', async () => {
+    const pinned = 'figlet=2.2.5-3+b1';
+    setAgentImagePackageIndexLoader(async () => index());
+    const client = new FakeSprites();
+    const pool = new SpritePool(client, undefined, indexCheckedAgentRuntimePackages(async () => [pinned]));
+    const signal = new AbortController().signal;
+    const first = await pool.acquire(signal);
+    await pool.release(first);
+    // The archive moves on: the refreshed index carries only a newer figlet.
+    setAgentImagePackageIndexLoader(async () => ({ ...index(), packages: new Map([['figlet', new Set(['2.2.6-1'])]]) }));
+    const reused = await pool.acquire(signal);
+    assert.equal(reused.sprite.name, first.sprite.name, 'the clean checkpoint already has the pinned version');
+    assert.equal(client.created.length, 1);
+    // With the warm Sprite in use, the next run needs a new one: that installation is checked and refused.
+    await assert.rejects(pool.acquire(signal), /Unknown version: figlet=2\.2\.5-3\+b1/);
+    assert.equal(client.created.length, 1, 'no Sprite created to install a version the archive lacks');
+    await pool.release(reused);
     await pool.close();
 });

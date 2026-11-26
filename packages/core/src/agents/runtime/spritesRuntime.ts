@@ -13,7 +13,7 @@ import { execute } from './sprites/spritesExecution.js';
 import { applySpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWORK_ENFORCEMENT } from './sprites/spritesNetwork.js';
 import { SpritePool, startupStep, type Slot, type SpriteClient, type SpritePackageSource } from './sprites/spritesProvisioning.js';
 import { loadConfiguredAgentRuntimePackages } from './agentRuntimePackageProfile.js';
-import { prevalidatedAgentRuntimePackages } from './agentRuntimePackageIndex.js';
+import { indexCheckedAgentRuntimePackages } from './agentRuntimePackageIndex.js';
 import { prepareSpriteRun, unsupportedMount, validateSpriteRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 import logger from '../../utils/logger.js';
@@ -45,8 +45,9 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     constructor(private readonly client?: SpriteClient | ((token: string) => Promise<SpriteClient>), private readonly environment = process.env,
         private readonly poolRedis?: SpritePoolRedis,
         // Sprites have no image: the configured runtime packages are installed while provisioning.
-        // The list is re-checked against the agent image's package index before any Sprite is provisioned.
-        private readonly loadPackages: SpritePackageSource = prevalidatedAgentRuntimePackages(loadConfiguredAgentRuntimePackages)) {}
+        // The list is re-checked against the agent image's package index before a Sprite is provisioned
+        // with it, not when a warm Sprite's clean checkpoint already has the packages.
+        private readonly loadPackages: SpritePackageSource = indexCheckedAgentRuntimePackages(loadConfiguredAgentRuntimePackages)) {}
 
     close(): Promise<void> {
         clearTimeout(this.startupRetry);

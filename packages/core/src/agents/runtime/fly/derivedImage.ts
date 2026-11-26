@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pipeline } from 'node:stream/promises';
 import { createGunzip } from 'node:zlib';
 import logger from '../../../utils/logger.js';
+import { AgentRuntimePackageUnavailableError, type AgentRuntimePackageAvailabilityCheck } from '../agentRuntimePackageIndex.js';
 import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
 import { startupStep } from '../startupStep.js';
 import { createRejected, type MachineLaunch, type MachinesApi } from './api.js';
@@ -28,6 +29,18 @@ export class FlyPackageImageError extends Error {}
 
 /** apt failed on the build Machine. Remembered per base manifest and package list, so queued runs do not each rebuild. */
 export class FlyPackageInstallFailure extends FlyPackageImageError {}
+
+/** A build Machine whose deletion could not be confirmed: its ID, or only its unique name when the create response was lost. */
+export interface FlyBuilderMachine { name: string; id?: string }
+
+/**
+ * A build Machine may still exist. The worker keeps the obligation to delete it, and no later run
+ * for the same configured image and package list builds again or creates its agent Machine until
+ * Fly confirms it gone.
+ */
+export class FlyBuilderCleanupError extends FlyPackageImageError {
+    constructor(message: string, readonly builder: FlyBuilderMachine, options?: ErrorOptions) { super(message, options); }
+}
 
 /** Timings; tests shorten them. */
 export interface FlyPackageImageTimings {
@@ -60,15 +73,21 @@ export interface SelectOptions {
     packages: readonly string[];
     signal: AbortSignal;
     run: string;
+    /** The package source's archive check, run only before a new installation (a build or a start-time install). */
+    checkAvailability?: AgentRuntimePackageAvailabilityCheck;
 }
 
 interface Derived { image: string; repository: string; tag: string; digest: string }
+interface Preparation { key: string; configured: string; registry: RegistryApi; repository: string; base: string | { digest: string; manifest: ImageManifest } }
 interface CachedImage { pending: Promise<Derived>; checkedAt: number; registry: RegistryApi; derived?: Derived }
 
 // Shared by every runtime instance in the worker process: one build per base image and package list.
 const images = new Map<string, CachedImage>();
 const failures = new Map<string, number>();
 const installFailures = new Map<string, { message: string; at: number }>();
+/** Build Machines not yet confirmed deleted, by unique name, with the configured image and package list they were built for. */
+interface UnresolvedBuilder extends FlyBuilderMachine { configured: string; reconciling?: Promise<void> }
+const unresolvedBuilders = new Map<string, UnresolvedBuilder>();
 
 /** The derived tag for a base manifest and package list; the same inputs on any worker give the same tag. */
 export function flyPackageImageTag(baseDigest: string, packages: readonly string[]) {
@@ -117,8 +136,11 @@ export class FlyPackageImages {
         // Failures back off per configured image and package list, whichever base manifest it resolved to.
         const configured = JSON.stringify([config.app, config.image, packages]);
         const { failureBackoffMs } = this.timings;
-        if (Date.now() - (failures.get(configured) ?? -Infinity) < failureBackoffMs) return;
         try {
+            // Before anything else, including the start-time install fallback: a build Machine an
+            // earlier run could not confirm deleted is deleted first, or this run fails as well.
+            if (hasUnresolvedBuilders(configured)) await this.reconcileBuilders(options, configured);
+            if (Date.now() - (failures.get(configured) ?? -Infinity) < failureBackoffMs) return;
             const registry = this.registryFor(config);
             // A tag can be pushed to while the worker runs: resolve it for every run, so the cached
             // image follows the base manifest it names now. A digest names one manifest for good.
@@ -130,29 +152,79 @@ export class FlyPackageImages {
                 throw new FlyPackageInstallFailure(failed.message);
             }
             installFailures.delete(key);
-            let cached = images.get(key);
-            if (cached?.derived && Date.now() - cached.checkedAt >= this.timings.recheckAfterMs && !await this.stillPublished(cached, cached.derived, signal)) {
-                images.delete(key);
-                cached = undefined;
-            }
-            if (!cached) {
-                signal.throwIfAborted();
-                // Shared, and outlives this run's cancellation: it deletes its own build Machine.
-                const entry: CachedImage = { pending: this.prepare(options, registry, base.repository, resolved ?? base.reference), checkedAt: Date.now(), registry };
-                cached = entry;
-                images.set(key, entry);
-                entry.pending.then(derived => { entry.derived = derived; }, error => {
-                    if (images.get(key) === entry) images.delete(key);
-                    if (error instanceof FlyPackageInstallFailure) installFailures.set(key, { message: error.message, at: Date.now() });
-                });
-            }
+            const cached = await this.cachedImage(options, { key, configured, registry, repository: base.repository, base: resolved ?? base.reference });
             const pending = cached.pending;
             return (await startupStep(signal, () => pending)).image;
         } catch (error) {
-            if (signal.aborted || error instanceof FlyPackageImageError) throw error;
+            if (signal.aborted || error instanceof FlyPackageImageError || error instanceof AgentRuntimePackageUnavailableError) throw error;
             failures.set(configured, Date.now());
             logger.warn({ ...fields, err: error }, 'Could not prepare the derived Fly Machine image; installing agent runtime packages at Fly Machine start');
             return;
+        }
+    }
+
+    /**
+     * The cached image or shared preparation for `key`, started here when there is none. The lookup and
+     * the start happen after the last await, so concurrent runs share one build; and a build starts only
+     * once no build Machine for `configured` is left unresolved.
+     */
+    private async cachedImage(options: SelectOptions, start: Preparation) {
+        const { key, configured } = start;
+        let cached = images.get(key);
+        if (cached?.derived && Date.now() - cached.checkedAt >= this.timings.recheckAfterMs && !await this.stillPublished(cached, cached.derived, options.signal)) {
+            images.delete(key);
+            cached = undefined;
+        }
+        for (;;) {
+            // After an await, another run may have started the preparation.
+            cached ??= images.get(key);
+            if (cached) return cached;
+            // A shared build that failed while this run waited on the registry may have left a build Machine behind.
+            if (!hasUnresolvedBuilders(configured)) break;
+            await this.reconcileBuilders(options, configured);
+        }
+        options.signal.throwIfAborted();
+        return this.startPreparation(options, start);
+    }
+
+    /** Starts the shared preparation for `key`. It outlives this run's cancellation: it deletes its own build Machine. */
+    private startPreparation(options: SelectOptions, { key, configured, registry, repository, base }: Preparation) {
+        const entry: CachedImage = { pending: this.prepare(options, registry, repository, base), checkedAt: Date.now(), registry };
+        images.set(key, entry);
+        entry.pending.then(derived => { entry.derived = derived; }, error => {
+            if (images.get(key) === entry) images.delete(key);
+            if (error instanceof FlyPackageInstallFailure) installFailures.set(key, { message: error.message, at: Date.now() });
+            // In the same callback as the entry removal: no run can start a build in between.
+            if (error instanceof FlyBuilderCleanupError) {
+                logger.warn({ run: options.run, machine: error.builder.id ?? null, name: error.builder.name },
+                    'Fly image build Machine deletion is unconfirmed; the next run for this image deletes it first');
+                unresolvedBuilders.set(error.builder.name, { ...error.builder, configured });
+            }
+        });
+        return entry;
+    }
+
+    /**
+     * Deletes the build Machines earlier runs for this configured image and package list could not
+     * confirm deleted. Concurrent runs share one attempt per Machine; while one stays unconfirmed,
+     * runs fail with `FlyBuilderCleanupError` and the obligation is kept for the next run.
+     */
+    private async reconcileBuilders({ api, signal }: SelectOptions, configured: string) {
+        for (const builder of [...unresolvedBuilders.values()]) {
+            if (builder.configured !== configured || unresolvedBuilders.get(builder.name) !== builder) continue;
+            if (!builder.reconciling) {
+                const reconciling = resolveBuilder(api, builder, this.timings).then(() => {
+                    if (unresolvedBuilders.get(builder.name) === builder) unresolvedBuilders.delete(builder.name);
+                    logger.info({ machine: builder.id ?? null, name: builder.name }, 'Deleted a Fly image build Machine left by an earlier run');
+                }, error => {
+                    builder.reconciling = undefined;
+                    throw error;
+                });
+                reconciling.catch(() => {});
+                builder.reconciling = reconciling;
+            }
+            const pending = builder.reconciling;
+            await startupStep(signal, () => pending);
         }
     }
 
@@ -183,6 +255,9 @@ export class FlyPackageImages {
             logger.info({ run: options.run, image: derived(existing).image, ...agentRuntimePackagesLogFields(options.packages) }, 'Using the derived Fly Machine image for agent runtime packages');
             return derived(existing);
         }
+        // Only a build installs anything: an existing image built with this list has the packages,
+        // even if the archive no longer lists a pinned version.
+        await options.checkAvailability?.(options.packages);
         const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-fly-image-'));
         try {
             const started = Date.now();
@@ -226,7 +301,7 @@ async function buildLayer(options: SelectOptions, timings: FlyPackageImageTiming
         return { layer, install: result!, machine: id, verified, rawBytes };
     } finally {
         void api.exec(id, ['/usr/bin/touch', RUN + '/packages-read']).catch(() => {});
-        await removeBuilder(api, id, timings);
+        await removeBuilder(api, { name, id }, timings);
     }
 }
 
@@ -238,7 +313,7 @@ async function buildLayer(options: SelectOptions, timings: FlyPackageImageTiming
  */
 async function settleLostBuilder(api: MachinesApi, name: string, error: unknown, timings: FlyPackageImageTimings): Promise<never> {
     if (createRejected(error)) throw error; // Fly refused the request: nothing of this name exists.
-    const unconfirmed = (cause: unknown) => new FlyPackageImageError('Fly image build Machine creation could not be confirmed', { cause });
+    const unconfirmed = (cause: unknown) => new FlyBuilderCleanupError('Fly image build Machine creation could not be confirmed', { name }, { cause });
     if (!api.find) throw unconfirmed(error);
     const deadline = Date.now() + timings.lostCreateWindowMs;
     let lookupError: unknown;
@@ -250,7 +325,7 @@ async function settleLostBuilder(api: MachinesApi, name: string, error: unknown,
         } catch (lookup) { lookupError = lookup; }
         if (found) {
             logger.warn({ machine: found, name }, 'A Fly image build Machine appeared after its create response was lost; deleting it');
-            await removeBuilder(api, found, timings);
+            await removeBuilder(api, { name, id: found }, timings);
             throw new Error(`Fly image build Machine ${found} appeared after its create response was lost and was deleted`, { cause: error });
         }
         if (Date.now() >= deadline) break;
@@ -313,16 +388,39 @@ async function download(api: MachinesApi, id: string, layer: NonNullable<BuildRe
  * Returns once Fly confirms the build Machine gone; the run must not create its agent Machine before then.
  * The delete has its own window, so a transient failure near the end of a long build is still retried.
  */
-async function removeBuilder(api: MachinesApi, id: string, { removalWindowMs, pollMs }: FlyPackageImageTimings) {
+async function removeBuilder(api: MachinesApi, { name, id }: { name: string; id: string }, { removalWindowMs, pollMs }: FlyPackageImageTimings) {
     const deadline = Date.now() + removalWindowMs;
     for (;;) {
         try { await api.destroy(id); return; } catch (error) {
             if (await api.gone(id).catch(() => false)) return;
             if (Date.now() >= deadline)
-                throw new FlyPackageImageError(`Could not confirm deletion of Fly image build Machine ${id}`, { cause: error });
+                throw new FlyBuilderCleanupError(`Could not confirm deletion of Fly image build Machine ${id}`, { name, id }, { cause: error });
         }
         await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())));
     }
+}
+
+/**
+ * Confirms an unresolved build Machine gone: deletes it by ID, or first looks it up by its unique name
+ * when its create response was lost (an earlier run already watched for it for `lostCreateWindowMs`,
+ * so a successful lookup that finds nothing confirms it absent). Throws `FlyBuilderCleanupError` otherwise.
+ */
+async function resolveBuilder(api: MachinesApi, builder: UnresolvedBuilder, timings: FlyPackageImageTimings) {
+    let id = builder.id;
+    if (!id) {
+        const { name } = builder;
+        if (!api.find) throw new FlyBuilderCleanupError(`Fly image build Machine ${name} may still exist and cannot be looked up`, { name });
+        try { id = await api.find(name); }
+        catch (error) { throw new FlyBuilderCleanupError(`Could not look up Fly image build Machine ${name}`, { name }, { cause: error }); }
+        if (!id) return;
+        builder.id = id;
+    }
+    await removeBuilder(api, { name: builder.name, id }, timings);
+}
+
+function hasUnresolvedBuilders(configured: string) {
+    for (const builder of unresolvedBuilders.values()) if (builder.configured === configured) return true;
+    return false;
 }
 
 interface DerivedPush { repository: string; tag: string; manifest: ImageManifest; layer: NonNullable<BuildResult['layer']>; file: string; packages: readonly string[] }
@@ -355,6 +453,8 @@ export async function selectFlyPackageImage(images: FlyPackageImages | undefined
     prepared: { launch: MachineLaunch; installPackages(packages: readonly string[]): void },
     options: SelectOptions): Promise<FlyPackageSelection> {
     const derived = options.packages.length && images ? await images.select(options) : undefined;
+    // The Machine installs the packages itself: check them first, so no Machine is created for a list apt cannot install.
+    if (!derived && options.packages.length) await options.checkAvailability?.(options.packages, options.signal);
     // Every selection sets the image: a retry that falls back after a refused derived image launches the base.
     prepared.launch.config.image = derived ?? options.config.image;
     const install = derived ? [] : options.packages;
@@ -410,4 +510,5 @@ export function resetFlyPackageImages() {
     images.clear();
     failures.clear();
     installFailures.clear();
+    unresolvedBuilders.clear();
 }

@@ -11,7 +11,9 @@ import { validateAgentRuntimePackages } from './agentRuntimePackageProfile.js';
  * the Debian apt sources the agent image (`Dockerfile.agent`) is built on, read
  * straight from the archive over HTTPS. Settings uses it when Docker is not the
  * runtime that applies the list or is unreachable, and the Fly Machines and
- * Sprites runtimes re-check against it before a build or provisioning starts.
+ * Sprites runtimes re-check against it before a new installation (a build, a
+ * start-time install or a fresh Sprite); an environment already built with the
+ * list is reused without it.
  */
 
 /** One apt source of the agent image: `<url>/dists/<suite>/<component>/binary-<arch>/Packages`. */
@@ -320,9 +322,10 @@ export async function validateAgentRuntimePackagesWithIndex(packages: unknown, s
 }
 
 /**
- * Before a Fly build or Sprite provisioning: throws `AgentRuntimePackageUnavailableError` for names
- * the index lacks, so no Machine or Sprite is created. An index that cannot be fetched lets the run
- * go ahead; the build or provisioning failure cache is the safety net then.
+ * Before a Fly build, a Fly Machine start-time install or Sprite provisioning: throws
+ * `AgentRuntimePackageUnavailableError` for names the index lacks, so no Machine or Sprite is
+ * created to install them. An index that cannot be fetched lets the run go ahead; the build or
+ * provisioning failure cache is the safety net then.
  */
 export async function assertAgentRuntimePackagesInIndex(packages: readonly string[], signal?: AbortSignal): Promise<void> {
     if (packages.length === 0) return;
@@ -337,12 +340,23 @@ export async function assertAgentRuntimePackagesInIndex(packages: readonly strin
     if (errors.length) throw new AgentRuntimePackageUnavailableError(unknown, errors);
 }
 
-/** A package source that refuses, before any Machine or Sprite exists, a list the index rejects. */
-export function prevalidatedAgentRuntimePackages(load: () => Promise<readonly string[]>,
-    check: (packages: readonly string[]) => Promise<void> = packages => assertAgentRuntimePackagesInIndex(packages)) {
-    return async () => {
-        const packages = await load();
-        await check(packages);
-        return packages;
-    };
+export type AgentRuntimePackageAvailabilityCheck = (packages: readonly string[], signal?: AbortSignal) => Promise<void>;
+
+/**
+ * Reads the configured runtime package list. `checkAvailability`, when present, is the archive check a
+ * runtime runs only before a new installation (a build, a start-time install or a fresh Sprite): an
+ * environment already built with the list (a derived image, a clean Sprite checkpoint) has the packages,
+ * even if the archive has since dropped a pinned version.
+ */
+export type AgentRuntimePackageLoader = (() => Promise<readonly string[]>) & { checkAvailability?: AgentRuntimePackageAvailabilityCheck };
+
+/** A package source whose list is checked against the index before each new installation (not on every read). */
+export function indexCheckedAgentRuntimePackages(load: () => Promise<readonly string[]>,
+    check: AgentRuntimePackageAvailabilityCheck = assertAgentRuntimePackagesInIndex): AgentRuntimePackageLoader {
+    return Object.assign(() => load(), { checkAvailability: check });
+}
+
+/** Runs the source's availability check before a new installation of `packages`; nothing to install, nothing to check. */
+export async function checkAgentRuntimePackagesBeforeInstall(source: AgentRuntimePackageLoader, packages: readonly string[], signal?: AbortSignal) {
+    if (packages.length > 0 && source.checkAvailability) await source.checkAvailability(packages, signal);
 }

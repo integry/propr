@@ -19,7 +19,7 @@ import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
 import { RUN } from './fly/wrapper.js';
 import { flyPackageInstallError, logFlyPackageInstall, readFlyPackageInstall, type FlyPackageInstall } from './fly/packages.js';
 import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, loadConfiguredAgentRuntimePackages } from './agentRuntimePackageProfile.js';
-import { prevalidatedAgentRuntimePackages } from './agentRuntimePackageIndex.js';
+import { indexCheckedAgentRuntimePackages, type AgentRuntimePackageLoader } from './agentRuntimePackageIndex.js';
 import { startRunPipeline } from './runPipeline.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
@@ -90,8 +90,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
     readonly unsupportedMount = unsupportedFlyMount;
 
     constructor(private readonly client?: MachinesApi, private readonly environment = process.env,
-        // The list is re-checked against the agent image's package index before any Machine is created.
-        private readonly loadPackages: () => Promise<readonly string[]> = prevalidatedAgentRuntimePackages(loadConfiguredAgentRuntimePackages),
+        // The list is re-checked against the agent image's package index before a Machine is created to
+        // install it (a build or a start-time install), not when a derived image already has the packages.
+        private readonly loadPackages: AgentRuntimePackageLoader = indexCheckedAgentRuntimePackages(loadConfiguredAgentRuntimePackages),
         // Configured runtime packages run from a derived image built once per base image and list. A
         // custom Machines client comes without the registry, so its runs install them at Machine start.
         private readonly images: FlyPackageImages | undefined = client ? undefined : new FlyPackageImages()) {}
@@ -176,7 +177,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             // Read for every run, so a Settings change applies to the next Machine. An unreadable
             // or invalid list fails the run rather than starting it without its packages.
             const configured = await this.loadPackages().catch(beforeCreation);
-            const selectOptions = { api, config, packages: configured, signal, run: spec.name };
+            const selectOptions = { api, config, packages: configured, signal, run: spec.name, checkAvailability: this.loadPackages.checkAvailability };
             const image = { selection: await selectFlyPackageImage(this.images, prepared, selectOptions).catch(beforeCreation), imageWaitMs: 0 };
             image.imageWaitMs = Date.now() - dispatchedAt;
             let agentStartedAt: number | undefined;

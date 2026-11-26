@@ -8,6 +8,7 @@ import logger from '../../../utils/logger.js';
 import type { NetworkPolicy, Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 import { sameSpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY } from './spritesNetwork.js';
 import { startupStep } from '../startupStep.js';
+import { checkAgentRuntimePackagesBeforeInstall, type AgentRuntimePackageLoader } from '../agentRuntimePackageIndex.js';
 import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, agentRuntimePackageInstallCommand, agentRuntimePackagesDigest,
     agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
 
@@ -34,8 +35,11 @@ export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
 }
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'> & Partial<Pick<SpritesClient, 'listAllSprites' | 'getSprite'>>;
-/** Reads the instance runtime package list (normalized); a Sprite is provisioned with exactly these installed. */
-export type SpritePackageSource = () => Promise<readonly string[]>;
+/**
+ * Reads the instance runtime package list (normalized); a Sprite is provisioned with exactly these installed.
+ * Its availability check, if any, runs only before a new Sprite is created to install them.
+ */
+export type SpritePackageSource = AgentRuntimePackageLoader;
 const noPackages: SpritePackageSource = async () => [];
 
 export type Slot = { sprite: Sprite; lease?: AbortSignal; checkpoint: string; provisioningMs: number; restoreMs: number;
@@ -77,6 +81,8 @@ export class SpritePool {
         // incarnation of this worker, can still have a live run on one it created.
         const started = Date.now();
         try {
+            // Only a new Sprite installs anything; warm and recycled ones keep their checkpoint's packages.
+            await startupStep(signal, () => checkAgentRuntimePackagesBeforeInstall(this.loadPackages, packages, signal));
             signal.throwIfAborted();
             this.inventory?.checkCreate(name);
         } catch (error) {

@@ -4,11 +4,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { after, beforeEach, test } from 'node:test';
+import { after, afterEach, beforeEach, test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import zlib from 'node:zlib';
 import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachinesRuntime.ts';
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
+import { indexCheckedAgentRuntimePackages, setAgentImagePackageIndexLoader } from '../packages/core/src/agents/runtime/agentRuntimePackageIndex.ts';
 import { agentRuntimePackageInstallCommand } from '../packages/core/src/agents/runtime/agentRuntimePackageProfile.ts';
 import { MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
 import { flyPackageImageTag, FlyPackageImages, resetFlyPackageImages } from '../packages/core/src/agents/runtime/fly/derivedImage.ts';
@@ -19,6 +20,7 @@ import { closeConnection } from '../packages/core/src/db/connection.ts';
 
 after(closeConnection);
 beforeEach(resetFlyPackageImages);
+afterEach(() => setAgentImagePackageIndexLoader());
 
 const BASE_DIGEST = 'sha256:' + 'a'.repeat(64);
 const TOKEN = 'FlyV1 synthetic-worker-credential';
@@ -710,8 +712,9 @@ test('a lost build Machine create is looked up by name until it appears, and del
 /** Build Machine creates lose their response; `find` answers the lookups by name. */
 class LostBuilder extends Machines {
     find?: (name: string) => Promise<string | undefined>;
+    lose = true;
     override async create(launch: MachineLaunch) {
-        if (isBuild(launch)) { this.launches.push(launch); this.events.push('create build (lost)'); throw new Error('socket hang up'); }
+        if (isBuild(launch) && this.lose) { this.launches.push(launch); this.events.push('create build (lost)'); throw new Error('socket hang up'); }
         return super.create(launch);
     }
 }
@@ -890,4 +893,105 @@ test('compute usage counts the wait for the derived image from dispatch', async 
     assert.ok(result.computeUsage!.wallTimeMs >= result.computeUsage!.imageWaitMs!);
     assert.ok(result.computeUsage!.provisioningMs! >= result.computeUsage!.imageWaitMs!);
     await run.release!();
+});
+
+test('a derived image built with a pinned version keeps serving it after the refreshed index drops the version', async () => {
+    const pinned = 'figlet=2.2.5-3+b1';
+    const indexWith = (version: string) => ({ packages: new Map([['figlet', new Set([version])]]), provides: new Set<string>(), loadedAt: Date.now() });
+    setAgentImagePackageIndexLoader(async () => indexWith('2.2.5-3+b1'));
+    const api = new Machines();
+    const registry = new Registry();
+    const fly = new FlyMachinesRuntime(api, env('pinned'), indexCheckedAgentRuntimePackages(async () => [pinned]), new FlyPackageImages(() => registry, FAST));
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    const derived = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, [pinned]));
+    // The archive moves on and the worker refreshes its index: the pinned version is no longer listed.
+    setAgentImagePackageIndexLoader(async () => indexWith('2.2.6-1'));
+    for (const name of ['cached', 'other-worker']) {
+        if (name === 'other-worker') resetFlyPackageImages(); // only the registry tag is left to find the image by
+        const run = fly.start(spec(name));
+        assert.equal((await run.wait()).exitCode, 0, name);
+        assert.equal(api.launches.at(-1)!.config.image, derived, name);
+        await run.release!();
+    }
+    assert.equal(api.launches.filter(isBuild).length, 1, 'the image already has the packages: nothing is rebuilt');
+    // A new installation is still checked: a rebuild, and a start-time install after a registry failure.
+    const launches = api.launches.length;
+    registry.tags.clear();
+    resetFlyPackageImages();
+    const rebuild = fly.start(spec('rebuild'));
+    await assert.rejects(rebuild.wait(), /Unknown version: figlet=2\.2\.5-3\+b1/);
+    await rebuild.release?.().catch(() => {});
+    registry.fail = new Error('Fly registry GET returned HTTP 503');
+    const fallback = fly.start(spec('fallback'));
+    await assert.rejects(fallback.wait(), /Unknown version: figlet=2\.2\.5-3\+b1/);
+    await fallback.release?.().catch(() => {});
+    assert.equal(api.launches.length, launches, 'no build or agent Machine to install a version the archive lacks');
+});
+
+/** While `stuck`, the build Machine's acknowledgement and delete fail; it stays present until a delete succeeds. */
+class UndeletableBuilder extends Machines {
+    stuck = true;
+    override async exec(id: string, args: string[]) {
+        if (this.stuck && args[0] === '/usr/bin/touch' && args[1] === RUN + '/packages-read') throw new Error('Fly API 503');
+        return super.exec(id, args);
+    }
+    override async destroy(id: string) {
+        if (this.stuck && isBuild(this.launches[Number(id.slice(1))])) throw new Error('Fly API 503');
+        return super.destroy(id);
+    }
+}
+
+test('a build Machine whose deletion is unconfirmed is deleted before any later run builds or creates an agent Machine', async () => {
+    const api = new UndeletableBuilder();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'undeletable', ['figlet'], { PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' });
+    const first = fly.start(spec('first'));
+    while (!registry.lookups) await delay(5);
+    // A second run is waiting on the registry when the shared build fails: it must not start a build beside the left-over Machine.
+    let open!: () => void;
+    registry.gate = new Promise(resolve => { open = resolve; });
+    const waiting = fly.start(spec('waiting'));
+    await assert.rejects(first.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    await first.release?.().catch(() => {});
+    open();
+    await assert.rejects(waiting.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    await waiting.release?.().catch(() => {});
+    const later = fly.start(spec('later'));
+    await assert.rejects(later.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    await later.release?.().catch(() => {});
+    assert.deepEqual(api.events, ['create build'], 'no second build Machine and no agent Machine while m0 may exist');
+    assert.deepEqual([...api.live], ['m0']);
+    // Fly recovers: the next run deletes the left-over build Machine first, then builds and runs.
+    api.stuck = false;
+    const recovered = fly.start(spec('recovered'));
+    assert.equal((await recovered.wait()).exitCode, 0);
+    assert.deepEqual(api.events.slice(0, 5), ['create build', 'destroy build', 'create build', 'destroy build', 'create launch']);
+    assert.equal(api.peak, 1);
+    await recovered.release!();
+});
+
+test('a lost build Machine create that could not be confirmed is looked up again before the next run builds', async () => {
+    const api = new LostBuilder();
+    let listing: 'failing' | 'visible' = 'failing';
+    api.find = async () => {
+        if (listing === 'failing') throw new MachinesHttpError('GET', 503, 'unavailable');
+        api.live.add('m0'); // Fly did create it
+        return 'm0';
+    };
+    const fly = runtime(api, new Registry(), 'lost-unresolved', ['figlet']);
+    const first = fly.start(spec('first'));
+    await assert.rejects(first.wait(), /build Machine creation could not be confirmed/);
+    await first.release?.().catch(() => {});
+    const second = fly.start(spec('second'));
+    await assert.rejects(second.wait(), /Could not look up Fly image build Machine propr-build-/);
+    await second.release?.().catch(() => {});
+    assert.deepEqual(api.events, ['create build (lost)'], 'no build or agent Machine while the lost one is unaccounted for');
+    listing = 'visible';
+    api.lose = false;
+    const third = fly.start(spec('third'));
+    assert.equal((await third.wait()).exitCode, 0);
+    assert.deepEqual(api.events.slice(0, 5), ['create build (lost)', 'destroy build', 'create build', 'destroy build', 'create launch']);
+    await third.release!();
 });
