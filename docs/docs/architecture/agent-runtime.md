@@ -218,7 +218,7 @@ OpenCode's config location is `~/.config/opencode`; configure OpenCode agents wi
 
 OpenCode 2 stores credentials in `~/.local/share/opencode/opencode.db`. Set `HOST_OPENCODE_DATA_DIR` to the host data directory when it differs from the sibling of the configured `~/.config/opencode` directory. Managed accounts use their own data directory.
 
-Task and analysis containers import credential rows into a disposable database. Changes to refreshed credentials are written back only when the stored value still matches the original. OpenCode can also import a series 1 `auth.json` from the mounted data directory. Provider API keys can be supplied through agent environment variables.
+Task and analysis containers import credential rows into a disposable database. Changes to refreshed credentials are written back only when the stored value still matches the original. OpenCode can also import a series 1 `auth.json` from the mounted data directory. When the host database has no credential rows yet, the first run copies the imported credentials (with any refresh) into it, skipping any credential the host added for the same login during the run. `auth.json` itself is left unchanged so a pinned series 1 CLI keeps working. Provider API keys can be supplied through agent environment variables.
 
 #### Model-ID Translation
 
