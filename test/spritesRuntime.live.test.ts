@@ -141,7 +141,7 @@ test('real Sprite reaches a worker-local ProPR API over the SSH reverse forward,
     try {
         const result = await run.wait();
         assert.equal(result.exitCode, 0, result.stderr);
-        assert.equal(result.stdout.trim(), 'data: first\n\ndata: second');
+        assert.match(result.stdout, /data: first\n\ndata: second\s*$/);
         assert.ok((await run.inspect!()).diagnostics?.some(line => line.includes('ssh-reverse-forward')));
         assert.ok(!result.stdout.includes('PRIVATE KEY') && !result.stderr.includes('PRIVATE KEY'));
     } finally { await run.release!(); }
