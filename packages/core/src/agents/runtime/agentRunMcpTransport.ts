@@ -1,6 +1,7 @@
 import { flyMcpEndpoint } from './fly/config.js';
 import type { AgentNetworkMode } from '../../network/networkPolicy.js';
 import { restrictedSpriteMcpEndpoint } from './sprites/spritesNetwork.js';
+import { SPRITES_MCP_FORWARD_ENV, spritesMcpForwardEnabled, spritesMcpForwardTarget } from './sprites/spritesMcpForwardConfig.js';
 import { getAgentRuntime, runtimeSupportsMcpReachableUrl, type ProviderAgentRuntime } from './registry.js';
 import type { AgentConfig } from '../types.js';
 import type { AgentRunMcpTransport } from './types.js';
@@ -11,10 +12,13 @@ import type { AgentRunMcpTransport } from './types.js';
  * preferred wherever the runtime can join it; a runtime that cannot falls back
  * to a URL its default network reaches, authenticated by the run's grant token
  * alone (that token is per run, scoped and revoked when the phase ends).
+ * A runtime that can carry MCP over a per-run SSH reverse forward (Sprites)
+ * uses it when it has no explicit or public HTTPS MCP URL.
  */
 export type AgentRunMcpTransportPlan =
     | { transport: 'private-network'; reason: string }
     | { transport: 'reachable-url'; url: string; reason: string }
+    | { transport: 'ssh-reverse-forward'; url: string; reason: string }
     | { transport: 'unavailable'; reason: string };
 
 /**
@@ -78,12 +82,39 @@ function selectAgentRunMcpTransport(
     return { transport: 'reachable-url', url, reason: `Agent runtime "${runtime.kind}" cannot join a private network; runs reach ProPR MCP at a reachable URL with their per-run grant token.` };
 }
 
+/**
+ * Selection on a runtime that can carry MCP over an SSH reverse forward:
+ * 1. the runtime's explicit endpoint (`PROPR_SPRITES_MCP_URL`), or a public
+ *    HTTPS URL (`PROPR_AGENT_MCP_URL` / `API_PUBLIC_URL`), used directly;
+ * 2. otherwise the per-run SSH reverse forward to the internal API;
+ * 3. otherwise the run is refused with what to configure.
+ * Returns undefined when the forward does not apply (another runtime, or the
+ * forward disabled with `PROPR_SPRITES_MCP_FORWARD=0`).
+ */
+function selectReverseForward(
+    runtime: Pick<ProviderAgentRuntime, 'kind' | 'capabilities'>,
+    plan: AgentRunMcpTransportPlan,
+    environment: NodeJS.ProcessEnv,
+): AgentRunMcpTransportPlan | undefined {
+    if (!runtime.capabilities.supportsMcpReverseForward || !spritesMcpForwardEnabled(environment)) return undefined;
+    if (plan.transport === 'reachable-url') {
+        const explicit = agentRunMcpRuntimeEndpoint(runtime.kind, environment);
+        if (plan.url === explicit || !('reason' in restrictedSpriteMcpEndpoint(plan.url))) return undefined;
+    }
+    const target = spritesMcpForwardTarget(environment);
+    if ('reason' in target) {
+        return { transport: 'unavailable', reason: `Agent runtime "${runtime.kind}" has no public HTTPS ProPR MCP URL, and the SSH reverse forward cannot reach the internal API: ${target.reason}. Set PROPR_SPRITES_MCP_URL (or API_PUBLIC_URL) to a public HTTPS URL, or fix PROPR_INTERNAL_API_URL.` };
+    }
+    return { transport: 'ssh-reverse-forward', url: target.url, reason: `Agent runtime "${runtime.kind}" has no public HTTPS ProPR MCP URL; runs reach ProPR MCP on a loopback address inside the run, carried to the internal API by a per-run SSH reverse forward from the worker, with their per-run grant token (set ${SPRITES_MCP_FORWARD_ENV}=0 to require a public URL instead).` };
+}
+
 export function planAgentRunMcpTransport(
     runtime: Pick<ProviderAgentRuntime, 'kind' | 'capabilities'>,
     environment: NodeJS.ProcessEnv = process.env,
     networkMode: AgentNetworkMode = 'open',
 ): AgentRunMcpTransportPlan {
-    const plan = selectAgentRunMcpTransport(runtime, environment);
+    const selected = selectAgentRunMcpTransport(runtime, environment);
+    const plan = selectReverseForward(runtime, selected, environment) ?? selected;
     if (runtime.kind === 'sprites' && networkMode === 'restricted' && plan.transport === 'reachable-url') {
         const endpoint = restrictedSpriteMcpEndpoint(plan.url);
         if ('reason' in endpoint) return { transport: 'unavailable', reason: endpoint.reason };

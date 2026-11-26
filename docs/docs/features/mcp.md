@@ -13,6 +13,10 @@ MCP lets a connected coding or chat client inspect and operate ProPR using scope
 
 With the hosted UI tunnel (`propr tunnel setup … --start`), MCP works automatically through ProPR Connect on Plus installations. Add `https://mcp.propr.dev/mcp` to your MCP client; there are no MCP settings to configure and no extra commands to run. The instance registers with Connect on startup. The settings page shows the registration status and an admin-only **Allow MCP clients through ProPR Connect** toggle to turn it off. `MCP_ENABLED=false` still forces MCP off.
 
+### Agent runs on remote runtimes
+
+Automation and agent runs call ProPR MCP with a per-run grant token, never with a client's OAuth grant. Docker runs reach the API over the private Compose network. Runs on [Fly Sprites](../architecture/agent-runtime.md#propr-mcp-from-sprites) use a public HTTPS MCP URL when one is set (`PROPR_SPRITES_MCP_URL`, `PROPR_AGENT_MCP_URL` or `API_PUBLIC_URL`; ProPR hosted on Fly, or the Plus hosted UI tunnel). That is preferred whenever you have one. A self-hosted instance with no public URL needs no tunnel: the worker carries MCP into each Sprite over a per-run SSH reverse forward to a loopback address, and nothing is exposed publicly. `get_agent_run_admission` and `propr admission` report which transport runs get (`reachable-url`, `ssh-reverse-forward` or `unavailable`). Fly Machines runs use Fly's private network.
+
 ## Consent and connected apps
 
 Connect the client to the instance's `/api/mcp` endpoint. Sign in through the browser and review the requested permissions and repository selection. Optional scopes begin unchecked. Select only the requested capabilities and repositories you intend to grant; refresh cannot expand the grant. A rejected GitHub session returns you to sign-in.

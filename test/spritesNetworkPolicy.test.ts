@@ -88,7 +88,9 @@ test('admission accepts restricted Sprites runs, and the Sprites MCP URL wins ov
     assert.equal(runtime.capabilities.restrictedNetworkEnforcement.method, 'sprites-dns-allowlist');
     const plan = planAgentRunMcpTransport(runtime, { PROPR_SPRITES_MCP_URL: ' https://gateway.example.net/api/mcp ', API_PUBLIC_URL: 'https://propr.example.net', PROPR_AGENT_MCP_URL: 'http://api:4000/api/mcp' }, 'restricted');
     assert.deepEqual([plan.transport, (plan as { url: string }).url], ['reachable-url', 'https://gateway.example.net/api/mcp']);
-    assert.equal(planAgentRunMcpTransport({ kind: 'docker', capabilities: runtime.capabilities }, { PROPR_SPRITES_MCP_URL: 'https://gateway.example.net' }).transport, 'unavailable');
+    // PROPR_SPRITES_MCP_URL is Sprites-only: another runtime kind ignores it (and gets the forward, or nothing without it).
+    assert.equal(planAgentRunMcpTransport({ kind: 'docker', capabilities: runtime.capabilities }, { PROPR_SPRITES_MCP_URL: 'https://gateway.example.net' }).transport, 'ssh-reverse-forward');
+    assert.equal(planAgentRunMcpTransport({ kind: 'docker', capabilities: runtime.capabilities }, { PROPR_SPRITES_MCP_URL: 'https://gateway.example.net', PROPR_SPRITES_MCP_FORWARD: '0' }).transport, 'unavailable');
 });
 
 test('the policy is applied before upload and launch, cleared after restore, and a Sprite that keeps it is discarded', async t => {

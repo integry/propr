@@ -17,12 +17,23 @@ import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntim
 import logger from '../../utils/logger.js';
 import { LiveOutputLog } from '../impl/utils/liveOutputLog.js';
 import { SpriteInventory, type SpritePoolRedis } from './sprites/spritesInventory.js';
+import { spritesMcpForwardTarget, type SpritesMcpForwardTarget } from './sprites/spritesMcpForwardConfig.js';
+import type { SpritesMcpForward } from './sprites/spritesMcpForward.js';
+
+/** The forward target a run's `ssh-reverse-forward` MCP grant needs, or undefined for any other grant. */
+function mcpForwardTarget(spec: AgentRunSpec, environment: NodeJS.ProcessEnv): SpritesMcpForwardTarget | undefined {
+    if (spec.mcpGrant?.transport !== 'ssh-reverse-forward') return undefined;
+    const target = spritesMcpForwardTarget(environment);
+    if ('reason' in target) throw new Error(`Sprites cannot start the ProPR MCP SSH reverse forward: ${target.reason}`);
+    if (spec.mcpGrant.url !== target.url) throw new Error('The ProPR MCP grant URL does not match the Sprites SSH reverse forward listener');
+    return target;
+}
 
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
     static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: true,
         restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
-        supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
+        supportsMcpReachableUrl: true, supportsMcpReverseForward: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly capabilities = SpritesRuntime.capabilities;
     readonly unsupportedMount = unsupportedMount;
     private readonly pools = new Map<string, Promise<SpritePool>>();
@@ -81,6 +92,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         if (!token) throw new Error('Set PROPR_SPRITES_TOKEN on the worker to run agents on Sprites');
         // Named networks, private MCP endpoints and malformed policies stay refused.
         const networkPolicy = spriteNetworkPolicy(spec);
+        const forwardTarget = mcpForwardTarget(spec, this.environment);
         process.env.SPRITES_CLIENT_SIGNALS ??= '0';
         if (this.closing) throw new Error('Sprites runtime is closed');
         const pool = this.getPool(token);
@@ -97,6 +109,14 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         let signal = AbortSignal.any([cancellation.signal,
             ...(options.signal ? [options.signal] : []), ...(ownership ? [ownership] : [])]);
         const output = new LazyOutputStreams();
+        const announce = (message: string) => {
+            output.write('stderr', message + '\n');
+            if (options.taskId && options.streamToRedis) {
+                const log = new LiveOutputLog(options.taskId);
+                log.append(message + '\n', 'stderr');
+                void log.close().catch(() => {});
+            }
+        };
         let slot: Slot | undefined;
         let released: Promise<void> | undefined;
         const reads = new Set<Promise<Buffer | null>>();
@@ -112,13 +132,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs } = await startupStep(signal, async () => {
                 const acquired = await ready.acquire(signal, () => {
                     diagnostics.push('Waiting for a Sprite');
-                    output.write('stderr', 'Waiting for a Sprite\n');
+                    announce('Waiting for a Sprite');
                     logger.info({ taskId: options.taskId, run: spec.name }, 'Waiting for a Sprite');
-                    if (options.taskId && options.streamToRedis) {
-                        const log = new LiveOutputLog(options.taskId);
-                        log.append('Waiting for a Sprite\n', 'stderr');
-                        void log.close().catch(() => {});
-                    }
                 });
                 const checkedOutAt = Date.now();
                 if (acquired.lease) signal = AbortSignal.any([signal, acquired.lease]);
@@ -145,9 +160,30 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     throw error;
                 }
             });
+            let forward: SpritesMcpForward | undefined;
+            const transportLost = new AbortController();
             try {
                 signal.throwIfAborted();
-                const executionSignal = AbortSignal.any([signal, AbortSignal.timeout(options.timeout ?? 300_000)]);
+                if (forwardTarget) {
+                    // Before the agent starts: its ProPR MCP config names the loopback listener.
+                    const starting = import('./sprites/spritesMcpForward.js').then(({ SpritesMcpForward }) => SpritesMcpForward.start({
+                        sprite, target: forwardTarget, signal, run: spec.name,
+                        onLost: error => {
+                            diagnostics.push(error.message);
+                            announce(error.message);
+                            transportLost.abort(error);
+                        },
+                    }));
+                    forward = await startupStep(signal, () => starting).catch(error => {
+                        void starting.then(late => late.close(), () => {});
+                        throw error;
+                    });
+                    const message = 'ProPR MCP transport: ssh-reverse-forward (per-run SSH reverse forward through the Sprites proxy)';
+                    diagnostics.push(message);
+                    announce(message);
+                    logger.info({ taskId: options.taskId, run: spec.name, sprite: sprite.name, mcpTransport: 'ssh-reverse-forward' }, 'ProPR MCP SSH reverse forward established');
+                }
+                const executionSignal = AbortSignal.any([signal, transportLost.signal, AbortSignal.timeout(options.timeout ?? 300_000)]);
                 const executed = await execute(sprite, launch, {
                     output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
                 });
@@ -155,6 +191,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     queueMs, provisioningMs, restoreMs, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
                     costUsd: null, costSource: null } };
             } finally {
+                // Torn down with the run: success, failure, cancellation, timeout or a lost reattach.
+                await forward?.close();
                 if (!commit && slot) {
                     ready.releaseInBackground(slot);
                     slot = undefined;

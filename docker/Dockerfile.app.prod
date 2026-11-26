@@ -177,7 +177,7 @@ COPY scripts/opencode-run.sh ./scripts/opencode-run.sh
 COPY scripts/vibe-entrypoint.sh ./scripts/vibe-entrypoint.sh
 COPY scripts/vibe-prompt-file-runner.py ./scripts/vibe-prompt-file-runner.py
 COPY scripts/gh-wrapper.sh ./scripts/gh-wrapper.sh
-COPY scripts/sprites-agent-setup.sh scripts/sprites-launcher.py ./scripts/
+COPY scripts/sprites-agent-setup.sh scripts/sprites-launcher.py scripts/sprites-mcp-forward.sh ./scripts/
 COPY scripts/extension-stdio-bridge.mjs ./scripts/extension-stdio-bridge.mjs
 COPY NOTICE ./NOTICE
 COPY THIRD_PARTY_LICENSES.md ./THIRD_PARTY_LICENSES.md

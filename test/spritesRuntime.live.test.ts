@@ -83,3 +83,66 @@ test('real Sprite provisions all pinned CLIs, runs as node and restores between 
     }
     assert.equal(fs.readFileSync(path.join(agyStore, oauth), 'utf8'), 'synthetic-after');
 });
+
+test('real Sprite reaches a worker-local ProPR API over the SSH reverse forward, streaming included', {
+    skip: !token && 'set PROPR_SPRITES_LIVE_TOKEN', timeout: 30 * 60_000,
+}, async t => {
+    process.env.SPRITES_CLIENT_SIGNALS ??= '0';
+    const http = await import('node:http');
+    const { SpritesClient } = await import('@fly/sprites');
+    const { SpritesRuntime } = await import('../packages/core/src/agents/runtime/spritesRuntime.ts');
+    const { AgentRunSpecBuilder, agentRunMcpGrant, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
+    const { planAgentRunMcpTransport } = await import('../packages/core/src/agents/runtime/agentRunMcpTransport.ts');
+    const { WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_TRANSPORT_RESULT_DIR } = await import('../packages/core/src/git/workspaceTransportScript.ts');
+    const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+    t.after(closeConnection);
+    // The "internal API": reachable only from this machine, never from the internet.
+    const grantToken = 'propr_mcp_live_' + randomUUID();
+    const api = http.createServer((req, res) => {
+        if (req.headers.authorization !== `Bearer ${grantToken}`) { res.writeHead(401).end(); return; }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write('data: first\n\n');
+        setTimeout(() => res.end('data: second\n\n'), 500);
+    });
+    await new Promise<void>(resolve => api.listen(0, '127.0.0.1', () => resolve()));
+    t.after(() => { api.closeAllConnections(); api.close(); });
+    const environment = { PROPR_SPRITES_TOKEN: token, PROPR_INTERNAL_API_URL: `http://127.0.0.1:${(api.address() as { port: number }).port}` };
+    const client = new SpritesClient(token!);
+    const sprite = await client.createSprite('propr-test-' + randomUUID());
+    t.after(() => client.deleteSprite(sprite.name));
+    const remote = '/opt/test-remote.git';
+    const { stdout } = await sprite.execFile('sudo', ['-n', 'bash', '-ec', `
+        git init -q --bare ${remote}
+        git init -q /tmp/test-seed
+        cd /tmp/test-seed
+        git -c user.name=ProPR -c user.email=test@propr.dev commit -q --allow-empty -m base
+        git push -q ${remote} HEAD:refs/heads/base
+        git rev-parse HEAD
+    `]);
+    const runtime = new SpritesRuntime({ createSprite: async () => sprite, deleteSprite: async () => {} }, environment);
+    const plan = planAgentRunMcpTransport(runtime, environment);
+    assert.equal(plan.transport, 'ssh-reverse-forward');
+    const url = (plan as { url: string }).url;
+    const spec = new AgentRunSpecBuilder({
+        name: 'live-forward', agentType: 'claude', image: 'live', stdin: true, user: '0:0', network: agentRunNetwork('bridge'),
+        mcpGrant: agentRunMcpGrant({ mcpServers: [{ name: 'propr', url, bearerTokenEnv: 'PROPR_MCP_TOKEN', bearerToken: grantToken }], mcpTransport: 'ssh-reverse-forward' }),
+        workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', mode: 'clone', readOnly: false,
+            clone: { remote, baseRef: 'refs/heads/base', baseCommit: stdout.toString().trim(), branch: 'task',
+                resultRef: 'refs/heads/result', resultDir: WORKSPACE_TRANSPORT_RESULT_DIR, script: WORKSPACE_TRANSPORT_SCRIPT } },
+    }).env('PROPR_MCP_TOKEN', grantToken).command('/bin/bash', '-ec', `
+        # sshd (port 39022 = 0x986E) and the forward (39080 = 0x98A8) listen on 127.0.0.1 only.
+        listening() { awk 'NR > 1 && $4 == "0A" { print $2 }' /proc/net/tcp /proc/net/tcp6 2>/dev/null; }
+        listening | grep -qx '0100007F:986E'
+        listening | grep -qx '0100007F:98A8'
+        ! listening | grep -v '^0100007F:' | grep -qE ':(986E|98A8)$'
+        curl -fsS -N -H "Authorization: Bearer $PROPR_MCP_TOKEN" ${url}
+    `).build();
+    const run = runtime.start(spec, { timeout: 20 * 60_000 });
+    try {
+        const result = await run.wait();
+        assert.equal(result.exitCode, 0, result.stderr);
+        assert.equal(result.stdout.trim(), 'data: first\n\ndata: second');
+        assert.ok((await run.inspect!()).diagnostics?.some(line => line.includes('ssh-reverse-forward')));
+        assert.ok(!result.stdout.includes('PRIVATE KEY') && !result.stderr.includes('PRIVATE KEY'));
+    } finally { await run.release!(); }
+});

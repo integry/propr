@@ -142,7 +142,7 @@ export interface AgentRunAdmissionRuntime {
   };
   mcp: {
     /** How runs granted ProPR MCP reach it on this runtime. */
-    transport: "private-network" | "reachable-url" | "unavailable";
+    transport: "private-network" | "reachable-url" | "ssh-reverse-forward" | "unavailable";
     reason: string;
   };
 }

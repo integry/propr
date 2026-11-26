@@ -27,17 +27,18 @@ export function agentRunNetwork(name: string): AgentRunNetwork {
 
 /**
  * The MCP grant a tool policy gives a run: server names plus how they are
- * reached, over the private network the policy names, or else at a URL the
- * runtime's default network reaches (authenticated by the per-run token).
+ * reached, over the private network the policy names, over the runtime's SSH
+ * reverse forward when the policy says so, or else at a URL the runtime's
+ * default network reaches (authenticated by the per-run token).
  */
-export function agentRunMcpGrant(policy: Pick<AgentToolPolicy, 'mcpServers' | 'dockerNetwork'> | undefined): AgentRunMcpGrant | undefined {
+export function agentRunMcpGrant(policy: Pick<AgentToolPolicy, 'mcpServers' | 'dockerNetwork' | 'mcpTransport'> | undefined): AgentRunMcpGrant | undefined {
     if (!policy?.mcpServers?.length) return undefined;
     const network = policy.dockerNetwork?.trim();
     const url = network ? undefined : policy.mcpServers.find(server => server.name === PROPR_MCP_SERVER_NAME)?.url;
     return {
         servers: policy.mcpServers.map(server => server.name),
         ...(network ? { network } : {}),
-        transport: network ? 'private-network' : 'reachable-url',
+        transport: network ? 'private-network' : policy.mcpTransport === 'ssh-reverse-forward' ? 'ssh-reverse-forward' : 'reachable-url',
         ...(url ? { url } : {}),
     };
 }
