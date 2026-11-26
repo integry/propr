@@ -14,8 +14,9 @@ import { startupStep } from './startupStep.js';
  * the apt sources of the runtime that installs them (`agentRuntimePackageBases.ts`),
  * read straight from the archive over HTTPS. Settings checks each runtime in use
  * against its own base, and the Fly Machines and Sprites runtimes re-check against
- * theirs before a new installation (a Fly Machine start-time install or a fresh
- * Sprite); a warm Sprite whose clean checkpoint already has the list is reused without it.
+ * theirs before a new installation (a Fly derived image build, a Fly Machine start-time
+ * install or a fresh Sprite); an environment already built with the list (a derived image,
+ * a warm Sprite's clean checkpoint) is reused without it.
  */
 
 export { AGENT_IMAGE_APT_SOURCES, AGENT_IMAGE_ARCHITECTURE, AGENT_IMAGE_PACKAGE_BASE, AGENT_IMAGE_PACKAGE_INDEX_NAME,
@@ -374,7 +375,7 @@ export async function validateAgentRuntimePackagesWithIndex(packages: unknown, s
 }
 
 /**
- * Before a Fly Machine start-time install or Sprite provisioning: throws
+ * Before a Fly derived image build, a Fly Machine start-time install or Sprite provisioning: throws
  * `AgentRuntimePackageUnavailableError` for names the base's index lacks, so no Machine or Sprite is
  * created to install them. An index that cannot be fetched lets the run go ahead; the apt
  * install itself still reports a bad name then.
@@ -397,9 +398,9 @@ export type AgentRuntimePackageAvailabilityCheck = (packages: readonly string[],
 
 /**
  * Reads the configured runtime package list. `checkAvailability`, when present, is the archive check a
- * runtime runs only before a new installation (a Fly Machine start-time install or a fresh Sprite): a
- * warm Sprite whose clean checkpoint was built with the list has the packages, even if the archive has
- * since dropped a name or a pinned version.
+ * runtime runs only before a new installation (a Fly derived image build, a Fly Machine start-time install
+ * or a fresh Sprite): an environment already built with the list (a derived image, a warm Sprite's clean
+ * checkpoint) has the packages, even if the archive has since dropped a name or a pinned version.
  */
 export type AgentRuntimePackageLoader = (() => Promise<readonly string[]>) & { checkAvailability?: AgentRuntimePackageAvailabilityCheck };
 

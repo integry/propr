@@ -66,6 +66,8 @@ class FakeMachines implements MachinesApi {
         if (!this.ignoreStop) this.status = 'exited 143';
     }
     async destroy() { this.destroyed++; }
+    async gone() { return this.destroyed > 0; }
+    async find() { return undefined; }
 }
 function fixture() {
     const api = new FakeMachines();

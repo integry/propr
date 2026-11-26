@@ -1,0 +1,78 @@
+import type { AgentRuntimePackageLoader } from '../agentRuntimePackageIndex.js';
+import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, type MachineLaunch, type MachinesApi } from './api.js';
+import { acquireFlyMachineSlot } from './capacity.js';
+import type { FlyConfig } from './config.js';
+import { createAgentMachine, selectFlyPackageImage, type FlyPackageImages, type FlyPackageSelection, type SelectOptions } from './derivedImage.js';
+
+interface DispatchInput {
+    images: FlyPackageImages | undefined;
+    loadPackages: AgentRuntimePackageLoader;
+    api: MachinesApi;
+    config: FlyConfig;
+    prepared: { launch: MachineLaunch; installPackages(packages: readonly string[]): void };
+    signal: AbortSignal;
+    run: string;
+}
+
+/** What a Fly run has before it creates its agent Machine. */
+export interface FlyDispatch {
+    /** The configured list, whether the derived image has it or the Machine installs it at start. */
+    configured: readonly string[];
+    selectOptions: SelectOptions;
+    /** The image selection and the time spent waiting for it; a retried create may update both. */
+    image: { selection: FlyPackageSelection; imageWaitMs: number };
+    /** Frees the run's `PROPR_FLY_MACHINES_MAX` slot (a no-op without the cap). */
+    release: () => void;
+    /** Time spent waiting for that slot. */
+    queueMs: number;
+}
+
+/**
+ * Everything before the agent Machine create: read the list, count build Machines an earlier worker
+ * process left against capacity, select the derived image (building it when needed, or falling back to
+ * the start-time install), then wait for a capacity slot. The slot comes last, after any build Machine
+ * this run needed is confirmed gone, so a run never holds a build Machine and its agent Machine at once.
+ */
+export async function dispatchFlyRun({ images, loadPackages, api, config, prepared, signal, run }: DispatchInput): Promise<FlyDispatch> {
+    const startedAt = Date.now();
+    // Read for every run, so a Settings change applies to the next Machine. An unreadable
+    // or invalid list fails the run rather than starting it without its packages.
+    const configured = await loadPackages();
+    await images?.reconcileLeftovers(api, config);
+    const selectOptions: SelectOptions = { api, config, packages: configured, signal, run, checkAvailability: loadPackages.checkAvailability };
+    // The index check runs only when this selection installs the list (a build, or the start-time install).
+    const selection = await selectFlyPackageImage(images, prepared, selectOptions);
+    const image = { selection, imageWaitMs: Date.now() - startedAt };
+    // Over PROPR_FLY_MACHINES_MAX the run queues here; the slot is held until its agent Machine is destroyed or confirmed gone.
+    const queuedAt = Date.now();
+    const release = await acquireFlyMachineSlot(config.app, config.maxMachines, signal, run);
+    return { configured, selectOptions, image, release, queueMs: Date.now() - queuedAt };
+}
+
+interface AgentCreate {
+    api: MachinesApi;
+    images: FlyPackageImages | undefined;
+    prepared: DispatchInput['prepared'];
+    dispatch: FlyDispatch;
+    mayRetry(): boolean;
+    onAttempt(): void;
+    onBootStart(timestamp: number): void;
+    /** A create whose response was lost and not adopted: a Machine may exist without an ID. */
+    onUnconfirmed(): void;
+}
+
+/** Creates the agent Machine from the selected image (see `createAgentMachine`), reporting an unconfirmed create. */
+export async function createFlyAgentMachine({ api, images, prepared, dispatch, mayRetry, onAttempt, onBootStart, onUnconfirmed }: AgentCreate) {
+    try {
+        return await createAgentMachine({ api, images, prepared, options: dispatch.selectOptions, state: dispatch.image, mayRetry, onAttempt, onBootStart });
+    } catch (error) {
+        if (error instanceof MachineCreateUnconfirmedError || error instanceof MachineNotFoundAfterCreateError) onUnconfirmed();
+        throw error;
+    }
+}
+
+/** The Fly-specific compute usage fields: the capacity queue (with a cap) and the derived-image wait (with packages). */
+export function flyDispatchUsage(dispatch: FlyDispatch, config: FlyConfig) {
+    return { ...(config.maxMachines !== undefined && { queueMs: dispatch.queueMs }),
+        ...(dispatch.configured.length > 0 && { imageWaitMs: dispatch.image.imageWaitMs }) };
+}

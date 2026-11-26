@@ -1,0 +1,124 @@
+import logger from '../../../utils/logger.js';
+import type { MachinesApi } from './api.js';
+import type { FlyConfig } from './config.js';
+
+/**
+ * Per-app FIFO limit on the Machines this worker process has created and not yet destroyed: agent
+ * Machines, derived-image build Machines, and Machines an earlier worker process left behind.
+ */
+interface Slots { active: number; waiting: Array<{ grant(): void }> }
+
+const apps = new Map<string, Slots>();
+
+/** `PROPR_FLY_MACHINES_MAX`: unset or empty means no limit. */
+export function flyMachinesMax(env: NodeJS.ProcessEnv): number | undefined {
+    const raw = env.PROPR_FLY_MACHINES_MAX?.trim();
+    if (!raw) return;
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < 1) throw new Error('Invalid PROPR_FLY_MACHINES_MAX');
+    return value;
+}
+
+/**
+ * Waits until fewer than `max` Machines of `app` are held by this process, then takes a slot.
+ * Runs over the cap queue in arrival order instead of failing; an aborted wait leaves the queue.
+ * The returned release is idempotent.
+ */
+export async function acquireFlyMachineSlot(app: string, max: number | undefined, signal: AbortSignal, run?: string): Promise<() => void> {
+    if (max === undefined) return () => {};
+    signal.throwIfAborted();
+    let slots = apps.get(app);
+    if (!slots) apps.set(app, slots = { active: 0, waiting: [] });
+    const state = slots;
+    let held = false;
+    const release = () => {
+        if (!held) return;
+        held = false;
+        state.active--;
+        drain(state, max);
+    };
+    if (state.active < max && !state.waiting.length) {
+        state.active++;
+        held = true;
+        return release;
+    }
+    logger.info({ app, run, max, active: state.active, queued: state.waiting.length + 1 }, 'Fly Machines at PROPR_FLY_MACHINES_MAX; run queued');
+    await new Promise<void>((resolve, reject) => {
+        const waiter = { grant: () => { signal.removeEventListener('abort', onAbort); held = true; resolve(); } };
+        const onAbort = () => {
+            const index = state.waiting.indexOf(waiter);
+            if (index >= 0) state.waiting.splice(index, 1);
+            reject(signal.reason);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        state.waiting.push(waiter);
+    });
+    return release;
+}
+
+function drain(state: Slots, max: number) {
+    while (state.active < max && state.waiting.length) {
+        state.active++;
+        state.waiting.shift()!.grant();
+    }
+}
+
+/** Pacing for checks on Machines that outlive their run; tests shorten it. */
+export const retainedMachineChecks = { intervalMs: 30_000, maxIntervalMs: 300_000 };
+
+/**
+ * Keeps a run's slot until `confirmGone` resolves true, meaning the Machine no longer exists at Fly
+ * (a Machine kept for recovery, or one a lost create may have launched). The first check runs after
+ * `afterMs`, the guest's recovery window; later checks back off to one every five minutes and continue
+ * until absence is confirmed. A failed check is not evidence of absence. Timers do not hold the worker open.
+ */
+export function releaseSlotWhenGone(release: () => void, confirmGone: () => Promise<boolean>, afterMs: number, context: Record<string, unknown>) {
+    let interval = retainedMachineChecks.intervalMs;
+    const schedule = (ms: number) => { setTimeout(() => void check(), ms).unref(); };
+    const check = async () => {
+        let gone = false;
+        try { gone = await confirmGone(); }
+        catch (err) { logger.debug({ ...context, err }, 'Fly Machine existence check failed; keeping its capacity slot'); }
+        if (gone) {
+            logger.info(context, 'Fly Machine kept past its run is gone; capacity slot freed');
+            release();
+            return;
+        }
+        schedule(interval);
+        interval = Math.min(interval * 2, retainedMachineChecks.maxIntervalMs);
+    };
+    logger.info({ ...context, afterMs }, 'Fly Machine kept past its run holds its capacity slot until it is gone');
+    schedule(afterMs);
+}
+
+interface UndeletedMachine {
+    config: Pick<FlyConfig, 'app' | 'maxMachines' | 'credentialRetention'>;
+    /** The run's Machine ID, when create returned one. */
+    machine?: string;
+    /** Create failed with its lookup also failing, so a Machine may exist without an ID. */
+    createUnconfirmed: boolean;
+    launchName: string;
+    run: string;
+}
+
+/**
+ * Frees the slot of a run whose Machine this worker did not delete. Only a run that never created a Machine frees it
+ * at once. A Machine kept for recovery holds it until Fly confirms it is gone; a lost create holds it until the lookup
+ * succeeds, deleting a found Machine first (its agent never started: it waits for the start gate).
+ */
+export function releaseUndeletedFlyMachineSlot(release: () => void, api: MachinesApi, { config, machine, createUnconfirmed, launchName, run }: UndeletedMachine) {
+    const context = { app: config.app, run, machine };
+    if (config.maxMachines === undefined) release();
+    else if (machine) releaseSlotWhenGone(release, () => api.gone(machine), config.credentialRetention * 1000, context);
+    else if (createUnconfirmed && api.find) {
+        const find = api.find.bind(api);
+        releaseSlotWhenGone(release, async () => {
+            const found = await find(launchName);
+            if (found) await api.destroy(found);
+            return true;
+        }, 0, context);
+    }
+    // Without a lookup a lost create can never be confirmed either way; keep the slot.
+    else if (createUnconfirmed) logger.warn(context, 'Fly Machine create was not confirmed and cannot be looked up; keeping its capacity slot');
+    else release();
+}

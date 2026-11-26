@@ -28,6 +28,8 @@ export const pollBackoff = (attempt: number) => calculateDelay(attempt, {
 interface MachineRecord {
     id: string;
     name: string;
+    state?: string;
+    created_at?: string;
     events?: { timestamp: number; type: string }[];
 }
 
@@ -36,6 +38,19 @@ export interface MachinesApi {
     exec(id: string, args: string[], signal?: AbortSignal): Promise<{ stdout: string; exit_code: number }>;
     signal(id: string, signal: NodeJS.Signals): Promise<void>;
     destroy(id: string): Promise<void>;
+    /** True only when Fly confirms the Machine no longer exists (absent or `destroyed`); false while it may still exist. */
+    gone(id: string): Promise<boolean>;
+    /**
+     * The ID of the Machine created with this unique launch name, or undefined when Fly lists none.
+     * Throws when the lookup itself fails: that is not evidence of absence. Optional for test doubles;
+     * without it a lost build Machine create cannot be confirmed either way.
+     */
+    find?(name: string): Promise<string | undefined>;
+    /**
+     * Every Machine of the app whose name starts with `prefix`, with its state and creation time.
+     * Optional for test doubles; without it Machines an earlier worker process left are not found.
+     */
+    list?(prefix: string): Promise<{ id: string; name: string; state?: string; createdAt?: number }[]>;
     logs(id: string, publish: (message: string) => void, signal: AbortSignal): Promise<void>;
 }
 
@@ -48,10 +63,24 @@ interface RequestOptions {
 const ERROR_BODY_LIMIT = 64 * 1024;
 export const ERROR_DETAIL_LIMIT = 300;
 
-class MachinesHttpError extends Error {
-    constructor(method: string, readonly status: number, detail?: string) {
+export class MachinesHttpError extends Error {
+    constructor(readonly method: string, readonly status: number, detail?: string) {
         super(`Fly Machines API ${method} returned HTTP ${status}` + (detail ? ': ' + detail : ''));
     }
+}
+
+/** A lost create response whose lookup by name failed too: the Machine may or may not exist. */
+export class MachineCreateUnconfirmedError extends Error {}
+
+/**
+ * A lost create response after which three lookups by the request's name found no Machine. Fly may
+ * still be creating it, so this is not proof of absence: the build path keeps looking (see `derivedImage.ts`).
+ */
+export class MachineNotFoundAfterCreateError extends Error {}
+
+/** Whether Fly refused the create request itself (HTTP 4xx on the POST), so no Machine of its name exists. */
+export function createRejected(error: unknown): boolean {
+    return error instanceof MachinesHttpError && error.status < 500 && error.method === 'POST';
 }
 
 async function readBounded(response: Response) {
@@ -127,18 +156,48 @@ export class MachinesClient implements MachinesApi {
             const response = await this.request('POST', this.url, { body: launch, timeout: this.config.bootTimeout });
             return identify(await response.json() as MachineRecord);
         } catch (error) {
-            if (error instanceof MachinesHttpError && error.status < 500) throw error;
+            if (createRejected(error)) throw error;
             // A lost create response can still have launched the agent. Adopt
             // only this request's UUID-named Machine; never POST a second run.
+            const message = error instanceof Error ? error.message : String(error);
             for (let attempt = 0; attempt < 3; attempt++) {
                 if (attempt) await delay(1000);
-                const response = await this.request('GET', this.url + '?metadata.propr_run_id=' + encodeURIComponent(launch.name));
-                const machines = await response.json() as MachineRecord[];
-                const found = machines.find(m => m.name === launch.name && /^[a-zA-Z0-9-]+$/.test(m.id));
+                let found: MachineRecord | undefined;
+                // A failed lookup (any status) says nothing about the Machine: never report it as a refusal.
+                try { found = await this.lookup(launch.name); }
+                catch (lookup) {
+                    throw new MachineCreateUnconfirmedError(`${message}; the lookup by name failed too: ${lookup instanceof Error ? lookup.message : String(lookup)}`, { cause: error });
+                }
                 if (found) return identify(found);
             }
-            throw error;
+            // Every lookup succeeded without finding it. A create still in flight at Fly
+            // could appear later; that race between the two API calls cannot be closed here.
+            throw new MachineNotFoundAfterCreateError(message, { cause: error });
         }
+    }
+
+    async find(name: string) {
+        return (await this.lookup(name))?.id;
+    }
+
+    private async lookup(name: string) {
+        const response = await this.request('GET', this.url + '?metadata.propr_run_id=' + encodeURIComponent(name));
+        const machines = await response.json() as MachineRecord[];
+        return machines.find(m => m.name === name && /^[a-zA-Z0-9-]+$/.test(m.id));
+    }
+
+    async list(prefix: string) {
+        const response = await this.request('GET', this.url);
+        const machines = await response.json() as MachineRecord[];
+        return machines.filter(m => typeof m.name === 'string' && m.name.startsWith(prefix) && /^[a-zA-Z0-9-]+$/.test(m.id))
+            .map(m => ({ id: m.id, name: m.name, state: m.state, createdAt: m.created_at ? Date.parse(m.created_at) || undefined : undefined }));
+    }
+
+    async gone(id: string) {
+        let record: MachineRecord;
+        try { record = await (await this.request('GET', this.url + '/' + id)).json() as MachineRecord; }
+        catch (error) { if (error instanceof MachinesHttpError && error.status === 404) return true; throw error; }
+        return record.state === 'destroyed';
     }
 
     async exec(id: string, command: string[], signal?: AbortSignal) {

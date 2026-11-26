@@ -270,7 +270,7 @@ jobs:
           flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'" |
             tee "$OUT/runtime-packages.log"
           applied=$(sed -n 's/^PROPR_RUNTIME_PACKAGES //p' "$OUT/runtime-packages.log" | tr -d '\r' | tail -n 1)
-          expected=$([[ $AGENT_RUNTIME == sprites ]] && echo 'when Sprites are provisioned' || echo 'at every Fly Machine start')
+          expected=$([[ $AGENT_RUNTIME == sprites ]] && echo 'when Sprites are provisioned' || echo 'in a derived Fly Machine image')
           jq -e --argjson pkgs "$packages" --arg expected "$expected" \
             '.status == "ready" and .packages == $pkgs and .accepted == $pkgs and (.appliedBy | contains($expected))' <<< "$applied" > /dev/null || {
             echo "::error::Runtime packages $packages were not applied for $AGENT_RUNTIME: $applied"
@@ -538,9 +538,10 @@ jobs:
             echo "::error::Line 2 of $APP.txt is not the $RUNTIME_PACKAGE version banner, so the runtime package was not installed for the run"
             exit 1
           fi
-          # Evidence: the runtime installed the configured list after the idle stop (Sprite provisioning or Fly Machine start).
+          # Evidence: the runtime installed the configured list after the idle stop (Sprite provisioning, or the
+          # derived Fly Machine image built by the first run; a fallback install at Machine start does not count).
           expected_log=$([[ $AGENT_RUNTIME == sprites ]] && echo 'Installed agent runtime packages on Sprite' ||
-            echo 'Installed agent runtime packages at Fly Machine start')
+            echo 'Installed agent runtime packages in a derived Fly Machine image')
           install=$(flyctl logs --app "$APP" --no-tail --json |
             jq -sc --argjson since "$STOPPED_AT_MS" --arg msg "$expected_log" '[.[] | .message | fromjson?
               | select((.msg // "") == $msg and (.time // 0) >= $since)] | last // empty')
@@ -549,6 +550,13 @@ jobs:
           jq -e --arg digest "$RUNTIME_PACKAGES_DIGEST" --argjson count "$RUNTIME_PACKAGE_COUNT" \
             '.packagesDigest == $digest and .packageCount == $count and (.installMs | numbers) >= 0' \
             <<< "$install" > /dev/null || { echo "::error::Runtime package install log does not match packagesDigest $RUNTIME_PACKAGES_DIGEST"; exit 1; }
+          if [[ $AGENT_RUNTIME == fly-machines ]]; then
+            # The first run built the derived image: the build log names the digest every later run launches.
+            derived=$(jq -er --arg app "$AGENT_APP" '.image | strings | select(startswith("registry.fly.io/" + $app + "@sha256:"))' <<< "$install") ||
+              { echo "::error::The derived image build log names no registry.fly.io/$AGENT_APP digest"; exit 1; }
+            echo "DERIVED_IMAGE=$derived" >> "$GITHUB_ENV"
+            echo "Derived Fly Machine image: $derived (layerBytes=$(jq -r .layerBytes <<< "$install"), verifiedFiles=$(jq -r .verifiedFiles <<< "$install"))"
+          fi
           if [[ $EXTENSIONS == true ]]; then
             expected=("SKILL-OK-$RUN_TOKEN" "Echo: MCP-OK-$RUN_TOKEN")
             for i in 0 1; do
@@ -592,6 +600,57 @@ jobs:
           done
           echo "Missing successful compute_runtime: $AGENT_RUNTIME execution for $REPO#$ISSUE, PR #$pr"
           exit 1
+
+      - name: Verify derived Fly Machine image reuse, rebuild and teardown
+        if: env.AGENT_RUNTIME == 'fly-machines'
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          : "${DERIVED_IMAGE:?The first run did not report a derived image}"
+          set -a; source "$OUT/agent-runtime.env"; set +a
+          # A fresh process, like another worker or a restart: only the registry tag is shared.
+          # Same list -> the first run's digest with no build Machine; a changed list -> one build and a new digest.
+          RUNTIME_PACKAGES="[\"$RUNTIME_PACKAGE\"]" CHANGED_PACKAGES="[\"$RUNTIME_PACKAGE\",\"cowsay\"]" \
+            node --import tsx --input-type=module <<'JS'
+          import { setTimeout as delay } from 'node:timers/promises';
+          import { MachinesClient } from './packages/core/src/agents/runtime/fly/api.ts';
+          import { flyConfig } from './packages/core/src/agents/runtime/fly/config.ts';
+          import { FlyPackageImages } from './packages/core/src/agents/runtime/fly/derivedImage.ts';
+          const fail = message => { console.log('::error::' + message); process.exit(1); };
+          const config = flyConfig(process.env);
+          const api = new MachinesClient(config, [config.token]);
+          const builds = [];
+          const create = api.create.bind(api);
+          api.create = (launch, onBootStart) => {
+            if (launch.config.processes[0].cmd[0] === 'build') builds.push(launch.name);
+            return create(launch, onBootStart);
+          };
+          const images = new FlyPackageImages();
+          const select = packages => images.select({ api, config, packages, signal: AbortSignal.timeout(40 * 60_000), run: 'fly-e2e-derived-check' });
+          const reused = await select(JSON.parse(process.env.RUNTIME_PACKAGES));
+          console.log('Same list: ' + reused + ', build Machines: ' + builds.length);
+          if (reused !== process.env.DERIVED_IMAGE) fail(`The same list selected ${reused}, not the first run's ${process.env.DERIVED_IMAGE}`);
+          if (builds.length) fail('The same list created a build Machine');
+          const changed = await select(JSON.parse(process.env.CHANGED_PACKAGES));
+          console.log('Changed list: ' + changed + ', build Machines: ' + builds.length);
+          if (!changed || !changed.startsWith(`registry.fly.io/${config.app}@sha256:`)) fail('The changed list did not build a derived image');
+          if (changed === reused) fail('The changed list reused the old digest');
+          if (builds.length !== 1) fail(`The changed list created ${builds.length} build Machines, not 1`);
+          // Teardown: every agent and build Machine is gone (auto_destroy may take a moment after exit).
+          let left = [];
+          for (let attempt = 0; attempt < 24; attempt++) {
+            left = (await api.list('')).filter(machine => machine.state !== 'destroyed');
+            if (!left.length) break;
+            await delay(5000);
+          }
+          if (left.length) fail('Machines left in the agent app: ' + left.map(m => `${m.name} (${m.state})`).join(', '));
+          console.log('No Machines left in ' + config.app);
+          JS
+          {
+            echo "### Derived Fly Machine image"
+            echo "- first run built \`$DERIVED_IMAGE\`; the same list reused it with no build Machine"
+            echo "- a changed list built a new digest; no Machines were left in \`$AGENT_APP\`"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the ProPR MCP automation over the SSH reverse forward
         if: env.MCP == 'true'

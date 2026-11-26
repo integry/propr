@@ -48,15 +48,15 @@ test('remote-only selections report how the packages are installed; any Docker a
     assert.equal(await install([{ runtime: 'docker' }], {}), undefined);
     assert.equal(await install([{ runtime: 'sprites' }, {}], {}), undefined, 'an agent on the default runtime uses Docker');
     assert.equal(await install([{ runtime: 'sprites' }], {}), 'Installed when Sprites are provisioned; no Docker image is built');
-    assert.equal(await install([], { PROPR_AGENT_RUNTIME: 'fly-machines' }), 'Installed at every Fly Machine start; no Docker image is built');
+    assert.equal(await install([], { PROPR_AGENT_RUNTIME: 'fly-machines' }), 'Installed in a derived Fly Machine image; no Docker image is built');
     assert.equal(await install([{ runtime: 'fly-machines' }, { runtime: 'sprites' }, { runtime: 'docker', enabled: false }], {}),
-        'Installed when Sprites are provisioned and at every Fly Machine start; no Docker image is built');
+        'Installed when Sprites are provisioned and in a derived Fly Machine image; no Docker image is built');
 });
 
 test('the API follows the runtime the worker published when its own environment selects none', async () => {
     const install = profile.remoteAgentRuntimePackageInstall;
     const published = async () => 'fly-machines';
-    assert.equal(await install([], {}, { published }), 'Installed at every Fly Machine start; no Docker image is built');
+    assert.equal(await install([], {}, { published }), 'Installed in a derived Fly Machine image; no Docker image is built');
     assert.equal(await install([{ runtime: 'docker' }], {}, { published }), undefined, 'an agent pinned to Docker still builds the image');
     assert.equal(await install([], { PROPR_AGENT_RUNTIME: 'docker' }, { published }), undefined, 'this process\'s own setting wins');
     assert.equal(await install([], {}, { published: async () => { throw new Error('db down'); } }), undefined);
@@ -79,7 +79,7 @@ test('without Docker the package build validates the list and reports it applied
     assert.deepEqual(state.activePackages, ['jq', 'postgresql-client']);
     assert.deepEqual(state.images, {});
     assert.equal(state.error, undefined);
-    assert.equal(state.appliedBy, 'Installed at every Fly Machine start; no Docker image is built');
+    assert.equal(state.appliedBy, 'Installed in a derived Fly Machine image; no Docker image is built');
     assert.deepEqual(state.remote?.['fly-machines']?.packages, ['jq', 'postgresql-client']);
     const stored = await packages.loadAgentRuntimePackageState();
     assert.equal(stored.status, 'ready');
