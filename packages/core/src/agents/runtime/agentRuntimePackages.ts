@@ -316,6 +316,9 @@ export async function buildAgentRuntimePackageProfile(
         await saveAgentRuntimePackageState(current);
     }
     if (validation.packages.length === 0) {
+        // Every remote runtime's record goes too, including runtimes not in use now: an empty list needs
+        // no index check, and a kept record would reinstall the cleared packages once that runtime is
+        // selected again (its loader prefers the record over `activePackages`).
         const disabled: AgentRuntimePackageState = {
             ...current,
             activePackages: [],
@@ -323,6 +326,7 @@ export async function buildAgentRuntimePackageProfile(
             images: {},
             buildLog: 'Runtime package profile disabled',
             appliedBy: undefined,
+            remote: undefined,
             updatedAt: new Date().toISOString()
         };
         await saveAgentRuntimePackageState(disabled);

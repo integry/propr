@@ -91,6 +91,12 @@ function runtimePackageRequestTimeoutMs(): number {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RUNTIME_PACKAGE_REQUEST_TIMEOUT_MS;
 }
 
+/** How long index validation waits on downloads: a margin (up to 15s, a quarter of short deadlines) under the request deadline. */
+function runtimePackageIndexDeadlineMs(): number {
+    const timeoutMs = runtimePackageRequestTimeoutMs();
+    return Math.max(1, timeoutMs - Math.min(15_000, Math.floor(timeoutMs / 4)));
+}
+
 async function withRuntimePackageRequestTimeout<T>(operation: string, promise: Promise<T>): Promise<T> {
     const timeoutMs = runtimePackageRequestTimeoutMs();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -160,7 +166,11 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
     // or no reachable daemon while a remote runtime is selected) Docker's own check uses the agent image's
     // index. An index that cannot be fetched passes the list with a warning; apt is the safety net.
     async function checkWithIndex(packages: string[], targets: AgentRuntimePackageTarget[] = []) {
-        return withRuntimePackageRequestTimeout('Agent runtime package availability validation', services.validateWithIndex(packages, undefined, targets));
+        // An index download can take longer than the request may (a cold Ubuntu index, a stalled archive).
+        // The validator stops waiting before the request deadline and returns the availability warning, so
+        // a valid list is still saved; the outer timeout only guards a validator that ignores its deadline.
+        return withRuntimePackageRequestTimeout('Agent runtime package availability validation',
+            services.validateWithIndex(packages, undefined, targets, { deadlineMs: runtimePackageIndexDeadlineMs() }));
     }
 
     async function checkAvailability(packages: string[]): Promise<AvailabilityResult> {

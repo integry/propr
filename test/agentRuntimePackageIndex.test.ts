@@ -207,6 +207,41 @@ test('Settings validation lists every unknown name, accepts a virtual package an
     await assertAgentRuntimePackagesInIndex(['figlett']);
 });
 
+test('a caller deadline turns a stalled index download into the availability warning; cancelling still rejects', async () => {
+    let release!: (value: AgentImagePackageIndex) => void;
+    const held = new Promise<AgentImagePackageIndex>(resolve => { release = resolve; });
+    setAgentImagePackageIndexLoader(() => held);
+    const targets = [{ runtimes: ['Sprites'], base: DEFAULT_SPRITE_PACKAGE_BASE }];
+    const unverified = await validateAgentRuntimePackagesWithIndex(['figlett'], undefined, targets, { deadlineMs: 50 });
+    assert.equal(unverified.valid, true, 'a valid list is not held up by a cold download');
+    assert.match(unverified.warnings[0], /^could not verify availability for Sprites \(Ubuntu 26\.04 LTS \(resolute\)\): .*not loaded within 50ms/);
+    assert.equal((await validateAgentRuntimePackagesWithIndex(['bad;name'], undefined, targets, { deadlineMs: 50 })).valid, false, 'syntax errors still fail');
+    const cancel = new AbortController();
+    const cancelled = validateAgentRuntimePackagesWithIndex(['figlet'], cancel.signal, targets, { deadlineMs: 10_000 });
+    cancel.abort(new Error('client went away'));
+    await assert.rejects(cancelled, /client went away/);
+
+    // The download kept going: once it lands, later checks use it.
+    release(index());
+    await held;
+    const checked = await validateAgentRuntimePackagesWithIndex(['figlett'], undefined, targets, { deadlineMs: 50 });
+    assert.deepEqual(checked.errors, ['Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: figlett']);
+
+    // A refresh that stalls past the deadline falls back to the previous index, as a failed one does.
+    let loads = 0;
+    setAgentImagePackageIndexLoader(() => loads++ === 0 ? Promise.resolve(index()) : new Promise<AgentImagePackageIndex>(() => {}));
+    await getAgentImagePackageIndex(undefined, DEFAULT_SPRITE_PACKAGE_BASE);
+    const realNow = Date.now;
+    const later = realNow() + 5 * 60 * 60_000;
+    Date.now = () => later;
+    try {
+        const stale = await validateAgentRuntimePackagesWithIndex(['figlett'], undefined, targets, { deadlineMs: 50 });
+        assert.equal(loads, 2, 'the expired index was being refreshed');
+        assert.deepEqual(stale.errors, ['Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: figlett']);
+        assert.deepEqual(stale.warnings, []);
+    } finally { Date.now = realNow; }
+});
+
 test('the runtime package source checks a list against the index before an installation, not on every read', async () => {
     let loads = 0;
     setAgentImagePackageIndexLoader(async () => { loads++; return index(); });

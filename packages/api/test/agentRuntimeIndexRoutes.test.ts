@@ -118,6 +118,34 @@ test('without Docker, an index that cannot be fetched saves the list with a warn
     assert.match((validated.record.body as { warnings: string[] }).warnings[0], /could not verify availability/);
 });
 
+test('without Docker, a cold index download that outlasts the request still saves the list with a warning', async () => {
+    const previous = process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
+    process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS = '400';
+    // The archive never answers: only the index deadline, kept under the request deadline, ends the wait.
+    setAgentImagePackageIndexLoader(() => new Promise<AgentImagePackageIndex>(() => {}));
+    try {
+        const queued: unknown[] = [];
+        const routes = remoteOnlyRoutes(queued, { remoteTargets: async () => [{ runtimes: ['Sprites'], base: DEFAULT_SPRITE_PACKAGE_BASE }] });
+        const put = responseRecorder();
+        await routes.putRuntimePackages(adminRequest({ packages: ['figlet'] }), put.response);
+        assert.equal(put.record.status, 202);
+        assert.equal(queued.length, 1, 'the list is queued for its build');
+        assert.match((put.record.body as { warnings: string[] }).warnings[0], /^could not verify availability for Sprites .*not loaded within 300ms/);
+
+        const validated = responseRecorder();
+        await routes.validateRuntimePackages(adminRequest({ packages: ['figlet'] }), validated.response);
+        assert.equal(validated.record.status, 200);
+
+        const invalid = responseRecorder();
+        await routes.putRuntimePackages(adminRequest({ packages: ['bad;name'] }), invalid.response);
+        assert.equal(invalid.record.status, 400, 'syntax errors are still refused');
+        assert.equal(queued.length, 1);
+    } finally {
+        if (previous === undefined) delete process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
+        else process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS = previous;
+    }
+});
+
 // A Sprite runs Ubuntu, so its names differ from the agent image's Debian ones.
 const spriteIndex = () => createAgentImagePackageIndex({ figlet: ['2.2.5-3build1'], libssl3t64: ['3.5.3-1ubuntu2'] });
 

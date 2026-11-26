@@ -260,7 +260,9 @@ export async function getAgentImagePackageIndex(signal?: AbortSignal, base: Agen
         return await (signal ? startupStep(signal, () => pending) : pending);
     } catch (error) {
         const stale = owner.cached;
-        if (!signal?.aborted && stale && Date.now() - stale.loadedAt < STALE_LIMIT_MS) return stale;
+        // A caller's deadline (a timeout reason) still gets the previous index; an explicit cancellation does not.
+        const cancelled = signal?.aborted && !(signal.reason instanceof Error && signal.reason.name === 'TimeoutError');
+        if (!cancelled && stale && Date.now() - stale.loadedAt < STALE_LIMIT_MS) return stale;
         throw error;
     }
 }
@@ -327,14 +329,25 @@ function groupTargets(targets: readonly AgentRuntimePackageTarget[]): AgentRunti
 
 const targetName = (target: AgentRuntimePackageTarget) => target.runtimes.length ? `${target.runtimes.join(' and ')} (${target.base.label})` : undefined;
 
+/** The signal index waits observe: the caller's, bounded by `deadlineMs` when given. */
+function indexWait(signal: AbortSignal | undefined, deadlineMs: number | undefined) {
+    if (deadlineMs === undefined) return { wait: signal, timedOut: () => false };
+    const deadline = AbortSignal.timeout(Math.max(0, deadlineMs));
+    return { wait: signal ? AbortSignal.any([signal, deadline]) : deadline, timedOut: () => deadline.aborted };
+}
+
 /**
  * Checks `packages` against every target's index; with no targets, against the agent image's index
- * with unprefixed errors (`Unknown package: <name>`).
+ * with unprefixed errors (`Unknown package: <name>`). `deadlineMs` bounds the wait on index downloads
+ * for the whole call (a request handler passes less than its own deadline): an index not loaded by
+ * then is reported with the `could not verify availability` warning, like one that cannot be fetched,
+ * and keeps loading in the background for later checks. Aborting `signal` still rejects.
  */
 export async function validateAgentRuntimePackagesWithIndex(packages: unknown, signal?: AbortSignal,
-    targets: readonly AgentRuntimePackageTarget[] = []): Promise<AgentRuntimePackageIndexValidation> {
+    targets: readonly AgentRuntimePackageTarget[] = [], { deadlineMs }: { deadlineMs?: number } = {}): Promise<AgentRuntimePackageIndexValidation> {
     const syntax = validateAgentRuntimePackages(packages);
     if (!syntax.valid || syntax.packages.length === 0) return { ...syntax, availability: [], sources: [], warnings: [] };
+    const { wait, timedOut } = indexWait(signal, deadlineMs);
     const groups = targets.length ? groupTargets(targets) : [{ runtimes: [], base: AGENT_IMAGE_PACKAGE_BASE }];
     const errors: string[] = [];
     const warnings: string[] = [];
@@ -344,10 +357,10 @@ export async function validateAgentRuntimePackagesWithIndex(packages: unknown, s
         const name = targetName(target);
         const indexName = target.base.key === AGENT_IMAGE_PACKAGE_BASE.key ? AGENT_IMAGE_PACKAGE_INDEX_NAME : `${target.base.label} package index`;
         let index: AgentImagePackageIndex;
-        try { index = await getAgentImagePackageIndex(signal, target.base); }
+        try { index = await getAgentImagePackageIndex(wait, target.base); }
         catch (error) {
             if (signal?.aborted) throw error;
-            const reason = error instanceof Error ? error.message : String(error);
+            const reason = timedOut() ? `not loaded within ${deadlineMs}ms` : error instanceof Error ? error.message : String(error);
             warnings.push(`${AGENT_RUNTIME_PACKAGE_INDEX_WARNING}${name ? ` for ${name}` : ''}: the ${indexName} could not be fetched (${reason})`);
             continue;
         }

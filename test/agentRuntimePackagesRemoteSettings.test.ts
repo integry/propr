@@ -92,6 +92,22 @@ test('without Docker the package build validates the list and reports it applied
     assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('fly-machines'), []);
 });
 
+test('clearing the list empties every remote runtime\'s record, including runtimes not in use now', async () => {
+    await packages.buildAgentRuntimePackageProfile(await packages.requestAgentRuntimePackageBuild(['jq'], [BASE_IMAGE]), { usage: async () => sprites });
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq']);
+
+    // The agents move to Fly Machines, then the list is cleared: Sprites take no part in that build.
+    const cleared = await packages.buildAgentRuntimePackageProfile(
+        await packages.requestAgentRuntimePackageBuild([], [BASE_IMAGE]), { usage: async () => fly });
+    assert.equal(cleared.status, 'disabled');
+    assert.equal(cleared.remote, undefined);
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('fly-machines'), []);
+    // Selecting Sprites again does not bring the cleared packages back.
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), []);
+    const view = remotePackages.describeAgentRuntimePackageRuntimes(await packages.loadAgentRuntimePackageState(), sprites);
+    assert.deepEqual(view.map(entry => [entry.runtime, entry.status, entry.activePackages]), [['sprites', 'disabled', []]]);
+});
+
 test('the remote path uses the same validator: an invalid list is rejected before anything is applied', async () => {
     const job = await packages.requestAgentRuntimePackageBuild(['jq'], [BASE_IMAGE]);
     await assert.rejects(packages.buildAgentRuntimePackageProfile({ ...job, packages: ['bad;rm -rf /'] }, { usage: async () => sprites }),
