@@ -3,7 +3,10 @@ import { after, afterEach, test } from 'node:test';
 import type { Request, Response } from 'express';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
 import {
+    AGENT_IMAGE_PACKAGE_BASE,
+    DEFAULT_SPRITE_PACKAGE_BASE,
     closeConnection,
+    createAgentImagePackageIndex,
     setAgentImagePackageIndexLoader,
     validateAgentRuntimePackagesWithIndex,
     type AgentImagePackageIndex,
@@ -17,15 +20,10 @@ import type { InstanceAuthorization } from '../authorization.js';
 after(async () => closeConnection());
 afterEach(() => setAgentImagePackageIndexLoader());
 
-const packageIndex = (): AgentImagePackageIndex => ({
-    packages: new Map([
-        ['postgresql-client', new Set(['15+248'])],
-        ['figlet', new Set(['2.2.5-3+b1'])],
-        ['postfix', new Set(['3.7.11-0+deb12u1'])]
-    ]),
-    provides: new Set(['mail-transport-agent', 'default-mta']),
-    loadedAt: Date.now()
-});
+const packageIndex = (): AgentImagePackageIndex => createAgentImagePackageIndex(
+    { 'postgresql-client': ['15+248'], figlet: ['2.2.5-3+b1'], postfix: ['3.7.11-0+deb12u1'] },
+    ['mail-transport-agent', 'default-mta']
+);
 
 const initialState = (): AgentRuntimePackageState => ({
     installationId: 'test-installation',
@@ -51,7 +49,7 @@ function responseRecorder() {
     return { response, record };
 }
 
-function remoteOnlyRoutes(queued: unknown[]) {
+function remoteOnlyRoutes(queued: unknown[], overrides: Parameters<typeof createAgentRuntimeRoutes>[0]['services'] = {}) {
     let state = initialState();
     const dockerOnly = async () => { throw new Error('Cannot connect to the Docker daemon'); };
     return createAgentRuntimeRoutes({
@@ -65,7 +63,10 @@ function remoteOnlyRoutes(queued: unknown[]) {
                 return { buildId: 'build-index', packages: packages as string[], baseImages };
             },
             validateAvailability: dockerOnly,
-            validateWithIndex: validateAgentRuntimePackagesWithIndex
+            validateWithIndex: validateAgentRuntimePackagesWithIndex,
+            runtimeUsage: async () => ({ runtimes: ['fly-machines'], docker: false }),
+            remoteTargets: async () => [],
+            ...overrides
         }
     });
 }
@@ -115,4 +116,70 @@ test('without Docker, an index that cannot be fetched saves the list with a warn
     await routes.validateRuntimePackages(adminRequest({ packages: ['figlett'] }), validated.response);
     assert.equal(validated.record.status, 200);
     assert.match((validated.record.body as { warnings: string[] }).warnings[0], /could not verify availability/);
+});
+
+// A Sprite runs Ubuntu, so its names differ from the agent image's Debian ones.
+const spriteIndex = () => createAgentImagePackageIndex({ figlet: ['2.2.5-3build1'], libssl3t64: ['3.5.3-1ubuntu2'] });
+
+test('each runtime in use is checked against its own apt sources, and errors name the runtime', async () => {
+    setAgentImagePackageIndexLoader(async (_signal, base) => base?.key === DEFAULT_SPRITE_PACKAGE_BASE.key ? spriteIndex() : packageIndex());
+    const queued: unknown[] = [];
+    const routes = remoteOnlyRoutes(queued, {
+        remoteInstall: async () => 'Installed when Sprites are provisioned and at every Fly Machine start; no Docker image is built',
+        remoteTargets: async () => [{ runtimes: ['Fly Machines'], base: AGENT_IMAGE_PACKAGE_BASE }, { runtimes: ['Sprites'], base: DEFAULT_SPRITE_PACKAGE_BASE }],
+    });
+    const put = responseRecorder();
+    await routes.putRuntimePackages(adminRequest({ packages: ['figlet', 'libssl3t64', 'postfix'] }), put.response);
+    assert.equal(put.record.status, 400);
+    assert.deepEqual((put.record.body as { errors: string[] }).errors, [
+        'Fly Machines (Debian 12 (bookworm)): Unknown package: libssl3t64',
+        'Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: postfix',
+    ]);
+    assert.deepEqual(queued, []);
+
+    // Sprites alone: the Ubuntu-only name is accepted rather than refused by the Debian index.
+    const spritesOnly = remoteOnlyRoutes(queued, {
+        remoteInstall: async () => 'Installed when Sprites are provisioned; no Docker image is built',
+        remoteTargets: async () => [{ runtimes: ['Sprites'], base: DEFAULT_SPRITE_PACKAGE_BASE }],
+    });
+    const accepted = responseRecorder();
+    await spritesOnly.putRuntimePackages(adminRequest({ packages: ['libssl3t64=3.5.3-1ubuntu2'] }), accepted.response);
+    assert.equal(accepted.record.status, 202);
+    assert.equal(queued.length, 1);
+});
+
+test('with Docker reachable and Sprites in use, Docker\'s image check and the Sprite base check both run', async () => {
+    setAgentImagePackageIndexLoader(async () => spriteIndex());
+    const routes = remoteOnlyRoutes([], {
+        remoteInstall: async () => undefined,
+        remoteTargets: async () => [{ runtimes: ['Sprites'], base: DEFAULT_SPRITE_PACKAGE_BASE }],
+        validateAvailability: async packages => ({ valid: false, packages: packages as string[], errors: ['libssl3t64 is unavailable on Debian GNU/Linux 12 (bookworm)'],
+            availability: [{ package: 'libssl3t64', available: false, unavailableOn: ['Debian GNU/Linux 12 (bookworm)'] }, { package: 'figlet', available: true, unavailableOn: [] }],
+            sources: [] }),
+    });
+    const validated = responseRecorder();
+    await routes.validateRuntimePackages(adminRequest({ packages: ['figlet', 'libssl3t64'] }), validated.response);
+    assert.equal(validated.record.status, 400);
+    assert.deepEqual((validated.record.body as { errors: string[] }).errors, ['Docker: libssl3t64 is unavailable on Debian GNU/Linux 12 (bookworm)']);
+});
+
+test('the state response recomputes appliedBy from the runtimes in use and shows each runtime\'s own state', async () => {
+    const stale: AgentRuntimePackageState = {
+        ...initialState(), packages: ['figlet'], activePackages: ['figlet'], status: 'ready',
+        appliedBy: 'Installed when Sprites are provisioned; no Docker image is built',
+        remote: { sprites: { packages: ['figlet'], status: 'ready', base: 'Ubuntu 26.04 LTS (resolute)', updatedAt: '2026-11-26T00:00:00.000Z' } },
+    };
+    // Docker agents were added after a remote-only period: the stored note is stale.
+    const routes = remoteOnlyRoutes([], {
+        loadState: async () => stale,
+        runtimeUsage: async () => ({ runtimes: ['docker', 'sprites'], docker: true }),
+    });
+    const got = responseRecorder();
+    await routes.getRuntimePackages(adminRequest(), got.response);
+    const body = got.record.body as AgentRuntimePackageState & { runtimes: Array<{ runtime: string; status: string; activePackages: string[]; source: string }> };
+    assert.equal(body.appliedBy, undefined, 'no "no Docker image is built" note once Docker is in use');
+    assert.deepEqual(body.runtimes.map(entry => [entry.runtime, entry.status, entry.activePackages, entry.source]), [
+        ['docker', 'ready', ['figlet'], 'derived Docker image'],
+        ['sprites', 'ready', ['figlet'], 'Ubuntu 26.04 LTS (resolute)'],
+    ]);
 });

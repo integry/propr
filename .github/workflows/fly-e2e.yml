@@ -76,6 +76,9 @@ jobs:
       RUNTIME_PACKAGE: figlet
       RUNTIME_PACKAGE_COMMAND: figlet -v | head -1
       RUNTIME_PACKAGE_BANNER: '^FIGlet Copyright \(C\) [0-9]'
+      # Sprites run Fly's Ubuntu base, not Dockerfile.agent's Debian: an Ubuntu-only name (bookworm has
+      # libssl3 instead) must pass the Sprite base's package check rather than be refused by the Debian one.
+      SPRITE_DISTRO_PACKAGE: libssl3t64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -212,8 +215,10 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: |
           set -euo pipefail
-          [[ $RUNTIME_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ ]]
-          setup=$(sed "s/__RUNTIME_PACKAGE__/$RUNTIME_PACKAGE/" <<'JS' | base64 -w0
+          [[ $RUNTIME_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ && $SPRITE_DISTRO_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ ]]
+          packages=$(jq -cn --arg pkg "$RUNTIME_PACKAGE" --arg distro "$SPRITE_DISTRO_PACKAGE" --arg runtime "$AGENT_RUNTIME" \
+            '[$pkg] + (if $runtime == "sprites" then [$distro] else [] end) | sort')
+          setup=$(sed -e "s/__RUNTIME_PACKAGES__/$packages/" -e "s/__AGENT_RUNTIME__/$AGENT_RUNTIME/" <<'JS' | base64 -w0
           const {
             saveAgents, closeConnection, AGENT_DEFAULTS, agentRuntimePackagesDigest,
             requestAgentRuntimePackageBuild, buildAgentRuntimePackageProfile,
@@ -225,27 +230,34 @@ jobs:
             supportedModels: defaultModels, defaultModel: 'claude-sonnet-5-5' }]);
           // Settings → Agent runtime packages → Apply: the API records the list
           // (requestAgentRuntimePackageBuild) and the worker's build job applies it.
-          const job = await requestAgentRuntimePackageBuild(['__RUNTIME_PACKAGE__'], [dockerImage]);
+          // The runtime accepts the list once it passes its own package index check (Sprites: the Sprite base's).
+          const packages = __RUNTIME_PACKAGES__;
+          const job = await requestAgentRuntimePackageBuild(packages, [dockerImage]);
           const state = await buildAgentRuntimePackageProfile(job);
           await closeConnection();
+          const accepted = state.remote?.['__AGENT_RUNTIME__'];
           const summary = { status: state.status, packages: state.activePackages,
-            packagesDigest: agentRuntimePackagesDigest(state.activePackages), appliedBy: state.appliedBy, error: state.error };
+            packagesDigest: agentRuntimePackagesDigest(state.activePackages), appliedBy: state.appliedBy, error: state.error,
+            accepted: accepted?.packages, base: accepted?.base, warning: accepted?.warning };
           console.log('PROPR_RUNTIME_PACKAGES ' + JSON.stringify(summary));
-          if (state.status !== 'ready' || !state.appliedBy || state.activePackages.join() !== '__RUNTIME_PACKAGE__') process.exit(1);
+          if (state.status !== 'ready' || !state.appliedBy || state.activePackages.join() !== packages.join()
+            || accepted?.packages.join() !== packages.join()) process.exit(1);
           JS
           )
           flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'" |
             tee "$OUT/runtime-packages.log"
           applied=$(sed -n 's/^PROPR_RUNTIME_PACKAGES //p' "$OUT/runtime-packages.log" | tr -d '\r' | tail -n 1)
           expected=$([[ $AGENT_RUNTIME == sprites ]] && echo 'when Sprites are provisioned' || echo 'at every Fly Machine start')
-          jq -e --arg pkg "$RUNTIME_PACKAGE" --arg expected "$expected" \
-            '.status == "ready" and .packages == [$pkg] and (.appliedBy | contains($expected))' <<< "$applied" > /dev/null || {
-            echo "::error::Runtime package $RUNTIME_PACKAGE was not applied for $AGENT_RUNTIME: $applied"
+          jq -e --argjson pkgs "$packages" --arg expected "$expected" \
+            '.status == "ready" and .packages == $pkgs and .accepted == $pkgs and (.appliedBy | contains($expected))' <<< "$applied" > /dev/null || {
+            echo "::error::Runtime packages $packages were not applied for $AGENT_RUNTIME: $applied"
             exit 1
           }
+          echo "RUNTIME_PACKAGE_COUNT=$(jq length <<< "$packages")" >> "$GITHUB_ENV"
+          jq -r '"Accepted for \(.base // "unknown base"): \(.accepted | join(" "))\(if .warning then " (" + .warning + ")" else "" end)"' <<< "$applied"
           digest=$(jq -er '.packagesDigest | strings | select(test("^[0-9a-f]{16}$"))' <<< "$applied")
           echo "RUNTIME_PACKAGES_DIGEST=$digest" >> "$GITHUB_ENV"
-          echo "Configured runtime package $RUNTIME_PACKAGE (packagesDigest $digest) before the idle stop"
+          echo "Configured runtime packages $packages (packagesDigest $digest) before the idle stop"
           # Install and verify the settings over SSH after the volume is mounted.
           awk '/^```bash title="Install headless Claude settings"$/{copy=1; next}
                copy && /^```$/{exit} copy' docs/docs/tutorials/setup-fly.md > "$OUT/claude-settings.sh"
@@ -425,7 +437,8 @@ jobs:
               | select((.msg // "") == $msg and (.time // 0) >= $since)] | last // empty')
           [[ -n $install ]] || { echo "::error::Missing '$expected_log' log after the idle stop"; exit 1; }
           jq -r '"\(.msg): packagesDigest=\(.packagesDigest) packageCount=\(.packageCount) installMs=\(.installMs)"' <<< "$install"
-          jq -e --arg digest "$RUNTIME_PACKAGES_DIGEST" '.packagesDigest == $digest and .packageCount == 1 and (.installMs | numbers) >= 0' \
+          jq -e --arg digest "$RUNTIME_PACKAGES_DIGEST" --argjson count "$RUNTIME_PACKAGE_COUNT" \
+            '.packagesDigest == $digest and .packageCount == $count and (.installMs | numbers) >= 0' \
             <<< "$install" > /dev/null || { echo "::error::Runtime package install log does not match packagesDigest $RUNTIME_PACKAGES_DIGEST"; exit 1; }
           # Read the worker's measurement for this issue AND PR, after wake was observed.
           check=$(base64 -w0 <<JS

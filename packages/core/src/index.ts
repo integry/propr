@@ -364,7 +364,13 @@ export type {
     RuntimePackageValidation
 } from './agents/runtime/agentRuntimePackages.js';
 export * from './agents/runtime/agentRuntimePackageVerification.js';
-export { agentRuntimePackagesDigest, publishWorkerAgentRuntime, remoteAgentRuntimeConfigured, remoteAgentRuntimePackageInstall } from './agents/runtime/agentRuntimePackageProfile.js';
+export { agentRuntimePackagesDigest, agentRuntimeUsage, describeRemoteAgentRuntimePackageInstall, publishWorkerAgentRuntime, remoteAgentRuntimeConfigured,
+    remoteAgentRuntimePackageInstall, type AgentRuntimeUsage } from './agents/runtime/agentRuntimePackageProfile.js';
+export { acceptRemoteAgentRuntimePackages, describeAgentRuntimePackageRuntimes, loadAcceptedRemoteAgentRuntimePackages, remoteAgentRuntimePackageTargets,
+    warmRemoteAgentRuntimePackageIndexes, type AgentRuntimePackageRuntimeState, type RemoteRuntimePackageRecord,
+    type RemoteRuntimePackageRecords } from './agents/runtime/agentRuntimeRemotePackages.js';
+export { AGENT_IMAGE_PACKAGE_BASE, DEFAULT_SPRITE_PACKAGE_BASE, loadSpritePackageBase, parseSpritePackageBaseProbe,
+    type AgentRuntimePackageBase } from './agents/runtime/agentRuntimePackageBases.js';
 export type * from './agents/runtime/types.js';
 export { AgentRunSpecBuilder, agentRunEnvironment, agentRunMounts, agentRunMcpGrant, agentRunNetwork } from './agents/runtime/agentRunSpec.js';
 export { renderDockerRunArgs } from './agents/runtime/dockerRunArgs.js';
@@ -414,11 +420,12 @@ export {
     AGENT_RUNTIME_PACKAGE_INDEX_WARNING,
     AgentRuntimePackageUnavailableError,
     assertAgentRuntimePackagesInIndex,
+    createAgentImagePackageIndex,
     findUnavailableAgentRuntimePackages,
     setAgentImagePackageIndexLoader,
     validateAgentRuntimePackagesWithIndex
 } from './agents/runtime/agentRuntimePackageIndex.js';
-export type { AgentImagePackageIndex, AgentRuntimePackageIndexValidation } from './agents/runtime/agentRuntimePackageIndex.js';
+export type { AgentImagePackageIndex, AgentRuntimePackageIndexValidation, AgentRuntimePackageTarget } from './agents/runtime/agentRuntimePackageIndex.js';
 export { generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 

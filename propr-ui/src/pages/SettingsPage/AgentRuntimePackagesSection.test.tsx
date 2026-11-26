@@ -118,6 +118,44 @@ describe('AgentRuntimePackagesSection', () => {
     expect(screen.queryByText(/active across/)).not.toBeInTheDocument();
   });
 
+  it('shows each runtime\'s own state when remote runtimes are in use, with a refusal on its row', async () => {
+    getState.mockResolvedValueOnce({
+      installationId: 'test-installation',
+      packages: ['jq', 'postfix'],
+      activePackages: ['jq'],
+      status: 'failed',
+      images: {},
+      error: 'Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: postfix',
+      runtimes: [
+        { runtime: 'docker', label: 'Docker', status: 'ready', activePackages: ['jq', 'postfix'], source: 'derived Docker image' },
+        { runtime: 'sprites', label: 'Sprites', status: 'failed', activePackages: ['jq'], source: 'Ubuntu 26.04 LTS (resolute)',
+          error: 'Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: postfix' },
+      ],
+      updatedAt: 'now'
+    });
+    render(<AgentRuntimePackagesSection />);
+
+    const list = await screen.findByRole('list', { name: 'Runtime package state per runtime' });
+    const rows = Array.from(list.querySelectorAll('li'));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Docker');
+    expect(rows[0]).toHaveTextContent('ready · 2 active');
+    expect(rows[1]).toHaveTextContent('Ubuntu 26.04 LTS (resolute)');
+    expect(rows[1]).toHaveTextContent('failed · 1 active');
+    // The refusal is shown once, on the runtime that refused the list.
+    expect(screen.getAllByText('Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: postfix')).toHaveLength(1);
+  });
+
+  it('shows no per-runtime list on a Docker-only instance', async () => {
+    getState.mockResolvedValueOnce({
+      installationId: 'test-installation', packages: ['jq'], activePackages: ['jq'], status: 'ready', images: {}, updatedAt: 'now',
+      runtimes: [{ runtime: 'docker', label: 'Docker', status: 'ready', activePackages: ['jq'], source: 'derived Docker image' }],
+    });
+    render(<AgentRuntimePackagesSection />);
+    expect(await screen.findByText(/active across/)).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Runtime package state per runtime' })).not.toBeInTheDocument();
+  });
+
   it('explains why packages are needed and how to find their names', async () => {
     render(<AgentRuntimePackagesSection />);
     await screen.findByText('jq');

@@ -2,6 +2,18 @@ import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export type AgentRuntimeBuildStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';
 
+/** One runtime in use: the list it applies now, where it installs from, and its own status. */
+export interface AgentRuntimePackageRuntimeState {
+  runtime: string;
+  label: string;
+  status: AgentRuntimeBuildStatus;
+  activePackages: string[];
+  /** "derived Docker image", or the apt base a remote runtime installs from (e.g. "Ubuntu 26.04 LTS (resolute)"). */
+  source: string;
+  error?: string;
+  warning?: string;
+}
+
 export interface AgentRuntimePackageState {
   installationId: string;
   packages: string[];
@@ -20,6 +32,8 @@ export interface AgentRuntimePackageState {
   /** Set when remote runtimes (Sprites, Fly Machines) install the packages instead of a Docker image build. */
   appliedBy?: string;
   canManage?: boolean;
+  /** Each runtime in use with its own state; remote runtimes keep the last list their own check accepted. */
+  runtimes?: AgentRuntimePackageRuntimeState[];
   updatedAt: string;
   /** Returned by a save that could not check availability ("could not verify availability: ..."); the list was saved. */
   warnings?: string[];

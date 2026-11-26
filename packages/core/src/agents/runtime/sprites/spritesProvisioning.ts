@@ -8,7 +8,8 @@ import logger from '../../../utils/logger.js';
 import type { NetworkPolicy, Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 import { sameSpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY } from './spritesNetwork.js';
 import { startupStep } from '../startupStep.js';
-import { checkAgentRuntimePackagesBeforeInstall, type AgentRuntimePackageLoader } from '../agentRuntimePackageIndex.js';
+import { checkAgentRuntimePackagesBeforeInstall } from '../agentRuntimePackageIndex.js';
+import { detectSpritePackageBaseBeforeInstall, type SpritePackageSource } from './spritesPackageBase.js';
 import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, agentRuntimePackageInstallCommand, agentRuntimePackagesDigest,
     agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
 
@@ -35,11 +36,6 @@ export function readSpritesCliPins(root = projectRoot()): SpritesCliPins {
 }
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'> & Partial<Pick<SpritesClient, 'listAllSprites' | 'getSprite'>>;
-/**
- * Reads the instance runtime package list (normalized); a Sprite is provisioned with exactly these installed.
- * Its availability check, if any, runs only before a new Sprite is created to install them.
- */
-export type SpritePackageSource = AgentRuntimePackageLoader;
 const noPackages: SpritePackageSource = async () => [];
 
 export type Slot = { sprite: Sprite; lease?: AbortSignal; checkpoint: string; provisioningMs: number; restoreMs: number;
@@ -113,12 +109,14 @@ export class SpritePool {
             const pins = Object.entries(readSpritesCliPins()).map(([name, value]) => `${name}=${value}`);
             await step(() => sprite.execFile('sudo', ['-n', 'env', ...pins, '/bin/bash', dir + '/sprites-agent-setup.sh', dir], { signal, timeout: 20 * 60_000 }));
             await step(() => fs.rm(dir, { recursive: true }));
+            await detectSpritePackageBaseBeforeInstall(this.loadPackages, sprite, packages, signal);
             // Instance runtime packages go into the clean checkpoint, so every run on this Sprite has them.
-            // An apt failure fails provisioning with its stderr, like a failed derived-image build.
+            // An apt failure fails provisioning with its stderr, like a failed derived-image build. The apt
+            // lists stay in the checkpoint, so `.propr/setup.sh` can still install without `apt-get update`.
             let packageInstallMs: number | undefined;
             if (packages.length > 0) {
                 const installing = Date.now();
-                await step(() => sprite.execFile('sudo', ['-n', ...agentRuntimePackageInstallCommand(packages)],
+                await step(() => sprite.execFile('sudo', ['-n', ...agentRuntimePackageInstallCommand(packages, { keepAptLists: true })],
                     { signal, timeout: AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS }));
                 packageInstallMs = Date.now() - installing;
                 logger.info({ sprite: sprite.name, ...agentRuntimePackagesLogFields(packages), installMs: packageInstallMs },
@@ -237,7 +235,7 @@ export class SpritePool {
         for (;;) {
             signal.throwIfAborted();
             if (performance.now() >= deadline) throw timeout();
-            await this.retireStaleIdle(packagesDigest);
+            this.retireStaleIdle(packagesDigest);
             let slot = this.idle.pop();
             let queueMs = elapsedQueueMs();
             const replacement = slot ? undefined : this.takeReplacement(packagesDigest);
@@ -295,13 +293,16 @@ export class SpritePool {
         });
     }
 
-    /** Delete idle Sprites provisioned with another package set; they are never handed to a run. */
-    private async retireStaleIdle(packagesDigest: string) {
+    /** Takes idle Sprites with another package set out of the pool (never handed to a run) and deletes them in the background. */
+    private retireStaleIdle(packagesDigest: string) {
         const stale = this.idle.filter(slot => slot.packagesDigest !== packagesDigest);
         if (stale.length === 0) return;
         this.idle = this.idle.filter(slot => slot.packagesDigest === packagesDigest);
         logger.info({ sprites: stale.map(slot => slot.sprite.name) }, 'Agent runtime packages changed; retiring warm Sprites');
-        await Promise.all(stale.map(slot => this.discardStale(slot)));
+        for (const slot of stale) {
+            const retiring: Promise<void> = this.discardStale(slot).finally(() => this.releases.delete(retiring));
+            this.releases.add(retiring);
+        }
     }
 
     private async claim(work: Promise<Slot>, signal: AbortSignal) {

@@ -11,9 +11,10 @@ import { AgentRunStoppedError, LazyOutputStreams, type AgentRunOptions } from '.
 import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
 import { applySpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWORK_ENFORCEMENT } from './sprites/spritesNetwork.js';
-import { SpritePool, startupStep, type Slot, type SpriteClient, type SpritePackageSource } from './sprites/spritesProvisioning.js';
-import { loadConfiguredAgentRuntimePackages } from './agentRuntimePackageProfile.js';
-import { indexCheckedAgentRuntimePackages } from './agentRuntimePackageIndex.js';
+import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
+import type { SpritePackageSource } from './sprites/spritesPackageBase.js';
+import { remoteRuntimePackageSource } from './agentRuntimeRemotePackages.js';
+import { detectSpritePackageBase } from './agentRuntimePackageBases.js';
 import { prepareSpriteRun, unsupportedMount, validateSpriteRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 import logger from '../../utils/logger.js';
@@ -44,10 +45,11 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
 
     constructor(private readonly client?: SpriteClient | ((token: string) => Promise<SpriteClient>), private readonly environment = process.env,
         private readonly poolRedis?: SpritePoolRedis,
-        // Sprites have no image: the configured runtime packages are installed while provisioning.
-        // The list is re-checked against the agent image's package index before a Sprite is provisioned
-        // with it, not when a warm Sprite's clean checkpoint already has the packages.
-        private readonly loadPackages: SpritePackageSource = indexCheckedAgentRuntimePackages(loadConfiguredAgentRuntimePackages)) {}
+        // Sprites have no image: the list Sprites accepted is installed while provisioning. It is
+        // re-checked against the Sprite base image's package index (Ubuntu, detected from each new
+        // Sprite) before a Sprite is provisioned with it, not when a warm Sprite's checkpoint has it.
+        // Each new Sprite also reports its distribution and apt sources (`detectBase`).
+        private readonly loadPackages: SpritePackageSource = Object.assign(remoteRuntimePackageSource('sprites'), { detectBase: detectSpritePackageBase })) {}
 
     close(): Promise<void> {
         clearTimeout(this.startupRetry);

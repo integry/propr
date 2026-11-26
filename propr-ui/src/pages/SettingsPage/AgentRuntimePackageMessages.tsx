@@ -19,18 +19,21 @@ function conciseBuildError(value?: string): string | null {
 }
 
 /** The save warning, the request or build error, and the failed build's log. */
-export function AgentRuntimePackageMessages({ warning, error, state }: {
+export function AgentRuntimePackageMessages({ warning, error, state, runtimeErrorsShown = false }: {
   warning: string | null;
   error: string | null;
   state: AgentRuntimePackageState;
+  /** The per-runtime rows already show each runtime's build or check error. */
+  runtimeErrorsShown?: boolean;
 }) {
+  const stateError = runtimeErrorsShown ? undefined : state.error;
   return (
     <>
       {warning && !error && (
         <p className="mt-2 break-words text-[12px] leading-5 text-amber-700" role="status">Warning: {warning}</p>
       )}
-      {(error || state.error) && (
-        <p className="mt-2 break-words text-[12px] leading-5 text-red-600">{error || conciseBuildError(state.error)}</p>
+      {(error || stateError) && (
+        <p className="mt-2 break-words text-[12px] leading-5 text-red-600">{error || conciseBuildError(stateError)}</p>
       )}
       {state.status === 'failed' && (state.buildLog || (state.error && state.error.length > 240)) && (
         <details className="mt-2 text-[12px] text-slate-500">

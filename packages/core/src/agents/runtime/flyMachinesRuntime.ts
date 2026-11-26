@@ -17,8 +17,9 @@ import { applyOutputDiagnostics, OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } f
 import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
 import { RUN } from './fly/wrapper.js';
 import { flyPackageInstallError, logFlyPackageInstall, readFlyPackageInstall, type FlyPackageInstall } from './fly/packages.js';
-import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, loadConfiguredAgentRuntimePackages } from './agentRuntimePackageProfile.js';
-import { checkAgentRuntimePackagesBeforeInstall, indexCheckedAgentRuntimePackages, type AgentRuntimePackageLoader } from './agentRuntimePackageIndex.js';
+import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS } from './agentRuntimePackageProfile.js';
+import { checkAgentRuntimePackagesBeforeInstall, type AgentRuntimePackageLoader } from './agentRuntimePackageIndex.js';
+import { remoteRuntimePackageSource } from './agentRuntimeRemotePackages.js';
 import { startRunPipeline } from './runPipeline.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
@@ -26,6 +27,8 @@ const POLL_FAILURE_TOLERANCE = 15_000;
 
 interface ExitPollCallbacks {
     bootDeadline: number;
+    /** The start gate's window after a runtime package install: the wrapper opens a fresh one when it reports ready. */
+    bootTimeout: number;
     /** Latest time a runtime package install may still be running; the boot deadline without packages. */
     installDeadline: number;
     start(machine: string): Promise<boolean>;
@@ -40,10 +43,14 @@ async function probe(api: MachinesApi, id: string, signal: AbortSignal) {
 
 const probeState = (status: Awaited<ReturnType<typeof probe>>) => status ? status[1] : undefined;
 
+/** Ready after an install: the guest opens a fresh boot window for the start gate, so the worker waits for it too. */
+const afterInstall = (deadline: number, installed: boolean, bootTimeout: number) => installed ? Math.max(deadline, Date.now() + bootTimeout) : deadline;
+
 /** Poll the atomic status and consume new usage when a cap is active.
  * Changing byte counts are activity for the stall watchdog. */
-async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { bootDeadline, installDeadline, start, activity, readUsage }: ExitPollCallbacks) {
+async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { bootDeadline, bootTimeout, installDeadline, start, activity, readUsage }: ExitPollCallbacks) {
     let deadline = bootDeadline;
+    let installed = false;
     let failures = 0;
     let retryUsage = false;
     let previousSize = -1;
@@ -56,8 +63,12 @@ async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { 
         if (state === 'install-failed') return state;
         if (state === 'installing') {
             // The wrapper bounds the install itself; keep polling while it reports progress.
+            installed = true;
             deadline = Math.max(deadline, Math.min(Date.now() + POLL_FAILURE_TOLERANCE, installDeadline));
         } else if (state === 'ready') {
+            // Not just the few seconds left past the last install probe.
+            deadline = afterInstall(deadline, installed, bootTimeout);
+            installed = false;
             if (Date.now() >= deadline) return;
             retry = !await start(id);
         } else if (status) {
@@ -89,9 +100,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
     readonly unsupportedMount = unsupportedFlyMount;
 
     constructor(private readonly client?: MachinesApi, private readonly environment = process.env,
-        // Fly Machines are ephemeral: the configured runtime packages are installed at every Machine start,
-        // so the list is re-checked against the agent image's package index before each such Machine.
-        private readonly loadPackages: AgentRuntimePackageLoader = indexCheckedAgentRuntimePackages(loadConfiguredAgentRuntimePackages)) {}
+        // Fly Machines are ephemeral: the list Fly Machines accepted is installed at every Machine start,
+        // so it is re-checked against the agent image's package index before each such Machine.
+        private readonly loadPackages: AgentRuntimePackageLoader = remoteRuntimePackageSource('fly-machines')) {}
 
     unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec) {
         if (!['claude', 'codex'].includes(spec.profile.agentType)) return 'Fly Machines supports Claude Code and Codex';
@@ -289,6 +300,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 let usageFailureSince: number | undefined;
                 const code = stopping ? undefined : await waitForExit(api, id, forced.signal, {
                     bootDeadline: bootStart + config.bootTimeout,
+                    bootTimeout: config.bootTimeout,
                     installDeadline: bootStart + config.bootTimeout + (packages.length ? AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS + POLL_FAILURE_TOLERANCE : 0),
                     async start(machine) {
                         if (stopping) return false;

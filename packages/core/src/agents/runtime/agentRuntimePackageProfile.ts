@@ -99,28 +99,48 @@ export interface RemoteAgentRuntimeOptions {
     published?: PublishedAgentRuntime;
 }
 
+/** The runtimes the enabled agents (or the default, without any) select, and whether any of them is Docker-based. */
+export interface AgentRuntimeUsage { runtimes: string[]; docker: boolean }
+
 /**
- * How the configured packages are applied when no enabled agent runs on Docker,
- * e.g. "Installed when Sprites are provisioned"; undefined when Docker is in use
- * (the derived image build applies them). Such a worker has no Docker daemon,
- * so Settings must not run the image build or the image-based package checks.
- * The default runtime is this process's `PROPR_AGENT_RUNTIME`, or else the one
- * the worker published, so the API decides like the worker that runs the agents.
+ * Which runtimes are in use. The default runtime is this process's `PROPR_AGENT_RUNTIME`, or else the
+ * one the worker published, so the API decides like the worker that runs the agents.
+ */
+export async function agentRuntimeUsage(
+    configs?: ReadonlyArray<Pick<AgentConfig, 'runtime' | 'enabled'>>, environment: NodeJS.ProcessEnv = process.env,
+    { published = readPublishedWorkerAgentRuntime }: RemoteAgentRuntimeOptions = {},
+): Promise<AgentRuntimeUsage> {
+    const agents = await agentSelections(configs);
+    const effective = await runtimeEnvironment(environment, published);
+    const enabled = agents.filter(config => config.enabled !== false);
+    const runtimes = [...new Set((enabled.length > 0 ? enabled : [null]).map(config => selectedAgentRuntimeName(config, effective)))].sort();
+    return { runtimes, docker: dockerAgentRuntimeInUse(agents, effective) };
+}
+
+/**
+ * How remote runtimes apply the packages when no enabled agent runs on Docker, e.g. "Installed when
+ * Sprites are provisioned; no Docker image is built"; undefined when Docker is in use (the derived image
+ * build applies them). Recomputed from the runtimes in use whenever it is shown or the state changes.
+ */
+export function describeRemoteAgentRuntimePackageInstall(usage: AgentRuntimeUsage): string | undefined {
+    if (usage.docker) return undefined;
+    const ways = [
+        ...(usage.runtimes.includes(SPRITES_AGENT_RUNTIME) ? ['when Sprites are provisioned'] : []),
+        ...(usage.runtimes.includes(FLY_MACHINES_AGENT_RUNTIME) ? ['at every Fly Machine start'] : []),
+    ];
+    return `Installed ${ways.join(' and ')}; no Docker image is built`;
+}
+
+/**
+ * How the configured packages are applied when no enabled agent runs on Docker (see
+ * `describeRemoteAgentRuntimePackageInstall`). Such a worker has no Docker daemon, so Settings must not
+ * run the image build or the image-based package checks.
  */
 export async function remoteAgentRuntimePackageInstall(
     configs?: ReadonlyArray<Pick<AgentConfig, 'runtime' | 'enabled'>>, environment: NodeJS.ProcessEnv = process.env,
-    { published = readPublishedWorkerAgentRuntime }: RemoteAgentRuntimeOptions = {},
+    options: RemoteAgentRuntimeOptions = {},
 ): Promise<string | undefined> {
-    const agents = await agentSelections(configs);
-    const effective = await runtimeEnvironment(environment, published);
-    if (dockerAgentRuntimeInUse(agents, effective)) return undefined;
-    const enabled = agents.filter(config => config.enabled !== false);
-    const runtimes = new Set((enabled.length > 0 ? enabled : [null]).map(config => selectedAgentRuntimeName(config, effective)));
-    const ways = [
-        ...(runtimes.has(SPRITES_AGENT_RUNTIME) ? ['when Sprites are provisioned'] : []),
-        ...(runtimes.has(FLY_MACHINES_AGENT_RUNTIME) ? ['at every Fly Machine start'] : []),
-    ];
-    return `Installed ${ways.join(' and ')}; no Docker image is built`;
+    return describeRemoteAgentRuntimePackageInstall(await agentRuntimeUsage(configs, environment, options));
 }
 
 /**
@@ -160,9 +180,12 @@ export function agentRuntimePackagesLogFields(packages: readonly string[]): { pa
 /**
  * argv (run as root) that installs `packages` with apt, using the same flags
  * as the derived Docker image. The specs travel as positional arguments, never
- * interpolated into the script.
+ * interpolated into the script. `keepAptLists` leaves the apt lists in place:
+ * a Sprite's checkpoint keeps them, so a repository's `.propr/setup.sh` can
+ * `apt-get install` without its own `apt-get update`, as on a Sprite without
+ * runtime packages. A Fly Machine start-time install cleans them (nothing persists).
  */
-export function agentRuntimePackageInstallCommand(packages: readonly string[]): string[] {
+export function agentRuntimePackageInstallCommand(packages: readonly string[], { keepAptLists = false }: { keepAptLists?: boolean } = {}): string[] {
     const validation = validateAgentRuntimePackages([...packages]);
     if (!validation.valid) throw new Error(`Refusing to install agent runtime packages: ${validation.errors.join('; ')}`);
     if (validation.packages.length === 0) throw new Error('Refusing to install an empty agent runtime package list');
@@ -171,7 +194,7 @@ export function agentRuntimePackageInstallCommand(packages: readonly string[]): 
         'command -v apt-get >/dev/null 2>&1 || { echo "agent runtime packages need apt-get, which this machine does not provide" >&2; exit 3; }',
         'apt-get update',
         'apt-get install -y --allow-downgrades --no-install-recommends "$@"',
-        'rm -rf /var/lib/apt/lists/*',
+        ...(keepAptLists ? [] : ['rm -rf /var/lib/apt/lists/*']),
     ].join('\n');
     return ['env', 'DEBIAN_FRONTEND=noninteractive', '/bin/bash', '-c', script, 'propr-runtime-packages', ...validation.packages];
 }

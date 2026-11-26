@@ -7,6 +7,7 @@ import { SettingsSection, SettingsStatus, type SettingsStatusTone } from './Sett
 import { SETTINGS_LABEL } from './settingsStyles';
 import { AgentRuntimePackageNameHelp, AgentRuntimePackagesDescription } from './AgentRuntimePackagesGuide';
 import { AgentRuntimePackageMessages } from './AgentRuntimePackageMessages';
+import { AgentRuntimePackageRuntimes } from './AgentRuntimePackageRuntimes';
 import {
   getAgentRuntimePackageState,
   searchAgentRuntimePackageCatalog,
@@ -387,7 +388,9 @@ const AgentRuntimePackagesSection: React.FC = () => {
         </button>
       </div>
 
-      <AgentRuntimePackageMessages warning={warning} error={error} state={state} />
+      <AgentRuntimePackageRuntimes runtimes={state.runtimes} />
+      <AgentRuntimePackageMessages warning={warning} error={error} state={state}
+        runtimeErrorsShown={!!state.runtimes?.some(runtime => runtime.runtime !== 'docker')} />
       </div>
     </SettingsSection>
   );

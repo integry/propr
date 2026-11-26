@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
 import {
     closeConnection,
+    createAgentImagePackageIndex,
     setAgentImagePackageIndexLoader,
     validateAgentRuntimePackagesWithIndex,
     type AgentImagePackageIndex,
@@ -14,15 +15,10 @@ import type { InstanceAuthorization } from '../authorization.js';
 after(async () => closeConnection());
 
 // The agent image's Debian package index, as the Docker-free check would read it.
-const packageIndex = (): AgentImagePackageIndex => ({
-    packages: new Map([
-        ['postgresql-client', new Set(['15+248'])],
-        ['figlet', new Set(['2.2.5-3+b1'])],
-        ['postfix', new Set(['3.7.11-0+deb12u1'])]
-    ]),
-    provides: new Set(['mail-transport-agent', 'default-mta']),
-    loadedAt: Date.now()
-});
+const packageIndex = (): AgentImagePackageIndex => createAgentImagePackageIndex(
+    { 'postgresql-client': ['15+248'], figlet: ['2.2.5-3+b1'], postfix: ['3.7.11-0+deb12u1'] },
+    ['mail-transport-agent', 'default-mta']
+);
 afterEach(() => setAgentImagePackageIndexLoader());
 
 const originalAdminUsers = process.env.PROPR_ADMIN_USERS;

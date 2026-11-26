@@ -5,46 +5,47 @@ import { createGunzip } from 'node:zlib';
 import logger from '../../utils/logger.js';
 import type { AgentRuntimePackageAvailabilityResult } from './agentRuntimePackageCatalog.js';
 import { validateAgentRuntimePackages } from './agentRuntimePackageProfile.js';
+import { AGENT_IMAGE_APT_SOURCES, AGENT_IMAGE_ARCHITECTURE, AGENT_IMAGE_PACKAGE_BASE, AGENT_IMAGE_PACKAGE_INDEX_NAME,
+    type AgentImageAptSource, type AgentRuntimePackageBase } from './agentRuntimePackageBases.js';
+import { startupStep } from './startupStep.js';
 
 /**
  * A Docker-free package availability check: package names are resolved against
- * the Debian apt sources the agent image (`Dockerfile.agent`) is built on, read
- * straight from the archive over HTTPS. Settings uses it when Docker is not the
- * runtime that applies the list or is unreachable, and the Fly Machines and
- * Sprites runtimes re-check against it before a new installation (a Fly Machine
- * start-time install or a fresh Sprite); a warm Sprite whose clean checkpoint
- * already has the list is reused without it.
+ * the apt sources of the runtime that installs them (`agentRuntimePackageBases.ts`),
+ * read straight from the archive over HTTPS. Settings checks each runtime in use
+ * against its own base, and the Fly Machines and Sprites runtimes re-check against
+ * theirs before a new installation (a Fly Machine start-time install or a fresh
+ * Sprite); a warm Sprite whose clean checkpoint already has the list is reused without it.
  */
 
-/** One apt source of the agent image: `<url>/dists/<suite>/<component>/binary-<arch>/Packages`. */
-export interface AgentImageAptSource { url: string; suite: string; component: string }
-
-// node:<version>-bookworm-slim ships deb.debian.org bookworm, bookworm-updates
-// and bookworm-security with the main component; Dockerfile.agent enables no
-// other Debian suite or component. Keep this in step with its FROM line.
-export const AGENT_IMAGE_APT_SOURCES: readonly AgentImageAptSource[] = [
-    { url: 'https://deb.debian.org/debian', suite: 'bookworm', component: 'main' },
-    { url: 'https://deb.debian.org/debian', suite: 'bookworm-updates', component: 'main' },
-    { url: 'https://deb.debian.org/debian-security', suite: 'bookworm-security', component: 'main' },
-];
-/** Dockerfile.agent builds linux/amd64 only (AGENT_PLATFORM). */
-export const AGENT_IMAGE_ARCHITECTURE = 'amd64';
-export const AGENT_IMAGE_PACKAGE_INDEX_NAME = 'Debian 12 (bookworm) package index';
+export { AGENT_IMAGE_APT_SOURCES, AGENT_IMAGE_ARCHITECTURE, AGENT_IMAGE_PACKAGE_BASE, AGENT_IMAGE_PACKAGE_INDEX_NAME,
+    type AgentImageAptSource, type AgentRuntimePackageBase };
 
 const INDEX_TTL_MS = 4 * 60 * 60_000;
 /** A refresh that fails keeps serving the last index for this long. */
 const STALE_LIMIT_MS = 24 * 60 * 60_000;
 /** After a failed load (offline host, private mirror), callers do not wait on the network again for this long. */
 const FAILURE_TTL_MS = 5 * 60_000;
-const FETCH_TIMEOUT_MS = 60_000;
-const INDEX_SIZE_LIMIT = 64 * 1024 ** 2;
+// Ubuntu's universe index alone is ~16 MB compressed (~77 MB plain), so a Sprite base needs room.
+const FETCH_TIMEOUT_MS = 3 * 60_000;
+const INDEX_SIZE_LIMIT = 128 * 1024 ** 2;
 
+/**
+ * A compact index: only what the checks need, not the parsed stanzas. `names` holds real packages and
+ * every name some package `Provides` (virtual packages); `pins` holds `<name>=<version>` of real packages.
+ */
 export interface AgentImagePackageIndex {
-    /** Real package name -> versions in the index. */
-    packages: Map<string, Set<string>>;
-    /** Names some package `Provides` (virtual packages). */
-    provides: Set<string>;
+    names: Set<string>;
+    pins: Set<string>;
     loadedAt: number;
+}
+type IndexSets = Pick<AgentImagePackageIndex, 'names' | 'pins'>;
+
+/** An index of `{ name: versions }` and provided names; for tests and fixtures. */
+export function createAgentImagePackageIndex(packages: Record<string, readonly string[]>, provides: readonly string[] = []): AgentImagePackageIndex {
+    const names = new Set([...Object.keys(packages), ...provides]);
+    const pins = new Set(Object.entries(packages).flatMap(([name, versions]) => versions.map(version => `${name}=${version}`)));
+    return { names, pins, loadedAt: Date.now() };
 }
 
 export type FetchLike = (url: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number; arrayBuffer(): Promise<ArrayBuffer> }>;
@@ -64,17 +65,18 @@ export interface AgentImagePackageIndexOptions {
 /** Thrown when the index cannot be fetched or does not verify; callers do not block on it. */
 export class AgentImagePackageIndexUnavailableError extends Error {}
 
-/** Some configured package is not in the agent image's apt sources. The message lists every bad name. */
+/** Some configured package is not in the installing runtime's apt sources. The message lists every bad name. */
 export class AgentRuntimePackageUnavailableError extends Error {
-    constructor(readonly unknown: string[], readonly errors: string[]) {
-        super(`Agent runtime packages are not available from the agent image's apt sources (${sourcesLabel()}): ${errors.join('; ')}. `
+    constructor(readonly unknown: string[], readonly errors: string[], base: AgentRuntimePackageBase = AGENT_IMAGE_PACKAGE_BASE, runtime?: string) {
+        super(`Agent runtime packages are not available ${runtime ? `to ${runtime} ` : ''}from the ${base.label} apt sources (${sourcesLabel(base.sources)}): ${errors.join('; ')}. `
             + 'The run was not started; correct the package list in Settings.');
         this.name = 'AgentRuntimePackageUnavailableError';
     }
 }
 
-function sourcesLabel(sources: readonly AgentImageAptSource[] = AGENT_IMAGE_APT_SOURCES) {
-    return sources.map(source => `${source.suite} ${source.component}`).join(', ');
+function sourcesLabel(sources: readonly AgentImageAptSource[]) {
+    const suites = [...new Set(sources.map(source => source.suite))];
+    return suites.map(suite => `${suite} ${sources.filter(source => source.suite === suite).map(source => source.component).join('/')}`).join(', ');
 }
 
 /** `<hash> <size> <path>` entries of the InRelease SHA256 section. */
@@ -96,15 +98,14 @@ function relationName(value: string) {
 }
 
 /** Streams a Packages file into the index: only `Package`, `Version` and `Provides` fields are kept. */
-export async function addPackagesToIndex(lines: AsyncIterable<Buffer | string>, index: Pick<AgentImagePackageIndex, 'packages' | 'provides'>) {
+export async function addPackagesToIndex(lines: AsyncIterable<Buffer | string>, index: IndexSets) {
     let name: string | undefined;
     let version: string | undefined;
     let field: string | undefined;
     const flush = () => {
         if (name) {
-            const versions = index.packages.get(name) ?? new Set<string>();
-            if (version) versions.add(version);
-            index.packages.set(name, versions);
+            index.names.add(name);
+            if (version) index.pins.add(`${name}=${version}`);
         }
         name = version = field = undefined;
     };
@@ -122,7 +123,7 @@ export async function addPackagesToIndex(lines: AsyncIterable<Buffer | string>, 
         else if (field === 'version') version = value;
         else if (field === 'provides') for (const part of value.split(',')) addProvide(part);
     };
-    const addProvide = (part: string) => { const provided = relationName(part); if (provided) index.provides.add(provided); };
+    const addProvide = (part: string) => { const provided = relationName(part); if (provided) index.names.add(provided); };
     let rest = '';
     for await (const chunk of lines) {
         rest += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
@@ -166,13 +167,9 @@ const HOST_XZ_DECODERS = [
     spawnDecoder('python3', ['-I', '-c', 'import lzma, shutil, sys; shutil.copyfileobj(lzma.open(sys.stdin.buffer), sys.stdout.buffer)']),
 ];
 
-function mergeIndex(index: AgentImagePackageIndex, part: Pick<AgentImagePackageIndex, 'packages' | 'provides'>) {
-    for (const [name, versions] of part.packages) {
-        const existing = index.packages.get(name);
-        if (existing) for (const version of versions) existing.add(version);
-        else index.packages.set(name, versions);
-    }
-    for (const name of part.provides) index.provides.add(name);
+function mergeIndex(index: IndexSets, part: IndexSets) {
+    for (const name of part.names) index.names.add(name);
+    for (const pin of part.pins) index.pins.add(pin);
 }
 
 async function loadSource(source: AgentImageAptSource, architecture: string, index: AgentImagePackageIndex,
@@ -204,7 +201,7 @@ async function loadSource(source: AgentImageAptSource, architecture: string, ind
         for (const decode of decoders) {
             try {
                 // Parse into a scratch index, so a decoder that fails halfway adds nothing.
-                const scratch = { packages: new Map<string, Set<string>>(), provides: new Set<string>() };
+                const scratch: IndexSets = { names: new Set(), pins: new Set() };
                 await addPackagesToIndex(decode(data), scratch);
                 mergeIndex(index, scratch);
                 return;
@@ -221,56 +218,63 @@ async function loadSource(source: AgentImageAptSource, architecture: string, ind
 export async function fetchAgentImagePackageIndex(options: AgentImagePackageIndexOptions = {}): Promise<AgentImagePackageIndex> {
     const fetcher = options.fetch ?? (fetch as unknown as FetchLike);
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(FETCH_TIMEOUT_MS);
-    const index: AgentImagePackageIndex = { packages: new Map(), provides: new Set(), loadedAt: Date.now() };
+    const index: AgentImagePackageIndex = { names: new Set(), pins: new Set(), loadedAt: Date.now() };
     const unxz = options.unxz ?? HOST_XZ_DECODERS;
     for (const source of options.sources ?? AGENT_IMAGE_APT_SOURCES)
         await loadSource(source, options.architecture ?? AGENT_IMAGE_ARCHITECTURE, index, { fetcher, signal, unxz });
-    if (index.packages.size === 0) throw new AgentImagePackageIndexUnavailableError('The package index is empty');
+    if (index.names.size === 0) throw new AgentImagePackageIndexUnavailableError('The package index is empty');
     return index;
 }
 
-type IndexLoader = (signal?: AbortSignal) => Promise<AgentImagePackageIndex>;
-let loader: IndexLoader = signal => fetchAgentImagePackageIndex({ signal });
-let cached: AgentImagePackageIndex | undefined;
-let loading: Promise<AgentImagePackageIndex> | undefined;
-let failure: { error: unknown; at: number } | undefined;
+/** Loads the index of one package base; the default fetches it from the base's archives. */
+type IndexLoader = (signal: AbortSignal | undefined, base: AgentRuntimePackageBase) => Promise<AgentImagePackageIndex>;
+const fetchBase: IndexLoader = (signal, base) => fetchAgentImagePackageIndex({ signal, sources: base.sources, architecture: base.architecture });
+let loader: IndexLoader = fetchBase;
+interface CacheEntry { cached?: AgentImagePackageIndex; loading?: Promise<AgentImagePackageIndex>; failure?: { error: unknown; at: number } }
+const caches = new Map<string, CacheEntry>();
 
 /**
- * The cached index, refreshed after four hours. Concurrent callers share one download. A failed
- * refresh keeps the previous index for a day; without one, the failure is replayed for five
- * minutes so an offline host does not wait on the network for every request.
+ * The cached index of `base` (the agent image's by default), refreshed after four hours. Concurrent
+ * callers share one download. A failed refresh keeps the previous index for a day; without one, the
+ * failure is replayed for five minutes so an offline host does not wait on the network for every request.
  */
-export async function getAgentImagePackageIndex(signal?: AbortSignal): Promise<AgentImagePackageIndex> {
+export async function getAgentImagePackageIndex(signal?: AbortSignal, base: AgentRuntimePackageBase = AGENT_IMAGE_PACKAGE_BASE): Promise<AgentImagePackageIndex> {
+    let entry = caches.get(base.key);
+    if (!entry) caches.set(base.key, entry = {});
     const now = Date.now();
+    const { cached, failure } = entry;
     if (cached && now - cached.loadedAt < INDEX_TTL_MS) return cached;
     if (failure && now - failure.at < FAILURE_TTL_MS) {
         if (cached && now - cached.loadedAt < STALE_LIMIT_MS) return cached;
         throw failure.error;
     }
     // The shared download is not tied to one caller's signal; each caller stops waiting on its own.
-    loading ??= loader().then(index => { cached = index; failure = undefined; return index; }, error => {
-        failure = { error, at: Date.now() };
-        logger.warn({ err: error }, 'Could not fetch the agent image package index');
+    const owner = entry;
+    owner.loading ??= loader(undefined, base).then(index => { owner.cached = index; owner.failure = undefined; return index; }, error => {
+        owner.failure = { error, at: Date.now() };
+        logger.warn({ err: error, base: base.label }, 'Could not fetch the agent runtime package index');
         throw error;
-    }).finally(() => { loading = undefined; });
-    const pending = loading;
+    }).finally(() => { owner.loading = undefined; });
+    const pending = owner.loading;
     try {
-        return await (signal ? Promise.race([pending, new Promise<never>((_resolve, reject) => {
-            if (signal.aborted) reject(signal.reason);
-            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-        })]) : pending);
+        return await (signal ? startupStep(signal, () => pending) : pending);
     } catch (error) {
-        if (!signal?.aborted && cached && Date.now() - cached.loadedAt < STALE_LIMIT_MS) return cached;
+        const stale = owner.cached;
+        if (!signal?.aborted && stale && Date.now() - stale.loadedAt < STALE_LIMIT_MS) return stale;
         throw error;
     }
 }
 
-/** Test seam: replace the index source and forget the cache. */
-export function setAgentImagePackageIndexLoader(next?: IndexLoader) {
-    loader = next ?? (signal => fetchAgentImagePackageIndex({ signal }));
-    cached = undefined;
-    loading = undefined;
-    failure = undefined;
+/** Starts loading the indexes of `bases` in the background (worker start), so the first check does not wait on it. */
+export function warmAgentRuntimePackageIndexes(bases: readonly AgentRuntimePackageBase[]): void {
+    for (const base of new Map(bases.map(candidate => [candidate.key, candidate])).values())
+        void getAgentImagePackageIndex(undefined, base).catch(() => { /* Logged by the loader; checks retry on demand. */ });
+}
+
+/** Test seam: replace the index source and forget every cached index. */
+export function setAgentImagePackageIndexLoader(next?: (signal?: AbortSignal, base?: AgentRuntimePackageBase) => Promise<AgentImagePackageIndex>) {
+    loader = next ?? fetchBase;
+    caches.clear();
 }
 
 function specParts(spec: string) {
@@ -289,9 +293,8 @@ export function findUnavailableAgentRuntimePackages(index: AgentImagePackageInde
     const errors: string[] = [];
     for (const spec of packages) {
         const { name, version } = specParts(spec);
-        const versions = index.packages.get(name);
-        if (!versions && !index.provides.has(name)) { unknown.push(spec); errors.push(`Unknown package: ${name}`); }
-        else if (version !== undefined && !versions?.has(version)) { unknown.push(spec); errors.push(`Unknown version: ${spec}`); }
+        if (!index.names.has(name)) { unknown.push(spec); errors.push(`Unknown package: ${name}`); }
+        else if (version !== undefined && !index.pins.has(`${name}=${version}`)) { unknown.push(spec); errors.push(`Unknown version: ${spec}`); }
     }
     return { unknown, errors };
 }
@@ -305,39 +308,76 @@ export const AGENT_RUNTIME_PACKAGE_INDEX_WARNING = 'could not verify availabilit
  */
 export type AgentRuntimePackageIndexValidation = AgentRuntimePackageAvailabilityResult & { warnings: string[] };
 
-export async function validateAgentRuntimePackagesWithIndex(packages: unknown, signal?: AbortSignal): Promise<AgentRuntimePackageIndexValidation> {
-    const syntax = validateAgentRuntimePackages(packages);
-    const sources = [{ packageManager: 'apt' as const, osName: AGENT_IMAGE_PACKAGE_INDEX_NAME, images: [] as string[] }];
-    if (!syntax.valid || syntax.packages.length === 0) return { ...syntax, availability: [], sources: [], warnings: [] };
-    let index: AgentImagePackageIndex;
-    try { index = await getAgentImagePackageIndex(signal); }
-    catch (error) {
-        if (signal?.aborted) throw error;
-        const reason = error instanceof Error ? error.message : String(error);
-        return { ...syntax, availability: [], sources: [], warnings: [`${AGENT_RUNTIME_PACKAGE_INDEX_WARNING}: the ${AGENT_IMAGE_PACKAGE_INDEX_NAME} could not be fetched (${reason})`] };
+/**
+ * The runtimes that install from one package base, e.g. Sprites from the Sprite base image, or Docker
+ * and Fly Machines from the agent image. Their names prefix each error ("Sprites (Ubuntu …): …").
+ */
+export interface AgentRuntimePackageTarget { runtimes: readonly string[]; base: AgentRuntimePackageBase }
+
+/** Merges targets that share a base, so each index is read once and its errors name every runtime. */
+function groupTargets(targets: readonly AgentRuntimePackageTarget[]): AgentRuntimePackageTarget[] {
+    const grouped = new Map<string, { runtimes: string[]; base: AgentRuntimePackageBase }>();
+    for (const target of targets) {
+        const entry = grouped.get(target.base.key) ?? { runtimes: [], base: target.base };
+        for (const runtime of target.runtimes) if (!entry.runtimes.includes(runtime)) entry.runtimes.push(runtime);
+        grouped.set(target.base.key, entry);
     }
-    const { unknown, errors } = findUnavailableAgentRuntimePackages(index, syntax.packages);
-    const availability = syntax.packages.map(spec => ({ package: spec, available: !unknown.includes(spec), unavailableOn: unknown.includes(spec) ? [AGENT_IMAGE_PACKAGE_INDEX_NAME] : [] }));
-    return { valid: errors.length === 0, packages: syntax.packages, errors, availability, sources, warnings: [] };
+    return [...grouped.values()];
+}
+
+const targetName = (target: AgentRuntimePackageTarget) => target.runtimes.length ? `${target.runtimes.join(' and ')} (${target.base.label})` : undefined;
+
+/**
+ * Checks `packages` against every target's index; with no targets, against the agent image's index
+ * with unprefixed errors (`Unknown package: <name>`).
+ */
+export async function validateAgentRuntimePackagesWithIndex(packages: unknown, signal?: AbortSignal,
+    targets: readonly AgentRuntimePackageTarget[] = []): Promise<AgentRuntimePackageIndexValidation> {
+    const syntax = validateAgentRuntimePackages(packages);
+    if (!syntax.valid || syntax.packages.length === 0) return { ...syntax, availability: [], sources: [], warnings: [] };
+    const groups = targets.length ? groupTargets(targets) : [{ runtimes: [], base: AGENT_IMAGE_PACKAGE_BASE }];
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    const unavailableOn = new Map(syntax.packages.map(spec => [spec, [] as string[]]));
+    const sources: AgentRuntimePackageAvailabilityResult['sources'] = [];
+    for (const target of groups) {
+        const name = targetName(target);
+        const indexName = target.base.key === AGENT_IMAGE_PACKAGE_BASE.key ? AGENT_IMAGE_PACKAGE_INDEX_NAME : `${target.base.label} package index`;
+        let index: AgentImagePackageIndex;
+        try { index = await getAgentImagePackageIndex(signal, target.base); }
+        catch (error) {
+            if (signal?.aborted) throw error;
+            const reason = error instanceof Error ? error.message : String(error);
+            warnings.push(`${AGENT_RUNTIME_PACKAGE_INDEX_WARNING}${name ? ` for ${name}` : ''}: the ${indexName} could not be fetched (${reason})`);
+            continue;
+        }
+        sources.push({ packageManager: 'apt', osName: name ?? indexName, images: [] });
+        const found = findUnavailableAgentRuntimePackages(index, syntax.packages);
+        errors.push(...found.errors.map(error => name ? `${name}: ${error}` : error));
+        for (const spec of found.unknown) unavailableOn.get(spec)?.push(name ?? indexName);
+    }
+    const availability = syntax.packages.map(spec => ({ package: spec, available: unavailableOn.get(spec)!.length === 0, unavailableOn: unavailableOn.get(spec)! }));
+    return { valid: errors.length === 0, packages: syntax.packages, errors, availability, sources, warnings };
 }
 
 /**
  * Before a Fly Machine start-time install or Sprite provisioning: throws
- * `AgentRuntimePackageUnavailableError` for names the index lacks, so no Machine or Sprite is
+ * `AgentRuntimePackageUnavailableError` for names the base's index lacks, so no Machine or Sprite is
  * created to install them. An index that cannot be fetched lets the run go ahead; the apt
  * install itself still reports a bad name then.
  */
-export async function assertAgentRuntimePackagesInIndex(packages: readonly string[], signal?: AbortSignal): Promise<void> {
+export async function assertAgentRuntimePackagesInIndex(packages: readonly string[], signal?: AbortSignal,
+    base: AgentRuntimePackageBase = AGENT_IMAGE_PACKAGE_BASE, runtime?: string): Promise<void> {
     if (packages.length === 0) return;
     let index: AgentImagePackageIndex;
-    try { index = await getAgentImagePackageIndex(signal); }
+    try { index = await getAgentImagePackageIndex(signal, base); }
     catch (error) {
         if (signal?.aborted) throw error;
-        logger.warn({ err: error }, 'Could not verify agent runtime packages against the package index; continuing without the check');
+        logger.warn({ err: error, base: base.label, runtime }, 'Could not verify agent runtime packages against the package index; continuing without the check');
         return;
     }
     const { unknown, errors } = findUnavailableAgentRuntimePackages(index, packages);
-    if (errors.length) throw new AgentRuntimePackageUnavailableError(unknown, errors);
+    if (errors.length) throw new AgentRuntimePackageUnavailableError(unknown, errors, base, runtime);
 }
 
 export type AgentRuntimePackageAvailabilityCheck = (packages: readonly string[], signal?: AbortSignal) => Promise<void>;

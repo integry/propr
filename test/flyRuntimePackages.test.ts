@@ -170,3 +170,32 @@ test('the wrapper install records its duration and exit, keeps the output tail a
     assert.match(slow.result.tail, /started/);
     assert.ok(slow.result.ms < 10_000, 'the install is killed at its time limit');
 });
+
+test('after a long install, ready opens a fresh boot window for the start gate, not the seconds left past the last install probe', async () => {
+    // A worker clock that jumps: each install probe is five minutes in (a ten-minute apt run), and the
+    // first start-gate attempt is lost and costs 20 s, past the 15 s the install probes extended to.
+    const realNow = Date.now;
+    let skew = 0;
+    Date.now = () => realNow() + skew;
+    try {
+        class SlowInstall extends InstallingMachine {
+            touches = 0;
+            override async exec(id: string, args: string[]) {
+                const result = await super.exec(id, args);
+                if (result.stdout.startsWith('installing')) skew += 5 * 60_000;
+                if (args[0] === '/usr/bin/touch' && args[1] === RUN + '/start' && this.touches++ === 0) {
+                    this.started = false;
+                    skew += 20_000;
+                    return { stdout: '', exit_code: 1 };
+                }
+                return result;
+            }
+        }
+        const api = new SlowInstall(2, { ms: 10 * 60_000, code: 0, tail: 'Setting up figlet' });
+        const run = new FlyMachinesRuntime(api, env, async () => ['figlet']).start(spec());
+        const result = await run.wait();
+        assert.equal(result.exitCode, 0, 'the agent still starts: the boot timeout restarts once the install reports ready');
+        assert.equal(api.touches, 2);
+        await run.release!();
+    } finally { Date.now = realNow; }
+});

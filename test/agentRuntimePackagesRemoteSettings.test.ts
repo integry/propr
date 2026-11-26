@@ -14,15 +14,30 @@ process.env.DATA_DIR = testDataDir;
 let packages: typeof import('../packages/core/src/agents/runtime/agentRuntimePackages.js');
 let profile: typeof import('../packages/core/src/agents/runtime/agentRuntimePackageProfile.js');
 let connection: typeof import('../packages/core/src/db/connection.js');
+let index: typeof import('../packages/core/src/agents/runtime/agentRuntimePackageIndex.js');
+let remotePackages: typeof import('../packages/core/src/agents/runtime/agentRuntimeRemotePackages.js');
+let bases: typeof import('../packages/core/src/agents/runtime/agentRuntimePackageBases.js');
 
 before(async () => {
     packages = await import('../packages/core/src/agents/runtime/agentRuntimePackages.js');
     profile = await import('../packages/core/src/agents/runtime/agentRuntimePackageProfile.js');
     connection = await import('../packages/core/src/db/connection.js');
+    index = await import('../packages/core/src/agents/runtime/agentRuntimePackageIndex.js');
+    remotePackages = await import('../packages/core/src/agents/runtime/agentRuntimeRemotePackages.js');
+    bases = await import('../packages/core/src/agents/runtime/agentRuntimePackageBases.js');
     await connection.runMigrations();
+    // Debian (agent image) and Ubuntu (Sprite base) indexes that differ in one name each.
+    index.setAgentImagePackageIndexLoader(async (_signal, base) => base!.key === bases.DEFAULT_SPRITE_PACKAGE_BASE.key
+        ? index.createAgentImagePackageIndex({ jq: ['1.8.1-3'], 'postgresql-client': ['18'], libssl3t64: ['3.5.3-1ubuntu2'] })
+        : index.createAgentImagePackageIndex({ jq: ['1.6-2.1'], 'postgresql-client': ['15'], postfix: ['3.7.11-0+deb12u1'] }));
 });
 
+const fly = { runtimes: ['fly-machines'], docker: false };
+const sprites = { runtimes: ['sprites'], docker: false };
+const mixed = { runtimes: ['docker', 'sprites'], docker: true };
+
 after(async () => {
+    index.setAgentImagePackageIndexLoader();
     await connection.closeConnection();
     fs.rmSync(testDataDir, { recursive: true, force: true });
 });
@@ -56,34 +71,85 @@ test('the API follows the runtime the worker published when its own environment 
 });
 
 test('without Docker the package build validates the list and reports it applied by the remote runtime, not failed', async () => {
-    const remoteInstall = async () => 'Installed at every Fly Machine start; no Docker image is built';
+    const usage = async () => fly;
     const job = await packages.requestAgentRuntimePackageBuild(['postgresql-client', 'jq'], [BASE_IMAGE]);
-    const state = await packages.buildAgentRuntimePackageProfile(job, { remoteInstall });
+    const state = await packages.buildAgentRuntimePackageProfile(job, { usage });
     assert.equal(state.status, 'ready');
     assert.deepEqual(state.activePackages, ['jq', 'postgresql-client']);
     assert.deepEqual(state.images, {});
     assert.equal(state.error, undefined);
     assert.equal(state.appliedBy, 'Installed at every Fly Machine start; no Docker image is built');
+    assert.deepEqual(state.remote?.['fly-machines']?.packages, ['jq', 'postgresql-client']);
     const stored = await packages.loadAgentRuntimePackageState();
     assert.equal(stored.status, 'ready');
     assert.equal(stored.appliedBy, state.appliedBy);
 
     // Clearing the list disables the profile, again without touching Docker.
     const cleared = await packages.buildAgentRuntimePackageProfile(
-        await packages.requestAgentRuntimePackageBuild([], [BASE_IMAGE]), { remoteInstall });
+        await packages.requestAgentRuntimePackageBuild([], [BASE_IMAGE]), { usage });
     assert.equal(cleared.status, 'disabled');
     assert.equal(cleared.appliedBy, undefined);
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('fly-machines'), []);
 });
 
 test('the remote path uses the same validator: an invalid list is rejected before anything is applied', async () => {
     const job = await packages.requestAgentRuntimePackageBuild(['jq'], [BASE_IMAGE]);
-    await assert.rejects(packages.buildAgentRuntimePackageProfile({ ...job, packages: ['bad;rm -rf /'] }, { remoteInstall: async () => 'Installed when Sprites are provisioned' }),
+    await assert.rejects(packages.buildAgentRuntimePackageProfile({ ...job, packages: ['bad;rm -rf /'] }, { usage: async () => sprites }),
         /invalid package spec: bad;rm -rf \//);
+});
+
+test('remote runtimes install only their accepted list: a pending change and a refused one leave the previous list', async () => {
+    const usage = async () => sprites;
+    await packages.buildAgentRuntimePackageProfile(await packages.requestAgentRuntimePackageBuild(['jq'], [BASE_IMAGE]), { usage });
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq']);
+
+    // Apply was clicked, the build has not run: Sprites keep installing the accepted list.
+    const pendingJob = await packages.requestAgentRuntimePackageBuild(['jq', 'libssl3t64'], [BASE_IMAGE]);
+    assert.equal((await packages.loadAgentRuntimePackageState()).status, 'pending');
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq']);
+    const pendingView = remotePackages.describeAgentRuntimePackageRuntimes(await packages.loadAgentRuntimePackageState(), sprites);
+    assert.deepEqual(pendingView.map(entry => [entry.runtime, entry.status, entry.activePackages]), [['sprites', 'pending', ['jq']]]);
+
+    // The Ubuntu-only name passes the Sprite base check (it would fail against the agent image's Debian index).
+    const accepted = await packages.buildAgentRuntimePackageProfile(pendingJob, { usage });
+    assert.equal(accepted.status, 'ready');
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq', 'libssl3t64']);
+    assert.equal(accepted.remote?.sprites?.base, 'Ubuntu 26.04 LTS (resolute)');
+
+    // A name the Sprite base lacks is refused for Sprites, which keep the accepted list.
+    const refused = await packages.buildAgentRuntimePackageProfile(await packages.requestAgentRuntimePackageBuild(['jq', 'postfix'], [BASE_IMAGE]), { usage });
+    assert.equal(refused.status, 'failed');
+    assert.match(refused.error ?? '', /^Sprites \(Ubuntu 26\.04 LTS \(resolute\)\): Unknown package: postfix$/);
+    assert.deepEqual(refused.activePackages, ['jq', 'libssl3t64']);
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq', 'libssl3t64']);
+    const view = remotePackages.describeAgentRuntimePackageRuntimes(refused, sprites);
+    assert.equal(view[0].status, 'failed');
+    assert.match(view[0].error ?? '', /Unknown package: postfix/);
+});
+
+test('on a mixed instance a failed Docker build leaves Docker on its list while Sprites accept theirs; Settings shows both', async () => {
+    const job = await packages.requestAgentRuntimePackageBuild(['jq', 'postgresql-client'], [BASE_IMAGE]);
+    await assert.rejects(packages.buildAgentRuntimePackageProfile(job, { usage: async () => mixed }));
+    const failed = await packages.loadAgentRuntimePackageState();
+    assert.equal(failed.status, 'failed');
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq', 'postgresql-client']);
+    const view = remotePackages.describeAgentRuntimePackageRuntimes(failed, mixed);
+    assert.deepEqual(view.map(entry => [entry.runtime, entry.status, entry.activePackages]), [
+        ['docker', 'failed', failed.activePackages],
+        ['sprites', 'ready', ['jq', 'postgresql-client']],
+    ]);
+});
+
+test('state saved before runtimes kept their own lists falls back to the applied list, never the desired one', async () => {
+    const { saveConfig } = await import('../packages/core/src/config/configStore.js');
+    await saveConfig('agent_runtime_packages', { installationId: 'legacy', packages: ['jq', 'postfix'], activePackages: ['jq'], status: 'pending', images: {} });
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('fly-machines'), ['jq']);
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq']);
 });
 
 test('with a Docker runtime in use the build still runs the Docker image build', async () => {
     const job = await packages.requestAgentRuntimePackageBuild(['jq'], [BASE_IMAGE]);
-    await assert.rejects(packages.buildAgentRuntimePackageProfile(job, { remoteInstall: async () => undefined }));
+    await assert.rejects(packages.buildAgentRuntimePackageProfile(job, { usage: async () => ({ runtimes: ['docker'], docker: true }) }));
     const failed = await packages.loadAgentRuntimePackageState();
     assert.equal(failed.status, 'failed');
 });

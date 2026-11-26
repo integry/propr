@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import zlib from 'node:zlib';
 import { after, afterEach, test } from 'node:test';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
 import {
-    AGENT_IMAGE_APT_SOURCES, AgentRuntimePackageUnavailableError, assertAgentRuntimePackagesInIndex, fetchAgentImagePackageIndex,
+    AGENT_IMAGE_APT_SOURCES, AgentRuntimePackageUnavailableError, assertAgentRuntimePackagesInIndex, createAgentImagePackageIndex, fetchAgentImagePackageIndex,
     findUnavailableAgentRuntimePackages, getAgentImagePackageIndex, indexCheckedAgentRuntimePackages, setAgentImagePackageIndexLoader,
     validateAgentRuntimePackagesWithIndex, type AgentImagePackageIndex, type FetchLike,
 } from '../packages/core/src/agents/runtime/agentRuntimePackageIndex.ts';
+import { AGENT_IMAGE_PACKAGE_BASE, DEFAULT_SPRITE_PACKAGE_BASE, parseOneLineAptSources } from '../packages/core/src/agents/runtime/agentRuntimePackageBases.ts';
 import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachinesRuntime.ts';
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import type { MachineLaunch, MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
@@ -34,6 +36,10 @@ Version: 4.96-15+deb12u7
 Provides: mail-transport-agent,
  exim4-localscanapi-6.0 (= 6.0), libc-dev:any
 `;
+const GH = `Package: gh
+Version: 2.83.1
+Architecture: amd64
+`;
 const SECURITY = `Package: postfix
 Version: 3.7.12-0+deb12u1
 Provides: default-mta, mail-transport-agent
@@ -52,6 +58,9 @@ function archive(overrides: { corrupt?: boolean } = {}) {
     const securityXz = Buffer.from('xz:' + SECURITY);
     files.set('https://deb.debian.org/debian-security/dists/bookworm-security/InRelease', Buffer.from(release([['main/binary-amd64/Packages.xz', securityXz]])));
     files.set('https://deb.debian.org/debian-security/dists/bookworm-security/main/binary-amd64/Packages.xz', securityXz);
+    // GitHub's apt repository publishes plain and gzip Packages only.
+    files.set('https://cli.github.com/packages/dists/stable/InRelease', Buffer.from(release([['main/binary-amd64/Packages', Buffer.from(GH)]])));
+    files.set('https://cli.github.com/packages/dists/stable/main/binary-amd64/Packages', Buffer.from(GH));
     const requested: string[] = [];
     const fetcher: FetchLike = async url => {
         requested.push(url);
@@ -68,16 +77,33 @@ const fakeUnxz = [async function* (data: Buffer) {
 }];
 
 function index(): AgentImagePackageIndex {
-    return { packages: new Map([['figlet', new Set(['2.2.5-3+b1'])], ['postfix', new Set(['3.7.11-0+deb12u1'])]]),
-        provides: new Set(['mail-transport-agent']), loadedAt: Date.now() };
+    return createAgentImagePackageIndex({ figlet: ['2.2.5-3+b1'], postfix: ['3.7.11-0+deb12u1'] }, ['mail-transport-agent']);
 }
 
-test('the agent image apt sources are the bookworm suites of Dockerfile.agent', () => {
-    assert.deepEqual(AGENT_IMAGE_APT_SOURCES.map(source => `${source.url} ${source.suite} ${source.component}`), [
-        'https://deb.debian.org/debian bookworm main',
-        'https://deb.debian.org/debian bookworm-updates main',
-        'https://deb.debian.org/debian-security bookworm-security main',
-    ]);
+/** Every apt source Dockerfile.agent's agent image has: its Debian base's suites plus each `deb` line it writes. */
+function dockerfileAgentSources() {
+    const dockerfile = readFileSync(new URL('../Dockerfile.agent', import.meta.url), 'utf8');
+    const from = /^FROM\s+\S*\s*node:\$\{AGENT_NODE_VERSION\}-(\w+)-slim AS agent-base$/m.exec(dockerfile.replace(/--platform=\S+\s+/g, ''));
+    assert.ok(from, 'Dockerfile.agent builds on a node:<version>-<debian>-slim base');
+    const codename = from[1];
+    const base = [
+        `https://deb.debian.org/debian ${codename} main`,
+        `https://deb.debian.org/debian ${codename}-updates main`,
+        `https://deb.debian.org/debian-security ${codename}-security main`,
+    ];
+    const added = [...dockerfile.matchAll(/echo\s+"(deb\s[^"]+)"\s*>+\s*\/etc\/apt\/sources\.list(?:\.d\/\S+)?/g)]
+        .flatMap(match => parseOneLineAptSources(match[1].replace(/\$\([^)]*\)/g, 'amd64')))
+        .map(source => `${source.url} ${source.suite} ${source.component}`);
+    assert.ok(added.length > 0, 'Dockerfile.agent adds GitHub\'s apt repository for gh');
+    return { codename, sources: [...base, ...added] };
+}
+
+test('the agent image apt sources are exactly the ones Dockerfile.agent has, including the repositories it adds', () => {
+    const { codename, sources: expected } = dockerfileAgentSources();
+    assert.equal(codename, 'bookworm');
+    assert.deepEqual(AGENT_IMAGE_APT_SOURCES.map(source => `${source.url} ${source.suite} ${source.component}`), expected);
+    assert.ok(expected.includes('https://cli.github.com/packages stable main'));
+    assert.equal(AGENT_IMAGE_PACKAGE_BASE.sources, AGENT_IMAGE_APT_SOURCES);
 });
 
 test('the index is read from InRelease-verified Packages files: real names, versions and provided virtual packages', async () => {
@@ -88,14 +114,17 @@ test('the index is read from InRelease-verified Packages files: real names, vers
         'https://deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages.gz',
         'https://deb.debian.org/debian-security/dists/bookworm-security/InRelease',
         'https://deb.debian.org/debian-security/dists/bookworm-security/main/binary-amd64/Packages.xz',
+        'https://cli.github.com/packages/dists/stable/InRelease',
+        'https://cli.github.com/packages/dists/stable/main/binary-amd64/Packages',
     ]);
-    assert.deepEqual([...loaded.packages.keys()].sort(), ['exim4-daemon-light', 'figlet', 'postfix']);
-    assert.deepEqual([...loaded.packages.get('postfix')!].sort(), ['3.7.11-0+deb12u1', '3.7.12-0+deb12u1']);
-    assert.deepEqual([...loaded.provides].sort(), ['default-mta', 'exim4-localscanapi-6.0', 'libc-dev', 'mail-transport-agent']);
+    // Compact: names (real and provided) and name=version pins, nothing else of the stanzas.
+    assert.deepEqual([...loaded.names].sort(), ['default-mta', 'exim4-daemon-light', 'exim4-localscanapi-6.0', 'figlet', 'gh', 'libc-dev', 'mail-transport-agent', 'postfix']);
+    assert.deepEqual([...loaded.pins].sort(), ['exim4-daemon-light=4.96-15+deb12u7', 'figlet=2.2.5-3+b1', 'gh=2.83.1', 'postfix=3.7.11-0+deb12u1', 'postfix=3.7.12-0+deb12u1']);
     const result = findUnavailableAgentRuntimePackages(loaded, [
-        'figlet', 'mail-transport-agent', 'libc-dev', 'postfix=3.7.12-0+deb12u1', 'figlet:amd64', 'figlett', 'nope', 'figlet=9',
+        'figlet', 'mail-transport-agent', 'libc-dev', 'postfix=3.7.12-0+deb12u1', 'figlet:amd64', 'gh', 'gh=2.83.1', 'figlett', 'nope', 'figlet=9',
+        'mail-transport-agent=1',
     ]);
-    assert.deepEqual(result.errors, ['Unknown package: figlett', 'Unknown package: nope', 'Unknown version: figlet=9']);
+    assert.deepEqual(result.errors, ['Unknown package: figlett', 'Unknown package: nope', 'Unknown version: figlet=9', 'Unknown version: mail-transport-agent=1']);
 });
 
 test('an index that does not match its InRelease checksum is not used', async () => {
@@ -120,6 +149,45 @@ test('the index is cached: concurrent and later callers share one download, and 
     await assert.rejects(getAgentImagePackageIndex(), /offline/);
     await assert.rejects(getAgentImagePackageIndex(), /offline/);
     assert.equal(failures, 1);
+});
+
+test('each package base has its own cached index; a caller that gives up does not cancel the shared download', async () => {
+    const loaded: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    setAgentImagePackageIndexLoader(async (_signal, base) => { loaded.push(base!.label); await gate; return index(); });
+    const controller = new AbortController();
+    const abandoned = getAgentImagePackageIndex(controller.signal, DEFAULT_SPRITE_PACKAGE_BASE);
+    controller.abort(new Error('caller gave up'));
+    await assert.rejects(abandoned, /caller gave up/);
+    const waiting = getAgentImagePackageIndex(undefined, DEFAULT_SPRITE_PACKAGE_BASE);
+    const agentImage = getAgentImagePackageIndex();
+    release();
+    await Promise.all([waiting, agentImage]);
+    assert.deepEqual(loaded, [DEFAULT_SPRITE_PACKAGE_BASE.label, AGENT_IMAGE_PACKAGE_BASE.label], 'one download per base, shared after the abort');
+});
+
+test('Settings checks each runtime against its own base, naming the runtime in every error', async () => {
+    // A Sprite (Ubuntu 26.04) has t64 library names and Ubuntu pins; the agent image (bookworm) has neither.
+    setAgentImagePackageIndexLoader(async (_signal, base) => base!.key === DEFAULT_SPRITE_PACKAGE_BASE.key
+        ? createAgentImagePackageIndex({ figlet: ['2.2.5-3build1'], libssl3t64: ['3.5.3-1ubuntu2'] })
+        : index());
+    const targets = [
+        { runtimes: ['Docker'], base: AGENT_IMAGE_PACKAGE_BASE },
+        { runtimes: ['Sprites'], base: DEFAULT_SPRITE_PACKAGE_BASE },
+        { runtimes: ['Fly Machines'], base: AGENT_IMAGE_PACKAGE_BASE },
+    ];
+    const result = await validateAgentRuntimePackagesWithIndex(['figlet', 'libssl3t64', 'postfix'], undefined, targets);
+    assert.equal(result.valid, false);
+    assert.deepEqual(result.errors, [
+        'Docker and Fly Machines (Debian 12 (bookworm)): Unknown package: libssl3t64',
+        'Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: postfix',
+    ]);
+    assert.deepEqual(result.availability.find(entry => entry.package === 'figlet')?.unavailableOn, []);
+    const spritesOnly = await validateAgentRuntimePackagesWithIndex(['libssl3t64=3.5.3-1ubuntu2'], undefined, [targets[1]]);
+    assert.equal(spritesOnly.valid, true, 'an Ubuntu-only name and pin pass for Sprites');
+    await assert.rejects(assertAgentRuntimePackagesInIndex(['postfix'], undefined, DEFAULT_SPRITE_PACKAGE_BASE, 'Sprites'),
+        /not available to Sprites from the Ubuntu 26\.04 LTS \(resolute\) apt sources .*Unknown package: postfix/);
 });
 
 test('Settings validation lists every unknown name, accepts a virtual package and passes with a warning when the index is unavailable', async () => {
@@ -186,7 +254,7 @@ test('every Fly Machine start installs the list, so a name the refreshed index l
     const first = flyRun(['figlet']);
     await assert.rejects(first.run.wait(), /stop after create/);
     assert.equal(first.launches.length, 1, 'checked and created while the index has the name');
-    setAgentImagePackageIndexLoader(async () => ({ ...index(), packages: new Map([['postfix', new Set(['3.7.11-0+deb12u1'])]]) }));
+    setAgentImagePackageIndexLoader(async () => createAgentImagePackageIndex({ postfix: ['3.7.11-0+deb12u1'] }, ['mail-transport-agent']));
     const next = flyRun(['figlet']);
     await assert.rejects(next.run.wait(), /Unknown package: figlet/);
     assert.deepEqual(next.launches, []);
@@ -210,7 +278,7 @@ test('a warm Sprite keeps serving a pinned version the refreshed index no longer
     const first = await pool.acquire(signal);
     await pool.release(first);
     // The archive moves on: the refreshed index carries only a newer figlet.
-    setAgentImagePackageIndexLoader(async () => ({ ...index(), packages: new Map([['figlet', new Set(['2.2.6-1'])]]) }));
+    setAgentImagePackageIndexLoader(async () => createAgentImagePackageIndex({ figlet: ['2.2.6-1'], postfix: ['3.7.11-0+deb12u1'] }, ['mail-transport-agent']));
     const reused = await pool.acquire(signal);
     assert.equal(reused.sprite.name, first.sprite.name, 'the clean checkpoint already has the pinned version');
     assert.equal(client.created.length, 1);
@@ -229,7 +297,7 @@ test('a warm Sprite keeps serving a package the refreshed index no longer has at
     const first = await pool.acquire(signal);
     await pool.release(first);
     // The name leaves the archive entirely.
-    setAgentImagePackageIndexLoader(async () => ({ ...index(), packages: new Map([['postfix', new Set(['3.7.11-0+deb12u1'])]]) }));
+    setAgentImagePackageIndexLoader(async () => createAgentImagePackageIndex({ postfix: ['3.7.11-0+deb12u1'] }, ['mail-transport-agent']));
     const reused = await pool.acquire(signal);
     assert.equal(reused.sprite.name, first.sprite.name, 'the clean checkpoint with the same packages digest is reused');
     await assert.rejects(pool.acquire(signal), /Unknown package: figlet/);

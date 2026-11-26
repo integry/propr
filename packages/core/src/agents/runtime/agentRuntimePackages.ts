@@ -5,11 +5,15 @@ import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { buildAgentRuntimeImage } from './agentRuntimeImageBuilder.js';
 import {
     AGENT_RUNTIME_PACKAGES_CONFIG_KEY,
+    agentRuntimeUsage,
+    describeRemoteAgentRuntimePackageInstall,
     normalizeAgentRuntimePackageList as normalizePackageList,
-    remoteAgentRuntimePackageInstall,
     validateAgentRuntimePackages,
+    type AgentRuntimeUsage,
     type RuntimePackageValidation,
 } from './agentRuntimePackageProfile.js';
+import { acceptRemoteAgentRuntimePackages, isRemoteAgentRuntime, normalizeRemoteRuntimePackageRecords, remoteOnlyBuildOutcome,
+    type RemoteRuntimePackageRecords } from './agentRuntimeRemotePackages.js';
 
 export { validateAgentRuntimePackages, type RuntimePackageValidation };
 
@@ -53,6 +57,8 @@ export interface AgentRuntimePackageState {
     buildLog?: string;
     /** Set when a remote runtime installs the packages itself instead of a Docker image build, e.g. "Installed when Sprites are provisioned; …". */
     appliedBy?: string;
+    /** Each remote runtime's own accepted list (see `agentRuntimeRemotePackages.ts`). */
+    remote?: RemoteRuntimePackageRecords;
     updatedAt: string;
 }
 
@@ -93,6 +99,7 @@ function normalizeState(value: unknown): AgentRuntimePackageState {
         error: typeof raw.error === 'string' ? raw.error : undefined,
         buildLog: typeof raw.buildLog === 'string' ? raw.buildLog : undefined,
         appliedBy: typeof raw.appliedBy === 'string' ? raw.appliedBy : undefined,
+        remote: normalizeRemoteRuntimePackageRecords(raw.remote),
         updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date(0).toISOString()
     };
 }
@@ -276,8 +283,8 @@ function summarizeBuildError(message: string): string {
 export async function buildAgentRuntimePackageProfile(
     job: AgentRuntimeBuildJobData,
     // The build job runs on the worker, which decides from its own environment, not the published default.
-    { remoteInstall = () => remoteAgentRuntimePackageInstall(undefined, process.env, { published: async () => undefined }) }:
-        { remoteInstall?: () => Promise<string | undefined> } = {},
+    { usage: readUsage = () => agentRuntimeUsage(undefined, process.env, { published: async () => undefined }) }:
+        { usage?: () => Promise<AgentRuntimeUsage> } = {},
 ): Promise<AgentRuntimePackageState> {
     const validation = validateAgentRuntimePackages(job.packages);
     if (!validation.valid) throw new Error(validation.errors.join('; '));
@@ -296,9 +303,18 @@ export async function buildAgentRuntimePackageProfile(
     };
     await saveAgentRuntimePackageState(current);
 
-    // A worker running only remote runtimes has no Docker daemon: those runtimes
-    // install the validated list themselves, so it is applied without a build.
-    const remote = await remoteInstall();
+    // Remote runtimes accept the list on their own, once their package index check passes; a worker
+    // running only remote runtimes has no Docker daemon, so the list is applied without a build.
+    const usage = await readUsage();
+    const remote = describeRemoteAgentRuntimePackageInstall(usage);
+    const remoteRuntimes = usage.runtimes.filter(isRemoteAgentRuntime);
+    const records = remoteRuntimes.length ? await acceptRemoteAgentRuntimePackages(validation.packages, remoteRuntimes, current, { buildId: job.buildId }) : current.remote;
+    if (remoteRuntimes.length) {
+        const latest = await loadAgentRuntimePackageState();
+        if (latest.buildId !== job.buildId) return latest;
+        current = { ...latest, remote: records, appliedBy: remote, updatedAt: new Date().toISOString() };
+        await saveAgentRuntimePackageState(current);
+    }
     if (validation.packages.length === 0) {
         const disabled: AgentRuntimePackageState = {
             ...current,
@@ -310,24 +326,15 @@ export async function buildAgentRuntimePackageProfile(
             updatedAt: new Date().toISOString()
         };
         await saveAgentRuntimePackageState(disabled);
-        if (!remote) await cleanupRuntimeImages(current.images, {}, installationId);
+        if (usage.docker) await cleanupRuntimeImages(current.images, {}, installationId);
         return disabled;
     }
     if (remote) {
-        const latest = await loadAgentRuntimePackageState();
-        if (latest.buildId !== job.buildId) return latest;
-        const applied: AgentRuntimePackageState = {
-            ...latest,
-            activePackages: validation.packages,
-            status: 'ready',
-            images: {},
-            error: undefined,
-            buildLog: `${remote}.`,
-            appliedBy: remote,
-            updatedAt: new Date().toISOString()
-        };
+        const applied: AgentRuntimePackageState = { ...current, ...remoteOnlyBuildOutcome(validation.packages, remoteRuntimes, records, { activePackages: current.activePackages, appliedBy: remote }),
+            images: {}, appliedBy: remote, updatedAt: new Date().toISOString() };
         await saveAgentRuntimePackageState(applied);
-        logger.info({ buildId: job.buildId, packageCount: validation.packages.length, appliedBy: remote }, 'Agent runtime packages applied by remote runtimes');
+        logger.info({ buildId: job.buildId, packageCount: validation.packages.length, appliedBy: remote, status: applied.status, error: applied.error },
+            'Agent runtime packages applied by remote runtimes');
         return applied;
     }
 
