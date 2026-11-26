@@ -16,6 +16,7 @@ import { FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME } from './runtimeSele
  * keeps installing its previous list. Saving or applying a list in Settings therefore changes nothing
  * on a remote runtime while the change is still `pending`, and a failed Docker build on a mixed
  * instance does not hold remote runtimes back (Settings shows each runtime's own state).
+ * A runtime not in use when a list is applied loses its record (`remoteRecordsForAppliedProfile`).
  */
 export type RemoteAgentRuntime = typeof SPRITES_AGENT_RUNTIME | typeof FLY_MACHINES_AGENT_RUNTIME;
 export const REMOTE_AGENT_RUNTIMES: readonly RemoteAgentRuntime[] = [FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME];
@@ -121,6 +122,19 @@ export async function acceptRemoteAgentRuntimePackages(packages: readonly string
         logger.warn({ runtime, base: base.label, errors }, 'Agent runtime packages not accepted for a remote runtime; it keeps its previous list');
     }
     return records;
+}
+
+/**
+ * The records kept once a build applies its list: a remote runtime that took no part in that build
+ * (not in use on the worker) loses its record, which the applied profile supersedes. Its loader then
+ * falls back to the applied list (`activePackages`), checked against the runtime's own index before
+ * the next install, instead of reinstalling an obsolete list once the runtime is selected again.
+ * Records of runtimes in the build stay, refusals included; a pending or failed build keeps them all.
+ */
+export function remoteRecordsForAppliedProfile(records: RemoteRuntimePackageRecords | undefined,
+    runtimes: readonly RemoteAgentRuntime[]): RemoteRuntimePackageRecords | undefined {
+    const kept = Object.fromEntries(Object.entries(records ?? {}).filter(([runtime]) => runtimes.includes(runtime as RemoteAgentRuntime)));
+    return Object.keys(kept).length ? kept as RemoteRuntimePackageRecords : undefined;
 }
 
 export type AgentRuntimePackageRuntimeStatus = 'disabled' | 'pending' | 'building' | 'ready' | 'failed';

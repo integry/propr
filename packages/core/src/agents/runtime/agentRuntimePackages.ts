@@ -13,7 +13,7 @@ import {
     type RuntimePackageValidation,
 } from './agentRuntimePackageProfile.js';
 import { acceptRemoteAgentRuntimePackages, isRemoteAgentRuntime, normalizeRemoteRuntimePackageRecords, remoteOnlyBuildOutcome,
-    type RemoteRuntimePackageRecords } from './agentRuntimeRemotePackages.js';
+    remoteRecordsForAppliedProfile, type RemoteRuntimePackageRecords } from './agentRuntimeRemotePackages.js';
 
 export { validateAgentRuntimePackages, type RuntimePackageValidation };
 
@@ -334,8 +334,10 @@ export async function buildAgentRuntimePackageProfile(
         return disabled;
     }
     if (remote) {
-        const applied: AgentRuntimePackageState = { ...current, ...remoteOnlyBuildOutcome(validation.packages, remoteRuntimes, records, { activePackages: current.activePackages, appliedBy: remote }),
-            images: {}, appliedBy: remote, updatedAt: new Date().toISOString() };
+        const outcome = remoteOnlyBuildOutcome(validation.packages, remoteRuntimes, records, { activePackages: current.activePackages, appliedBy: remote });
+        const applied: AgentRuntimePackageState = { ...current, ...outcome, images: {}, appliedBy: remote, updatedAt: new Date().toISOString(),
+            // An applied list supersedes the records of remote runtimes not in this build.
+            ...(outcome.status === 'ready' && { remote: remoteRecordsForAppliedProfile(current.remote, remoteRuntimes) }) };
         await saveAgentRuntimePackageState(applied);
         logger.info({ buildId: job.buildId, packageCount: validation.packages.length, appliedBy: remote, status: applied.status, error: applied.error },
             'Agent runtime packages applied by remote runtimes');
@@ -373,6 +375,7 @@ export async function buildAgentRuntimePackageProfile(
             error: undefined,
             buildLog: tailBuildLog(logs.join('\n\n')),
             appliedBy: undefined,
+            remote: remoteRecordsForAppliedProfile(latest.remote, remoteRuntimes),
             updatedAt: new Date().toISOString()
         };
         await saveAgentRuntimePackageState(ready);

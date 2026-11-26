@@ -169,3 +169,42 @@ test('with a Docker runtime in use the build still runs the Docker image build',
     const failed = await packages.loadAgentRuntimePackageState();
     assert.equal(failed.status, 'failed');
 });
+
+test('a runtime not in use when a list is applied picks up that list, checked against its own index, once selected again', async () => {
+    await packages.buildAgentRuntimePackageProfile(await packages.requestAgentRuntimePackageBuild(['jq'], [BASE_IMAGE]), { usage: async () => sprites });
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq']);
+
+    // The agents move to Fly Machines only, and a new list is applied there.
+    const applied = await packages.buildAgentRuntimePackageProfile(
+        await packages.requestAgentRuntimePackageBuild(['postgresql-client'], [BASE_IMAGE]), { usage: async () => fly });
+    assert.equal(applied.status, 'ready');
+    assert.deepEqual(Object.keys(applied.remote ?? {}), ['fly-machines']);
+
+    // A Sprites agent is enabled again: it installs the applied list, not the obsolete one.
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['postgresql-client']);
+    const view = remotePackages.describeAgentRuntimePackageRuntimes(await packages.loadAgentRuntimePackageState(), sprites);
+    assert.deepEqual(view.map(entry => [entry.runtime, entry.status, entry.activePackages]), [['sprites', 'ready', ['postgresql-client']]]);
+    await index.checkAgentRuntimePackagesBeforeInstall(remotePackages.remoteRuntimePackageSource('sprites'), ['postgresql-client']);
+
+    // A list applied without Sprites that their base lacks fails their install check; the old list is not swapped in.
+    await packages.buildAgentRuntimePackageProfile(await packages.requestAgentRuntimePackageBuild(['jq'], [BASE_IMAGE]), { usage: async () => sprites });
+    await packages.buildAgentRuntimePackageProfile(await packages.requestAgentRuntimePackageBuild(['postfix'], [BASE_IMAGE]), { usage: async () => fly })
+        .catch(() => undefined);
+    const flyApplied = await packages.loadAgentRuntimePackageState();
+    // Fly's Debian index has postfix, so the Fly-only build applies it and supersedes the Sprites record.
+    assert.equal(flyApplied.status, 'ready');
+    const source = remotePackages.remoteRuntimePackageSource('sprites');
+    assert.deepEqual(await source(), ['postfix']);
+    await assert.rejects(index.checkAgentRuntimePackagesBeforeInstall(source, await source()), /postfix/);
+});
+
+test('a refused or pending change keeps the records of runtimes not in use', async () => {
+    await packages.buildAgentRuntimePackageProfile(await packages.requestAgentRuntimePackageBuild(['jq'], [BASE_IMAGE]), { usage: async () => sprites });
+    // Fly's Debian index lacks libssl3t64, so the Fly-only build is refused and applies nothing.
+    const refused = await packages.buildAgentRuntimePackageProfile(
+        await packages.requestAgentRuntimePackageBuild(['libssl3t64'], [BASE_IMAGE]), { usage: async () => fly });
+    assert.equal(refused.status, 'failed');
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq']);
+    await packages.requestAgentRuntimePackageBuild(['postgresql-client'], [BASE_IMAGE]);
+    assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq']);
+});
