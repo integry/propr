@@ -39,6 +39,5 @@ export function agentRunToolPolicy(input: {
         allowWeb,
         mcpServers: [proprMcpServer(mcpGrant)],
         ...(mcpGrant.network && mcpGrant.transport !== 'reachable-url' ? { dockerNetwork: mcpGrant.network } : {}),
-        ...(mcpGrant.transport === 'ssh-reverse-forward' ? { mcpTransport: 'ssh-reverse-forward' as const } : {}),
     };
 }

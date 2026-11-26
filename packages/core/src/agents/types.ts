@@ -66,12 +66,6 @@ export interface AgentToolPolicy {
      * can resolve an `mcpServers` URL that names a Compose service such as `api`.
      */
     dockerNetwork?: string;
-    /**
-     * Set when the ProPR MCP URL in `mcpServers` is the loopback end of the
-     * runtime's per-run SSH reverse forward (Sprites without a public MCP URL),
-     * so the runtime starts the forward before the agent.
-     */
-    mcpTransport?: 'ssh-reverse-forward';
     /** Internal operator-resolved stdio descriptors; never customer API input. */
     localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
 }

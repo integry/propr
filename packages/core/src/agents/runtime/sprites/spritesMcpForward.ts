@@ -1,13 +1,12 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import net from 'node:net';
-import tls from 'node:tls';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Sprite } from '@fly/sprites';
 import ssh2, { type ClientChannel } from 'ssh2';
 import logger from '../../../utils/logger.js';
 import {
-    SPRITES_MCP_FORWARD_HOST, SPRITES_MCP_FORWARD_PORT, SPRITES_MCP_FORWARD_SCRIPT, SPRITES_MCP_FORWARD_USER, SPRITES_MCP_SSHD_PORT,
+    SPRITES_MCP_FORWARD_HOST, SPRITES_MCP_FORWARD_PORT, SPRITES_MCP_FORWARD_SCRIPT, SPRITES_MCP_FORWARD_USER, SPRITES_MCP_SSHD_DEAD_PEER_MS, SPRITES_MCP_SSHD_PORT,
     spritesMcpAuthorizedKey, spritesMcpSshdConfig, type SpritesMcpForwardTarget,
 } from './spritesMcpForwardConfig.js';
 
@@ -34,24 +33,30 @@ export interface SpritesMcpForwardOptions {
     /** Called once when the forward is gone for good (reconnects exhausted). */
     onLost: (error: SpritesMcpForwardError) => void;
     run?: string;
-    /** Reconnect attempts after a drop (default 5); the first connection gets as many. */
+    /** Reconnect attempts after a drop (default 5, at least); the first connection gets as many. */
     retries?: number;
     /** Base reconnect backoff in ms (default 500, doubling, capped at 8s). */
     retryDelayMs?: number;
+    /**
+     * A reconnect keeps trying (past `retries`) until this much time has passed
+     * since the drop. The default is three times sshd's dead-peer timeout, so a
+     * stale session that the reset could not clear is gone before we give up.
+     */
+    reconnectWindowMs?: number;
     /** Test seam: opens the worker-side proxy to the Sprite's sshd. */
     openProxy?: (sprite: ForwardSprite) => Promise<SpritesMcpProxy>;
     /** Test seam: the login user (an unprivileged test sshd can only admit its own user). */
     user?: string;
+    /** Test seam: opens the worker's TCP connection to the local end of the proxy. */
+    connectProxy?: (port: number) => Promise<net.Socket>;
     /** Test seam: opens the worker-side connection to the target. */
     connectTarget?: (target: SpritesMcpForwardTarget) => net.Socket;
     /** Deadline for one upstream connection to the target, in ms (default 10s); a slower one is refused. */
     connectTimeoutMs?: number;
 }
 
+/** Plain TCP to the internal API: the target is http:// on an internal address (see spritesMcpForwardTarget). */
 function connectTarget(target: SpritesMcpForwardTarget): net.Socket {
-    if (target.protocol === 'https:') {
-        return tls.connect({ host: target.host, port: target.port, ...(net.isIP(target.host) ? {} : { servername: target.host }) });
-    }
     return net.connect({ host: target.host, port: target.port });
 }
 
@@ -82,6 +87,18 @@ function publicKeyBlob(publicKey: string): Buffer {
     return Buffer.from(publicKey.trim().split(/\s+/)[1] ?? '', 'base64');
 }
 
+/**
+ * An ed25519 key pair ssh2 can parse back. ssh2's generator occasionally (about
+ * 1 in 250) emits a private key its own parser rejects as malformed, which
+ * would fail every connection attempt of the run; draw again in that case.
+ */
+function generateKeyPair(): { private: string; public: string } {
+    for (let attempt = 0; ; attempt++) {
+        const pair = ssh2.utils.generateKeyPairSync('ed25519');
+        if (!(ssh2.utils.parseKey(pair.private) instanceof Error) || attempt >= 20) return pair;
+    }
+}
+
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /**
@@ -93,8 +110,8 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
  * the run ends and the Sprite is reset to its clean checkpoint.
  */
 export class SpritesMcpForward {
-    private readonly clientKey = ssh2.utils.generateKeyPairSync('ed25519');
-    private readonly hostKey = ssh2.utils.generateKeyPairSync('ed25519');
+    private readonly clientKey = generateKeyPair();
+    private readonly hostKey = generateKeyPair();
     private readonly hostKeyBlob = publicKeyBlob(this.hostKey.public);
     private readonly channels = new Set<{ destroy(): unknown }>();
     private readonly closer = new AbortController();
@@ -104,6 +121,8 @@ export class SpritesMcpForward {
     private closing?: Promise<void>;
     private lost = false;
     private configured = false;
+    /** The background `mcp-forward.sh stop` close() started; observable for tests. */
+    remoteStop?: Promise<void>;
     /** Connections established, including the first; observable for diagnostics and tests. */
     connections = 0;
 
@@ -126,7 +145,7 @@ export class SpritesMcpForward {
     }
 
     /** Reconnect and upstream-connect policy for runs that do not pass their own (tests shorten it). */
-    static defaults = { retries: 5, retryDelayMs: 500, connectTimeoutMs: 10_000 };
+    static defaults = { retries: 5, retryDelayMs: 500, connectTimeoutMs: 10_000, reconnectWindowMs: 3 * SPRITES_MCP_SSHD_DEAD_PEER_MS };
     private get retries() { return this.options.retries ?? SpritesMcpForward.defaults.retries; }
 
     private log(level: 'info' | 'warn', details: Record<string, unknown>, text: string) {
@@ -179,13 +198,21 @@ export class SpritesMcpForward {
         client.on('tcp connection', (_info, accept, reject) => this.relay(accept, reject));
         this.signal.addEventListener('abort', abort, { once: true });
         try {
+            const sock = await (this.options.connectProxy ?? connectProxy)(proxyPort(proxy));
+            // close() may have run while the socket was opening: its abort found no connection to end.
+            if (this.signal.aborted) {
+                sock.destroy();
+                this.signal.throwIfAborted();
+            }
             client.connect({
-                sock: await connectProxy(proxyPort(proxy)), username: this.options.user ?? SPRITES_MCP_FORWARD_USER,
+                sock, username: this.options.user ?? SPRITES_MCP_FORWARD_USER,
                 privateKey: this.clientKey.private, agent: undefined, tryKeyboard: false,
                 hostVerifier: (key: Buffer) => key.length === this.hostKeyBlob.length && timingSafeEqual(key, this.hostKeyBlob),
                 readyTimeout: 20_000, keepaliveInterval: 10_000, keepaliveCountMax: 3,
             });
             await established;
+            // Closed during the handshake after the listener was granted: never adopt the connection.
+            this.signal.throwIfAborted();
         } catch (error) {
             this.signal.removeEventListener('abort', abort);
             client.off('close', closedEarly);
@@ -208,13 +235,17 @@ export class SpritesMcpForward {
 
     private async connectWithRetries(phase: 'connect' | 'reconnect') {
         let last: unknown;
-        for (let attempt = phase === 'connect' ? 0 : 1; attempt <= this.retries; attempt++) {
+        const startedAt = Date.now();
+        const window = phase === 'reconnect' ? this.options.reconnectWindowMs ?? SpritesMcpForward.defaults.reconnectWindowMs : 0;
+        let attempt = phase === 'connect' ? 0 : 1;
+        for (; attempt <= this.retries || Date.now() - startedAt < window; attempt++) {
             if (attempt > 0) {
                 const wait = Math.min(8000, (this.options.retryDelayMs ?? SpritesMcpForward.defaults.retryDelayMs) * 2 ** (attempt - 1));
                 await delay(wait, undefined, { signal: this.signal });
                 if (phase === 'reconnect') this.log('warn', { attempt, retries: this.retries }, 'Reconnecting the ProPR MCP SSH reverse forward');
             }
             try {
+                if (phase === 'reconnect') await this.resetSessions();
                 await this.connectOnce();
                 if (phase === 'reconnect') this.log('info', { attempt }, 'ProPR MCP SSH reverse forward reconnected');
                 return;
@@ -223,7 +254,25 @@ export class SpritesMcpForward {
                 last = error;
             }
         }
-        throw new SpritesMcpForwardError(`ProPR MCP transport lost: the SSH reverse forward to Sprite ${this.options.sprite.name} could not be ${phase === 'connect' ? 'established' : 're-established'} after ${this.retries} ${phase === 'connect' ? 'retries' : 'reconnect attempts'} (${message(last)})`, { cause: last });
+        const attempts = phase === 'connect' ? this.retries : attempt - 1;
+        throw new SpritesMcpForwardError(`ProPR MCP transport lost: the SSH reverse forward to Sprite ${this.options.sprite.name} could not be ${phase === 'connect' ? 'established' : 're-established'} after ${attempts} ${phase === 'connect' ? 'retries' : 'reconnect attempts'} (${message(last)})`, { cause: last });
+    }
+
+    /**
+     * Before re-forwarding, end the forward user's stale sessions on the Sprite.
+     * After a half-open proxy path, sshd still holds 127.0.0.1:39080 for the old
+     * connection until its dead-peer timeout, and every new `forwardIn` fails
+     * with "address in use". The helper kills those sessions over the Sprites
+     * exec API (not the proxy) and waits until the port is free. A failure is
+     * only logged: sshd's own dead-peer timeout frees the port as well.
+     */
+    private async resetSessions() {
+        try {
+            await this.options.sprite.execFile('sudo', ['-n', SPRITES_MCP_FORWARD_SCRIPT, 'reset-sessions'], { cwd: '/', signal: this.signal, timeout: 15_000 });
+        } catch (error) {
+            this.signal.throwIfAborted();
+            this.log('warn', { error: message(error) }, 'Could not reset stale ProPR MCP forward sessions; waiting for sshd to drop them');
+        }
     }
 
     private dropped(client: ssh2.Client) {
@@ -269,7 +318,7 @@ export class SpritesMcpForward {
         deadline.unref();
         upstream.once('error', refuse);
         upstream.once('close', refuse);
-        upstream.once(this.options.target.protocol === 'https:' && !this.options.connectTarget ? 'secureConnect' : 'connect', () => {
+        upstream.once('connect', () => {
             if (!pending) return;
             if (this.signal.aborted) return refuse();
             pending = false;
@@ -289,7 +338,11 @@ export class SpritesMcpForward {
         });
     }
 
-    /** Tear the forward down: the tunnel at once, then the run's sshd on the Sprite (best effort). */
+    /**
+     * Tear the forward down: the tunnel at once, then the run's sshd on the
+     * Sprite, best effort and in the background: the run's slot is released
+     * without waiting for it, and the Sprite reset stops sshd anyway.
+     */
     close(): Promise<void> {
         return this.closing ??= (async () => {
             this.closer.abort();
@@ -301,8 +354,8 @@ export class SpritesMcpForward {
             this.proxy?.close();
             this.proxy = undefined;
             if (!this.configured) return;
-            await this.options.sprite.execFile('sudo', ['-n', SPRITES_MCP_FORWARD_SCRIPT, 'stop'], { cwd: '/', timeout: 10_000 })
-                .catch(error => this.log('warn', { error: message(error) }, 'Could not stop the ProPR MCP forward sshd; the Sprite reset stops it'));
+            this.remoteStop = this.options.sprite.execFile('sudo', ['-n', SPRITES_MCP_FORWARD_SCRIPT, 'stop'], { cwd: '/', timeout: 10_000 })
+                .then(() => {}, error => this.log('warn', { error: message(error) }, 'Could not stop the ProPR MCP forward sshd; the Sprite reset stops it'));
         })();
     }
 }

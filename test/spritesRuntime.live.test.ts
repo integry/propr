@@ -125,7 +125,7 @@ test('real Sprite reaches a worker-local ProPR API over the SSH reverse forward,
     const url = (plan as { url: string }).url;
     const spec = new AgentRunSpecBuilder({
         name: 'live-forward', agentType: 'claude', image: 'live', stdin: true, user: '0:0', network: agentRunNetwork('bridge'),
-        mcpGrant: agentRunMcpGrant({ mcpServers: [{ name: 'propr', url, bearerTokenEnv: 'PROPR_MCP_TOKEN', bearerToken: grantToken }], mcpTransport: 'ssh-reverse-forward' }),
+        mcpGrant: agentRunMcpGrant({ mcpServers: [{ name: 'propr', url, bearerTokenEnv: 'PROPR_MCP_TOKEN', bearerToken: grantToken }] }),
         workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', mode: 'clone', readOnly: false,
             clone: { remote, baseRef: 'refs/heads/base', baseCommit: stdout.toString().trim(), branch: 'task',
                 resultRef: 'refs/heads/result', resultDir: WORKSPACE_TRANSPORT_RESULT_DIR, script: WORKSPACE_TRANSPORT_SCRIPT } },

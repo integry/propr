@@ -14,7 +14,7 @@ import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachi
 import { assertAgentRuntimeSupports } from '../packages/core/src/agents/runtime/registry.ts';
 import { SpritesMcpForward, SpritesMcpForwardError } from '../packages/core/src/agents/runtime/sprites/spritesMcpForward.ts';
 import {
-    SPRITES_MCP_FORWARD_PORT, SPRITES_MCP_SSHD_PORT, isSpritesMcpForwardUrl, spritesMcpAuthorizedKey, spritesMcpForwardTarget, spritesMcpSshdConfig,
+    SPRITES_MCP_FORWARD_PORT, SPRITES_MCP_SSHD_DEAD_PEER_MS, SPRITES_MCP_SSHD_PORT, isSpritesMcpForwardUrl, spritesMcpAuthorizedKey, spritesMcpForwardTarget, spritesMcpSshdConfig,
     type SpritesMcpForwardTarget,
 } from '../packages/core/src/agents/runtime/sprites/spritesMcpForwardConfig.ts';
 import { spriteNetworkPolicy } from '../packages/core/src/agents/runtime/sprites/spritesNetwork.ts';
@@ -36,7 +36,7 @@ let apiPort = 0;
 const apiRequests: Array<{ url?: string; authorization?: string }> = [];
 let releaseSecondEvent: () => void = () => {};
 before(async () => {
-    SpritesMcpForward.defaults = { ...SpritesMcpForward.defaults, retries: 2, retryDelayMs: 10 };
+    SpritesMcpForward.defaults = { ...SpritesMcpForward.defaults, retries: 2, retryDelayMs: 10, reconnectWindowMs: 0 };
     api = http.createServer((req, res) => {
         apiRequests.push({ url: req.url, authorization: req.headers.authorization });
         if (req.url === '/api/mcp' && req.headers.accept === 'text/event-stream') {
@@ -106,9 +106,45 @@ test('Sprites without a public HTTPS MCP URL select the SSH reverse forward to t
     }
     const prefixed = planAgentRunMcpTransport(sprites, { PROPR_INTERNAL_API_URL: 'http://propr-api:8080/propr/' });
     assert.equal(prefixed.transport === 'ssh-reverse-forward' && prefixed.url, `http://127.0.0.1:${SPRITES_MCP_FORWARD_PORT}/propr/api/mcp`);
-    assert.deepEqual(spritesMcpForwardTarget({ PROPR_INTERNAL_API_URL: 'https://api.internal' }),
-        { protocol: 'https:', host: 'api.internal', port: 443, url: FORWARD_URL });
     assert.deepEqual(spritesMcpForwardTarget({}), { protocol: 'http:', host: 'api', port: 4000, url: FORWARD_URL });
+});
+
+test('the forward target is plain http on a loopback, private or internal address; anything else is refused', () => {
+    for (const [raw, host, port] of [
+        ['http://127.0.0.1:4000', '127.0.0.1', 4000], ['http://api:4000', 'api', 4000], ['http://10.0.0.5', '10.0.0.5', 80],
+        ['http://172.20.1.2:8080', '172.20.1.2', 8080], ['http://192.168.1.20:4000', '192.168.1.20', 4000],
+        ['http://propr.internal:4000', 'propr.internal', 4000], ['http://[::1]:4000', '::1', 4000], ['http://[fd00::5]:4000', 'fd00::5', 4000],
+    ] as const) {
+        assert.deepEqual(spritesMcpForwardTarget({ PROPR_INTERNAL_API_URL: raw }), { protocol: 'http:', host, port, url: FORWARD_URL }, raw);
+    }
+    for (const raw of ['https://api.internal', 'https://127.0.0.1:4000']) {
+        const refused = spritesMcpForwardTarget({ PROPR_INTERNAL_API_URL: raw });
+        assert.match('reason' in refused ? refused.reason : '', /must be a plain http:\/\/ URL .*Host header/, raw);
+    }
+    for (const raw of ['http://propr.example.com', 'http://8.8.8.8:4000', 'http://172.32.0.1']) {
+        const refused = spritesMcpForwardTarget({ PROPR_INTERNAL_API_URL: raw });
+        assert.match('reason' in refused ? refused.reason : '', /is not a loopback, private or internal address/, raw);
+    }
+    const plan = planAgentRunMcpTransport(sprites, { PROPR_INTERNAL_API_URL: 'https://propr.example.com' });
+    assert.equal(plan.transport, 'unavailable');
+    assert.match(plan.reason, /plain http:\/\//);
+});
+
+test('PROPR_SPRITES_MCP_FORWARD is parsed strictly: true/false set it, anything else refuses Sprites MCP runs', () => {
+    for (const value of ['1', 'true', 'ON', 'yes', ' ']) {
+        assert.equal(planAgentRunMcpTransport(sprites, { PROPR_SPRITES_MCP_FORWARD: value }).transport, 'ssh-reverse-forward', value);
+    }
+    for (const value of ['0', 'false', 'off', 'No']) {
+        assert.equal(planAgentRunMcpTransport(sprites, { PROPR_SPRITES_MCP_FORWARD: value }).transport, 'unavailable', value);
+        assert.equal(planAgentRunMcpTransport(sprites, { PROPR_SPRITES_MCP_FORWARD: value, API_PUBLIC_URL: 'https://propr.example.com' }).transport, 'reachable-url', value);
+    }
+    for (const value of ['disabled', 'none', 'enable', '2']) {
+        for (const environment of [{}, { API_PUBLIC_URL: 'https://propr.example.com' }, { PROPR_SPRITES_MCP_TRANSPORT: 'forward' }]) {
+            const plan = planAgentRunMcpTransport(sprites, { ...environment, PROPR_SPRITES_MCP_FORWARD: value });
+            assert.equal(plan.transport, 'unavailable', `${value} ${JSON.stringify(environment)}`);
+            assert.match(plan.reason, /Invalid PROPR_SPRITES_MCP_FORWARD/);
+        }
+    }
 });
 
 test('an explicit or public HTTPS MCP URL is used directly before the forward', () => {
@@ -198,10 +234,23 @@ test('a forward plan yields a forward grant, tool policy and spec grant naming t
     assert.equal(grant.url, FORWARD_URL);
     assert.equal(grant.network, null);
     const policy = agentRunToolPolicy({ phase: 'action', capabilities: [], mcpGrant: grant });
-    assert.equal(policy.mcpTransport, 'ssh-reverse-forward');
+    assert.deepEqual(Object.keys(policy).sort(), ['allowWeb', 'mcpServers'], 'the policy carries no transport side field');
     assert.equal(policy.dockerNetwork, undefined);
     assert.equal(policy.mcpServers?.[0].bearerToken, GRANT_TOKEN, 'the per-run grant token is still required');
     assert.deepEqual(agentRunMcpGrant(policy), { servers: ['propr'], transport: 'ssh-reverse-forward', url: FORWARD_URL });
+    // A policy rebuilt elsewhere (only the server list copied) still selects the forward from its URL.
+    assert.deepEqual(agentRunMcpGrant({ mcpServers: policy.mcpServers!.map(server => ({ ...server })) }),
+        { servers: ['propr'], transport: 'ssh-reverse-forward', url: FORWARD_URL });
+});
+
+test('a loopback MCP URL that is not the forward listener refuses the Sprites run explicitly', () => {
+    const url = 'http://127.0.0.1:4000/api/mcp';
+    assert.equal(agentRunMcpGrant({ mcpServers: [{ name: 'propr', url, bearerTokenEnv: 'PROPR_MCP_TOKEN', bearerToken: GRANT_TOKEN }] })?.transport, 'reachable-url');
+    for (const loopback of [url, 'http://localhost:39080/api/mcp', 'http://[::1]:4000/api/mcp']) {
+        assert.throws(() => spriteNetworkPolicy(forwardSpec(agentRunNetwork('bridge'), loopback)), /loopback URL .* without the SSH reverse forward/, loopback);
+    }
+    const { runtime } = runtimeFixture();
+    assert.throws(() => runtime.start(forwardSpec(agentRunNetwork('bridge'), url)), /without the SSH reverse forward/);
 });
 
 test('restricted Sprites add no MCP host for the loopback forward and refuse a forward grant naming another URL', () => {
@@ -210,7 +259,9 @@ test('restricted Sprites add no MCP host for the loopback forward and refuse a f
     const policy = spriteNetworkPolicy(spec);
     assert.deepEqual(policy?.rules.filter(rule => rule.action === 'allow').map(rule => rule.domain).filter(domain => domain?.includes('127.0.0.1')), []);
     assert.ok(policy?.rules.some(rule => rule.domain === 'example.com'));
-    assert.throws(() => spriteNetworkPolicy(forwardSpec(agentRunNetwork('bridge'), 'http://api:4000/api/mcp')), /loopback forward listener/);
+    const mismatched = forwardSpec();
+    mismatched.mcpGrant = { ...mismatched.mcpGrant!, url: 'http://api:4000/api/mcp' };
+    assert.throws(() => spriteNetworkPolicy(mismatched), /loopback forward listener/);
     assert.ok(isSpritesMcpForwardUrl(`http://127.0.0.1:${SPRITES_MCP_FORWARD_PORT}/propr/api/mcp`));
     assert.ok(!isSpritesMcpForwardUrl(`http://localhost:${SPRITES_MCP_FORWARD_PORT}/api/mcp`));
 });
@@ -329,6 +380,134 @@ test('a forward that cannot reconnect reports a clear MCP transport error once',
     assert.match(lost[0].message, /ProPR MCP transport lost: .* could not be re-established after 2 reconnect attempts/);
 });
 
+test('after a half-open drop the stale session holding the listener is reset, then the reconnect succeeds', async () => {
+    const { sprite, sshd: fake } = forwardSprite();
+    const forward = await SpritesMcpForward.start({ sprite: sprite as never, target: target(), signal: AbortSignal.timeout(10_000), onLost: () => assert.fail('lost') });
+    try {
+        assert.equal(fake.resets, 0, 'the first connection needs no reset');
+        fake.dropHalfOpen();
+        assert.ok(fake.portHeld, 'the stale session still holds 127.0.0.1:39080');
+        await until(() => forward.connections === 2);
+        assert.equal(fake.portHeld, false, 'the held port was released');
+        assert.ok(fake.resets >= 1, 'the worker reset the stale sessions before re-forwarding');
+        assert.equal((await mcpCall(await fake.listenPort!)).status, 200);
+    } finally { await forward.close(); }
+});
+
+test('a reconnect keeps trying past its retry count until the window exceeds the sshd dead-peer timeout', async () => {
+    const { sprite, sshd: fake } = forwardSprite();
+    // The reset cannot clear the port; sshd's dead-peer timeout releases it later.
+    const execFile = sprite.execFile.bind(sprite);
+    sprite.execFile = async (cmd: string, args: string[], options?: { signal?: AbortSignal }) =>
+        args[2] === 'reset-sessions' ? { exitCode: 0, stdout: '', stderr: '' } : execFile(cmd, args, options);
+    const forward = await SpritesMcpForward.start({ sprite: sprite as never, target: target(), signal: AbortSignal.timeout(10_000), onLost: () => assert.fail('lost'),
+        retries: 1, retryDelayMs: 20, reconnectWindowMs: 2_000 });
+    try {
+        fake.dropHalfOpen();
+        await until(() => fake.forwardRequests.length >= 4);
+        fake.portHeld = false;
+        await until(() => forward.connections === 2);
+        assert.ok(fake.forwardRequests.length > 3, 'more attempts than the retry count');
+    } finally { await forward.close(); }
+    assert.equal(SpritesMcpForward.defaults.reconnectWindowMs, 0, 'tests shorten the window');
+});
+
+test('the default reconnect window is clearly longer than the sshd dead-peer timeout', async () => {
+    const config = new Map(spritesMcpSshdConfig('/run/x').trim().split('\n').map(line => line.split(' ', 2) as [string, string]));
+    assert.equal(config.get('ClientAliveInterval'), '5');
+    assert.equal(config.get('ClientAliveCountMax'), '2');
+    const { SpritesMcpForward: Fresh } = await import(`../packages/core/src/agents/runtime/sprites/spritesMcpForward.ts?defaults=${Date.now()}`);
+    assert.ok(Fresh.defaults.reconnectWindowMs >= 2 * SPRITES_MCP_SSHD_DEAD_PEER_MS, `${Fresh.defaults.reconnectWindowMs}ms`);
+    assert.equal(SPRITES_MCP_SSHD_DEAD_PEER_MS, 10_000);
+});
+
+test('closing the forward while a reconnect is opening its proxy socket leaves no SSH session behind', async () => {
+    const { sprite, sshd: fake } = forwardSprite();
+    let forward!: SpritesMcpForward;
+    let opens = 0;
+    const connectTo = (host: string, port: number) => new Promise<net.Socket>((resolve, reject) => {
+        const socket = net.connect({ host, port });
+        socket.once('connect', () => resolve(socket));
+        socket.once('error', reject);
+    });
+    const realConnect = (port: number) => connectTo('127.0.0.1', port).catch(() => connectTo('::1', port));
+    forward = await SpritesMcpForward.start({ sprite: sprite as never, target: target(), signal: AbortSignal.timeout(10_000), onLost: () => assert.fail('lost'),
+        connectProxy: async port => {
+            const socket = await realConnect(port);
+            // The reconnect's socket opens while close() runs: its abort finds no connection to end yet.
+            if (++opens === 2) await forward.close();
+            return socket;
+        } });
+    const authAttempts = fake.authAttempts;
+    fake.drop();
+    await until(() => opens === 2);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(forward.connections, 1, 'the late connection is never adopted');
+    assert.equal(fake.authAttempts, authAttempts, 'the late socket never authenticates');
+    assert.equal(fake.connections.size, 0, 'no live SSH session remains');
+});
+
+for (const phase of ['authentication', 'listener request'] as const) {
+    test(`closing the forward during the reconnect handshake (${phase}) leaves no SSH session or listener behind`, async () => {
+        const { sprite, sshd: fake } = forwardSprite();
+        const forward = await SpritesMcpForward.start({ sprite: sprite as never, target: target(), signal: AbortSignal.timeout(10_000), onLost: () => assert.fail('lost') });
+        let closed: Promise<void> | undefined;
+        const hook = () => { closed ??= forward.close(); };
+        const authAttempts = fake.authAttempts;
+        if (phase === 'authentication') fake.onAuthentication = () => { if (fake.authAttempts > authAttempts) hook(); };
+        else fake.onForwardRequest = () => { if (fake.forwardRequests.length === 2) hook(); };
+        fake.drop();
+        await until(() => !!closed);
+        await closed;
+        await new Promise(resolve => setTimeout(resolve, 200));
+        assert.equal(forward.connections, 1, 'the connection completing after close() is never adopted');
+        assert.equal(fake.connections.size, 0, 'no live SSH session remains');
+    });
+}
+
+test('close() does not wait for the remote sshd stop before the slot is released', async () => {
+    const { sprite } = forwardSprite();
+    const forward = await SpritesMcpForward.start({ sprite: sprite as never, target: target(), signal: AbortSignal.timeout(10_000), onLost: () => assert.fail('lost') });
+    let finishStop!: () => void;
+    const execFile = sprite.execFile.bind(sprite);
+    sprite.execFile = async (cmd: string, args: string[], options?: { signal?: AbortSignal }) => {
+        if (args[2] !== 'stop') return execFile(cmd, args, options);
+        await new Promise<void>(resolve => { finishStop = resolve; });
+        return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const startedAt = Date.now();
+    await forward.close();
+    assert.ok(Date.now() - startedAt < 1_000, 'close() returned while the remote stop is still running');
+    assert.ok(forward.remoteStop, 'the remote stop was started');
+    finishStop();
+    await forward.remoteStop;
+});
+
+test('the forward helper resets stale forward sessions until the listener is free, keeping the daemon', { skip: process.platform !== 'linux' }, () => {
+    const dir = execFileSync('mktemp', ['-d']).toString().trim();
+    try {
+        // A stand-in daemon whose per-connection child holds a loopback listener, as a stale sshd session holds 39080.
+        const script = `
+            set -euo pipefail
+            source scripts/sprites-mcp-forward.sh
+            run_dir="$1"
+            port="$(node -e "const s=require('net').createServer().listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})")"
+            forward_listener="$(printf '0100007F:%04X' "$port")"
+            export HOLD='require("net").createServer().listen(Number(process.argv[1]), "127.0.0.1")'
+            sh -c 'node -e "$HOLD" "$1" & echo $! > "$0/child.pid"; while :; do wait; sleep 0.1; done' "$run_dir" "$port" & daemon=$!
+            echo "$daemon" > "$run_dir/sshd.pid"
+            for _ in $(seq 100); do listener_held && break; sleep 0.05; done
+            listener_held || { echo never-listened; exit 1; }
+            reset_sessions
+            listener_held && echo held
+            kill -0 "$daemon" 2>/dev/null || echo daemon-gone
+            kill "$daemon" 2>/dev/null || true
+            echo reset`;
+        const result = spawnSync('bash', ['-c', script, 'test', dir], { encoding: 'utf8', timeout: 20_000 });
+        assert.equal(result.stdout.trim(), 'reset', result.stderr);
+    } finally { execFileSync('rm', ['-rf', dir]); }
+});
+
 /** An unreachable target: the upstream connection never completes (a black-holed host). */
 function unreachableTarget() {
     const sockets: net.Socket[] = [];
@@ -368,7 +547,7 @@ test('closing the forward while an upstream connection is pending destroys that 
 function forwardSpec(network = agentRunNetwork('bridge'), url = FORWARD_URL) {
     return new AgentRunSpecBuilder({
         name: 'forward', stdin: true, agentType: 'antigravity', image: 'test', network, user: '0:0',
-        mcpGrant: agentRunMcpGrant({ mcpServers: [{ name: 'propr', url, bearerTokenEnv: 'PROPR_MCP_TOKEN', bearerToken: GRANT_TOKEN }], mcpTransport: 'ssh-reverse-forward' }),
+        mcpGrant: agentRunMcpGrant({ mcpServers: [{ name: 'propr', url, bearerTokenEnv: 'PROPR_MCP_TOKEN', bearerToken: GRANT_TOKEN }] }),
         workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',
             clone: { remote: 'unused', baseRef: 'base', baseCommit: 'unused', branch: 'test', resultDir: '/tmp/propr-workspace-result', script: WORKSPACE_TRANSPORT_SCRIPT } },
     }).command('agy', '--version').build();

@@ -120,8 +120,11 @@ for (const shape of ['single-commit', 'shallow'] as const) {
     const logged = { info: 0, error: 0 };
     t.mock.method(logger, 'info', () => { logged.info += 1; });
     t.mock.method(logger, 'error', () => { logged.error += 1; });
-    for (let poll = 0; poll < 3; poll += 1) assert.deepEqual(await getWorktreeChanges(worktree), []);
+    for (let poll = 0; poll < 3; poll += 1) assert.deepEqual(await getWorktreeChanges(worktree, undefined, `task-${shape}-1`), []);
     assert.deepEqual(logged, { info: 1, error: 0 });
+    // A later task reusing the same worktree path reports the condition again.
+    for (let poll = 0; poll < 2; poll += 1) assert.deepEqual(await getWorktreeChanges(worktree, undefined, `task-${shape}-2`), []);
+    assert.deepEqual(logged, { info: 2, error: 0 });
 
     // Once the task commits, the commit's own changes appear as before.
     if (shape === 'single-commit') {

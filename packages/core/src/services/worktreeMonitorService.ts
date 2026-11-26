@@ -193,7 +193,8 @@ async function parseStatLine(line: string, statusOutput: string, git: SimpleGit)
  * Uses git diff --stat and git diff to get change information
  * Supply the task's starting commit for a final scan after commit and push.
  */
-export async function getWorktreeChanges(worktreePath: string, comparisonRef?: string): Promise<FileChange[]> {
+export async function getWorktreeChanges(worktreePath: string, comparisonRef?: string, taskId?: string): Promise<FileChange[]> {
+    const logOnce = (condition: string, log: () => void) => logOncePerTaskWorktree(taskId, worktreePath, condition, log);
     try {
         const git: SimpleGit = simpleGit({ baseDir: worktreePath });
         if (comparisonRef) {
@@ -217,7 +218,7 @@ export async function getWorktreeChanges(worktreePath: string, comparisonRef?: s
                 // agent works remotely). Nothing is committed on top of the
                 // base yet, so there are no changes to show.
                 if (!await hasParentCommit(git)) {
-                    logOncePerWorktree(worktreePath, 'no-parent', () => logger.info({ worktreePath },
+                    logOnce('no-parent', () => logger.info({ worktreePath },
                         'Worktree HEAD has no parent commit (root or shallow clone); no committed changes to show'));
                     return [];
                 }
@@ -243,7 +244,7 @@ export async function getWorktreeChanges(worktreePath: string, comparisonRef?: s
     } catch (error) {
         const message = (error as Error).message;
         // The probe polls every few seconds during a run: report each distinct error once.
-        logOncePerWorktree(worktreePath, `error:${message}`, () => logger.error({ worktreePath, error: message }, 'Error getting worktree changes'));
+        logOnce(`error:${message}`, () => logger.error({ worktreePath, error: message }, 'Error getting worktree changes'));
         return [];
     }
 }
@@ -260,13 +261,20 @@ async function hasParentCommit(git: SimpleGit): Promise<boolean> {
 const MAX_LOGGED_WORKTREES = 256;
 const loggedWorktreeConditions = new Map<string, Set<string>>();
 
-/** Run `log` the first time `condition` is seen for `worktreePath`; bounded so a long-lived worker cannot grow it. */
-function logOncePerWorktree(worktreePath: string, condition: string, log: () => void): void {
-    let seen = loggedWorktreeConditions.get(worktreePath);
+/**
+ * Run `log` the first time `condition` is seen for one task's worktree, so a
+ * polling run reports each condition once while a later task reusing the same
+ * path reports it again. Without a task id (one-off scans) it always logs.
+ * Bounded so a long-lived worker cannot grow it.
+ */
+function logOncePerTaskWorktree(taskId: string | undefined, worktreePath: string, condition: string, log: () => void): void {
+    if (!taskId) return log();
+    const key = `${taskId}\0${worktreePath}`;
+    let seen = loggedWorktreeConditions.get(key);
     if (!seen) {
         if (loggedWorktreeConditions.size >= MAX_LOGGED_WORKTREES) loggedWorktreeConditions.clear();
         seen = new Set();
-        loggedWorktreeConditions.set(worktreePath, seen);
+        loggedWorktreeConditions.set(key, seen);
     }
     if (seen.has(condition)) return;
     seen.add(condition);
@@ -341,7 +349,7 @@ export async function clearFileChanges(taskId: string): Promise<void> {
  * This is the main function to call during task execution
  */
 export async function updateFileChangesFromWorktree(taskId: string, worktreePath: string, comparisonRef?: string): Promise<FileChange[]> {
-    const changes = await getWorktreeChanges(worktreePath, comparisonRef);
+    const changes = await getWorktreeChanges(worktreePath, comparisonRef, taskId);
     await storeFileChanges(taskId, changes);
     return changes;
 }

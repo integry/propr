@@ -127,6 +127,7 @@ test('real sshd: the forward carries streamed MCP responses through the proxy, r
     const sprite = new FakeSprite('real-sshd');
     let daemon: ChildProcess | undefined;
     let proxied = 0;
+    let resets = 0;
     const startFiles = sprite.execFile.bind(sprite);
     sprite.execFile = async (cmd: string, args: string[], options?: { signal?: AbortSignal }) => {
         if (cmd !== 'sudo' || args[1] !== SPRITES_MCP_FORWARD_SCRIPT) return startFiles(cmd, args, options);
@@ -136,17 +137,26 @@ test('real sshd: the forward carries streamed MCP responses through the proxy, r
             assert.equal(config, spritesMcpSshdConfig('/run/propr-mcp-forward'));
             fs.writeFileSync(path.join(dir, 'sshd_config'), config.replaceAll('/run/propr-mcp-forward', dir));
             daemon = await startSshd(dir);
+        } else if (args[2] === 'reset-sessions') {
+            // The real helper's reset: end the per-connection children of this sshd, keep the daemon.
+            if (daemon?.pid) fs.writeFileSync(path.join(dir, 'sshd.pid'), `${daemon.pid}\n`);
+            const reset = spawn('bash', ['-c', 'source scripts/sprites-mcp-forward.sh; run_dir="$1"; reset_sessions', 'reset', dir], { stdio: 'ignore' });
+            const code = await new Promise<number | null>(resolve => reset.once('exit', resolve));
+            assert.equal(code, 0, 'reset-sessions frees the forward listener');
+            resets++;
         } else if (daemon) await stopSshd(daemon);
         return { exitCode: 0, stdout: '', stderr: '' };
     };
     // Like the Sprites API proxy: a local listener whose connections reach 127.0.0.1:<sshd port> in the Sprite.
     const sockets = new Set<net.Socket>();
+    const pairs: Array<{ socket: net.Socket; upstream: net.Socket }> = [];
     Object.assign(sprite, {
         proxyPort: async (_local: number, remote: number, remoteHost: string) => {
             proxied++;
             const server = net.createServer(socket => {
                 const upstream = net.connect(remote, remoteHost);
                 sockets.add(socket).add(upstream);
+                pairs.push({ socket, upstream });
                 socket.pipe(upstream).pipe(socket);
                 socket.on('error', () => upstream.destroy());
                 upstream.on('error', () => socket.destroy());
@@ -175,7 +185,24 @@ test('real sshd: the forward carries streamed MCP responses through the proxy, r
         assert.equal(forward.connections, 2);
         assert.equal(await call(), 'data: GET /api/mcp Bearer grant\n\ndata: done\n\n');
         assert.ok(proxied >= 2);
+        assert.ok(resets >= 1, 'the reconnect reset stale sessions first');
+        assert.equal(daemon?.exitCode, null, 'the reset kept the daemon running');
+        // A half-open proxy path: the worker's side closes, but sshd's side stays open and silent, so
+        // sshd keeps the stale session holding 127.0.0.1:39080 until its 10 s dead-peer timeout.
+        for (const { socket, upstream } of pairs.splice(0)) {
+            socket.unpipe(upstream);
+            upstream.unpipe(socket);
+            socket.destroy();
+        }
+        const droppedAt = Date.now();
+        for (let attempt = 0; forward.connections < 3 && attempt < 400; attempt++) await new Promise(resolve => setTimeout(resolve, 25));
+        assert.equal(forward.connections, 3, 'the reconnect succeeds once the held port is released');
+        assert.ok(Date.now() - droppedAt < 8_000, `reconnected before sshd's dead-peer timeout (${Date.now() - droppedAt} ms)`);
+        assert.ok(resets >= 2);
+        assert.equal(await call(), 'data: GET /api/mcp Bearer grant\n\ndata: done\n\n');
     } finally { await forward.close(); }
+    // close() does not wait for the remote stop; it runs in the background.
+    await forward.remoteStop;
     assert.equal(daemon?.exitCode !== null || daemon?.signalCode !== null, true, 'the run sshd is stopped');
     // The per-connection sshd child closes the listener as the connection ends.
     let refused = '';

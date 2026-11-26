@@ -1,7 +1,7 @@
 import { isIP } from 'node:net';
 import type { NetworkPolicy, PolicyRule, Sprite } from '@fly/sprites';
 import { normalizeEgressHost } from '../../../network/egressAllowlist.js';
-import { isSpritesMcpForwardUrl } from './spritesMcpForwardConfig.js';
+import { SPRITES_MCP_FORWARD_HOST, SPRITES_MCP_FORWARD_PORT, isSpritesMcpForwardUrl } from './spritesMcpForwardConfig.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy } from '../agentRunNetworkPolicy.js';
 import type { AgentRunSpec, AgentRuntimeRestrictedNetworkEnforcement } from '../types.js';
 
@@ -45,7 +45,20 @@ function spriteMcpGrantHost(grant: AgentRunSpec['mcpGrant']) {
         if (!isSpritesMcpForwardUrl(grant.url)) throw new Error('Sprites refuses an SSH reverse forward MCP grant whose URL is not the loopback forward listener');
         return undefined;
     }
+    if (grant.url && isLoopbackMcpUrl(grant.url)) throw new Error(loopbackMcpUrlRefusal(grant.url));
     return grant.url ? restrictedSpriteMcpEndpoint(grant.url) : undefined;
+}
+
+/** Why a loopback ProPR MCP URL other than the forward listener cannot serve a Sprites run. */
+export function loopbackMcpUrlRefusal(url: string): string {
+    return `Sprites refuses a ProPR MCP grant for loopback URL ${new URL(url).origin} without the SSH reverse forward: nothing inside the Sprite listens there. Use the forward listener http://${SPRITES_MCP_FORWARD_HOST}:${SPRITES_MCP_FORWARD_PORT}/api/mcp or a public HTTPS MCP URL.`;
+}
+
+/** A loopback host (`localhost`, 127.0.0.0/8, ::1): inside a Sprite that is the Sprite itself. */
+export function isLoopbackMcpUrl(url: string): boolean {
+    let host: string;
+    try { host = normalizeEgressHost(new URL(url).hostname); } catch { return false; }
+    return host === 'localhost' || host.endsWith('.localhost') || host === '::1' || (isIP(host) === 4 && host.startsWith('127.'));
 }
 
 /**

@@ -28,6 +28,17 @@ export class FakeSpriteSshd {
     failStart = false;
     /** Serve this host key instead of the uploaded one (an impostor behind the proxy). */
     hostKeyOverride?: string;
+    /**
+     * Set by {@link dropHalfOpen}: the stale session still holds 127.0.0.1:39080
+     * (as sshd does until its dead-peer timeout), so `tcpip-forward` fails with
+     * "address in use" until `mcp-forward.sh reset-sessions` ends it.
+     */
+    portHeld = false;
+    resets = 0;
+    /** Called when a client starts authenticating (the handshake is under way). */
+    onAuthentication?: () => void;
+    /** Called when the listener is requested, before it is granted. */
+    onForwardRequest?: () => void;
 
     constructor(readonly sprite: FakeSprite) {
         this.resetListen();
@@ -36,6 +47,7 @@ export class FakeSpriteSshd {
             if (cmd === 'sudo' && args[1] === SPRITES_MCP_FORWARD_SCRIPT) {
                 if (args[2] === 'start') return this.start(args[3]);
                 if (args[2] === 'stop') { this.stop(); sprite.events.push('forward-stop'); return { exitCode: 0, stdout: '', stderr: '' }; }
+                if (args[2] === 'reset-sessions') { this.resets++; this.portHeld = false; return { exitCode: 0, stdout: '', stderr: '' }; }
             }
             return execFile(cmd, args, options);
         };
@@ -72,6 +84,7 @@ export class FakeSpriteSshd {
         client.on('error', () => {});
         client.on('authentication', ctx => {
             this.authAttempts++;
+            this.onAuthentication?.();
             if (ctx.method !== 'publickey' || ctx.username !== SPRITES_MCP_FORWARD_USER
                 || ctx.key.algo !== allowed.type || !ctx.key.data.equals(allowed.getPublicSSH())) return ctx.reject(['publickey']);
             if (ctx.signature && !allowed.verify(ctx.blob!, ctx.signature, ctx.hashAlgo)) return ctx.reject(['publickey']);
@@ -85,6 +98,8 @@ export class FakeSpriteSshd {
                 if (name !== 'tcpip-forward') return reject?.();
                 this.forwardRequests.push({ bindAddr: bind.bindAddr, bindPort: bind.bindPort });
                 if (bind.bindAddr !== SPRITES_MCP_FORWARD_HOST || bind.bindPort !== SPRITES_MCP_FORWARD_PORT) return reject?.();
+                this.onForwardRequest?.();
+                if (this.portHeld) return reject?.();
                 const listener = net.createServer(socket => {
                     client.forwardOut(bind.bindAddr, bind.bindPort, socket.remoteAddress ?? '127.0.0.1', socket.remotePort ?? 0, (error, channel) => {
                         if (error) return socket.destroy();
@@ -130,6 +145,12 @@ export class FakeSpriteSshd {
     /** Drop every live SSH connection, as a lost proxy WebSocket would. */
     drop() {
         for (const client of this.connections) client.end();
+    }
+
+    /** A half-open proxy path: the worker loses the connection while sshd keeps the stale session and its listener. */
+    dropHalfOpen() {
+        this.portHeld = true;
+        this.drop();
     }
 
     stop() {

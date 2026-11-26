@@ -1,6 +1,6 @@
 import { flyMcpEndpoint } from './fly/config.js';
 import type { AgentNetworkMode } from '../../network/networkPolicy.js';
-import { restrictedSpriteMcpEndpoint } from './sprites/spritesNetwork.js';
+import { isLoopbackMcpUrl, loopbackMcpUrlRefusal, restrictedSpriteMcpEndpoint } from './sprites/spritesNetwork.js';
 import {
     SPRITES_MCP_FORWARD_ENV, SPRITES_MCP_TRANSPORT_ENV, spritesMcpForwardEnabled, spritesMcpForwardTarget, spritesMcpTransportPreference,
 } from './sprites/spritesMcpForwardConfig.js';
@@ -109,7 +109,11 @@ function selectReverseForward(
         return { transport: 'unavailable', reason: `Agent runtime "${runtime.kind}" cannot plan its ProPR MCP transport: ${preference.reason}; runs that need ProPR MCP are refused.` };
     }
     const forced = preference === 'forward';
-    if (!spritesMcpForwardEnabled(environment)) {
+    const enabled = spritesMcpForwardEnabled(environment);
+    if (typeof enabled !== 'boolean') {
+        return { transport: 'unavailable', reason: `Agent runtime "${runtime.kind}" cannot plan its ProPR MCP transport: ${enabled.reason}; runs that need ProPR MCP are refused.` };
+    }
+    if (!enabled) {
         if (!forced) return undefined;
         return { transport: 'unavailable', reason: `${SPRITES_MCP_TRANSPORT_ENV}=forward requires the SSH reverse forward, but ${SPRITES_MCP_FORWARD_ENV} turns it off; runs that need ProPR MCP are refused. Unset one of them.` };
     }
@@ -136,6 +140,9 @@ export function planAgentRunMcpTransport(
 ): AgentRunMcpTransportPlan {
     const selected = selectAgentRunMcpTransport(runtime, environment);
     const plan = selectReverseForward(runtime, selected, environment) ?? selected;
+    if (runtime.kind === 'sprites' && plan.transport === 'reachable-url' && isLoopbackMcpUrl(plan.url)) {
+        return { transport: 'unavailable', reason: loopbackMcpUrlRefusal(plan.url) };
+    }
     if (runtime.kind === 'sprites' && networkMode === 'restricted' && plan.transport === 'reachable-url') {
         const endpoint = restrictedSpriteMcpEndpoint(plan.url);
         if ('reason' in endpoint) return { transport: 'unavailable', reason: endpoint.reason };
