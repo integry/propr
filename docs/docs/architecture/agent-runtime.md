@@ -12,10 +12,10 @@ The worker selects the agent’s configured runtime, then the instance default (
 | Workspace | Host worktree or clone | Clone with scoped token | Clone with scoped token |
 | Isolation and lifetime | Container per run on the operator’s daemon | One run per leased Sprite, restored to a clean checkpoint before reuse | Fresh Machine per run, destroyed after result retrieval |
 | Restricted network | Worker allowlist proxy | Sprite DNS allowlist | Restricted runs refused |
-| Agent extensions | Supported | Unsupported | Unsupported |
+| Extension Library | Skill bundles, URL and package MCP servers | Skill bundles and URL MCP servers | Skill bundles and URL MCP servers |
 | Capacity | Host CPU, RAM and worker concurrency | Redis-backed pool, default two Sprites | Available Machine slots in the agent app’s organization |
 
-For the run contract see [Coding Agent Integration](./coding-agent-integration.md). For a control plane that delegates all agent work to Fly, follow [Run ProPR on Fly](../tutorials/setup-fly.md).
+For what each runtime gives the agent from the Extension Library and elsewhere, see [Extensions by runtime](#extensions-by-runtime). For the run contract see [Coding Agent Integration](./coding-agent-integration.md). For a control plane that delegates all agent work to Fly, follow [Run ProPR on Fly](../tutorials/setup-fly.md).
 
 ## Runtime Model
 
@@ -52,7 +52,7 @@ Build the unified agent image from the repository root with `fly deploy --remote
 
 `PROPR_FLY_REGION` selects a region. Fly chooses the placement when it is unset. `PROPR_FLY_MACHINE_SIZE` accepts `shared-cpu-<n>x` or `performance-<n>x` and defaults to `shared-cpu-2x`. `PROPR_FLY_MACHINE_MEMORY_MB` defaults to 2048. `PROPR_FLY_BOOT_TIMEOUT` sets the time allowed for creation, image pull and guest readiness in seconds (default 300).
 
-Runs use a writable clone workspace and receive per-run credential copies. The root launcher keeps the workspace token separate and drops to `node` for the provider. Only declared refreshed credential files return to the worker. Extension runs, host bind mounts and restricted-network runs are refused. A Fly-hosted control plane exposes MCP at `http://api.process.<control-plane-app>.internal:<DASHBOARD_API_PORT>/api/mcp` (default port 4000). Set `PROPR_FLY_MCP_URL` to override the endpoint, including for a custom API process group. Elsewhere set `PROPR_AGENT_MCP_URL` without a pinned Docker network or set `API_PUBLIC_URL`. MCP uses the per-run grant token.
+Runs use a writable clone workspace and receive per-run credential copies. The root launcher keeps the workspace token separate and drops to `node` for the provider. Only declared refreshed credential files return to the worker. Host bind mounts and restricted-network runs are refused. For Extension Library items see [Extensions by runtime](#extensions-by-runtime). A Fly-hosted control plane exposes MCP at `http://api.process.<control-plane-app>.internal:<DASHBOARD_API_PORT>/api/mcp` (default port 4000). Set `PROPR_FLY_MCP_URL` to override the endpoint, including for a custom API process group. Elsewhere set `PROPR_AGENT_MCP_URL` without a pinned Docker network or set `API_PUBLIC_URL`. MCP uses the per-run grant token.
 
 With an active cost cap, the worker reads new stdout bytes while the Machine runs so the shared cost guard can stop the agent. If a capture read fails, the worker retries from the last validated byte. Read failures lasting 15 seconds or a record over 16 MiB stop a capped run with an accounting error. After exit, the worker reads the remaining stdout and scans stderr for workflow reports. The shared result retains up to 1 MiB per stream. For streams collected only for results and workflow reports, reads are capped at 16 MiB per stream. For a larger capture the worker scans the retained tail and reports truncation. A truncated prefix that could contain required workflow records fails the run. Fly logs provide a best-effort live display and may omit lines. A missing capture or exit status fails the run.
 
@@ -64,7 +64,7 @@ To verify a deployment, set `PROPR_FLY_LIVE_TOKEN`, `PROPR_FLY_LIVE_APP` and `PR
 
 ## Fly Sprites
 
-The Node 22 worker pins `@fly/sprites` to 0.2.5. Upstream declares Node 24 or newer. CI smoke-tests the pinned SDK on Node 22, and the live runtime suite checks service compatibility before merge. Sprites refuses runs that require extensions.
+The Node 22 worker pins `@fly/sprites` to 0.2.5. Upstream declares Node 24 or newer. CI smoke-tests the pinned SDK on Node 22, and the live runtime suite checks service compatibility before merge. For Extension Library items see [Extensions by runtime](#extensions-by-runtime).
 
 Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an individual Claude Code, Codex, or Antigravity agent. Supply an organization token in the worker’s `PROPR_SPRITES_TOKEN` environment variable (`SPRITES_TOKEN` is also accepted). The worker defaults `SPRITES_CLIENT_SIGNALS` to `0` unless the operator sets it. Runs use the clone workspace transport. Restricted runs use the Sprite's DNS allowlist, which the worker applies before the run and clears after restoring the checkpoint. MCP grants need an endpoint reachable from the Sprite. For restricted runs with an MCP grant, set `PROPR_SPRITES_MCP_URL` to a public HTTPS URL or use the generic reachable URL from `PROPR_AGENT_MCP_URL` without a pinned network or from `API_PUBLIC_URL`. See [Restricted mode on Fly Sprites](../features/execution-safety.md#restricted-mode-on-fly-sprites).
 
@@ -80,6 +80,28 @@ If the launch connection drops, the worker attempts to reattach once to observe 
 Release restores the entire checkpoint after credential write-back and workspace result retrieval, including failed and stopped runs. If result retrieval fails before the worker verifies a local Git ref, cleanup keeps the Sprite out of the pool and reports its name and result directory for recovery. A restore failure causes the worker to destroy the Sprite and provision a replacement. A restarted worker creates its own Sprites. On graceful shutdown the worker drains its jobs and deletes its idle Sprites. Standalone callers should await `runtime.close()` after releasing their runs.
 
 After a crash or failed deletion, use `sprite list --prefix propr-` in the worker’s Sprites organization. Match each candidate’s exact name to the stopped worker’s `Worker created Sprite` log entry and check its job errors for bundles kept for recovery. If the creating worker is unknown, drain and stop all ProPR workers sharing the organization before reaping their Sprites. Once any needed result is recovered, delete the confirmed orphan with `sprite destroy -s <exact-name>`. [Sprites CLI reference](https://docs.sprites.dev/working-with-sprites/#managing-sprites)
+
+## Extensions by runtime
+
+| What the agent gets | Docker | Sprites | Fly Machines |
+| --- | --- | --- | --- |
+| Skills, commands, agents and instruction files in the provider config directory | Yes, in the per-run credential copy | Yes, in the uploaded credential copy | Yes, in the Machine's credential copy |
+| Repository skills, `AGENTS.md` and `CLAUDE.md` | Yes, with the worktree | Yes, with the clone | Yes, with the clone |
+| Library skill bundles | Yes, read-only mount | Yes, uploaded read-only | Yes, as read-only Machine files |
+| Library URL MCP servers | Yes | Yes | Yes |
+| Library package (stdio) MCP servers and operator catalog stdio servers | Yes | No | No |
+| ProPR MCP | Private network or reachable URL | Reachable URL | Reachable URL |
+
+Library skill bundles appear at `/opt/propr/extensions/<bundle id>/` in every runtime, and the run prompt points the agent at each `SKILL.md`. Docker bind-mounts the worker's validated staging directory. Sprites and Fly Machines receive the same files, checked against the bundle digest the run resolved, in the run's upload: root-owned and read-only for the agent, and gone when the Sprite is restored or the Machine destroyed, like the per-run credential copies.
+
+URL MCP servers reach the run through the ProPR extension gateway with the run's grant token, so the run needs only the gateway. On Sprites and Fly Machines the gateway URL is derived from the run's reachable ProPR MCP URL (`PROPR_SPRITES_MCP_URL` or `PROPR_FLY_MCP_URL`, else `PROPR_AGENT_MCP_URL` without a pinned network, else `API_PUBLIC_URL`) by replacing `/api/mcp` with `/api/extensions/mcp`. A restricted Sprite allows the gateway host beside the ProPR MCP host. The gateway checks each upstream server against the run's network policy, as for Docker. With no reachable URL, URL servers count as unsupported on that runtime.
+
+Package servers are installed and verified on the worker and bind-mounted into Docker runs. Sprites and Fly Machines do not install them yet. The registry refuses only the classes a runtime cannot run:
+
+- An auto-applied item the runtime cannot run is dropped for that run. The run's `extensions.resolved` event lists it as skipped with reason `agent_runtime_unsupported`, and the issue or pull request comment carries a note naming it. The run continues.
+- An explicitly added item the runtime cannot run refuses the run with an `AgentRuntimeCapabilityError` (`skills`, `remote_mcp` or `package_mcp`) that names the item.
+
+A custom runtime declares the classes it applies in `capabilities.extensions` (`skills`, `remoteMcp`, `packageMcp`). Without that field, Docker applies every class and other runtimes none.
 
 ## Container Configuration
 

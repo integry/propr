@@ -62,6 +62,8 @@ export interface ExecuteClaudeCodeOptions {
 export interface ClaudeCodeResponse {
     /** Container-observed workflow validation report, independent of agent prose. */
     repositoryValidation?: string;
+    /** Auto-applied Extension Library items the agent runtime could not apply (Markdown note). */
+    extensionNotice?: string;
     /** Structured per-command outcome the `repositoryValidation` report is rendered from. */
     repositoryValidationResult?: RepositoryValidationResult;
     success: boolean;

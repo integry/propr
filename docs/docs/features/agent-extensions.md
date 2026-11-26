@@ -125,6 +125,11 @@ library as it is at that moment. Claude and Codex task execution are the qualifi
 targets. Other runtimes, and goal runs, launch without extensions as before
 (goal execution refuses explicitly added items). Review runs and Ultrafix review
 steps do not use the library.
+Sprites and Fly Machines apply skill bundles and URL servers but not package
+servers. An auto-applied item the selected agent runtime cannot run is dropped for
+that run, with a note in the task timeline and in the issue or pull request
+comment. An explicitly added one refuses the run with an error naming it. See
+[Extensions by runtime](../architecture/agent-runtime.md#extensions-by-runtime).
 If the library cannot be read when an issue task or follow-up resolves it (for
 example after a restore with mismatched revision identity), that run launches
 without extensions and a warning is logged; automation runs and explicitly added

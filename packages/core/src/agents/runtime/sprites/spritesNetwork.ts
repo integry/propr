@@ -6,7 +6,7 @@ import type { AgentRunSpec, AgentRuntimeRestrictedNetworkEnforcement } from '../
 
 export const SPRITES_RESTRICTED_NETWORK_ENFORCEMENT: AgentRuntimeRestrictedNetworkEnforcement = Object.freeze({
     method: 'sprites-dns-allowlist',
-    description: 'The Sprite gets a DNS allowlist network policy covering the run\'s allowed hosts and the granted ProPR MCP host, with every other domain denied. The policy is applied before the agent starts and cleared after checkpoint restoration and before reuse. Ports are not confined, raw IP connections are denied, and private addresses are never reachable.',
+    description: 'The Sprite gets a DNS allowlist network policy covering the run\'s allowed hosts, the granted ProPR MCP host and the extension gateway host, with every other domain denied. The policy is applied before the agent starts and cleared after checkpoint restoration and before reuse. Ports are not confined, raw IP connections are denied, and private addresses are never reachable.',
 });
 
 /** Sprites' unrestricted state: no rules, no enforcement. */
@@ -43,7 +43,7 @@ export function restrictedSpriteMcpEndpoint(endpoint: string): { host: string } 
  * literal rules are dropped (Sprites denies raw IPs that were not resolved
  * from an allowed domain, and never reaches private addresses).
  */
-export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefined {
+export function spriteNetworkPolicy(spec: AgentRunSpec, gatewayUrls: readonly string[] = []): NetworkPolicy | undefined {
     if (spec.network.mode === 'named') throw new Error(`Sprites cannot join network "${spec.network.name}"`);
     const grant = spec.mcpGrant;
     if (grant && (grant.network || grant.transport !== 'reachable-url')) {
@@ -62,11 +62,7 @@ export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefin
         if (rule.wildcard) zones.add(host);
         allowed.add(rule.wildcard ? `*.${host}` : host);
     }
-    if (grant?.url) {
-        const endpoint = restrictedSpriteMcpEndpoint(grant.url);
-        if ('reason' in endpoint) throw new Error(endpoint.reason);
-        allowed.add(endpoint.host);
-    }
+    for (const host of restrictedSpriteMcpHosts(grant?.url, gatewayUrls)) allowed.add(host);
     const wildcardZones = [...zones];
     const denied = wildcardZones.filter(zone => !allowed.has(zone)
         && !wildcardZones.some(parent => zone.endsWith(`.${parent}`)));
@@ -77,6 +73,15 @@ export function spriteNetworkPolicy(spec: AgentRunSpec): NetworkPolicy | undefin
             { domain: '*', action: 'deny' },
         ],
     };
+}
+
+/** The ProPR MCP host, and the extension gateway host a run's URL MCP servers are reached through. */
+function restrictedSpriteMcpHosts(grantUrl: string | undefined, gatewayUrls: readonly string[]): string[] {
+    return [grantUrl, ...gatewayUrls].filter((url): url is string => !!url).map(url => {
+        const endpoint = restrictedSpriteMcpEndpoint(url);
+        if ('reason' in endpoint) throw new Error(endpoint.reason);
+        return endpoint.host;
+    });
 }
 
 const ruleKey = (rule: PolicyRule) => `${rule.include ?? ''}|${rule.domain ?? ''}|${rule.action ?? 'allow'}`;

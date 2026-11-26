@@ -9,6 +9,7 @@ import { startLiveOutputStreaming } from '../../claude/docker/dockerLiveOutputSt
 import { assertNativeLogAdmission } from '../../diagnostics/managedLogRuntime.js';
 import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.js';
 import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
+import { extensionLaunchRefusal } from './extensionCapabilities.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.js';
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
@@ -78,9 +79,13 @@ function applyOutputDiagnostics(result: ExecutionResult, truncated: string[], mi
     }
 }
 
+const FLY_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: false });
+
 export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'fly-machines';
-    static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: false,
+    // Skill bundles travel as Machine files and URL MCP servers through the extension gateway.
+    // Package servers are not installed on Machines yet: auto-applied ones are dropped, explicit ones refused.
+    static readonly capabilities = { extensions: FLY_EXTENSION_CAPABILITIES, supportsBindMounts: false, supportsRestrictedNetwork: false,
         supportsMcpPrivateNetwork: false, supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly capabilities = FlyMachinesRuntime.capabilities;
     readonly unsupportedMount = unsupportedFlyMount;
@@ -93,13 +98,16 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
     }
 
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {
-        if (extensionLaunchForRun(this.kind, [], { ...options, agentRun: { spec } })) throw new Error('Fly Machines does not support extensions');
+        // Library items arrive filtered for this runtime; refuse a launch that still carries a class it cannot apply.
+        const extension = extensionLaunchForRun(this.kind, [], { ...options, agentRun: { spec } });
+        const extensionRefusal = extension && extensionLaunchRefusal(this, extension.requires);
+        if (extensionRefusal) throw extensionRefusal;
         if (spec.network.mode !== 'bridge' || spec.network.restriction || spec.network.policy?.mode === 'restricted' ||
             spec.mcpGrant?.network || spec.mcpGrant?.transport === 'private-network') throw new Error('Fly Machines requires open networking and a reachable MCP URL');
         assertNativeLogAdmission(options.diagnostics);
         const config = flyConfig(this.environment);
         const api = this.client ?? new MachinesClient(config);
-        const prepared = prepareLaunch(spec, options, config);
+        const prepared = prepareLaunch(spec, options, config, extension);
         const ownership = getExecutionOwnershipContext();
         const external = AbortSignal.any([options.signal, ownership?.signal].filter((s): s is AbortSignal => !!s));
         const workspace = new WorkspaceFiles();
@@ -262,6 +270,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             };
             let exitCode = -1;
             try {
+                // The physical launch boundary: revalidates the library items and activates the run's gateway grant.
+                await extension?.beforeLaunch();
                 let bootStart = Date.now();
                 id = await api.create(prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); });
                 void api.logs(id, display, logs.signal).catch(() => {});

@@ -1,5 +1,6 @@
 import { assertNativeLogAdmission } from '../../diagnostics/managedLogRuntime.js';
 import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.js';
+import { extensionLaunchRefusal } from './extensionCapabilities.js';
 import { randomUUID } from 'node:crypto';
 import type { ExecutionResult } from '../../claude/docker/dockerExecutor.js';
 import { getExecutionOwnershipContext } from '../../claude/docker/dockerExecutionOwnership.js';
@@ -18,9 +19,13 @@ import logger from '../../utils/logger.js';
 import { LiveOutputLog } from '../impl/utils/liveOutputLog.js';
 import { SpriteInventory, type SpritePoolRedis } from './sprites/spritesInventory.js';
 
+const SPRITES_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: false });
+
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
-    static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: true,
+    // Skill bundles travel with the run's upload and URL MCP servers through the extension gateway.
+    // Package servers are not installed on Sprites yet: auto-applied ones are dropped, explicit ones refused.
+    static readonly capabilities = { extensions: SPRITES_EXTENSION_CAPABILITIES, supportsBindMounts: false, supportsRestrictedNetwork: true,
         restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
         supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly capabilities = SpritesRuntime.capabilities;
@@ -75,12 +80,16 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     }
 
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {
-        if (extensionLaunchForRun(this.kind, [], { ...options, agentRun: { spec } })) throw new Error('Sprites runtime does not support extensions');
+        // Library items arrive filtered for this runtime; refuse a launch that still carries a class it cannot apply.
+        const extension = extensionLaunchForRun(this.kind, [], { ...options, agentRun: { spec } });
+        const extensionRefusal = extension && extensionLaunchRefusal(this, extension.requires);
+        if (extensionRefusal) throw extensionRefusal;
         assertNativeLogAdmission(options.diagnostics);
         const token = this.environment.PROPR_SPRITES_TOKEN || this.environment.SPRITES_TOKEN;
         if (!token) throw new Error('Set PROPR_SPRITES_TOKEN on the worker to run agents on Sprites');
         // Named networks, private MCP endpoints and malformed policies stay refused.
-        const networkPolicy = spriteNetworkPolicy(spec);
+        // URL MCP servers go through the extension gateway: a restricted Sprite allows its host too.
+        const networkPolicy = spriteNetworkPolicy(spec, extension?.gatewayUrl ? [extension.gatewayUrl] : []);
         process.env.SPRITES_CLIENT_SIGNALS ??= '0';
         if (this.closing) throw new Error('Sprites runtime is closed');
         const pool = this.getPool(token);
@@ -106,7 +115,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const refusal = await startupStep(signal, () => admitCostExecution('sprites', [], { ...options, agentRun: { spec } }));
             if (refusal) return refuseCostExecution(refusal, options.preserveOutputOnTimeout ?? false);
             const inputPath = `/opt/propr/inbox/${randomUUID()}.json`;
-            const launch = { spec, options, token, inputPath };
+            const launch = { spec, options, token, inputPath, skillFiles: extension?.skillFiles };
             const validated = validateSpriteRun(launch, envDefaults);
             const ready = await startupStep(signal, () => pool);
             const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs } = await startupStep(signal, async () => {
@@ -132,6 +141,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                         acquired.restricted = { policy: networkPolicy, run: spec.name, recordDiagnostic };
                     }
                     signal.throwIfAborted();
+                    // The physical launch boundary: revalidates the library items and activates the run's gateway grant.
+                    if (extension) await startupStep(signal, () => extension.beforeLaunch());
                     const payload = prepareSpriteRun(launch, validated, envDefaults);
                     prepared = payload;
                     await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => payload.upload(acquired.sprite));

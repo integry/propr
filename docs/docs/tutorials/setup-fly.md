@@ -104,6 +104,21 @@ To check idle wake, close the UI, wait until `fly machine list --app "$APP"` sho
 
 When tearing down an installation with idle shutdown enabled, find the ID of the stop token (named `propr idle stop` when created by the CLI) with `fly tokens list --app "$APP"` and run `fly tokens revoke <id>` before destroying the app. The deploy token stays active after app deletion.
 
+### Extensions on Fly runtimes
+
+Agents on Sprites and Fly Machines get these extensions:
+
+| What the agent gets | Sprites | Fly Machines |
+| --- | --- | --- |
+| Skills, commands, agents and instruction files in the provider config directory | Yes | Yes |
+| Repository skills, `AGENTS.md` and `CLAUDE.md` | Yes | Yes |
+| Library skill bundles | Yes | Yes |
+| Library URL MCP servers | Yes, through the ProPR extension gateway | Yes, through the ProPR extension gateway |
+| Library package (stdio) MCP servers | No | No |
+| ProPR MCP | Yes, at the reachable URL | Yes, at the reachable URL |
+
+An auto-applied package server is dropped from a Fly run. The task timeline and the issue or pull request comment name the dropped server. A run that adds a package server explicitly is refused with an error naming the server. To use package servers, run that agent on Docker. See [Extensions by runtime](../architecture/agent-runtime.md#extensions-by-runtime).
+
 ## Who can access the work
 
 You control the Fly organization, volume, GitHub installation and model credentials. Fly hosts the repository contents and credentials needed during a run. A cloud agent receives a scoped workspace clone and per-run provider credentials. The worker retrieves the result, handles credential refresh and publishes the PR. Sprites restore a clean checkpoint between leases. Fly Machines are destroyed after result collection. Limit GitHub installation access to intended repositories, use separate agent and control-plane tokens, and treat users who can trigger tasks as able to run code on your account. ProPR Connect can relay events and wake requests. It does not supply the agent compute.

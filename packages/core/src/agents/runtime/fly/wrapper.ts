@@ -56,6 +56,14 @@ def launch():
         subprocess.run(['/bin/mount', '-t', 'tmpfs', '-o', 'rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=%d,gid=%d' % (node.pw_uid, node.pw_gid), 'tmpfs', target], check=True)
     for file in data['owned']:
         os.chown(file, node.pw_uid, node.pw_gid)
+    extensions = Path('/opt/propr/extensions')
+    if data.get('extensions') and extensions.is_dir() and not extensions.is_symlink():
+        for directory, _, names in os.walk(extensions):
+            os.chown(directory, 0, 0)
+            os.chmod(directory, 0o555)
+            for name in names:
+                os.chown(Path(directory) / name, 0, 0)
+                os.chmod(Path(directory) / name, 0o444)
     os.chown(agent, 0, node.pw_gid)
     os.chmod(agent, 0o640)
     child = None

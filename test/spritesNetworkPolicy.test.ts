@@ -44,6 +44,13 @@ test('the run allowlist becomes a deny-by-default DNS policy that never covers a
     assert.equal(spriteNetworkPolicy(build()), undefined);
 });
 
+test('a restricted Sprite also allows the extension gateway host its URL MCP servers go through', () => {
+    const rules = new Map(spriteNetworkPolicy(restricted('https://mcp.example.net/api/mcp'), ['https://gateway.example.net/api/extensions/mcp'])!.rules.map(rule => [rule.domain, rule.action]));
+    assert.equal(rules.get('gateway.example.net'), 'allow');
+    assert.equal(rules.get('mcp.example.net'), 'allow');
+    assert.throws(() => spriteNetworkPolicy(restricted(), ['http://10.0.0.1/api/extensions/mcp']), /public HTTPS URL/);
+});
+
 test('neutral policy hostnames use the same normalization as MCP endpoints', () => {
     const spec = build({ ...agentRunNetwork('bridge'), policy: { mode: 'restricted', privateAddressAllow: [], allow: [
         { host: ' DOCS.example.org. ', ports: [443], wildcard: false },

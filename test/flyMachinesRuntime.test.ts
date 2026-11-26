@@ -251,11 +251,11 @@ for value in ('running', 'exited 143'):
 `, 'test', root]);
 });
 
-test('Fly selection skips Docker preparation, refuses extensions and restricted networks, and resolves MCP', () => {
+test('Fly selection skips Docker preparation, admits extensions, refuses restricted networks, and resolves MCP', () => {
     const { runtime, builder } = fixture();
     assert.equal(getAgentRuntime({ runtime: 'fly-machines' }).kind, runtime.kind);
     assert.equal(dockerAgentRuntimeInUse([], { PROPR_AGENT_RUNTIME: runtime.kind }), false);
-    assert.match(configuredExtensionRefusal(runtime.kind)!, /does not support extensions/);
+    assert.equal(configuredExtensionRefusal(runtime.kind), undefined, 'skill bundles and URL MCP servers run on Fly');
     builder.spec.network.policy = { mode: 'restricted', allow: [], privateAddressAllow: [] };
     assert.throws(() => runtime.start(builder.build()), /open networking/);
     const plan = (env: NodeJS.ProcessEnv) => agentRunMcpTransportFor({ runtime: runtime.kind }, env);
@@ -522,12 +522,46 @@ test('the unprivileged hook loads the resolved setup and agent environment', asy
     await run.release!();
 });
 
-test('extension admission refuses Fly before workspace preparation', async () => {
+test('extension admission refuses package MCP servers on Fly before workspace preparation', async () => {
     const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
     const { runAgent } = await import('../packages/core/src/agents/runtime/registry.ts');
-    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], beforeLaunch: async () => {} }, async () => {
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { packageMcp: ['local-files'] }, beforeLaunch: async () => {} }, async () => {
         await assert.rejects(runAgent({ runtime: 'fly-machines' }, fixture().builder.build(), { taskId: 'ext', extensionAgentLaunch: true }),
-            { name: 'AgentRuntimeCapabilityError', capability: 'extensions' });
+            (error: Error & { capability?: string }) => error.name === 'AgentRuntimeCapabilityError' && error.capability === 'package_mcp' && /"local-files"/.test(error.message));
+    });
+});
+
+test('library skill bundles reach the Machine read-only and the grant activates before the Machine is created', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, api, builder } = fixture();
+    const secret = 'extension-grant-token-for-fly';
+    const events: string[] = [];
+    const create = api.create.bind(api);
+    api.create = async launch => { events.push('create'); return create(launch); };
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [secret], requires: { skills: ['Review'], remoteMcp: ['docs'] },
+        skillFiles: [{ path: 'bundle-1/SKILL.md', content: Buffer.from('# Review') }, { path: 'bundle-1/ref/notes.md', content: Buffer.from('notes') }],
+        gatewayUrl: 'https://propr.example/api/extensions/mcp', beforeLaunch: async () => { events.push('beforeLaunch'); } }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+    });
+    assert.deepEqual(events, ['beforeLaunch', 'create']);
+    const files = new Map(api.launch!.config.files.map(f => [f.guest_path, f]));
+    const skill = files.get('/opt/propr/extensions/bundle-1/SKILL.md')!;
+    assert.equal(Buffer.from(skill.raw_value, 'base64').toString(), '# Review');
+    assert.equal(skill.mode, 0o444);
+    assert.ok(files.has('/opt/propr/extensions/bundle-1/ref/notes.md'));
+    const input = JSON.parse(Buffer.from(files.get(RUN + '/input')!.raw_value, 'base64').toString());
+    assert.equal(input.extensions, true);
+    assert.ok(input.secrets.includes(secret), 'the wrapper redacts the extension grant token from live output');
+});
+
+test('a skill bundle path that could leave the extension root is refused', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, builder } = fixture();
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { skills: ['Bad'] },
+        skillFiles: [{ path: 'bundle/../../etc/passwd', content: Buffer.from('x') }], beforeLaunch: async () => {} }, async () => {
+        assert.throws(() => runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true }), /Invalid extension skill bundle path/);
     });
 });
 

@@ -1,6 +1,7 @@
 import { providerCredentialManifest } from '../../credentials/providerManifests.js';
 import { PROPR_MCP_BEARER_TOKEN_ENV } from '../../agentToolPolicy.js';
-import { resolveRunEnvironment } from '../sprites/spritesRun.js';
+import { extensionSkillPath, resolveRunEnvironment } from '../sprites/spritesRun.js';
+import { EXTENSION_SKILLS_ROOT, type ExtensionSkillFile } from '../../../extensions/extensionLaunchContext.js';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { CLAUDE_BACKUPS_CONTAINER_PATH, CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
@@ -97,7 +98,17 @@ function providerArgv(spec: AgentRunSpec, provider: 'claude' | 'codex') {
     return [spec.repoSetup?.providerEntrypoint ?? spec.entrypoint ?? `/home/node/${provider}-entrypoint.sh`, ...spec.args];
 }
 
-export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig) {
+/** What the run's extension launch adds to the Machine: skill bundle files and secrets to redact. */
+export interface FlyExtensionLaunch { skillFiles?: readonly ExtensionSkillFile[]; secrets?: readonly string[] }
+
+/** Library skill bundles: root-owned and read-only for the agent, like Docker's read-only mount. */
+function stageExtension(extension: FlyExtensionLaunch | undefined, add: AddFile) {
+    const files = extension?.skillFiles ?? [];
+    for (const file of files) add(`${EXTENSION_SKILLS_ROOT}/${extensionSkillPath(file.path)}`, file.content, 0o444);
+    return { secrets: extension?.secrets ?? [], skills: files.length > 0 };
+}
+
+export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig, extension?: FlyExtensionLaunch) {
     const { clone, containerPath, provider } = validateLaunch(spec, options);
     const files: MachineLaunch['config']['files'] = [];
     const add = (guest_path: string, content: string | Buffer, mode = 0o600) => {
@@ -118,7 +129,8 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     const owned = staged.owned;
     const credentialNames = [...providerCredentialManifest(provider, 'config')?.apiKeyEnv ?? [], 'OPENAI_API_KEY',
         'ANTHROPIC_AUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN', PROPR_MCP_BEARER_TOKEN_ENV];
-    const secrets = [transportToken, ...Object.values(bundle.secretEnv), ...staged.secrets, ...credentialNames.map(k => env.get(k))]
+    const extensionStaged = stageExtension(extension, add);
+    const secrets = [transportToken, ...extensionStaged.secrets, ...Object.values(bundle.secretEnv), ...staged.secrets, ...credentialNames.map(k => env.get(k))]
         .filter((v): v is string => v !== undefined && v.length >= 12);
     const environment = { PATH, ...Object.fromEntries(env), ...bundle.secretEnv, HOME: '/home/node', USER: 'node', LOGNAME: 'node' };
     // Only trusted values enter the root shell. Provider settings such as
@@ -141,7 +153,7 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     if (setup) add(hookBin + '/su-exec', '#!/bin/sh\nshift\nexec /usr/local/bin/su-exec node /usr/bin/python3 -I ' + WRAPPER + ' hook "$@"\n', 0o755);
     const command = ['/bin/bash', '-c', clone.script, ...(setup ? [`export PATH=${hookBin}:$PATH\n${setup.script}`, shim, ...spec.args] : [WORKSPACE_DIRECT_AGENT_LAUNCH, ...helper, 'agent'])];
     const credentialPath = store?.outputs.length ? storePath : undefined;
-    add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, credentialPath, bootTimeout: config.bootTimeout, credentialRetention: config.credentialRetention, timeout: options.timeout ?? 300_000, directories: [...directories], secrets }));
+    add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, credentialPath, bootTimeout: config.bootTimeout, credentialRetention: config.credentialRetention, timeout: options.timeout ?? 300_000, directories: [...directories], extensions: extensionStaged.skills, secrets }));
     add(RUN + '/stdin', options.stdinData ?? '');
     const name = 'propr-' + randomUUID();
     const launch: MachineLaunch = { name, skip_service_registration: true, skip_secrets: true, region: config.region, config: {

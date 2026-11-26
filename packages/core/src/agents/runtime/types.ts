@@ -246,9 +246,24 @@ export interface AgentRuntimeRestrictedNetworkEnforcement {
     description: string;
 }
 
+/** What a runtime can do with each class of Extension Library item. */
+export interface AgentRuntimeExtensionCapabilities {
+    /** Library skill bundles, readable at `/opt/propr/extensions/<bundle id>` in the run. */
+    skills: boolean;
+    /** URL MCP servers, reached through the ProPR extension gateway with the run's grant token. */
+    remoteMcp: boolean;
+    /** Local stdio MCP servers: verified npm package servers and operator catalog executables. */
+    packageMcp: boolean;
+}
+
 export interface AgentRuntimeCapabilities {
-    /** The runtime applies the selected extension mounts, gateway and launch checks. */
-    supportsExtensions?: boolean;
+    /**
+     * Extension Library classes the runtime can apply to a run. Absent means
+     * every class on Docker and none on any other runtime. A run is refused
+     * only for the classes its runtime lacks; auto-applied items of such a
+     * class are dropped for that run with a visible note instead.
+     */
+    extensions?: AgentRuntimeExtensionCapabilities;
     /** Host paths can be bind-mounted (workspace, git metadata, credentials). */
     supportsBindMounts: boolean;
     /**

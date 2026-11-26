@@ -719,7 +719,8 @@ test('ambient extension secrets are redacted from Sprite results and both handle
     const secret = 'private-extension-test';
     client.setup = sprite => { sprite.output = secret; sprite.stderr = secret; };
     await launchContext.run({ taskId: 'test', secrets: [secret], mounts: [], beforeLaunch: async () => {} }, async () => {
-        assert.throws(() => runtime.start(builder.build(), { taskId: 'test', extensionAgentLaunch: true }), /does not support extensions/);
+        // A launch that does not say what it carries is treated as carrying package servers, which Sprites cannot run.
+        assert.throws(() => runtime.start(builder.build(), { taskId: 'test', extensionAgentLaunch: true }), /cannot run package \(stdio\) MCP servers/);
         const helper = runtime.start(builder.build());
         const observed: string[] = [];
         helper.stdout.on('data', chunk => observed.push(String(chunk)));
@@ -731,6 +732,48 @@ test('ambient extension secrets are redacted from Sprite results and both handle
         await helper.release!();
     });
     await runtime.close();
+});
+
+test('library skill bundles travel with the Sprite upload after the grant activates', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, client, builder } = fixture();
+    const events: string[] = [];
+    await launchContext.run({ taskId: 'ext', secrets: [], mounts: [], requires: { skills: ['Review'], remoteMcp: ['docs'] },
+        skillFiles: [{ path: 'bundle-1/SKILL.md', content: Buffer.from('# Review') }],
+        gatewayUrl: 'https://propr.example/api/extensions/mcp', beforeLaunch: async () => { events.push('beforeLaunch'); } }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+    });
+    assert.deepEqual(events, ['beforeLaunch']);
+    const upload = JSON.parse(client.created[0].launches[0]);
+    assert.deepEqual(upload.extensions, [['bundle-1/SKILL.md', Buffer.from('# Review').toString('base64')]]);
+    await assert.rejects(launchContext.run({ taskId: 'ext', secrets: [], mounts: [], requires: { packageMcp: ['local-files'] }, beforeLaunch: async () => {} },
+        async () => runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true }).wait()), /"local-files"/);
+    await runtime.close();
+});
+
+test('the Sprite launcher installs skill bundles root-owned and refuses paths outside the root', t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sprite-extensions-'));
+    // The installed tree is read-only, as on the Sprite; make it removable again for cleanup.
+    t.after(() => { execFileSync('chmod', ['-R', 'u+w', root]); fs.rmSync(root, { recursive: true, force: true }); });
+    const script = String.raw`
+import runpy, sys, pathlib, os, base64
+ns = runpy.run_path('scripts/sprites-launcher.py')
+target = pathlib.Path(sys.argv[1]) / 'extensions'
+ns['install_extensions'].__globals__['EXTENSIONS'] = target
+os.chown = lambda *a: None
+ns['install_extensions']([['b/SKILL.md', base64.b64encode(b'# Skill').decode()]])
+print(oct((target / 'b' / 'SKILL.md').stat().st_mode & 0o777), oct((target / 'b').stat().st_mode & 0o777), (target / 'b' / 'SKILL.md').read_text())
+ns['install_extensions'].__globals__['EXTENSIONS'] = pathlib.Path(sys.argv[1]) / 'other'
+try:
+    ns['install_extensions']([['../escape', '']])
+except ValueError as error:
+    print(error)
+`;
+    const out = execFileSync('python3', ['-I', '-c', script, root], { encoding: 'utf8' }).trim().split('\n');
+    assert.equal(out[0], '0o444 0o555 # Skill');
+    assert.equal(out[1], 'Invalid extension skill bundle path');
 });
 
 test('CLI admission reuses Dockerfile pins for the same setup root', async t => {

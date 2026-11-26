@@ -177,8 +177,8 @@ function buildDigestAndRemainingWork(reviewDigestSection: string | undefined, pa
     return `${reviewDigestSection ?? ''}${remaining}`;
 }
 
-function buildRepositoryValidationSection(report: string | undefined): string {
-    return report ? `${redactSecrets(report)}\n\n` : '';
+function buildRepositoryValidationSection(report: string | undefined, extensionNotice?: string): string {
+    return (extensionNotice ? `${extensionNotice}\n\n` : '') + (report ? `${redactSecrets(report)}\n\n` : '');
 }
 
 function cleanCompletionReport(text: string): string {
@@ -288,7 +288,7 @@ export async function buildCompletionComment(
             prCommentBody += `${visualPreviewSection}\n\n`;
         }
 
-        prCommentBody += buildRepositoryValidationSection(claudeResult.repositoryValidation);
+        prCommentBody += buildRepositoryValidationSection(claudeResult.repositoryValidation, claudeResult.extensionNotice);
         prCommentBody += await buildMetricsSection(claudeResult, llm, authorsText, false);
 
         if (undoContext) {
@@ -318,7 +318,7 @@ export async function buildCompletionComment(
         }
 
         noChangesBody += buildNoChangeStatement(unfinished, visualPreviewSection);
-        noChangesBody += buildRepositoryValidationSection(claudeResult.repositoryValidation);
+        noChangesBody += buildRepositoryValidationSection(claudeResult.repositoryValidation, claudeResult.extensionNotice);
         noChangesBody += await buildMetricsSection(claudeResult, llm, authorsText, true);
 
         if (taskUrl) {
