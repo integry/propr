@@ -502,6 +502,42 @@ with tarfile.open(sys.argv[1]) as tar:
     }
 });
 
+// The production build verifies with the default root '/': real host paths outside the
+// excluded mounts, a fake dpkg, and before/after snapshots that say which files changed.
+test('the dpkg read-back under the production root checks package files: a missing or uncaptured file fails, an unchanged base file passes', () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-root-dpkg-'));
+    try {
+        const file = fs.realpathSync('/usr/bin/env');
+        const missing = path.join(path.dirname(file), 'propr-missing-' + crypto.randomUUID());
+        fs.writeFileSync(path.join(bin, 'dpkg-query'), `#!/bin/sh
+if [ "$1" = "-W" ]; then printf 'fakepkg\\tinstall ok installed\\t1\\t\\n'; exit 0; fi
+printf '/.\\n${path.dirname(file)}\\n${file}\\n'
+[ -n "$MISSING" ] && printf '%s\\n' "$MISSING"
+exit 0
+`, { mode: 0o755 });
+        const out = path.join(bin, 'layer.tar.gz');
+        const verify = (mode: string, extra: Record<string, string> = {}) => JSON.parse(execFileSync('python3', ['-I', '-c', wrapper + `
+import tarfile
+file, out, query, mode = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+assert image_path(file) == file, image_path(file)
+with tarfile.open(out, 'w:gz') as tar:
+    if mode == 'captured':
+        tar.add(file, arcname=file[1:], recursive=False)
+meta = (1, 2, 3)
+before = {file: meta} if mode in ('unchanged', 'missing') else {}
+after = {file: meta}
+try:
+    print(json.dumps(verify_layer(['fakepkg'], {'fakepkg'}, before, after, out, dpkg_query=query)))
+except RuntimeError as error:
+    print(json.dumps({'error': str(error)}))
+`, file, out, path.join(bin, 'dpkg-query'), mode], { encoding: 'utf8', env: { ...process.env, ...extra } }));
+        assert.deepEqual(verify('unchanged'), { packages: 1, files: 1, installedBytes: 0 }, 'an unchanged base file passes');
+        assert.deepEqual(verify('captured'), { packages: 1, files: 1, installedBytes: 0 }, 'a file in the layer passes');
+        assert.equal(verify('omitted').error, `fakepkg installed ${file}, but the layer does not contain it`);
+        assert.equal(verify('missing', { MISSING: missing }).error, `fakepkg lists ${missing}, which does not exist after the install`);
+    } finally { fs.rmSync(bin, { recursive: true, force: true }); }
+});
+
 // Applies a layer the way container runtimes do: a whiteout removes its target,
 // an entry replaces a path of another type. Unlike tarfile it refuses to resolve
 // a member's parent through anything but a real directory.
@@ -768,6 +804,37 @@ test('a Machine create refused for a cached derived image re-checks the registry
     assert.notEqual(api.launches.at(-1)!.config.image, api.launches[1].config.image);
     assert.ok(api.events.includes('refused launch'));
     await second.release!();
+});
+
+test('a Machine create refused for a derived image, then a registry failure, retries on the base image with a start-time install', async () => {
+    class Refusing extends Machines {
+        refuse?: string;
+        override async create(launch: MachineLaunch) {
+            if (!isBuild(launch) && launch.config.image === this.refuse) {
+                this.events.push('refused launch');
+                throw new MachinesHttpError('POST', 422, 'image not found');
+            }
+            return super.create(launch);
+        }
+    }
+    const api = new Refusing();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'refused-fallback', ['figlet']);
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    const derived = api.launches.at(-1)!.config.image;
+    assert.notEqual(derived, 'registry.fly.io/agents@' + BASE_DIGEST);
+    api.refuse = derived; // the derived image stays unavailable
+    registry.tags.clear();
+    registry.fail = new Error('Fly registry GET returned HTTP 503');
+    const second = fly.start(spec('second'));
+    assert.equal((await second.wait()).exitCode, 0);
+    await second.release!();
+    assert.deepEqual(api.events.filter(e => e === 'refused launch'), ['refused launch']);
+    const retry = api.launches.at(-1)!;
+    assert.equal(retry.config.image, 'registry.fly.io/agents@' + BASE_DIGEST, 'the fallback launches the configured base image');
+    assert.deepEqual(JSON.parse(api.file(retry, RUN + '/packages.json')!).argv, agentRuntimePackageInstallCommand(['figlet']));
 });
 
 test('deleting the build Machine has its own window: a delete that never succeeds fails the run in that window', async () => {

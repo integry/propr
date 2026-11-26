@@ -169,10 +169,18 @@ def dpkg_excluded(root='/'):
 def image_path(path, root='/'):
     # The image path of a dpkg -L entry, through symlinked parents (/bin -> usr/bin).
     root = os.path.realpath(root)
+    # The production root is '/': every resolved parent is inside it, and its
+    # image path is the parent itself (root + '/' would be '//').
     parent = os.path.realpath(os.path.join(root, os.path.dirname(path)[1:]))
-    if parent != root and not parent.startswith(root + '/'):
+    if root == '/':
+        relative = parent
+    elif parent == root:
+        relative = '/'
+    elif parent.startswith(root + '/'):
+        relative = parent[len(root):]
+    else:
         return None
-    return os.path.join(parent[len(root):] or '/', os.path.basename(path))
+    return os.path.join(relative, os.path.basename(path))
 
 def outside_image(path, mounts):
     return any(p in BUILD_EXCLUDE or p in mounts for p in [path] + list(ancestors(path)))

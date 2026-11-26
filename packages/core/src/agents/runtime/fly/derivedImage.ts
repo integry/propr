@@ -355,7 +355,8 @@ export async function selectFlyPackageImage(images: FlyPackageImages | undefined
     prepared: { launch: MachineLaunch; installPackages(packages: readonly string[]): void },
     options: SelectOptions): Promise<FlyPackageSelection> {
     const derived = options.packages.length && images ? await images.select(options) : undefined;
-    if (derived) prepared.launch.config.image = derived;
+    // Every selection sets the image: a retry that falls back after a refused derived image launches the base.
+    prepared.launch.config.image = derived ?? options.config.image;
     const install = derived ? [] : options.packages;
     prepared.installPackages(install);
     return { install, ...(derived && { derived }) };
