@@ -6,11 +6,13 @@
 # code and message to stderr (never the request or its headers) and returns 1,
 # so `x=$(propr_api ... | jq ...)` under `set -euo pipefail` stops the step.
 # Needs APP and GH_TOKEN.
+#
+#   ... | propr_redact                     masks secret-shaped values in log output
 propr_api() {
   local method=$1 path=$2 body status reason
   shift 2
   body=$(mktemp)
-  if ! status=$(curl --silent --show-error --retry 3 --retry-connrefused -o "$body" -w '%{http_code}' \
+  if ! status=$(curl --silent --show-error --retry 3 --retry-connrefused --max-time 60 -o "$body" -w '%{http_code}' \
       -X "$method" -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
       "https://$APP.fly.dev/api$path" "$@"); then
     echo "::error::$method /api$path: the request did not complete (HTTP ${status:-000})" >&2
@@ -27,4 +29,12 @@ propr_api() {
   fi
   cat "$body"
   rm -f "$body"
+}
+
+# Masks token/secret/key/password/authorization values and any long opaque string.
+propr_redact() {
+  perl -pe '
+    s{((?:token|secret|key|password|authorization)\w*"?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|(?:Bearer\s+|Basic\s+)?(?!ENOENT:)[^\s,"]+)}{$1<masked>}gi;
+    s{[A-Za-z0-9+/_=-]{32,}}{<long>}g;
+  '
 }

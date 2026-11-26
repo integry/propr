@@ -370,14 +370,21 @@ jobs:
           set -euo pipefail
           : "${AUTOMATION_RUN:?The automation run was not started}"
           source .github/fly-e2e/propr-api.sh
-          for _ in {1..110}; do
+          # On any failure, read the run, its task timeline and logs, and the worker lines that name
+          # them while the app is still up: the failure dump only has flyctl's last few minutes.
+          trap 'status=$?; (( status == 0 )) || bash .github/fly-e2e/mcp-run-diagnostics.sh "$AUTOMATION_RUN" "$OUT/app-logs.jsonl"; exit $status' EXIT
+          # 25 minutes, which leaves the step time for the diagnostics.
+          for _ in {1..100}; do
             run=$(propr_api GET "/automation-runs/$AUTOMATION_RUN" | jq -ec '.run | objects')
             state=$(jq -r .state <<< "$run")
             case $state in completed|failed|skipped|rejected|cancelled) break ;; esac
             sleep 15
           done
           echo "Automation run $AUTOMATION_RUN: $state"
-          [[ $state == completed ]] || { echo "::error::Automation run ended $state: $(jq -r '.error // ""' <<< "$run")"; exit 1; }
+          [[ $state == completed ]] || {
+            echo "::error::Automation run ended $state: $(jq -r '.failureReason // .skipReason // .error // "no reason recorded"' <<< "$run" | propr_redact)"
+            exit 1
+          }
           task=$(jq -er '.reportTaskId | strings' <<< "$run")
 
           # 1. The report carries the tool's deterministic result: this fixture's only repository.
@@ -433,11 +440,8 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: |
-          timeout 60s flyctl logs --app "$APP" --no-tail 2>&1 |
-            perl -pe '
-              s{((?:token|secret|key|password|authorization)\w*"?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|(?:Bearer\s+|Basic\s+)?(?!ENOENT:)[^\s,"]+)}{$1<masked>}gi;
-              s{[A-Za-z0-9+/_=-]{32,}}{<long>}g;
-            ' | tail -n 200 || true
+          source .github/fly-e2e/propr-api.sh
+          timeout 60s flyctl logs --app "$APP" --no-tail 2>&1 | propr_redact | tail -n 200 || true
 
       - name: Destroy test app, Machines and volume
         if: always() && steps.app.outcome == 'success'
@@ -466,23 +470,37 @@ jobs:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          token=$(bash "$OUT/installation-token.sh")
+          echo "::add-mask::$token"
+          # $1 is the URI-encoded branch name; a branch already gone is fine.
+          delete_branch() {
+            status=$(curl --silent --show-error -o "$OUT/delete-ref.json" -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer $token" "https://api.github.com/repos/$REPO/git/refs/heads/$1")
+            [[ $status == 204 ]] && return 0
+            if [[ $status == 404 || $status == 422 ]] && jq -e --arg status "$status" '
+              .message | test("^Reference does not exist[.]?$"; "i") or ($status == "404" and . == "Not Found")
+            ' "$OUT/delete-ref.json" >/dev/null; then
+              return 0
+            fi
+            echo "::error::Deleting branch $1 returned HTTP $status"
+            return 1
+          }
+          encode='split("/") | map(@uri) | join("/")'
           prs=$(gh pr list --repo "$REPO" --json number,headRefName,closingIssuesReferences,isCrossRepository |
-            jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | [.number, (.headRefName | split("/") | map(@uri) | join("/"))] | @tsv')
+            jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | [.number, (.headRefName | '"$encode"')] | @tsv')
           if [[ -n $prs ]]; then
-            token=$(bash "$OUT/installation-token.sh")
-            echo "::add-mask::$token"
             while IFS=$'\t' read -r pr ref; do
               gh pr close "$pr" --repo "$REPO"
-              status=$(curl --silent --show-error -o "$OUT/delete-ref.json" -w '%{http_code}' -X DELETE \
-                -H "Authorization: Bearer $token" "https://api.github.com/repos/$REPO/git/refs/heads/$ref")
-              [[ $status == 204 ]] && continue
-              if [[ $status == 404 || $status == 422 ]] && jq -e --arg status "$status" '
-                .message | test("^Reference does not exist[.]?$"; "i") or ($status == "404" and . == "Not Found")
-              ' "$OUT/delete-ref.json" >/dev/null; then
-                continue
-              fi
-              echo "::error::Deleting the head branch for PR #$pr returned HTTP $status"
-              exit 1
+              delete_branch "$ref"
             done <<< "$prs"
+          fi
+          # A run that failed before opening a PR still leaves its "<issue>/..." branch behind.
+          branches=$(gh api --paginate "repos/$REPO/git/matching-refs/heads/$ISSUE/" |
+            jq -r '.[].ref | ltrimstr("refs/heads/") | '"$encode")
+          if [[ -n $branches ]]; then
+            while read -r ref; do
+              echo "Deleting leftover fixture branch $ref"
+              delete_branch "$ref"
+            done <<< "$branches"
           fi
           gh issue close "$ISSUE" --repo "$REPO"

@@ -212,6 +212,15 @@ export async function getWorktreeChanges(worktreePath: string, comparisonRef?: s
             try {
                 comparisonBranch = (await git.revparse(['--abbrev-ref', '@{upstream}'])).trim();
             } catch {
+                // A clean checkout of a single-commit or shallow clone has no
+                // HEAD~1 (Sprites runs keep the local worktree clean while the
+                // agent works remotely). Nothing is committed on top of the
+                // base yet, so there are no changes to show.
+                if (!await hasParentCommit(git)) {
+                    logOncePerWorktree(worktreePath, 'no-parent', () => logger.info({ worktreePath },
+                        'Worktree HEAD has no parent commit (root or shallow clone); no committed changes to show'));
+                    return [];
+                }
                 comparisonBranch = 'HEAD~1';
             }
             return parseCommitDiffOutput(await git.diff([`${comparisonBranch}...HEAD`]));
@@ -232,9 +241,36 @@ export async function getWorktreeChanges(worktreePath: string, comparisonRef?: s
 
         return files;
     } catch (error) {
-        logger.error({ worktreePath, error: (error as Error).message }, 'Error getting worktree changes');
+        const message = (error as Error).message;
+        // The probe polls every few seconds during a run: report each distinct error once.
+        logOncePerWorktree(worktreePath, `error:${message}`, () => logger.error({ worktreePath, error: message }, 'Error getting worktree changes'));
         return [];
     }
+}
+
+async function hasParentCommit(git: SimpleGit): Promise<boolean> {
+    try {
+        // simple-git does not reject on a quiet non-zero exit, so check the output too.
+        return (await git.raw(['rev-parse', '--verify', '--quiet', 'HEAD~1^{commit}'])).trim() !== '';
+    } catch {
+        return false;
+    }
+}
+
+const MAX_LOGGED_WORKTREES = 256;
+const loggedWorktreeConditions = new Map<string, Set<string>>();
+
+/** Run `log` the first time `condition` is seen for `worktreePath`; bounded so a long-lived worker cannot grow it. */
+function logOncePerWorktree(worktreePath: string, condition: string, log: () => void): void {
+    let seen = loggedWorktreeConditions.get(worktreePath);
+    if (!seen) {
+        if (loggedWorktreeConditions.size >= MAX_LOGGED_WORKTREES) loggedWorktreeConditions.clear();
+        seen = new Set();
+        loggedWorktreeConditions.set(worktreePath, seen);
+    }
+    if (seen.has(condition)) return;
+    seen.add(condition);
+    log();
 }
 
 /**
