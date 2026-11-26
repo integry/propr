@@ -719,8 +719,8 @@ test('ambient extension secrets are redacted from Sprite results and both handle
     const secret = 'private-extension-test';
     client.setup = sprite => { sprite.output = secret; sprite.stderr = secret; };
     await launchContext.run({ taskId: 'test', secrets: [secret], mounts: [], beforeLaunch: async () => {} }, async () => {
-        // A launch that does not say what it carries is treated as carrying package servers, which Sprites cannot run.
-        assert.throws(() => runtime.start(builder.build(), { taskId: 'test', extensionAgentLaunch: true }), /cannot run package \(stdio\) MCP servers/);
+        // A launch that does not say what it carries is treated as carrying every class, including catalog stdio servers Sprites cannot run.
+        assert.throws(() => runtime.start(builder.build(), { taskId: 'test', extensionAgentLaunch: true }), /cannot run operator catalog stdio MCP servers/);
         const helper = runtime.start(builder.build());
         const observed: string[] = [];
         helper.stdout.on('data', chunk => observed.push(String(chunk)));
@@ -748,8 +748,80 @@ test('library skill bundles travel with the Sprite upload after the grant activa
     assert.deepEqual(events, ['beforeLaunch']);
     const upload = JSON.parse(client.created[0].launches[0]);
     assert.deepEqual(upload.extensions, [['bundle-1/SKILL.md', Buffer.from('# Review').toString('base64')]]);
-    await assert.rejects(launchContext.run({ taskId: 'ext', secrets: [], mounts: [], requires: { packageMcp: ['local-files'] }, beforeLaunch: async () => {} },
-        async () => runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true }).wait()), /"local-files"/);
+    await assert.rejects(launchContext.run({ taskId: 'ext', secrets: [], mounts: [], requires: { catalogMcp: ['operator-tool'] }, beforeLaunch: async () => {} },
+        async () => runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true }).wait()), /"operator-tool"/);
+    await runtime.close();
+});
+
+const packageInstall = (key = 'a') => ({
+    registry: 'https://registry.npmjs.org',
+    servers: [{ key: key.repeat(40), package: 'propr-fixture-mcp', version: '1.0.0', integrity: 'sha512-fixture', entry: 'node_modules/propr-fixture-mcp/bin/server.js',
+        packageJson: '{"dependencies":{"propr-fixture-mcp":"1.0.0"}}', lock: '{"packages":{}}' }],
+});
+
+/** Record setup uploads and the package server install on every Sprite the pool creates. */
+function watchPackageInstalls(client: FakeSprites, fail?: string) {
+    const uploads: string[] = [];
+    client.setup = sprite => {
+        const fs = sprite.filesystem();
+        sprite.filesystem = () => ({ ...fs, writeFile: async (file, data) => { uploads.push(file); await fs.writeFile(file, data); } });
+        const exec = sprite.execFile.bind(sprite);
+        sprite.execFile = async (cmd, args, options) => {
+            if (args.at(-1)?.endsWith('/package-servers.json')) {
+                sprite.events.push('install-packages');
+                assert.deepEqual([cmd, ...args], ['sudo', '-n', '/usr/bin/python3', '-I', '/var/tmp/propr-setup/package-servers.py', '/var/tmp/propr-setup/package-servers.json']);
+                if (fail) throw Object.assign(new Error('Command failed'), { stderr: fail });
+            }
+            return exec(cmd, args, options);
+        };
+    };
+    return uploads;
+}
+
+test('package MCP servers are installed before the clean checkpoint and select the warm Sprite by digest', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, client, builder } = fixture();
+    const uploads = watchPackageInstalls(client);
+    const launch = async (install?: ReturnType<typeof packageInstall>) => launchContext.run({ taskId: 'ext', secrets: [], mounts: [],
+        requires: { packageMcp: install ? ['local-tools'] : [] }, ...(install ? { packageInstall: install } : {}), beforeLaunch: async () => {} }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        const result = await run.wait();
+        await run.release!();
+        return result;
+    });
+    const first = await launch(packageInstall());
+    assert.equal(first.exitCode, 0);
+    assert.deepEqual(client.created[0].events.slice(0, 3), ['install-packages', 'checkpoint', 'restore']);
+    assert.equal(typeof first.computeUsage?.packageServerInstallMs, 'number', 'the install time is part of the run\'s compute usage');
+    assert.ok(uploads.includes('/var/tmp/propr-setup/extension-stdio-bridge.mjs'), 'the stdio bridge is installed with the setup scripts');
+    assert.ok(uploads.includes('/var/tmp/propr-setup/package-servers.py'));
+    // The same package server set reuses the warm Sprite without installing again.
+    const second = await launch(packageInstall());
+    assert.equal(client.created.length, 1);
+    assert.equal(second.computeUsage?.packageServerInstallMs, undefined);
+    // Another set (another library revision) retires the warm Sprite instead of reusing it.
+    await launch(packageInstall('b'));
+    assert.equal(client.created.length, 2);
+    assert.deepEqual(client.deleted, [client.created[0].name]);
+    assert.deepEqual(client.created[1].events.slice(0, 2), ['install-packages', 'checkpoint']);
+    // No package servers: no install step, and the Sprite built for servers is not reused either.
+    await launch();
+    assert.equal(client.created.length, 3);
+    assert.ok(!client.created[2].events.includes('install-packages'));
+    await runtime.close();
+});
+
+test('a failed package MCP server install fails provisioning with the end of npm\'s output', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, client, builder } = fixture();
+    watchPackageInstalls(client, 'npm error 404 Not Found - GET https://registry.npmjs.org/propr-fixture-mcp');
+    await launchContext.run({ taskId: 'ext', secrets: [], mounts: [], requires: { packageMcp: ['local-tools'] }, packageInstall: packageInstall(), beforeLaunch: async () => {} }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        await assert.rejects(run.wait(), /Failed to provision the clean Sprite checkpoint: npm error 404 Not Found/);
+        await run.release!();
+    });
+    assert.deepEqual(client.deleted, [client.created[0].name], 'the half-provisioned Sprite is deleted');
+    assert.ok(!client.created[0].events.includes('launch'));
     await runtime.close();
 });
 

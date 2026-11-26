@@ -14,6 +14,7 @@ import type { AgentRunMount, AgentRunSpec } from '../types.js';
 import type { MachineLaunch, MachinesApi } from './api.js';
 import type { FlyConfig } from './config.js';
 import { RUN, AGENT, WRAPPER, wrapper } from './wrapper.js';
+import { PACKAGE_SERVER_INSTALLER, packageServerInstallSpec, type RemotePackageInstall } from '../../../extensions/remotePackageServers.js';
 
 export const helper = ['/usr/bin/python3', '-I', WRAPPER];
 const PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -98,14 +99,24 @@ function providerArgv(spec: AgentRunSpec, provider: 'claude' | 'codex') {
     return [spec.repoSetup?.providerEntrypoint ?? spec.entrypoint ?? `/home/node/${provider}-entrypoint.sh`, ...spec.args];
 }
 
-/** What the run's extension launch adds to the Machine: skill bundle files and secrets to redact. */
-export interface FlyExtensionLaunch { skillFiles?: readonly ExtensionSkillFile[]; secrets?: readonly string[] }
+/** What the run's extension launch adds to the Machine: skill bundle files, package servers to install and secrets to redact. */
+export interface FlyExtensionLaunch { skillFiles?: readonly ExtensionSkillFile[]; secrets?: readonly string[]; packageInstall?: RemotePackageInstall }
+
+/** Where the wrapper finds the package server installer and its input; it records the outcome next to them. */
+export const PACKAGE_SERVERS = { installer: '/opt/propr/fly-package-servers.py', spec: RUN + '/package-servers.json',
+    result: RUN + '/package-servers-result', read: RUN + '/package-servers-read' } as const;
 
 /** Library skill bundles: root-owned and read-only for the agent, like Docker's read-only mount. */
 function stageExtension(extension: FlyExtensionLaunch | undefined, add: AddFile) {
     const files = extension?.skillFiles ?? [];
     for (const file of files) add(`${EXTENSION_SKILLS_ROOT}/${extensionSkillPath(file.path)}`, file.content, 0o444);
-    return { secrets: extension?.secrets ?? [], skills: files.length > 0 };
+    // Package servers are installed by root at Machine start, before the agent (none: no install step at all).
+    const packageServers = extension?.packageInstall?.servers ?? [];
+    if (packageServers.length) {
+        add(PACKAGE_SERVERS.installer, PACKAGE_SERVER_INSTALLER, 0o644);
+        add(PACKAGE_SERVERS.spec, packageServerInstallSpec(extension!.packageInstall!));
+    }
+    return { secrets: extension?.secrets ?? [], skills: files.length > 0, packageServers };
 }
 
 export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig, extension?: FlyExtensionLaunch) {
@@ -161,7 +172,7 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
         processes: [{ user: 'root', ignore_app_secrets: true, entrypoint: ['/usr/bin/setpriv', '--no-new-privs', ...helper], cmd: ['launch'] }], files,
     } };
     if (JSON.stringify(launch).includes(config.token)) throw new Error('Fly API credential found in Machine configuration');
-    return { launch, credentialPath, secrets: [...new Set([config.token, ...secrets].filter(Boolean))],
+    return { launch, credentialPath, secrets: [...new Set([config.token, ...secrets].filter(Boolean))], packageServers: extensionStaged.packageServers,
         markerArgs: transportEnv.PROPR_REPO_SETUP === '0' || !setup ? [] : [setup.script],
         async commit(api: MachinesApi, id: string) {
             if (!store) return;

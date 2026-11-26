@@ -114,10 +114,13 @@ Agents on Sprites and Fly Machines get these extensions:
 | Repository skills, `AGENTS.md` and `CLAUDE.md` | Yes | Yes |
 | Library skill bundles | Yes | Yes |
 | Library URL MCP servers | Yes, through the ProPR extension gateway | Yes, through the ProPR extension gateway |
-| Library package (stdio) MCP servers | No | No |
+| Library package (stdio) MCP servers | Yes, installed while the Sprite is provisioned | Yes, installed at Machine start |
+| Operator catalog stdio servers | No | No |
 | ProPR MCP | Yes, at the reachable URL | Yes, at the reachable URL |
 
-An auto-applied package server is dropped from a Fly run. The task timeline and the issue or pull request comment name the dropped server. A run that adds a package server explicitly is refused with an error naming the server. To use package servers, run that agent on Docker. See [Extensions by runtime](../architecture/agent-runtime.md#extensions-by-runtime).
+Package servers are installed inside the Sprite or Machine from the worker's verified install, with `npm ci` and no lifecycle scripts, so the Sprite or Machine must reach the npm registry. A Sprite is provisioned with the run's package servers before its clean checkpoint. A warm Sprite built for another set, for example after a library change, is deleted, not reused. A Fly Machine installs them before the agent starts, within 10 minutes. A failed install fails the run with the end of npm's output. Runs report the install time as `packageServerInstallMs` in compute usage.
+
+An auto-applied operator catalog stdio server is dropped from a Fly run. The task timeline and the issue or pull request comment name the dropped server. A run that adds one explicitly is refused with an error naming the server. To use them, run that agent on Docker. See [Extensions by runtime](../architecture/agent-runtime.md#extensions-by-runtime).
 
 ## Who can access the work
 

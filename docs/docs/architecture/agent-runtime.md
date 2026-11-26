@@ -12,7 +12,7 @@ The worker selects the agent’s configured runtime, then the instance default (
 | Workspace | Host worktree or clone | Clone with scoped token | Clone with scoped token |
 | Isolation and lifetime | Container per run on the operator’s daemon | One run per leased Sprite, restored to a clean checkpoint before reuse | Fresh Machine per run, destroyed after result retrieval |
 | Restricted network | Worker allowlist proxy | Sprite DNS allowlist | Restricted runs refused |
-| Extension Library | Skill bundles, URL and package MCP servers | Skill bundles and URL MCP servers | Skill bundles and URL MCP servers |
+| Extension Library | Skill bundles, URL, package and operator catalog stdio MCP servers | Skill bundles, URL and package MCP servers | Skill bundles, URL and package MCP servers |
 | Capacity | Host CPU, RAM and worker concurrency | Redis-backed pool, default two Sprites | Available Machine slots in the agent app’s organization |
 
 For what each runtime gives the agent from the Extension Library and elsewhere, see [Extensions by runtime](#extensions-by-runtime). For the run contract see [Coding Agent Integration](./coding-agent-integration.md). For a control plane that delegates all agent work to Fly, follow [Run ProPR on Fly](../tutorials/setup-fly.md).
@@ -89,19 +89,28 @@ After a crash or failed deletion, use `sprite list --prefix propr-` in the worke
 | Repository skills, `AGENTS.md` and `CLAUDE.md` | Yes, with the worktree | Yes, with the clone | Yes, with the clone |
 | Library skill bundles | Yes, read-only mount | Yes, uploaded read-only | Yes, as read-only Machine files |
 | Library URL MCP servers | Yes | Yes | Yes |
-| Library package (stdio) MCP servers and operator catalog stdio servers | Yes | No | No |
+| Library package (stdio) MCP servers | Yes, read-only mount | Yes, installed in the clean checkpoint | Yes, installed at Machine start |
+| Operator catalog stdio servers | Yes | No | No |
 | ProPR MCP | Private network or reachable URL | Reachable URL | Reachable URL |
 
 Library skill bundles appear at `/opt/propr/extensions/<bundle id>/` in every runtime, and the run prompt points the agent at each `SKILL.md`. Docker bind-mounts the worker's validated staging directory. Sprites and Fly Machines receive the same files, checked against the bundle digest the run resolved, in the run's upload: root-owned and read-only for the agent, and gone when the Sprite is restored or the Machine destroyed, like the per-run credential copies.
 
 URL MCP servers reach the run through the ProPR extension gateway with the run's grant token, so the run needs only the gateway. On Sprites and Fly Machines the gateway URL is derived from the run's reachable ProPR MCP URL (`PROPR_SPRITES_MCP_URL` or `PROPR_FLY_MCP_URL`, else `PROPR_AGENT_MCP_URL` without a pinned network, else `API_PUBLIC_URL`) by replacing `/api/mcp` with `/api/extensions/mcp`. A restricted Sprite allows the gateway host beside the ProPR MCP host. The gateway checks each upstream server against the run's network policy, as for Docker. With no reachable URL, URL servers count as unsupported on that runtime.
 
-Package servers are installed and verified on the worker and bind-mounted into Docker runs. Sprites and Fly Machines do not install them yet. The registry refuses only the classes a runtime cannot run:
+Package servers are installed and verified on the worker first, on every runtime: the same registry, exact version, integrity value and no lifecycle scripts (see [Local package servers](../features/agent-extensions.md#local-package-servers)). Docker bind-mounts that install. Sprites and Fly Machines replay it inside the sandbox: they receive the worker install's `package.json` and `package-lock.json`, run `npm ci --ignore-scripts` from the same registry, so every dependency is checked against the integrity value in the lock file, check that the lock pins the package at its stored integrity value and that the installed package reports the pinned version, and make the result root-owned and read-only at `/opt/propr/packages/<key>`. The servers then run next to the agent through the same stdio bridge as on Docker, with the same plain variables, secrets passed by environment name only, and the run's network policy.
+
+- **Sprites** install the run's package servers while provisioning a Sprite, before its clean checkpoint, so each run restored from it has them. The warm pool matches on a digest of the installed package-server set: an idle Sprite built for another set, such as an earlier library revision, is deleted rather than reused. A run that needs a new set therefore provisions a fresh Sprite. A failed install fails provisioning with the end of npm's output.
+- **Fly Machines** install them at Machine start, as root, before the agent and before the start gate opens, within a 10-minute limit. A failed or timed-out install fails the run with the end of npm's output and destroys the Machine without starting the agent. A run without package servers has no install step.
+- On both, the install time is reported as `packageServerInstallMs` in the run's compute usage (part of `provisioningMs`; a warm Sprite reports none). The sandbox must reach the npm registry: a private mirror set with `PROPR_EXTENSION_NPM_REGISTRY` must be reachable from Sprites and Fly Machines too.
+
+Operator catalog stdio servers run an executable that must already exist in the run's image, which Sprites and Fly Machines do not provide. The registry refuses only the classes a runtime cannot run:
 
 - An auto-applied item the runtime cannot run is dropped for that run. The run's `extensions.resolved` event lists it as skipped with reason `agent_runtime_unsupported`, and the issue or pull request comment carries a note naming it. The run continues.
-- An explicitly added item the runtime cannot run refuses the run with an `AgentRuntimeCapabilityError` (`skills`, `remote_mcp` or `package_mcp`) that names the item.
+- An explicitly added item the runtime cannot run refuses the run with an `AgentRuntimeCapabilityError` (`skills`, `remote_mcp`, `package_mcp` or `catalog_mcp`) that names the item.
 
-A custom runtime declares the classes it applies in `capabilities.extensions` (`skills`, `remoteMcp`, `packageMcp`). Without that field, Docker applies every class and other runtimes none.
+A custom runtime declares the classes it applies in `capabilities.extensions` (`skills`, `remoteMcp`, `packageMcp`, and optionally `catalogMcp`, which defaults to `packageMcp`). Without that field, Docker applies every class and other runtimes none. A custom runtime without `packageMcp` keeps the rule above for package servers.
+
+Each run that applies library items logs one line, `Extension Library items applied to this run`, with the runtime, library revision, an `extensionDigest` of the applied items, the counts `skills`, `urlServers`, `packageServers` and `catalogStdioServers`, and the `packageServersDigest`. Sprites log `Installed package MCP servers on Sprite` and Fly Machines `Installed package MCP servers at Fly Machine start`, with the same digest and the install time.
 
 ## Container Configuration
 

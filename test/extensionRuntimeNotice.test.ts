@@ -25,8 +25,8 @@ after(async () => {
 });
 
 const notice = extensionRuntimeDropNotice({
-    runtime: 'sprites', servers: ['local-files'], skills: [],
-    message: 'Agent runtime "sprites" cannot run package (stdio) MCP servers, so this run launched without these auto-applied Extension Library items: MCP server "local-files".',
+    runtime: 'sprites', servers: ['operator-tool'], skills: [],
+    message: 'Agent runtime "sprites" cannot run operator catalog stdio MCP servers, so this run launched without these auto-applied Extension Library items: MCP server "operator-tool".',
 });
 
 test('the issue completion comment carries the dropped-items note', async () => {
@@ -35,7 +35,7 @@ test('the issue completion comment carries the dropped-items note', async () => 
     });
     assert.equal(response.extensionNotice, notice);
     const comment = await generateCompletionComment(response, { number: 1, repoOwner: 'team', repoName: 'repo' });
-    assert.match(comment, /> \[!NOTE\]\n> Agent runtime "sprites" cannot run package \(stdio\) MCP servers.*"local-files"\. Run the agent on the docker runtime/);
+    assert.match(comment, /> \[!NOTE\]\n> Agent runtime "sprites" cannot run operator catalog stdio MCP servers.*"operator-tool"\. Run the agent on the docker runtime/);
     const without = await generateCompletionComment({ ...response, extensionNotice: undefined }, { number: 1, repoOwner: 'team', repoName: 'repo' });
     assert.doesNotMatch(without, /Extension Library/);
 });
@@ -47,5 +47,5 @@ test('the pull request follow-up comment carries the dropped-items note', async 
         summary: 'Looked into it.', extensionNotice: notice,
     };
     const comment = await buildCompletionComment(null, comments, { changesSummary: 'Looked into it.', commitMessage: '', llm: 'claude-opus', authorsText: '@reviewer' }, result);
-    assert.match(comment, /MCP server "local-files"/);
+    assert.match(comment, /MCP server "operator-tool"/);
 });

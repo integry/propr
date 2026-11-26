@@ -252,8 +252,13 @@ export interface AgentRuntimeExtensionCapabilities {
     skills: boolean;
     /** URL MCP servers, reached through the ProPR extension gateway with the run's grant token. */
     remoteMcp: boolean;
-    /** Local stdio MCP servers: verified npm package servers and operator catalog executables. */
+    /** npm package (stdio) MCP servers, installed from their pinned, integrity-checked lock files and run next to the agent. */
     packageMcp: boolean;
+    /**
+     * Operator catalog stdio servers: executables that must already exist in
+     * the run's image. Absent means the same as `packageMcp`.
+     */
+    catalogMcp?: boolean;
 }
 
 export interface AgentRuntimeCapabilities {

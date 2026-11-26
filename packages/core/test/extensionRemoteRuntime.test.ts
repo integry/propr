@@ -21,9 +21,9 @@ const skillFiles = () => [{ path: 'SKILL.md', content: Buffer.from('---\nname: r
 const result = { success: true, executionTimeMs: 0, modifiedFiles: [], commitMessage: null, logs: '', modelUsed: 'synthetic' };
 const claude = { type: 'claude', alias: 'claude-main', id: randomUUID(), enabled: true, dockerImage: 'synthetic', configPath: '/unused', supportedModels: ['synthetic'] } as AgentConfig;
 const issueTask = (): AgentExtensionRequest => taskRunExtensionRequest({ kind: 'issue', repository: 'team/repo' });
-/** A Sprites-like runtime: uploads skills, reaches the gateway at a public URL, runs no package servers. */
+/** A Sprites-like runtime: uploads skills, reaches the gateway at a public URL, installs package servers, has no operator catalog executables. */
 const remote = (capabilities: Partial<ExtensionRuntimeSupport['capabilities']> = {}): ExtensionRuntimeSupport => ({
-  kind: 'sprites', capabilities: { skills: true, remoteMcp: true, packageMcp: false, ...capabilities }, bindsSkills: false, mcpEndpoint: 'https://propr.example/api/mcp',
+  kind: 'sprites', capabilities: { skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false, ...capabilities }, bindMounts: false, mcpEndpoint: 'https://propr.example/api/mcp',
 });
 
 async function fixture(t: TestContext) {
@@ -66,7 +66,8 @@ test('a remote runtime receives validated skill files and gateway URL servers in
   const { launched, returned, event } = await run(issueTask(), remote());
   const launch = launched.launch!;
   assert.deepEqual(launch.mounts, [], 'nothing is bind-mounted into a remote run');
-  assert.deepEqual(launch.requires, { skills: ['release-notes'], remoteMcp: ['docs'], packageMcp: [] });
+  assert.deepEqual(launch.requires, { skills: ['release-notes'], remoteMcp: ['docs'], packageMcp: [], catalogMcp: [] });
+  assert.equal(launch.packageInstall, undefined, 'nothing to install without package servers');
   assert.deepEqual(launch.skillFiles!.map(file => file.path), [`${bundle.id}/SKILL.md`]);
   assert.match(launch.skillFiles![0].content.toString(), /Write them\./);
   assert.equal(launch.gatewayUrl, 'https://propr.example/api/extensions/mcp');
@@ -81,7 +82,7 @@ test('auto-applied items a remote runtime cannot apply are dropped with a note; 
   const { save, run, bundle } = await fixture(t);
   await save({ servers: [server()], skills: [{ bundleId: bundle.id, enabled: true, repositories: [], agents: [], autoApply: true }] });
   const { launched, returned, event, reason } = await run(issueTask(), remote({ remoteMcp: false }));
-  assert.deepEqual(launched.launch!.requires, { skills: ['release-notes'], remoteMcp: [], packageMcp: [] });
+  assert.deepEqual(launched.launch!.requires, { skills: ['release-notes'], remoteMcp: [], packageMcp: [], catalogMcp: [] });
   assert.deepEqual(launched.prepared.toolPolicy!.mcpServers, []);
   assert.deepEqual(event.servers, []);
   assert.deepEqual(event.skipped, [{ kind: 'server', name: 'docs', reason: 'agent_runtime_unsupported', source: 'auto' }]);
@@ -105,27 +106,37 @@ test('explicitly added items a remote runtime cannot apply refuse the run with t
     (error: Error & { capability?: string }) => error.capability === 'skills' && /"release-notes"/.test(error.message));
 });
 
-test('package and catalog stdio servers are a separate class: auto-applied ones dropped, explicit ones refused by name', async () => {
+test('package servers run on a remote runtime that installs them; catalog stdio servers are a separate class it can lack', async () => {
   const pkg = { kind: 'package', name: 'local-files' } as ExtensionLibraryServer;
   const stdio = { kind: 'catalog', name: 'operator-tool', catalogId: 'tool' } as ExtensionLibraryServer;
   const url = { kind: 'https', name: 'docs' } as ExtensionLibraryServer;
   const set: ResolvedExtensionSet = { servers: [pkg, stdio, url], skills: [], skipped: [], omitted: [] };
   const classify = (s: ExtensionLibraryServer) => serverExtensionClass(s, s.name === 'operator-tool' ? 'stdio' : 'https');
   assert.equal(serverExtensionClass({ kind: 'catalog', name: 'internal' } as ExtensionLibraryServer, 'https'), 'remoteMcp');
+  assert.equal(serverExtensionClass(pkg), 'packageMcp');
+  assert.equal(serverExtensionClass(stdio, 'stdio'), 'catalogMcp');
   const auto = await applyRuntimeSupport(set, issueTask(), remote(), classify);
-  assert.deepEqual(auto.set.servers.map(s => s.name), ['docs']);
-  assert.deepEqual(auto.dropped!.servers, ['local-files', 'operator-tool']);
-  assert.match(auto.dropped!.message, /cannot run package \(stdio\) MCP servers/);
-  await assert.rejects(applyRuntimeSupport(set, { ...issueTask(), servers: ['local-files'] }, remote(), classify),
+  assert.deepEqual(auto.set.servers.map(s => s.name), ['local-files', 'docs'], 'package servers are kept: Sprites and Fly install them');
+  assert.deepEqual(auto.dropped!.servers, ['operator-tool']);
+  assert.match(auto.dropped!.message, /cannot run operator catalog stdio MCP servers/);
+  const explicitPackage = await applyRuntimeSupport(set, { ...issueTask(), servers: ['local-files'] }, remote(), classify);
+  assert.deepEqual(explicitPackage.set.servers.map(s => s.name), ['local-files', 'docs']);
+  await assert.rejects(applyRuntimeSupport(set, { ...issueTask(), servers: ['operator-tool'] }, remote(), classify),
+    (error: Error & { capability?: string }) => error.capability === 'catalog_mcp' && /"operator-tool"/.test(error.message));
+  // A custom runtime without the capability keeps the interim rule for package servers: dropped when auto-applied, refused when explicit.
+  const custom = remote({ packageMcp: false });
+  assert.deepEqual((await applyRuntimeSupport(set, issueTask(), custom, classify)).dropped!.servers, ['local-files', 'operator-tool']);
+  await assert.rejects(applyRuntimeSupport(set, { ...issueTask(), servers: ['local-files'] }, custom, classify),
     (error: Error & { capability?: string }) => error.capability === 'package_mcp' && /"local-files"/.test(error.message));
-  const docker = await applyRuntimeSupport(set, { ...issueTask(), servers: ['local-files'] }, { ...remote({ packageMcp: true }), bindsSkills: true }, classify);
+  const docker = await applyRuntimeSupport(set, { ...issueTask(), servers: ['local-files'] }, { ...remote({ catalogMcp: true }), bindMounts: true }, classify);
   assert.equal(docker.set, set, 'a runtime that applies every class keeps the set untouched');
 });
 
 test('the run\'s runtime decides support: Docker applies all, Sprites and Fly upload skills and reach the gateway at their MCP URL', async () => {
-  assert.deepEqual((await extensionRuntimeSupport({}, 'open', {})).capabilities, { skills: true, remoteMcp: true, packageMcp: true });
+  assert.deepEqual((await extensionRuntimeSupport({}, 'open', {})).capabilities, { skills: true, remoteMcp: true, packageMcp: true, catalogMcp: true });
   const sprites = await extensionRuntimeSupport({ runtime: 'sprites' }, 'open', { PROPR_SPRITES_MCP_URL: 'https://propr.example/api/mcp' });
-  assert.deepEqual(sprites, { kind: 'sprites', capabilities: { skills: true, remoteMcp: true, packageMcp: false }, bindsSkills: false, mcpEndpoint: 'https://propr.example/api/mcp' });
+  assert.deepEqual(sprites, { kind: 'sprites', capabilities: { skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false }, bindMounts: false, mcpEndpoint: 'https://propr.example/api/mcp' });
+  assert.equal((await extensionRuntimeSupport({ runtime: 'fly-machines' }, 'open', { API_PUBLIC_URL: 'https://propr.example' })).capabilities.packageMcp, true);
   const fly = await extensionRuntimeSupport({ runtime: 'fly-machines' }, 'open', { API_PUBLIC_URL: 'https://propr.example' });
   assert.equal(fly.mcpEndpoint, 'https://propr.example/api/mcp');
   assert.equal(fly.capabilities.remoteMcp, true);

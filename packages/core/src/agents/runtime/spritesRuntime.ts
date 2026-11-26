@@ -19,12 +19,13 @@ import logger from '../../utils/logger.js';
 import { LiveOutputLog } from '../impl/utils/liveOutputLog.js';
 import { SpriteInventory, type SpritePoolRedis } from './sprites/spritesInventory.js';
 
-const SPRITES_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: false });
+// Operator catalog executables are not part of a Sprite: those servers stay refused (explicit) or dropped (auto-applied).
+const SPRITES_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false });
 
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
     // Skill bundles travel with the run's upload and URL MCP servers through the extension gateway.
-    // Package servers are not installed on Sprites yet: auto-applied ones are dropped, explicit ones refused.
+    // Package servers are installed while the Sprite is provisioned, in its clean checkpoint.
     static readonly capabilities = { extensions: SPRITES_EXTENSION_CAPABILITIES, supportsBindMounts: false, supportsRestrictedNetwork: true,
         restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
         supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
@@ -118,7 +119,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const launch = { spec, options, token, inputPath, skillFiles: extension?.skillFiles };
             const validated = validateSpriteRun(launch, envDefaults);
             const ready = await startupStep(signal, () => pool);
-            const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs } = await startupStep(signal, async () => {
+            const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs, packageServerInstallMs } = await startupStep(signal, async () => {
                 const acquired = await ready.acquire(signal, () => {
                     diagnostics.push('Waiting for a Sprite');
                     output.write('stderr', 'Waiting for a Sprite\n');
@@ -128,7 +129,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                         log.append('Waiting for a Sprite\n', 'stderr');
                         void log.close().catch(() => {});
                     }
-                });
+                }, extension?.packageInstall);
                 const checkedOutAt = Date.now();
                 if (acquired.lease) signal = AbortSignal.any([signal, acquired.lease]);
                 const waitIndex = diagnostics.indexOf('Waiting for a Sprite');
@@ -148,7 +149,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => payload.upload(acquired.sprite));
                     signal.throwIfAborted();
                     slot = acquired;
-                    return { sprite: acquired.sprite, prepared: payload, checkedOutAt, queueMs: acquired.queueMs, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs };
+                    return { sprite: acquired.sprite, prepared: payload, checkedOutAt, queueMs: acquired.queueMs, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs,
+                        packageServerInstallMs: acquired.packageServerInstallMs };
                 } catch (error) {
                     // An interrupted policy change or upload can still write to the Sprite.
                     if (prepared || (networkPolicy && !acquired.restricted)) await ready.discard(acquired.sprite);
@@ -163,7 +165,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
                 });
                 return { ...executed, computeUsage: { runtime: 'sprites', wallTimeMs: Date.now() - checkedOutAt + provisioningMs + restoreMs,
-                    queueMs, provisioningMs, restoreMs, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
+                    queueMs, provisioningMs, restoreMs, ...(packageServerInstallMs !== undefined && { packageServerInstallMs }), cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
                     costUsd: null, costSource: null } };
             } finally {
                 if (!commit && slot) {

@@ -148,4 +148,6 @@ for script in claude-entrypoint.sh codex-entrypoint.sh antigravity-entrypoint.sh
 done
 install -m 0755 "$source_dir/gh-wrapper.sh" /usr/local/bin/gh-wrapper
 install -m 0755 "$source_dir/sprites-launcher.py" /opt/propr/launcher.py
+# Package and catalog stdio MCP servers run through the same bridge as in the Docker task image.
+install -m 0644 "$source_dir/extension-stdio-bridge.mjs" /opt/propr/extension-stdio-bridge.mjs
 configure_agent_git node /home/node

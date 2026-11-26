@@ -1,18 +1,22 @@
+import { createHash } from 'node:crypto';
 import type { ExtensionLibraryServer, ExtensionSkippedItem, ResolvedExtensionSet } from '@propr/shared';
 import type { AgentConfig, AgentExtensionRequest } from '../agents/types.js';
 import {
-  EXTENSION_CLASS_INFO, extensionClassRefusal, runtimeExtensionCapabilities, type AgentRuntimeExtensionClass,
+  EXTENSION_CLASSES, EXTENSION_CLASS_INFO, extensionClassRefusal, runtimeExtensionCapabilities, type AgentRuntimeExtensionClass, type ResolvedExtensionCapabilities,
 } from '../agents/runtime/extensionCapabilities.js';
 import { DEFAULT_AGENT_RUNTIME, selectedAgentRuntimeName } from '../agents/runtime/runtimeSelection.js';
 import type { AgentNetworkMode } from '../network/networkPolicy.js';
-import type { AgentRuntimeExtensionCapabilities } from '../agents/runtime/types.js';
 
 /** What the run's runtime can do with library items, resolved before any item is prepared. */
 export interface ExtensionRuntimeSupport {
   kind: string;
-  capabilities: AgentRuntimeExtensionCapabilities;
-  /** Skill bundles are bind-mounted from the worker's staging directory (Docker) rather than uploaded. */
-  bindsSkills: boolean;
+  capabilities: ResolvedExtensionCapabilities;
+  /**
+   * Skill bundles and package servers are bind-mounted from the worker (Docker).
+   * Without bind mounts, skill files are uploaded and package servers are
+   * installed inside the sandbox from the worker's verified install.
+   */
+  bindMounts: boolean;
   /**
    * The ProPR MCP URL the run reaches without a private network: the
    * extension gateway is derived from it so remote runs reach the gateway too.
@@ -21,7 +25,7 @@ export interface ExtensionRuntimeSupport {
 }
 
 const DOCKER_SUPPORT: ExtensionRuntimeSupport = Object.freeze({
-  kind: DEFAULT_AGENT_RUNTIME, capabilities: Object.freeze({ skills: true, remoteMcp: true, packageMcp: true }), bindsSkills: true,
+  kind: DEFAULT_AGENT_RUNTIME, capabilities: Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: true }), bindMounts: true,
 });
 
 /**
@@ -34,18 +38,25 @@ export async function extensionRuntimeSupport(config: Pick<AgentConfig, 'runtime
   const { getAgentRuntime } = await import('../agents/runtime/registry.js');
   const runtime = getAgentRuntime(config, environment);
   const capabilities = { ...runtimeExtensionCapabilities(runtime) };
-  if (runtime.capabilities.supportsBindMounts && runtime.capabilities.supportsMcpPrivateNetwork) return { kind: runtime.kind, capabilities, bindsSkills: true };
+  if (runtime.capabilities.supportsBindMounts && runtime.capabilities.supportsMcpPrivateNetwork) return { kind: runtime.kind, capabilities, bindMounts: true };
   const { planAgentRunMcpTransport } = await import('../agents/runtime/agentRunMcpTransport.js');
   const plan = planAgentRunMcpTransport(runtime, environment, networkMode);
   // Without an endpoint the run reaches, URL servers have no gateway to call.
+  // TODO(#3817): once Sprites reach ProPR MCP through the per-run SSH reverse forward
+  // (127.0.0.1:39080 -> internal API) when there is no public URL, point the gateway
+  // at that forward's /api/extensions/mcp instead of treating URL servers as unsupported.
   if (plan.transport !== 'reachable-url') capabilities.remoteMcp = false;
-  return { kind: runtime.kind, capabilities, bindsSkills: runtime.capabilities.supportsBindMounts, ...(plan.transport === 'reachable-url' ? { mcpEndpoint: plan.url } : {}) };
+  return { kind: runtime.kind, capabilities, bindMounts: runtime.capabilities.supportsBindMounts, ...(plan.transport === 'reachable-url' ? { mcpEndpoint: plan.url } : {}) };
 }
 
-/** URL servers (direct or operator catalog over HTTPS) need only network reach; package and catalog stdio servers run locally. */
+/**
+ * URL servers (direct or operator catalog over HTTPS) need only network reach.
+ * Package servers are installed next to the agent; operator catalog stdio
+ * servers run an executable that must already be in the run's image.
+ */
 export type ServerClassifier = (server: ExtensionLibraryServer) => Promise<AgentRuntimeExtensionClass> | AgentRuntimeExtensionClass;
 export const serverExtensionClass = (server: ExtensionLibraryServer, catalogKind?: 'stdio' | 'https'): AgentRuntimeExtensionClass =>
-  server.kind === 'package' || (server.kind === 'catalog' && catalogKind === 'stdio') ? 'packageMcp' : 'remoteMcp';
+  server.kind === 'package' ? 'packageMcp' : server.kind === 'catalog' && catalogKind === 'stdio' ? 'catalogMcp' : 'remoteMcp';
 
 export interface ExtensionRuntimeDrop {
   runtime: string;
@@ -62,7 +73,7 @@ export interface ExtensionRuntimeDrop {
  */
 export async function applyRuntimeSupport(set: ResolvedExtensionSet, request: AgentExtensionRequest, support: ExtensionRuntimeSupport, classify: ServerClassifier): Promise<{ set: ResolvedExtensionSet; dropped?: ExtensionRuntimeDrop }> {
   const { capabilities, kind } = support;
-  if (capabilities.skills && capabilities.remoteMcp && capabilities.packageMcp) return { set };
+  if (EXTENSION_CLASSES.every(extensionClass => capabilities[extensionClass])) return { set };
   const runtime = { kind, capabilities: { extensions: capabilities } };
   const unsupportedServers = new Map<string, AgentRuntimeExtensionClass>();
   for (const server of set.servers) {
@@ -71,7 +82,7 @@ export async function applyRuntimeSupport(set: ResolvedExtensionSet, request: Ag
   }
   const unsupportedSkills = capabilities.skills ? [] : set.skills;
   // Explicit items keep their strict behaviour: refused, never silently dropped.
-  for (const extensionClass of ['remoteMcp', 'packageMcp'] as const) {
+  for (const extensionClass of ['remoteMcp', 'packageMcp', 'catalogMcp'] as const) {
     const explicit = [...unsupportedServers].filter(([name, c]) => c === extensionClass && request.servers.includes(name)).map(([name]) => name);
     if (explicit.length) throw extensionClassRefusal(runtime, extensionClass, explicit);
   }
@@ -95,3 +106,18 @@ export async function applyRuntimeSupport(set: ResolvedExtensionSet, request: Ag
 /** The Markdown note a run's issue or pull request comment carries for dropped items. */
 export const extensionRuntimeDropNotice = (dropped: ExtensionRuntimeDrop) =>
   `> [!NOTE]\n> ${dropped.message} Run the agent on the docker runtime to apply them.`;
+
+/** One value for the items a run applies: equal servers and skill bundle contents give the same digest. */
+export function extensionSetDigest(set: Pick<ResolvedExtensionSet, 'servers' | 'skills'>): string {
+  const servers = set.servers.map(server => JSON.stringify(server)).sort();
+  const skills = set.skills.map(skill => `${skill.bundleId}:${skill.bundle.digest}`).sort();
+  return createHash('sha256').update(JSON.stringify({ servers, skills })).digest('hex').slice(0, 16);
+}
+
+/** Fields of the per-run log line: the extension digest and how many items of each class the run carries. */
+export function extensionApplicationLog(run: { taskId: string; runtime: string; revision: number; set: Pick<ResolvedExtensionSet, 'servers' | 'skills'>;
+  requires: Record<AgentRuntimeExtensionClass, readonly string[]>; packageFields: Record<string, unknown> }) {
+  const { requires } = run;
+  return { taskId: run.taskId, runtime: run.runtime, revision: run.revision, extensionDigest: extensionSetDigest(run.set), skills: requires.skills.length,
+    urlServers: requires.remoteMcp.length, catalogStdioServers: requires.catalogMcp.length, ...run.packageFields, packageServers: requires.packageMcp.length };
+}

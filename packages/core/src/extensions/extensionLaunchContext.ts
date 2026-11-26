@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { startsContainer, type AgentRunLaunch } from '../agents/runtime/agentRunLaunch.js';
 import type { ExtensionLaunchRequirements } from '../agents/runtime/extensionCapabilities.js';
+import type { RemotePackageInstall } from './remotePackageServers.js';
 
 /** One validated skill bundle file, relative to {@link EXTENSION_SKILLS_ROOT}. */
 export interface ExtensionSkillFile { path: string; content: Buffer }
@@ -18,6 +19,8 @@ interface LaunchContext {
   skillFiles?: readonly ExtensionSkillFile[];
   /** The extension gateway URL the run's URL MCP servers point at, so a restricted runtime can allow its host. */
   gatewayUrl?: string;
+  /** Package servers a runtime without bind mounts installs inside the sandbox before the agent starts. */
+  packageInstall?: RemotePackageInstall;
 }
 export const launchContext = new AsyncLocalStorage<LaunchContext>();
 export const currentExtensionLaunch = () => launchContext.getStore();

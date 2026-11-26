@@ -3,7 +3,7 @@ import { DEFAULT_AGENT_RUNTIME } from './runtimeSelection.js';
 
 export type AgentRuntimeExtensionClass = keyof AgentRuntimeExtensionCapabilities;
 
-export type AgentRuntimeCapability = 'skills' | 'remote_mcp' | 'package_mcp' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'agent_config';
+export type AgentRuntimeCapability = 'skills' | 'remote_mcp' | 'package_mcp' | 'catalog_mcp' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'agent_config';
 
 /**
  * A run refused before launch because its runtime cannot provide what the
@@ -18,23 +18,27 @@ export class AgentRuntimeCapabilityError extends Error {
     }
 }
 
-export const EXTENSION_CLASSES: readonly AgentRuntimeExtensionClass[] = ['skills', 'remoteMcp', 'packageMcp'];
+export const EXTENSION_CLASSES: readonly AgentRuntimeExtensionClass[] = ['skills', 'remoteMcp', 'packageMcp', 'catalogMcp'];
 
 /** The refusal capability and the operator-facing name of each extension class. */
 export const EXTENSION_CLASS_INFO: Record<AgentRuntimeExtensionClass, { capability: AgentRuntimeCapability; label: string }> = {
     skills: { capability: 'skills', label: 'library skill bundles' },
     remoteMcp: { capability: 'remote_mcp', label: 'URL MCP servers' },
     packageMcp: { capability: 'package_mcp', label: 'package (stdio) MCP servers' },
+    catalogMcp: { capability: 'catalog_mcp', label: 'operator catalog stdio MCP servers' },
 };
 
-const ALL: AgentRuntimeExtensionCapabilities = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true });
-const NONE: AgentRuntimeExtensionCapabilities = Object.freeze({ skills: false, remoteMcp: false, packageMcp: false });
+export type ResolvedExtensionCapabilities = Required<AgentRuntimeExtensionCapabilities>;
+const ALL: ResolvedExtensionCapabilities = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: true });
+const NONE: ResolvedExtensionCapabilities = Object.freeze({ skills: false, remoteMcp: false, packageMcp: false, catalogMcp: false });
 
 export type ExtensionRuntime = { kind: string; capabilities: Pick<AgentRuntimeCapabilities, 'extensions'> };
 
 /** What the runtime applies: its declared classes, else everything on Docker and nothing elsewhere. */
-export function runtimeExtensionCapabilities(runtime: ExtensionRuntime): AgentRuntimeExtensionCapabilities {
-    return runtime.capabilities.extensions ?? (runtime.kind === DEFAULT_AGENT_RUNTIME ? ALL : NONE);
+export function runtimeExtensionCapabilities(runtime: ExtensionRuntime): ResolvedExtensionCapabilities {
+    const declared = runtime.capabilities.extensions;
+    if (!declared) return runtime.kind === DEFAULT_AGENT_RUNTIME ? ALL : NONE;
+    return { ...declared, catalogMcp: declared.catalogMcp ?? declared.packageMcp };
 }
 
 /** Runtimes that apply every class, for refusal messages. */

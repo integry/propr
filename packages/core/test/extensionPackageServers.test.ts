@@ -17,6 +17,9 @@ import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
 import { ExtensionPackageCache, type NpmRunner } from '../src/extensions/packageCache.js';
 import { resolveNpmPackage } from '../src/extensions/packageRegistry.js';
 import { claudeToolPolicyArgs, codexToolPolicyArgs } from '../src/agents/agentToolPolicy.js';
+import { PACKAGE_SERVER_INSTALLER, packageServerInstallSpec, packageServersDigest } from '../src/extensions/remotePackageServers.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { AgentConfig, AgentExtensionRequest, AgentTaskOptions } from '../src/agents/types.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
@@ -210,6 +213,63 @@ test('a matching run launches the package through the stdio bridge for Claude an
   assert.deepEqual(second.launched.toolPolicy!.localMcpServers!.map(s => s.name), ['local-tools']);
   assert.equal(installs(), 1);
   assert.ok(codexToolPolicyArgs(second.launched.toolPolicy!).cliArgs.some(arg => arg.includes('env_vars=["PROPR_EXTENSION_STDIO_0_0_SECRET"]')));
+});
+
+test('a runtime without bind mounts gets the verified install to replay: npm ci from the same lock files, then the bridge runs it', async t => {
+  const { save, store, cache, database, worktree, root, registry, environment } = await fixture(t);
+  await save([packageServer({ secretEnv: ['FIXTURE_TOKEN'] })], { 'local-tools/FIXTURE_TOKEN': secret }, ['local-tools']);
+  const taskId = randomUUID();
+  await database('tasks').insert({ task_id: taskId });
+  let launched: AgentTaskOptions | undefined; let launch: ReturnType<typeof currentExtensionLaunch>;
+  const options: AgentTaskOptions = { extensions: issueTask(), taskId, issueRef: { repoOwner: 'team', repoName: 'repo', number: 1 }, worktreePath: worktree, prompt: 'Run', githubToken: '' };
+  await executeWithExtensions(claude, options, async prepared => {
+    launch = currentExtensionLaunch();
+    await launch!.beforeLaunch();
+    launched = prepared;
+    return result;
+  }, store, { packageCache: cache, runtimeSupport: { kind: 'sprites', capabilities: { skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false }, bindMounts: false, mcpEndpoint: 'https://propr.example/api/mcp' } });
+  assert.deepEqual(launch!.mounts, [], 'nothing is bind-mounted');
+  assert.deepEqual(launch!.requires!.packageMcp, ['local-tools']);
+  const installed = await cache.verify((await store.readLibrary('1')).servers[0] as any);
+  const install = launch!.packageInstall!;
+  assert.equal(install.registry, registry.url.replace(/\/+$/, ''));
+  assert.equal(install.servers.length, 1);
+  const [remote] = install.servers;
+  assert.equal(remote.key, cache.key((await store.readLibrary('1')).servers[0] as any));
+  assert.equal(remote.lock, await fs.readFile(path.join(installed.localDirectory, 'package-lock.json'), 'utf8'), 'the worker\'s verified lock file, verbatim');
+  assert.match(packageServersDigest(install.servers), /^[0-9a-f]{16}$/);
+  assert.ok(!JSON.stringify(install).includes(secret), 'the install carries no secret');
+  const local = launched!.toolPolicy!.localMcpServers!;
+  const config = JSON.parse(Buffer.from(local[0].bridgeConfig, 'base64url').toString());
+  assert.equal(config.args[0], `/opt/propr/packages/${remote.key}/node_modules/propr-fixture-mcp/bin/server.js`);
+  assert.deepEqual(local[0].env, { PROPR_EXTENSION_STDIO_0_0_SECRET: secret }, 'secrets reach the bridge by environment name, as on Docker');
+
+  // Replay the install as the Sprite or Machine does, into a scratch root.
+  const sandbox = path.join(root, 'sandbox-packages');
+  const specFile = path.join(root, 'package-servers.json');
+  const resultFile = path.join(root, 'package-servers-result');
+  const installer = path.join(root, 'installer.py');
+  await fs.writeFile(installer, PACKAGE_SERVER_INSTALLER);
+  await fs.writeFile(specFile, JSON.stringify({ ...JSON.parse(packageServerInstallSpec(install, 120_000, environment.PATH)), root: sandbox }));
+  await promisify(execFile)('python3', ['-I', installer, specFile, resultFile]);
+  const outcome = JSON.parse(await fs.readFile(resultFile, 'utf8'));
+  assert.equal(outcome.code, 0, outcome.tail);
+  const directory = path.join(sandbox, remote.key);
+  if (process.getuid?.() !== 0) await assert.rejects(fs.writeFile(path.join(directory, remote.entry), 'tampered'), /EACCES/, 'the install is read-only');
+  assert.ok(!await fs.stat(registry.marker).catch(() => null), 'no lifecycle script ran during the replay');
+  // The agent lists and calls the tools through the bridge, from the replayed install.
+  const remoteConfig = { ...config, args: [config.args[0].replace(`/opt/propr/packages/${remote.key}`, directory), ...config.args.slice(1)] };
+  const call = await bridgeSession(t, Buffer.from(JSON.stringify(remoteConfig)).toString('base64url'), { ...local[0].env }, directory);
+  assert.equal((await call('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'agent', version: '1' } })).result.serverInfo.name, 'local-tools');
+  assert.deepEqual((await call('tools/call', { name: 'echo', arguments: { text: 'hi' } })).result.content[0].text, `dep:${plainValue}:hi:--flag,value`);
+
+  // A lock file that does not pin the package at its integrity value is refused before npm runs.
+  const tampered = { ...remote, key: 'b'.repeat(40), integrity: `sha512-${'A'.repeat(86)}==` };
+  await fs.writeFile(specFile, JSON.stringify({ ...JSON.parse(packageServerInstallSpec({ ...install, servers: [tampered] }, 120_000, environment.PATH)), root: sandbox }));
+  await assert.rejects(promisify(execFile)('python3', ['-I', installer, specFile, resultFile]), /does not pin the package at its integrity value/);
+  assert.notEqual(JSON.parse(await fs.readFile(resultFile, 'utf8')).code, 0);
+  assert.ok(!await fs.stat(path.join(sandbox, tampered.key)).catch(() => null));
+  if (process.getuid?.() !== 0) await import('node:child_process').then(c => c.execFileSync('chmod', ['-R', 'u+w', sandbox]));
 });
 
 test('changed installed files refuse the server at launch; the run proceeds without it and records why', async t => {

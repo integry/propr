@@ -44,8 +44,36 @@ def live(stream, secrets, done):
                 pending = b''
                 dropping = False
 
+def install_package_servers():
+    # Before dropping to node and before reporting ready: the agent never starts
+    # without its package MCP servers. The installer bounds npm and records
+    # {ms, code, tail}; only trusted values form its environment.
+    spec = run / 'package-servers.json'
+    if not spec.exists():
+        return True
+    status('installing')
+    result = run / 'package-servers-result'
+    try:
+        subprocess.run([python, '-I', '/opt/propr/fly-package-servers.py', str(spec), str(result)], env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8'},
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=json.loads(spec.read_bytes())['timeout'] / 1000 + 60)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if json.loads(result.read_bytes()).get('code') == 0:
+            return True
+    except (OSError, ValueError):
+        pass
+    status('install-failed')
+    # Keep the Machine for the worker to read the failure, then exit (auto_destroy).
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline and not (run / 'package-servers-read').exists():
+        time.sleep(.2)
+    return False
+
 def launch():
     run.chmod(0o700)
+    if not install_package_servers():
+        return
     data = json.loads((run / 'input').read_bytes())
     node = pwd.getpwnam('node')
     for directory in data['directories']:

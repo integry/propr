@@ -125,8 +125,8 @@ library as it is at that moment. Claude and Codex task execution are the qualifi
 targets. Other runtimes, and goal runs, launch without extensions as before
 (goal execution refuses explicitly added items). Review runs and Ultrafix review
 steps do not use the library.
-Sprites and Fly Machines apply skill bundles and URL servers but not package
-servers. An auto-applied item the selected agent runtime cannot run is dropped for
+Sprites and Fly Machines apply skill bundles, URL servers and package servers,
+but not operator catalog stdio servers. An auto-applied item the selected agent runtime cannot run is dropped for
 that run, with a note in the task timeline and in the issue or pull request
 comment. An explicitly added one refuses the run with an error naming it. See
 [Extensions by runtime](../architecture/agent-runtime.md#extensions-by-runtime).
@@ -480,6 +480,14 @@ scripts, so such a package would not work.
   JSON protocol, drops the server's stderr and redacts the configured secrets.
 - The server process has the run's own network policy and nothing more. It is
   never reachable through Core's HTTPS gateway.
+- On Sprites and Fly Machines, which have no bind mounts, the sandbox replays the
+  worker's verified install: `npm ci --ignore-scripts` from the install's own
+  `package.json` and `package-lock.json`, against the same registry, so every
+  dependency is checked against its integrity value. The result is root-owned and
+  read-only at `/opt/propr/packages/<key>`. Sprites install while provisioning,
+  before the clean checkpoint, and match warm Sprites on the package-server set;
+  Fly Machines install at Machine start, before the agent. See
+  [Extensions by runtime](../architecture/agent-runtime.md#extensions-by-runtime).
 
 Operators can point installs and **Check** at a mirror of the public registry
 with `PROPR_EXTENSION_NPM_REGISTRY` on Core and workers. The mirror is operator
