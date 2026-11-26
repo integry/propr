@@ -466,7 +466,7 @@ for (const phase of ['authentication', 'listener request'] as const) {
 }
 
 test('close() does not wait for the remote sshd stop before the slot is released', async () => {
-    const { sprite } = forwardSprite();
+    const { sprite, sshd: fake } = forwardSprite();
     const forward = await SpritesMcpForward.start({ sprite: sprite as never, target: target(), signal: AbortSignal.timeout(10_000), onLost: () => assert.fail('lost') });
     let finishStop!: () => void;
     const execFile = sprite.execFile.bind(sprite);
@@ -481,6 +481,8 @@ test('close() does not wait for the remote sshd stop before the slot is released
     assert.ok(forward.remoteStop, 'the remote stop was started');
     finishStop();
     await forward.remoteStop;
+    // The stub swallowed the stop, so the fake sshd's listener is still open: stop it or the process never exits.
+    fake.stop();
 });
 
 test('the forward helper resets stale forward sessions until the listener is free, keeping the daemon', { skip: process.platform !== 'linux' }, () => {
