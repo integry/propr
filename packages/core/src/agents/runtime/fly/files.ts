@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { WORKSPACE_TRANSPORT_RESULT_DIR } from '../../../git/workspaceTransportScript.js';
 import { DOCKER_CONTAINER_FILE_LIMIT_BYTES } from '../dockerContainerFiles.js';
+import type { ExecutionResult } from '../../../claude/docker/dockerExecutor.js';
 import type { MachinesApi } from './api.js';
 import { helper } from './launch.js';
 import { RUN } from './wrapper.js';
@@ -42,6 +43,16 @@ export async function scanFile(api: MachinesApi, id: string, file: string, { con
         } else await consume(chunk);
     }
     return size;
+}
+
+export function applyOutputDiagnostics(result: ExecutionResult, truncated: string[], missing: string[], failures: string[]) {
+    if (truncated.length) result.stderr += '\nFly captured ' + truncated.join(' and ') + ' exceeded the returned output limit; older output was truncated.';
+    if (missing.length) failures.unshift('Fly Machine output unavailable: ' + missing.join(', '));
+    if (failures.length) {
+        result.outputIncomplete = failures.join('. ');
+        result.stderr += '\n' + result.outputIncomplete;
+        result.exitCode = -1;
+    }
 }
 
 /** Keep the clone transport's recovery copy on the worker, freeing the VM

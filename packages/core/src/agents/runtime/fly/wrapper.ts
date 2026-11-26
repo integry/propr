@@ -4,7 +4,7 @@ export const RUN = '/root/propr-run';
 export const WRAPPER = '/opt/propr/fly-run.py';
 export const AGENT = '/opt/propr/fly-agent.json';
 export const wrapper = String.raw`
-import base64, errno, json, os, pwd, signal, stat, subprocess, sys, threading, time
+import base64, errno, gzip, hashlib, json, os, pwd, signal, stat, subprocess, sys, tarfile, threading, time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -44,11 +44,9 @@ def live(stream, secrets, done):
                 pending = b''
                 dropping = False
 
-def install_packages(spec):
-    # Before dropping to node and before reporting ready: the run never starts
-    # without its packages. The argv carries the specs as arguments, never as
-    # shell text; only trusted values form the environment.
-    status('installing')
+def run_install(spec):
+    # The argv carries the specs as arguments, never as shell text; only
+    # trusted values form the environment.
     started = time.monotonic()
     child = subprocess.Popen(spec['argv'], env={'PATH': spec['path'], 'HOME': '/root', 'LANG': 'C.UTF-8'}, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
@@ -62,18 +60,131 @@ def install_packages(spec):
             pass
         output, _ = child.communicate()
         code = 'timeout'
-    result = {'ms': round((time.monotonic() - started) * 1000), 'code': code, 'tail': output[-4096:].decode('utf8', 'replace')}
-    tmp = run / 'packages-result.tmp'
-    tmp.write_text(json.dumps(result))
-    tmp.replace(run / 'packages-result')
-    if code == 0:
+    return {'ms': round((time.monotonic() - started) * 1000), 'code': code, 'tail': output[-4096:].decode('utf8', 'replace')}
+
+def write_json(name, value):
+    tmp = run / (name + '.tmp')
+    tmp.write_text(json.dumps(value))
+    tmp.replace(run / name)
+
+def wait_for_ack(idle):
+    # Keep the Machine while the worker reads it (chunk reads touch the run
+    # directory), then exit so auto_destroy removes it.
+    while not (run / 'packages-read').exists() and time.time() - run.stat().st_mtime < idle:
+        time.sleep(.2)
+
+def install_packages(spec):
+    # Before dropping to node and before reporting ready: the run never starts
+    # without its packages.
+    status('installing')
+    result = run_install(spec)
+    write_json('packages-result', result)
+    if result['code'] == 0:
         return True
     status('install-failed')
-    # Keep the Machine for the worker to read the failure, then exit (auto_destroy).
-    deadline = time.monotonic() + 300
-    while time.monotonic() < deadline and not (run / 'packages-read').exists():
-        time.sleep(.2)
+    os.utime(run, None)
+    wait_for_ack(300)
     return False
+
+# Paths that are not part of the image: kernel and runtime mounts, files Fly
+# writes into every Machine, this wrapper's own files and apt's download caches.
+BUILD_EXCLUDE = frozenset(['/proc', '/sys', '/dev', '/run', '/tmp', '/mnt', '/lost+found', '/.fly', '/.fly-upper-layer',
+    str(run), '/opt/propr', '/etc/hosts', '/etc/hostname', '/etc/resolv.conf', '/var/lib/apt/lists',
+    '/var/cache/apt/archives', '/var/cache/apt/pkgcache.bin', '/var/cache/apt/srcpkgcache.bin', '/var/cache/debconf/config.dat-old',
+    '/var/cache/debconf/templates.dat-old', '/var/log/apt', '/var/log/dpkg.log', '/var/log/alternatives.log'])
+
+def snapshot(root='/'):
+    # Metadata of every path on the root filesystem, keyed by its image path;
+    # ctime and inode catch in-place rewrites, renames and owner or mode changes.
+    real = lambda path: os.path.join(root, path[1:])
+    root_dev = os.lstat(root).st_dev
+    entries = {}
+    stack = ['/']
+    while stack:
+        directory = stack.pop()
+        try:
+            names = os.listdir(real(directory))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(directory, name)
+            if path in BUILD_EXCLUDE:
+                continue
+            try:
+                st = os.lstat(real(path))
+            except OSError:
+                continue
+            if st.st_dev != root_dev:
+                continue
+            link = os.readlink(real(path)) if stat.S_ISLNK(st.st_mode) else None
+            entries[path] = (st.st_mode, st.st_uid, st.st_gid, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, link)
+            if stat.S_ISDIR(st.st_mode):
+                stack.append(path)
+    return entries
+
+class Digest:
+    def __init__(self, target):
+        self.target = target
+        self.hash = hashlib.sha256()
+        self.size = 0
+    def write(self, data):
+        self.hash.update(data)
+        self.size += len(data)
+        return self.target.write(data)
+    def flush(self):
+        self.target.flush()
+
+def ancestors(path):
+    parent = os.path.dirname(path)
+    while parent != '/':
+        yield parent
+        parent = os.path.dirname(parent)
+
+def write_layer(before, after, target, root='/'):
+    # An OCI layer of what the install changed: changed and added paths with
+    # their parent directories, and a whiteout for each topmost removed path.
+    changed = {p for p, v in after.items() if before.get(p) != v}
+    removed = {p for p in before if p not in after}
+    removed = {p for p in removed if not any(a in removed for a in ancestors(p))}
+    whiteouts = {os.path.join(os.path.dirname(p), '.wh.' + os.path.basename(p)): p for p in removed}
+    members = set(changed)
+    for path in list(changed) + list(whiteouts):
+        members.update(a for a in ancestors(path) if a in after)
+    with open(target, 'wb') as out:
+        compressed = Digest(out)
+        gz = gzip.GzipFile(filename='', mode='wb', fileobj=compressed, mtime=0, compresslevel=6)
+        raw = Digest(gz)
+        with tarfile.open(fileobj=raw, mode='w|', format=tarfile.PAX_FORMAT) as tar:
+            for path in sorted(members | set(whiteouts), key=lambda p: p.split('/')):
+                if path in whiteouts:
+                    info = tarfile.TarInfo(path[1:])
+                    info.mtime = 0
+                    tar.addfile(info)
+                else:
+                    tar.add(os.path.join(root, path[1:]), arcname=path[1:], recursive=False)
+        gz.close()
+        out.flush()
+        os.fsync(out.fileno())
+    return {'digest': 'sha256:' + compressed.hash.hexdigest(), 'size': compressed.size,
+            'diffId': 'sha256:' + raw.hash.hexdigest(), 'changed': len(changed), 'removed': len(removed)}
+
+def build():
+    # A derived image build Machine: install the packages on the base image and
+    # leave the change as a layer for the worker to push. No credential is here.
+    run.chmod(0o700)
+    status('building')
+    spec = json.loads((run / 'build.json').read_bytes())
+    before = snapshot()
+    result = run_install(spec)
+    if result['code'] == 0:
+        try:
+            result['layer'] = write_layer(before, snapshot(), run / 'layer.tar.gz')
+        except Exception as error:
+            result['error'] = type(error).__name__ + ': ' + str(error)[:500]
+    write_json('build-result', result)
+    status('built' if 'layer' in result else 'build-error' if result['code'] == 0 else 'build-failed')
+    os.utime(run, None)
+    wait_for_ack(300)
 
 def launch():
     run.chmod(0o700)
@@ -193,6 +304,8 @@ if __name__ == '__main__':
     mode = sys.argv[1]
     if mode == 'launch':
         launch()
+    elif mode == 'build':
+        build()
     elif mode in ('agent', 'hook'):
         data = json.loads(agent.read_bytes())
         argv = data['argv'] if mode == 'agent' else sys.argv[2:]

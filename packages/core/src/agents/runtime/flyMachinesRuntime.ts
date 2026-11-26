@@ -12,9 +12,10 @@ import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.js';
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
-import { acquireFlyMachineSlot } from './fly/capacity.js';
+import { acquireFlyMachineSlot, MachineReservation } from './fly/capacity.js';
 import { flyConfig } from './fly/config.js';
-import { OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
+import { FlyPackageImages, selectFlyPackageImage } from './fly/derivedImage.js';
+import { applyOutputDiagnostics, OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
 import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
 import { RUN } from './fly/wrapper.js';
 import { flyPackageInstallError, logFlyPackageInstall, readFlyPackageInstall, type FlyPackageInstall } from './fly/packages.js';
@@ -81,16 +82,6 @@ async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { 
     if (last && !['ready', 'installing', 'install-failed'].includes(last[1])) return last[2] === undefined ? 'running' : Number(last[2]);
 }
 
-function applyOutputDiagnostics(result: ExecutionResult, truncated: string[], missing: string[], failures: string[]) {
-    if (truncated.length) result.stderr += '\nFly captured ' + truncated.join(' and ') + ' exceeded the returned output limit; older output was truncated.';
-    if (missing.length) failures.unshift('Fly Machine output unavailable: ' + missing.join(', '));
-    if (failures.length) {
-        result.outputIncomplete = failures.join('. ');
-        result.stderr += '\n' + result.outputIncomplete;
-        result.exitCode = -1;
-    }
-}
-
 export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'fly-machines';
     static readonly capabilities = { supportsExtensions: false, supportsRuntimePackages: true, supportsBindMounts: false, supportsRestrictedNetwork: false,
@@ -99,8 +90,10 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
     readonly unsupportedMount = unsupportedFlyMount;
 
     constructor(private readonly client?: MachinesApi, private readonly environment = process.env,
-        // Fly Machines are ephemeral: the configured runtime packages are installed at every Machine start.
-        private readonly loadPackages: () => Promise<readonly string[]> = loadConfiguredAgentRuntimePackages) {}
+        private readonly loadPackages: () => Promise<readonly string[]> = loadConfiguredAgentRuntimePackages,
+        // Configured runtime packages run from a derived image built once per base image and list. A
+        // custom Machines client comes without the registry, so its runs install them at Machine start.
+        private readonly images: FlyPackageImages | undefined = client ? undefined : new FlyPackageImages()) {}
 
     unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec) {
         if (!['claude', 'codex'].includes(spec.profile.agentType)) return 'Fly Machines supports Claude Code and Codex';
@@ -133,7 +126,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         let workspaceSafeToDestroy = false;
         let credentialsPending = !!prepared.credentialPath;
         let keepLocalBundle = false;
-        let releaseSlot = () => {};
+        let reservation: MachineReservation | undefined;
+        let machineGone = () => {};
         const machineLocation = () => `Fly app ${config.app}, Machine ${id}, ${RUN}/workspace`;
         const credentialRecovery = () => `Recover credentials from Fly app ${config.app}, Machine ${id}, ${prepared.credentialPath}`;
         let destroyed: Promise<void> | undefined;
@@ -155,9 +149,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         const destroy = () => {
             const machine = id;
             if (machine && workspaceSafeToDestroy && !credentialsPending)
-                // The capacity slot is freed by the deletion that succeeds, including a background
-                // retry after the run settled, so a Machine still awaiting deletion keeps counting.
-                return destroyed ??= retryCleanup(machine, 'destroy', async () => { await api.destroy(machine); releaseSlot(); });
+                // The Machine stops counting toward capacity at the deletion that succeeds, including a
+                // background retry after the run settled, so a Machine still awaiting deletion keeps counting.
+                return destroyed ??= retryCleanup(machine, 'destroy', async () => { await api.destroy(machine); machineGone(); });
         };
         let mayHaveStarted = false;
         const requestStop = (signal: NodeJS.Signals = 'SIGTERM', grace = 10_000) => {
@@ -177,13 +171,15 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             if (refusal) return refuseCostExecution(refusal, preserve);
             external.throwIfAborted();
             if (stopping) throw new Error('Fly run stopped before creation');
-            // Over PROPR_FLY_MACHINES_MAX the run queues here; the slot is held until the Machine is destroyed.
-            releaseSlot = await acquireFlyMachineSlot(config.app, config.maxMachines, AbortSignal.any([external, forced.signal]), spec.name)
-                .catch(error => { external.throwIfAborted(); throw stopping ? new Error('Fly run stopped before creation') : error; });
+            // Over PROPR_FLY_MACHINES_MAX the run queues here; the slot is held until its Machines are confirmed gone.
+            const signal = AbortSignal.any([external, forced.signal]);
+            const beforeCreation = (error: unknown): never => { external.throwIfAborted(); throw stopping ? new Error('Fly run stopped before creation') : error; };
+            const releaseSlot = await acquireFlyMachineSlot(config.app, config.maxMachines, signal, spec.name).catch(beforeCreation);
+            reservation = new MachineReservation(releaseSlot, config.maxMachines !== undefined);
             // Read for every run, so a Settings change applies to the next Machine. An unreadable
             // or invalid list fails the run rather than starting it without its packages.
-            const packages = await this.loadPackages();
-            prepared.installPackages(packages);
+            const packages = await selectFlyPackageImage(this.images, prepared, { api, config, packages: await this.loadPackages(), reservation, signal, run: spec.name })
+                .catch(beforeCreation);
             let packageInstall: FlyPackageInstall | undefined;
             external.throwIfAborted();
             if (stopping) throw new Error('Fly run stopped before creation');
@@ -292,7 +288,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             const createdAt = Date.now();
             try {
                 let bootStart = Date.now();
-                id = await api.create(prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); });
+                ({ id, gone: machineGone } = await reservation.create(api, prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); }));
                 void api.logs(id, display, logs.signal).catch(() => {});
                 let usageFailureSince: number | undefined;
                 const code = stopping ? undefined : await waitForExit(api, id, forced.signal, {
@@ -384,9 +380,13 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             external.removeEventListener('abort', abort);
             logs.abort();
             output.end();
-            // Without a Machine, or with one kept for recovery that this worker will never delete,
-            // free the slot now; otherwise the confirmed deletion above frees it.
-            try { await destroy(); } finally { if (!destroyed) releaseSlot(); }
+            // A Machine kept for recovery is never deleted by this worker: it keeps its slot until
+            // Fly confirms it gone (its guest exits after the retention window and auto-destroys,
+            // or an operator deletes it). Without any Machine the slot is free at once.
+            try { await destroy(); } finally {
+                if (id && !destroyed) reservation?.watch(api, { id, name: prepared.launch.name }, machineGone);
+                reservation?.close();
+            }
         }).catch(async error => {
             // Transport cleanup calls release even when wait rejected before complete.
             keepLocalBundle = workspace.hasBundle;
