@@ -90,7 +90,7 @@ After a crash or failed deletion, use `sprite list --prefix propr-` in the worke
 | Library skill bundles | Yes, read-only mount | Yes, uploaded read-only | Yes, as read-only Machine files |
 | Library URL MCP servers | Yes | Yes | Yes |
 | Library package (stdio) MCP servers | Yes, read-only mount | Yes, installed in the clean checkpoint | Yes, installed at Machine start |
-| Operator catalog stdio servers | Yes | No | No |
+| Operator catalog stdio servers (`catalogMcp`) | Yes | No: dropped with a note when auto-applied, run refused when added explicitly | No: dropped with a note when auto-applied, run refused when added explicitly |
 | ProPR MCP | Private network or reachable URL | Reachable URL | Reachable URL |
 
 Library skill bundles appear at `/opt/propr/extensions/<bundle id>/` in every runtime, and the run prompt points the agent at each `SKILL.md`. Docker bind-mounts the worker's validated staging directory. Sprites and Fly Machines receive the same files, checked against the bundle digest the run resolved, in the run's upload: root-owned and read-only for the agent, and gone when the Sprite is restored or the Machine destroyed, like the per-run credential copies.

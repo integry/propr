@@ -142,3 +142,16 @@ The **Fly end-to-end smoke** GitHub Actions workflow runs on manual dispatch by 
 Install a dedicated fixture GitHub App with access to read the issue and write the branch and PR. In the App registration, select **Webhook → Active**, set the placeholder URL to `https://example.invalid/webhook` and save. Under **Permissions & events → Subscribe to events**, select **Issues** and **Pull request** and save. Complete this once before running the workflow. [GitHub App registration settings](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration)
 
 Each run points the App webhook at the disposable Machine and sets a fresh signing secret. After confirming delivery of the new fixture issue, the workflow waits for idle shutdown and adds the `AI` label. It reports the wake record’s redelivery count and verifies the linked PR and its Sprites execution. Teardown restores the placeholder URL, closes the fixture issue and PR, and deletes the temporary compute.
+
+### Extension Library check
+
+Dispatch the workflow with the **extensions** input checked to also verify Extension Library items on the remote runtime. For nightly runs, set the repository variable `FLY_E2E_NIGHTLY_EXTENSIONS` to `true`. The check runs on Sprites only for now.
+
+Before the idle stop, the workflow adds the `FLY_E2E_GITHUB_TOKEN` user to `PROPR_ADMIN_USERS`, claims the administrator role and calls the same API as **Settings → Extensions**. It adds two items, each auto-applied to issue tasks in the fixture repository:
+
+- a skill bundle with one `SKILL.md` that gives a token unique to the run;
+- the package MCP server `@modelcontextprotocol/server-everything` 2.3.1, pinned in the workflow by version and integrity value. The run fails if the registry resolves another integrity value. The agent calls its `echo` tool.
+
+The fixture has no URL MCP server of its own, so none is added. The step summary says so.
+
+The fixture issue asks for a three-line file: the app name, the skill token and the `echo` output (`Echo: MCP-OK-<run>`). The verify step checks all three lines. It also finds the `Extension Library items applied to this run` log record with `skills` and `packageServers` of at least 1, and the matching `Installed package MCP servers on Sprite` record. The step summary shows `extensionDigest`, `packageServersDigest` and the install time.

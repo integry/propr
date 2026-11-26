@@ -2,6 +2,11 @@ name: Fly end-to-end smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      extensions:
+        description: Also verify Extension Library items (a skill bundle and a pinned npm MCP server) on the remote runtime
+        type: boolean
+        default: false
   schedule:
     - cron: '17 4 * * *'
 
@@ -51,6 +56,15 @@ jobs:
       REPO: ${{ vars.FLY_E2E_REPO }}
       REGION: iad
       IDLE_AFTER: 2m
+      # Manual runs follow the input; nightly runs opt in with the repository variable.
+      # The extensions mode covers Sprites only for now. Once #3816 adds the
+      # `agent_runtime` input, combine the two so it also runs on Fly Machines.
+      EXTENSIONS: ${{ (github.event_name == 'workflow_dispatch' && inputs.extensions) || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_EXTENSIONS == 'true') }}
+      RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
+      # A small, well-known npm MCP server with a deterministic `echo` tool, pinned to an exact version and integrity.
+      EXT_PACKAGE: '@modelcontextprotocol/server-everything'
+      EXT_PACKAGE_VERSION: 2.3.1
+      EXT_PACKAGE_INTEGRITY: sha512-fOONra8VnAjlVp5xO+dWWoKGkZYg8sBEg52txVoLT0N43B3F5nX3UmsgHch79DM0L+nVCi/w5d/WV6UfhBH7kA==
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -86,6 +100,7 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
           APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
           SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
           OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID }}
           OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET }}
         run: |
@@ -95,6 +110,16 @@ jobs:
           for key in PROPR_ADMIN_USERS GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 CLAUDE_SETTINGS_B64; do
             grep -q "^${key}=." "$ENV_FILE" || { echo "Missing $key"; exit 1; }
           done
+          if [[ $EXTENSIONS == true ]]; then
+            # The Extension Library API needs a durable instance administrator. The
+            # fixture token's user becomes a bootstrap administrator and claims the role.
+            login=$(gh api user --jq .login)
+            [[ $login =~ ^[A-Za-z0-9-]+$ ]]
+            echo "EXT_ADMIN=$login" >> "$GITHUB_ENV"
+            if ! grep -E "^PROPR_ADMIN_USERS=" "$ENV_FILE" | tr ',=' '\n\n' | grep -qixF "$login"; then
+              sed -i "s/^PROPR_ADMIN_USERS=.*/&,$login/" "$ENV_FILE"
+            fi
+          fi
           openssl rand -hex 32 > "$OUT/hook-secret"
           {
             echo "GH_OAUTH_CLIENT_ID=$OAUTH_CLIENT_ID"
@@ -142,6 +167,75 @@ jobs:
           test -s "$OUT/claude-settings.sh"
           bash -eu "$OUT/claude-settings.sh"
 
+      - name: Add Extension Library items before idle shutdown
+        if: env.EXTENSIONS == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The same API the Settings → Extensions page uses, authenticated with the
+          # fixture user's GitHub token as a bearer.
+          base="https://$APP.fly.dev"
+          api() {
+            local path=$1; shift
+            curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/json' "$base$path" "$@"
+          }
+          # Only reads retry; a repeated save would fail on the expected library revision.
+          get() { api "$1" --retry 4 --retry-all-errors; }
+          post() { api "$1" -X POST -H 'Content-Type: application/json' -H 'X-ProPR-Extensions: 1' --data-binary @-; }
+          # Wake the Machine if the proxy stopped it, then store the bootstrap administrator role.
+          get /health > /dev/null
+          echo '{}' | api /api/admin/members/claim -X POST -H 'Content-Type: application/json' --data-binary @- |
+            jq -e --arg login "$EXT_ADMIN" '.member.role == "admin" and (.member.githubUsername | ascii_downcase) == ($login | ascii_downcase)' > /dev/null
+
+          # Skill bundle: one SKILL.md with a token unique to this run, uploaded as a ustar archive.
+          skill="$OUT/fixture-skill"
+          mkdir -p "$skill"
+          cat > "$skill/SKILL.md" <<MD
+          ---
+          name: fixture-token
+          description: Gives the fixture skill token. Use it whenever a task asks for the fixture skill token.
+          ---
+
+          When asked for the fixture skill token, answer exactly \`SKILL-OK-$RUN_TOKEN\` and nothing else.
+          MD
+          tar --format=ustar --owner=0 --group=0 --numeric-owner -cf "$OUT/fixture-skill.tar" -C "$skill" SKILL.md
+          bundle=$(jq -n --rawfile archive <(base64 -w0 "$OUT/fixture-skill.tar") '{archive: $archive, filename: "fixture-skill.tar"}' |
+            post /api/instance/extensions/v1/skills/archive | jq -er '.bundle.id | strings')
+
+          # Package server: Settings' "Check" resolves the registry integrity; it must match the pin.
+          resolved=$(jq -n --arg package "$EXT_PACKAGE" --arg version "$EXT_PACKAGE_VERSION" \
+            '{ecosystem: "npm", package: $package, version: $version, bin: "mcp-server-everything"}' |
+            post /api/instance/extensions/v1/packages/resolve)
+          jq -e --arg integrity "$EXT_PACKAGE_INTEGRITY" '.package.integrity == $integrity' <<< "$resolved" > /dev/null ||
+            { echo "::error::$EXT_PACKAGE@$EXT_PACKAGE_VERSION no longer resolves to the pinned integrity"; exit 1; }
+
+          current=$(get /api/instance/extensions/v1)
+          jq -n --argjson current "$current" --arg bundle "$bundle" --arg repo "$REPO" \
+            --arg package "$EXT_PACKAGE" --arg version "$EXT_PACKAGE_VERSION" '{
+              expectedRevision: $current.library.revision,
+              input: {
+                version: $current.contract.version,
+                servers: ($current.library.servers + [{
+                  kind: "package", name: "fixture-echo", enabled: true, tools: ["echo"], capability: "read",
+                  ecosystem: "npm", package: $package, version: $version, bin: "mcp-server-everything", args: ["stdio"],
+                  env: [], secretEnv: [], repositories: [$repo], agents: [], autoApply: true
+                }]),
+                skills: ($current.library.skills + [{bundleId: $bundle, enabled: true, repositories: [$repo], agents: [], autoApply: true}])
+              }
+            }' | post /api/instance/extensions/v1/library > "$OUT/library.json"
+          jq -e --arg bundle "$bundle" --arg integrity "$EXT_PACKAGE_INTEGRITY" '
+            (.library.skills | any(.bundleId == $bundle and .enabled and .autoApply)) and
+            (.library.servers | any(.name == "fixture-echo" and .enabled and .autoApply and .integrity == $integrity))
+          ' "$OUT/library.json" > /dev/null
+          {
+            echo "### Extension Library (revision $(jq -r .library.revision "$OUT/library.json"))"
+            echo "- Skill bundle \`fixture-token\` ($bundle), auto-applied to $REPO"
+            echo "- Package MCP server \`fixture-echo\`: \`$EXT_PACKAGE@$EXT_PACKAGE_VERSION\` ($EXT_PACKAGE_INTEGRITY), auto-applied to $REPO"
+            echo "- URL MCP server: skipped. The fixture has no reachable URL MCP server of its own, and the gateway's reverse-forward route (#3817) is not merged yet."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Configure the signed App webhook and create the agent-labeled issue
         env:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
@@ -188,8 +282,17 @@ jobs:
             app_api /hook/config -X PATCH -H 'Content-Type: application/json' --data-binary @- > /dev/null
           bash "$OUT/installation-token.sh" > /dev/null
 
+          body="Create $APP.txt containing exactly the line $APP. Open a PR resolving this issue."
+          if [[ $EXTENSIONS == true ]]; then
+            body="Create $APP.txt containing exactly three lines and nothing else:
+          1. \`$APP\`
+          2. the fixture skill token (the \`fixture-token\` skill tells you what it is)
+          3. the exact text returned by the \`echo\` tool of the \`fixture-echo\` MCP server when called with message \`MCP-OK-$RUN_TOKEN\`
+
+          Open a PR resolving this issue."
+          fi
           issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" -F 'labels[]=llm-claude' \
-            -f body="Create $APP.txt containing exactly the line $APP. Open a PR resolving this issue." --jq .number)
+            -f body="$body" --jq .number)
           echo "ISSUE=$issue" >> "$GITHUB_ENV"
           # GET /app does not expose the Active checkbox. Verify the actual delivery.
           for _ in {1..12}; do
@@ -231,6 +334,11 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: |
           set -o pipefail
+          if [[ $EXTENSIONS == true ]]; then
+            # The no-tail buffer holds only recent lines; keep the whole run's log for the extension records.
+            flyctl logs --app "$APP" --json > "$OUT/app-logs.json" 2> /dev/null &
+            log_stream=$!
+          fi
           for _ in {1..24}; do
             if recovery=$(flyctl logs --app "$APP" --no-tail --json |
               jq -sce '[.[] | .message | fromjson? | select(.msg == "Woke from idle shutdown")]
@@ -255,7 +363,34 @@ jobs:
           token=$(bash "$OUT/installation-token.sh")
           echo "::add-mask::$token"
           contents=$(GH_TOKEN="$token" gh api "repos/$REPO/contents/$APP.txt?ref=$sha" --jq .content | base64 -d)
-          [[ $contents == "$APP" ]]
+          if [[ $EXTENSIONS == true ]]; then
+            mapfile -t lines <<< "$contents"
+            expected=("$APP" "SKILL-OK-$RUN_TOKEN" "Echo: MCP-OK-$RUN_TOKEN")
+            for i in 0 1 2; do
+              [[ ${lines[i]:-} == "${expected[i]}" ]] ||
+                { echo "::error::$APP.txt line $((i + 1)) is '${lines[i]:-}', expected '${expected[i]}'"; exit 1; }
+            done
+            (( ${#lines[@]} == 3 )) || { echo "::error::$APP.txt has ${#lines[@]} lines, expected 3"; exit 1; }
+            kill "$log_stream" 2> /dev/null || true
+            logs=$({ cat "$OUT/app-logs.json"; flyctl logs --app "$APP" --no-tail --json; } |
+              jq -sc '[.[] | .message? | strings | fromjson? | objects] | unique')
+            applied=$(jq -ce '[.[] | select(.msg == "Extension Library items applied to this run"
+              and .runtime == "sprites" and .skills >= 1 and .packageServers >= 1)] | max_by(.time) | objects' <<< "$logs") ||
+              { echo "::error::No 'Extension Library items applied to this run' record with skills>=1 and packageServers>=1"; exit 1; }
+            installed=$(jq -ce --arg digest "$(jq -r .packageServersDigest <<< "$applied")" '[.[] | select(
+              (.msg == "Installed package MCP servers on Sprite" or .msg == "Installed package MCP servers at Fly Machine start")
+              and .packageServersDigest == $digest)] | max_by(.time) | objects' <<< "$logs") ||
+              { echo "::error::No 'Installed package MCP servers' record for the applied package-server digest"; exit 1; }
+            {
+              echo "### Extension Library on the remote runtime"
+              echo "- extensionDigest: \`$(jq -r .extensionDigest <<< "$applied")\`"
+              echo "- packageServersDigest: \`$(jq -r .packageServersDigest <<< "$applied")\`"
+              echo "- skills=$(jq -r .skills <<< "$applied"), packageServers=$(jq -r .packageServers <<< "$applied"), urlServers=$(jq -r .urlServers <<< "$applied")"
+              echo "- $(jq -r .msg <<< "$installed"): installMs=$(jq -r .installMs <<< "$installed")"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            [[ $contents == "$APP" ]]
+          fi
           # Read the worker's measurement for this issue AND PR, after wake was observed.
           check=$(base64 -w0 <<JS
           const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
