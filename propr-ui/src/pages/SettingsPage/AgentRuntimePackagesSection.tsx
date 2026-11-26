@@ -193,6 +193,8 @@ const AgentRuntimePackagesSection: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Availability could not be checked (package index unreachable); the change still went through.
+  const [warning, setWarning] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [catalogSources, setCatalogSources] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
@@ -277,6 +279,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
     }
     setValidating(true);
     setError(null);
+    setWarning(null);
     try {
       const result = await validateAgentRuntimePackageSelection([...packages, value]);
       if (!result.valid) {
@@ -284,6 +287,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
         return;
       }
       setPackages(result.packages);
+      setWarning(result.warnings?.join('; ') || null);
       if (result.sources) {
         setCatalogSources([...new Set(result.sources.map(source => `${source.osName} (${source.packageManager})`))]);
       }
@@ -327,6 +331,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
     try {
       const next = await updateAgentRuntimePackageState(normalizedDesired);
       setState(next);
+      setWarning(next.warnings?.join('; ') || null);
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
@@ -399,6 +404,9 @@ const AgentRuntimePackagesSection: React.FC = () => {
         </button>
       </div>
 
+      {warning && !error && (
+        <p className="mt-2 break-words text-[12px] leading-5 text-amber-700" role="status">Warning: {warning}</p>
+      )}
       {(error || state.error) && (
         <p className="mt-2 break-words text-[12px] leading-5 text-red-600">{error || conciseBuildError(state.error)}</p>
       )}

@@ -19,6 +19,7 @@ import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
 import { RUN } from './fly/wrapper.js';
 import { flyPackageInstallError, logFlyPackageInstall, readFlyPackageInstall, type FlyPackageInstall } from './fly/packages.js';
 import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, loadConfiguredAgentRuntimePackages } from './agentRuntimePackageProfile.js';
+import { prevalidatedAgentRuntimePackages } from './agentRuntimePackageIndex.js';
 import { startRunPipeline } from './runPipeline.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
@@ -89,7 +90,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
     readonly unsupportedMount = unsupportedFlyMount;
 
     constructor(private readonly client?: MachinesApi, private readonly environment = process.env,
-        private readonly loadPackages: () => Promise<readonly string[]> = loadConfiguredAgentRuntimePackages,
+        // The list is re-checked against the agent image's package index before any Machine is created.
+        private readonly loadPackages: () => Promise<readonly string[]> = prevalidatedAgentRuntimePackages(loadConfiguredAgentRuntimePackages),
         // Configured runtime packages run from a derived image built once per base image and list. A
         // custom Machines client comes without the registry, so its runs install them at Machine start.
         private readonly images: FlyPackageImages | undefined = client ? undefined : new FlyPackageImages()) {}

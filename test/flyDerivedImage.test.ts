@@ -81,6 +81,8 @@ class Machines implements MachinesApi {
     started = new Set<string>();
     buildState = 'built';
     buildResult: Record<string, unknown> = { ms: 12_000, code: 0, tail: 'Setting up figlet', layer };
+    /** What the build Machine reports for its dpkg check of the layer; null for no report. */
+    verified?: Record<string, number> | null;
     async create(launch: MachineLaunch) {
         const id = 'm' + this.launches.length;
         this.launches.push(launch);
@@ -96,7 +98,10 @@ class Machines implements MachinesApi {
         if (args[0] === '/bin/cat' && args[1] === RUN + '/packages-result') return { stdout: JSON.stringify({ ms: 5, code: 0, tail: '' }), exit_code: 0 };
         if (args[0] === '/bin/cat') {
             assert.equal(args[1], RUN + '/build-result');
-            return { stdout: JSON.stringify(this.buildResult), exit_code: 0 };
+            // The wrapper's read-back of the layer against dpkg, for the packages build.json asked it to verify.
+            const verify = JSON.parse(this.file(this.launches[Number(id.slice(1))], RUN + '/build.json')!).verify as string[];
+            const verified = this.verified === undefined ? { packages: verify.length, files: 3, installedBytes: 0 } : this.verified;
+            return { stdout: JSON.stringify({ ...this.buildResult, ...(verified && { verified }) }), exit_code: 0 };
         }
         const [op, file, offset, length] = args.slice(3);
         if (op === 'probe') {
@@ -246,6 +251,39 @@ test('a layer that does not match its recorded digest is not pushed', async () =
     await run.release!().catch(() => {});
 });
 
+test('a build whose layer was not verified against dpkg is neither pushed nor cached: the run installs at start', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    api.verified = null;
+    const fly = runtime(api, registry, 'unverified', ['figlet=2.2.5-3+b1', 'libc-bin:amd64']);
+    const run = fly.start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.deepEqual(JSON.parse(api.file(api.launches[0], RUN + '/build.json')!).verify, ['figlet', 'libc-bin'],
+        'the build Machine checks dpkg names, without pins or architecture qualifiers');
+    assert.equal(registry.tags.size, 0);
+    assert.deepEqual(registry.uploads, []);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'), 'the run falls back to the start-time install');
+    await run.release!();
+    const next = fly.start(spec('next'));
+    assert.equal((await next.wait()).exitCode, 0);
+    assert.equal(api.launches.filter(isBuild).length, 1, 'no digest was cached, and the failure backs off');
+    assert.ok(api.file(api.launches[2], RUN + '/packages.json'));
+    await next.release!();
+});
+
+test('a layer smaller than the installed size apt reports is a failed build', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    // The fixture layer is a few dozen bytes; apt reports figlet as 702 KiB.
+    api.verified = { packages: 1, files: 40, installedBytes: 702 * 1024 };
+    const run = runtime(api, registry, 'small-layer', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(registry.tags.size, 0);
+    assert.deepEqual(registry.uploads, []);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'), 'the run falls back to the start-time install');
+    await run.release!();
+});
+
 /** The build Machine's deletion fails; `gone` reports it present until the test says otherwise. */
 class StuckBuilder extends Machines {
     present = true;
@@ -375,6 +413,93 @@ with tarfile.open(sys.argv[1]) as tar:
         ]);
         fs.rmSync(out);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// A fake dpkg on a real file tree: the wrapper's capture and its read-back check, on an
+// overlay-like root where regular files report another device than the root directory.
+const FAKE_INSTALL = `
+import builtins
+root, out, bindir = sys.argv[1], sys.argv[2], sys.argv[3]
+real_lstat = os.lstat
+def overlay_lstat(p, *a, **k):
+    st = real_lstat(p, *a, **k)
+    if stat.S_ISDIR(st.st_mode):
+        return st
+    # Overlayfs with layers on different filesystems: a file reports its layer's device.
+    return os.stat_result((st.st_mode, st.st_ino, st.st_dev + 1) + tuple(st)[3:])
+os.lstat = overlay_lstat
+before = snapshot(root)
+before_installed = dpkg_installed(os.path.join(bindir, 'dpkg-query'))
+time.sleep(0.05)
+files = {'usr/bin/fakefig': 'x' * 3000, 'usr/share/fakefig/standard.flf': 'f' * 5000, 'usr/share/fakefig/big.flf': 'b' * 9000,
+         'var/lib/dpkg/info/fakefig.list': ''}
+for rel, content in files.items():
+    os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+    open(os.path.join(root, rel), 'w').write(content)
+os.symlink('fakefig', os.path.join(root, 'usr/bin/fakefig-alias'))
+open(os.path.join(bindir, 'installed'), 'w').write('1')
+after = snapshot(root)
+skip = sys.argv[4] if len(sys.argv) > 4 else None
+if skip:
+    del after[skip]
+layer = write_layer(before, after, out, root)
+try:
+    verified = verify_layer(['fake-virtual', 'basepkg'], before_installed, before, after, out, root, os.path.join(bindir, 'dpkg-query'))
+except RuntimeError as error:
+    verified = {'error': str(error)}
+print(json.dumps({'layer': layer, 'verified': verified}))
+`;
+
+function fakeDpkg(dir: string) {
+    // dpkg-query -W lists basepkg before the install and fakefig (providing fake-virtual) after it; -L lists their files.
+    fs.writeFileSync(path.join(dir, 'dpkg-query'), `#!/bin/sh
+here=$(dirname "$0")
+if [ "$1" = "-W" ]; then
+  printf 'basepkg\tinstall ok installed\t4\t\n'
+  [ -f "$here/installed" ] && printf 'fakefig\tinstall ok installed\t17\tfake-virtual\n'
+  exit 0
+fi
+case "$2" in
+  fakefig) printf '/.\n/usr\n/usr/bin\n/usr/bin/fakefig\n/usr/bin/fakefig-alias\n/bin/fakefig\n/usr/share/fakefig/standard.flf\n/usr/share/fakefig/big.flf\n/usr/share/doc/fakefig/copyright\ndiverted by other to: /usr/bin/x\n' ;;
+  basepkg) printf '/usr/bin/base-tool\n' ;;
+esac
+`, { mode: 0o755 });
+}
+
+test('the build layer captures every file a package installs, on an overlay root, and the dpkg read-back confirms it', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-capture-'));
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-dpkg-'));
+    try {
+        for (const dir of ['usr/bin', 'usr/share/doc', 'etc/dpkg/dpkg.cfg.d', 'var/lib/dpkg/info']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+        fs.symlinkSync('usr/bin', path.join(root, 'bin')); // merged /usr: dpkg -L may name /bin/fakefig
+        fs.writeFileSync(path.join(root, 'usr/bin/base-tool'), 'in the base image');
+        // Slim images drop docs: dpkg -L lists the copyright file, which is never unpacked.
+        fs.writeFileSync(path.join(root, 'etc/dpkg/dpkg.cfg.d/docker'), 'path-exclude /usr/share/doc/*\npath-include /usr/share/doc/*/keep\n');
+        fakeDpkg(bin);
+        const out = path.join(bin, 'layer.tar.gz');
+        const result = JSON.parse(python(FAKE_INSTALL, root, out, bin));
+        assert.deepEqual(result.verified, { packages: 2, files: 6, installedBytes: 17 * 1024 });
+        const members = python(`
+import tarfile
+with tarfile.open(sys.argv[1]) as tar:
+    for m in tar.getmembers():
+        print(m.name, m.size)
+`, out).trim().split('\n');
+        for (const file of ['usr/bin/fakefig 3000', 'usr/share/fakefig/standard.flf 5000', 'usr/share/fakefig/big.flf 9000', 'usr/bin/fakefig-alias 0'])
+            assert.ok(members.includes(file), `${file} in ${members.join(', ')}`);
+        assert.ok(!members.some(member => member.startsWith('usr/bin/base-tool')), 'unchanged base files stay out of the layer');
+        const raw = zlib.gunzipSync(fs.readFileSync(out)).length;
+        assert.ok(raw >= 3000 + 5000 + 9000, `uncompressed layer ${raw} bytes holds the installed files`);
+
+        // A file the capture missed (here: dropped from the post-install snapshot) fails the build.
+        fs.rmSync(path.join(bin, 'installed'));
+        for (const rel of ['usr/bin/fakefig', 'usr/bin/fakefig-alias', 'usr/share/fakefig/standard.flf', 'usr/share/fakefig/big.flf']) fs.rmSync(path.join(root, rel));
+        const missed = JSON.parse(python(FAKE_INSTALL, root, out, bin, '/usr/share/fakefig/big.flf'));
+        assert.match(missed.verified.error, /fakefig installed \/usr\/share\/fakefig\/big\.flf, but the layer does not contain it/);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(bin, { recursive: true, force: true });
+    }
 });
 
 // Applies a layer the way container runtimes do: a whiteout removes its target,

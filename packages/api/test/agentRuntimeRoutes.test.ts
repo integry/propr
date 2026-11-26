@@ -2,10 +2,28 @@ import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
-import { closeConnection, type AgentRuntimePackageState } from '@propr/core';
+import {
+    closeConnection,
+    setAgentImagePackageIndexLoader,
+    validateAgentRuntimePackagesWithIndex,
+    type AgentImagePackageIndex,
+    type AgentRuntimePackageState
+} from '@propr/core';
 import type { InstanceAuthorization } from '../authorization.js';
 
 after(async () => closeConnection());
+
+// The agent image's Debian package index, as the Docker-free check would read it.
+const packageIndex = (): AgentImagePackageIndex => ({
+    packages: new Map([
+        ['postgresql-client', new Set(['15+248'])],
+        ['figlet', new Set(['2.2.5-3+b1'])],
+        ['postfix', new Set(['3.7.11-0+deb12u1'])]
+    ]),
+    provides: new Set(['mail-transport-agent', 'default-mta']),
+    loadedAt: Date.now()
+});
+afterEach(() => setAgentImagePackageIndexLoader());
 
 const originalAdminUsers = process.env.PROPR_ADMIN_USERS;
 const originalRuntimeRequestTimeoutMs = process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
@@ -355,7 +373,7 @@ describe('agent runtime package routes', () => {
         assert.equal(record.status, 403);
         assert.equal(called, false);
     });
-    test('with only remote runtimes, validation and queueing use the syntax validator and skip the Docker image checks', async () => {
+    test('with only remote runtimes, validation and queueing use the package index and skip the Docker image checks', async () => {
         let state = initialState();
         let queued: unknown;
         const dockerOnly = async () => { throw new Error('Cannot connect to the Docker daemon'); };
@@ -371,9 +389,11 @@ describe('agent runtime package routes', () => {
                 },
                 search: dockerOnly,
                 validateAvailability: dockerOnly,
+                validateWithIndex: validateAgentRuntimePackagesWithIndex,
                 warmCatalog: dockerOnly
             }
         });
+        setAgentImagePackageIndexLoader(async () => packageIndex());
         const request = (body?: unknown, query: Record<string, string> = {}) =>
             ({ body, query, user: { username: 'admin' }, authorization: adminAuthorization }) as unknown as Request;
 
@@ -397,7 +417,7 @@ describe('agent runtime package routes', () => {
         assert.deepEqual(queued, { buildId: 'build-remote', packages: ['postgresql-client'], baseImages: ['propr/agent:bundle-test'] });
     });
 
-    test('when Docker is unreachable but a remote runtime is configured somewhere, validation falls back to the syntax validator', async () => {
+    test('when Docker is unreachable but a remote runtime is configured somewhere, validation falls back to the package index', async () => {
         let remote = true;
         const unreachable = async () => {
             throw new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?');
@@ -410,9 +430,11 @@ describe('agent runtime package routes', () => {
                 remoteConfigured: async () => remote,
                 search: unreachable,
                 validateAvailability: unreachable,
+                validateWithIndex: validateAgentRuntimePackagesWithIndex,
                 warmCatalog: () => {}
             }
         });
+        setAgentImagePackageIndexLoader(async () => packageIndex());
         const request = (body?: unknown, query: Record<string, string> = {}) =>
             ({ body, query, user: { username: 'admin' }, authorization: adminAuthorization }) as unknown as Request;
         const validated = responseRecorder();

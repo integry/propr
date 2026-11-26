@@ -10,6 +10,7 @@ import {
     searchAgentRuntimePackages,
     validateAgentRuntimePackageAvailability,
     validateAgentRuntimePackages,
+    validateAgentRuntimePackagesWithIndex,
     verifyAgentRuntimePackageProfile,
     warmAgentRuntimePackageCatalog,
     type AgentRuntimeBuildJobData,
@@ -23,7 +24,7 @@ interface AgentRuntimeRoutesDeps {
     services?: Partial<AgentRuntimeRouteServices>;
 }
 
-type RuntimePackageStateResponse = AgentRuntimePackageState & { canManage: boolean };
+type RuntimePackageStateResponse = AgentRuntimePackageState & { canManage: boolean; warnings?: string[] };
 const DEFAULT_RUNTIME_PACKAGE_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
 
 class RuntimePackageRequestTimeoutError extends Error {
@@ -45,6 +46,8 @@ interface AgentRuntimeRouteServices {
     search: typeof searchAgentRuntimePackages;
     validate: typeof validateAgentRuntimePackages;
     validateAvailability: typeof validateAgentRuntimePackageAvailability;
+    /** Docker-free check against the agent image's Debian package index. */
+    validateWithIndex: typeof validateAgentRuntimePackagesWithIndex;
     verify: typeof verifyAgentRuntimePackageProfile;
     warmCatalog: typeof warmAgentRuntimePackageCatalog;
 }
@@ -55,8 +58,8 @@ function requireRuntimeAdmin(req: Request, res: Response): boolean {
     return false;
 }
 
-function runtimeStateResponse(state: AgentRuntimePackageState): RuntimePackageStateResponse {
-    return { ...state, canManage: true };
+function runtimeStateResponse(state: AgentRuntimePackageState, warnings: string[] = []): RuntimePackageStateResponse {
+    return { ...state, canManage: true, ...(warnings.length > 0 && { warnings }) };
 }
 
 function runtimePackageRequestTimeoutMs(): number {
@@ -119,27 +122,30 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         search: searchAgentRuntimePackages,
         validate: validateAgentRuntimePackages,
         validateAvailability: validateAgentRuntimePackageAvailability,
+        validateWithIndex: validateAgentRuntimePackagesWithIndex,
         verify: verifyAgentRuntimePackageProfile,
         warmCatalog: warmAgentRuntimePackageCatalog,
         ...overrides
     };
 
-    // Package availability is checked against the agent images with Docker. With
-    // only remote runtimes there is no Docker daemon: the list passes on the same
-    // syntax validator, and the runtime's own apt install reports a bad name.
-    async function checkAvailability(packages: string[]) {
-        const syntaxOnly = { valid: true, packages, errors: [] as string[], availability: [], sources: [] };
-        if (await services.remoteInstall()) return syntaxOnly;
+    // Package availability is checked against the agent images with Docker when Docker applies the
+    // list. Otherwise (only remote runtimes, or no reachable Docker daemon while a remote runtime is
+    // selected) the names are resolved against the agent image's Debian package index. An index that
+    // cannot be fetched passes the list with a warning; the runtime's apt install is the safety net.
+    async function checkWithIndex(packages: string[]) {
+        return withRuntimePackageRequestTimeout('Agent runtime package availability validation', services.validateWithIndex(packages));
+    }
+
+    async function checkAvailability(packages: string[]): Promise<Awaited<ReturnType<typeof checkWithIndex>>> {
+        if (await services.remoteInstall()) return checkWithIndex(packages);
         const images = await configuredBaseImages(services.loadBaseImages);
         try {
-            return await withRuntimePackageRequestTimeout(
+            return { warnings: [], ...await withRuntimePackageRequestTimeout(
                 'Agent runtime package availability validation',
                 services.validateAvailability(packages, images)
-            );
+            ) };
         } catch (error) {
-            // This host has no Docker daemon, but a remote runtime is selected somewhere: the list is
-            // validated like the remote-only path, and the runtime's own apt install reports a bad name.
-            if (dockerUnreachable(error) && await services.remoteConfigured().catch(() => false)) return syntaxOnly;
+            if (dockerUnreachable(error) && await services.remoteConfigured().catch(() => false)) return checkWithIndex(packages);
             throw error;
         }
     }
@@ -199,6 +205,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
 
     async function queueBuild(packages: unknown, res: Response): Promise<void> {
         let jobData: AgentRuntimeBuildJobData | undefined;
+        let warnings: string[] = [];
         let syntax: ReturnType<AgentRuntimeRouteServices['validate']> | undefined;
         try {
             syntax = services.validate(packages);
@@ -213,6 +220,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
             }
             const images = await configuredBaseImages(services.loadBaseImages);
             jobData = await services.requestBuild(availability.packages, images);
+            warnings = availability.warnings;
             const queue = getRuntimeBuildQueue?.() || runtimeBuildQueue;
             if (!queue) throw new Error('Agent runtime build queue is not initialized');
             await queue.add('build-agent-runtime', jobData, {
@@ -220,7 +228,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 removeOnComplete: 20,
                 removeOnFail: 50
             });
-            res.status(202).json(runtimeStateResponse(await services.loadState()));
+            res.status(202).json(runtimeStateResponse(await services.loadState(), warnings));
         } catch (error) {
             if (jobData) {
                 try {

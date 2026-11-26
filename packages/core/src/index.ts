@@ -409,6 +409,16 @@ export type {
     AgentRuntimePackageSearchResult,
     AgentRuntimePackageSource
 } from './agents/runtime/agentRuntimePackageCatalog.js';
+export {
+    AGENT_IMAGE_APT_SOURCES,
+    AGENT_RUNTIME_PACKAGE_INDEX_WARNING,
+    AgentRuntimePackageUnavailableError,
+    assertAgentRuntimePackagesInIndex,
+    findUnavailableAgentRuntimePackages,
+    setAgentImagePackageIndexLoader,
+    validateAgentRuntimePackagesWithIndex
+} from './agents/runtime/agentRuntimePackageIndex.js';
+export type { AgentImagePackageIndex, AgentRuntimePackageIndexValidation } from './agents/runtime/agentRuntimePackageIndex.js';
 export { generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 

@@ -75,6 +75,32 @@ describe('AgentRuntimePackagesSection', () => {
     expect(await screen.findByText('pending')).toBeInTheDocument();
   });
 
+  it('saves a list whose availability could not be verified and shows the warning', async () => {
+    const warning = 'could not verify availability: the Debian 12 (bookworm) package index could not be fetched (fetch failed)';
+    validateSelection.mockImplementationOnce(async packages => ({ valid: true, packages: [...packages].sort(), errors: [], warnings: [warning] }));
+    updateState.mockResolvedValueOnce({
+      installationId: 'test-installation',
+      packages: ['figlet', 'jq'],
+      activePackages: ['jq'],
+      status: 'pending',
+      images: {},
+      appliedBy: 'Installed in a derived Fly Machine image; no Docker image is built',
+      updatedAt: 'now',
+      warnings: [warning]
+    });
+    render(<AgentRuntimePackagesSection />);
+
+    expect(await screen.findByText('jq')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Package name'), { target: { value: 'figlet' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add package' }));
+    expect(await screen.findByText(`Warning: ${warning}`)).toBeInTheDocument();
+    expect(await screen.findByText('figlet')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(updateState).toHaveBeenCalledWith(['figlet', 'jq']));
+    expect(await screen.findByText(`Warning: ${warning}`)).toHaveClass('text-amber-700');
+  });
+
   it('shows packages applied by remote runtimes instead of an image count', async () => {
     getState.mockResolvedValueOnce({
       installationId: 'test-installation',

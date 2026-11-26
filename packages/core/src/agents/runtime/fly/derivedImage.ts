@@ -18,7 +18,8 @@ import { FLY_REGISTRY, FlyRegistry, MEDIA, parseFlyImage, sha256, type ImageMani
 import { RUN, WRAPPER, wrapper } from './wrapper.js';
 
 /** Part of every derived tag: bump it when the layer recipe changes so older images are not reused. */
-export const FLY_PACKAGE_IMAGE_RECIPE = 1;
+// 2: recipe 1 left every regular file out on an overlay root (layers of a few hundred bytes); never reuse those.
+export const FLY_PACKAGE_IMAGE_RECIPE = 2;
 const LAYER_LIMIT = 4 * 1024 ** 3;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
@@ -48,6 +49,8 @@ const DEFAULT_TIMINGS: FlyPackageImageTimings = {
 
 interface BuildResult extends FlyPackageInstall {
     layer?: { digest: string; size: number; diffId: string; changed: number; removed: number };
+    /** The build Machine read the layer back: every package installed, each file dpkg lists for it in the layer or the base. */
+    verified?: { packages: number; files: number; installedBytes: number };
     error?: string;
 }
 
@@ -183,10 +186,11 @@ export class FlyPackageImages {
         const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-fly-image-'));
         try {
             const started = Date.now();
-            const { layer, install, machine } = await buildLayer(options, this.timings, `${FLY_REGISTRY}/${repository}@${digest}`, path.join(directory, 'layer.tar.gz'));
+            const { layer, install, machine, verified, rawBytes } = await buildLayer(options, this.timings, `${FLY_REGISTRY}/${repository}@${digest}`, path.join(directory, 'layer.tar.gz'));
             const pushed = derived(await pushDerived(registry, { repository, tag, manifest, layer, file: path.join(directory, 'layer.tar.gz'), packages: options.packages }));
             logger.info({ run: options.run, machine, image: pushed.image, ...agentRuntimePackagesLogFields(options.packages), installMs: install.ms,
-                layerBytes: layer.size, buildMs: Date.now() - started }, 'Installed agent runtime packages in a derived Fly Machine image');
+                layerBytes: layer.size, layerRawBytes: rawBytes, installedBytes: verified.installedBytes, verifiedFiles: verified.files,
+                buildMs: Date.now() - started }, 'Installed agent runtime packages in a derived Fly Machine image');
             return pushed;
         } finally { await fs.rm(directory, { recursive: true, force: true }); }
     }
@@ -199,7 +203,7 @@ async function buildLayer(options: SelectOptions, timings: FlyPackageImageTiming
     const launch: MachineLaunch = { name, skip_service_registration: true, skip_secrets: true, region: config.region, config: {
         image: baseImage, guest: config.guest, metadata: { propr_run_id: name }, auto_destroy: true, restart: { policy: 'no' },
         processes: [{ user: 'root', ignore_app_secrets: true, entrypoint: ['/usr/bin/setpriv', '--no-new-privs', ...helper], cmd: ['build'] }],
-        files: [file(WRAPPER, wrapper, 0o644), file(RUN + '/build.json', JSON.stringify(flyPackageInstallSpec(packages)))],
+        files: [file(WRAPPER, wrapper, 0o644), file(RUN + '/build.json', JSON.stringify({ ...flyPackageInstallSpec(packages), verify: packageNames(packages) }))],
     } };
     // Boot, install, snapshot and transfer; the build is shared, so no single run's cancellation stops it.
     const deadline = Date.now() + config.bootTimeout + AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS + 30 * 60_000;
@@ -214,8 +218,12 @@ async function buildLayer(options: SelectOptions, timings: FlyPackageImageTiming
         if (state !== 'built' || !layer || !DIGEST.test(layer.digest) || !DIGEST.test(layer.diffId)
             || !Number.isSafeInteger(layer.size) || layer.size <= 0 || layer.size > LAYER_LIMIT)
             throw new Error(`Fly image build Machine ${id} produced no layer (${state ?? 'no status'}${result?.error ? ': ' + result.error : ''})`);
-        await download(api, id, layer, target);
-        return { layer, install: result!, machine: id };
+        const verified = verifiedLayer(id, result!, packages);
+        const rawBytes = await download(api, id, layer, target);
+        // Installed-Size rounds each file up to 1 KiB; a tar entry is a 512-byte header plus the data padded to 512 bytes, never less.
+        if (rawBytes < verified.installedBytes)
+            throw new Error(`Fly image build layer holds ${rawBytes} bytes, less than the ${verified.installedBytes} bytes apt reports installed`);
+        return { layer, install: result!, machine: id, verified, rawBytes };
     } finally {
         void api.exec(id, ['/usr/bin/touch', RUN + '/packages-read']).catch(() => {});
         await removeBuilder(api, id, timings);
@@ -263,7 +271,27 @@ async function waitForBuild(api: MachinesApi, id: string, { bootDeadline, deadli
     }
 }
 
-/** Reads the layer into `target`; its compressed digest, size and uncompressed diff ID are checked on the worker. */
+/**
+ * The build Machine's read-back of its layer: every package `install ok installed`, and each file
+ * `dpkg -L` lists for it in the layer (or unchanged in the base). Without it the digest is not used.
+ */
+function verifiedLayer(id: string, result: BuildResult, packages: readonly string[]) {
+    const verified = result.verified;
+    if (!verified || verified.packages !== packages.length || !Number.isSafeInteger(verified.files) || verified.files < 0
+        || !Number.isSafeInteger(verified.installedBytes) || verified.installedBytes < 0)
+        throw new Error(`Fly image build Machine ${id} did not verify the layer against dpkg`);
+    return verified;
+}
+
+/** The names dpkg knows the specs by: no version pin, no architecture qualifier. */
+function packageNames(packages: readonly string[]) {
+    return packages.map(spec => spec.split('=', 1)[0].split(':', 1)[0]);
+}
+
+/**
+ * Reads the layer into `target`; its compressed digest, size and uncompressed diff ID are checked on the
+ * worker. Returns the uncompressed size.
+ */
 async function download(api: MachinesApi, id: string, layer: NonNullable<BuildResult['layer']>, target: string) {
     const handle = await fs.open(target, 'wx', 0o600);
     const hash = crypto.createHash('sha256');
@@ -273,8 +301,12 @@ async function download(api: MachinesApi, id: string, layer: NonNullable<BuildRe
     } finally { await handle.close(); }
     if (size !== layer.size || 'sha256:' + hash.digest('hex') !== layer.digest) throw new Error('Fly image build layer does not match its recorded digest');
     const raw = crypto.createHash('sha256');
-    await pipeline(createReadStream(target), createGunzip(), async (source: AsyncIterable<Buffer>) => { for await (const chunk of source) raw.update(chunk); });
+    let rawBytes = 0;
+    await pipeline(createReadStream(target), createGunzip(), async (source: AsyncIterable<Buffer>) => {
+        for await (const chunk of source) { raw.update(chunk); rawBytes += chunk.length; }
+    });
     if ('sha256:' + raw.digest('hex') !== layer.diffId) throw new Error('Fly image build layer does not match its recorded diff ID');
+    return rawBytes;
 }
 
 /**

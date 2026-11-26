@@ -21,6 +21,8 @@ export interface AgentRuntimePackageState {
   appliedBy?: string;
   canManage?: boolean;
   updatedAt: string;
+  /** Returned by a save that could not check availability ("could not verify availability: ..."); the list was saved. */
+  warnings?: string[];
 }
 
 export interface AgentRuntimePackageSource {
@@ -42,6 +44,8 @@ export interface AgentRuntimePackageValidationResult {
   error?: string;
   availability?: Array<{ package: string; available: boolean; unavailableOn: string[] }>;
   sources?: AgentRuntimePackageSource[];
+  /** The package index could not be fetched: the list passes unverified. */
+  warnings?: string[];
 }
 
 async function handleRuntimeResponse(response: Response): Promise<Response> {
