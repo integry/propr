@@ -49,7 +49,7 @@ Set `PROPR_ADMIN_USERS` to your GitHub login or a comma-separated list of admini
 
 For **Sprites**, set `SPRITES_TOKEN` for your organization. For **Fly Machines**, set `RUNTIME=fly-machines` in your shell and add the separate agent app name (`PROPR_FLY_APP`), its deploy token (`PROPR_FLY_API_TOKEN`) and the unified agent image digest (`PROPR_FLY_IMAGE`) to the file. [Fly Machines runtime requirements](../architecture/agent-runtime.md#fly-machines)
 
-Instance runtime packages (Settings → Agent runtime packages) are installed on each Sprite when it is provisioned, and changing the list replaces warm Sprites. Fly Machines cannot apply them yet, so their runs are refused while any are configured. For tools a single repository needs, install them in `.propr/setup.sh` instead, which runs before every run on both runtimes. [Runtime packages per runtime](../architecture/agent-runtime.md#runtime-packages)
+Instance runtime packages (Settings → Agent runtime packages) are installed on each Sprite when it is provisioned, and changing the list replaces warm Sprites. Fly Machines install them at every Machine start, before the agent runs, so each run pays the install time; if that is slow, Sprites install them once per warm Sprite. For tools a single repository needs, install them in `.propr/setup.sh` instead, which runs before every run on both runtimes. [Runtime packages per runtime](../architecture/agent-runtime.md#runtime-packages)
 
 For headless Claude, optionally add `CLAUDE_SETTINGS_B64` to the file. Use single-line base64 of a settings JSON containing an `env` object with a dedicated `ANTHROPIC_API_KEY`.
 

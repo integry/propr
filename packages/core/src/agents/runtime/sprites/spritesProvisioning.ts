@@ -7,7 +7,8 @@ import { calculateDelay } from '../../../utils/retryHandler.js';
 import logger from '../../../utils/logger.js';
 import type { NetworkPolicy, Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 import { sameSpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY } from './spritesNetwork.js';
-import { agentRuntimePackageInstallCommand, agentRuntimePackagesDigest } from '../agentRuntimePackageProfile.js';
+import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, agentRuntimePackageInstallCommand, agentRuntimePackagesDigest,
+    agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
 
 const projectRoot = () => process.env.PROPR_ROOT
     || (existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
@@ -36,7 +37,9 @@ const noPackages: SpritePackageSource = async () => [];
 
 export type Slot = { sprite: Sprite; lease?: AbortSignal; checkpoint: string; provisioningMs: number; restoreMs: number;
     /** Digest of the runtime packages baked into the checkpoint; a slot whose digest is no longer current is retired. */
-    packagesDigest: string; restricted?: { policy: NetworkPolicy; run: string; recordDiagnostic: (message: string) => void } };
+    packagesDigest: string;
+    /** Time the package install took while provisioning this slot; absent on recycled slots and without packages. */
+    packageInstallMs?: number; restricted?: { policy: NetworkPolicy; run: string; recordDiagnostic: (message: string) => void } };
 
 /** Stop waiting for SDK operations that do not accept a signal. The caller owns any late resource. */
 export async function startupStep<T>(signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
@@ -117,9 +120,14 @@ export class SpritePool {
             await step(() => fs.rm(dir, { recursive: true }));
             // Instance runtime packages go into the clean checkpoint, so every run on this Sprite has them.
             // An apt failure fails provisioning with its stderr, like a failed derived-image build.
+            let packageInstallMs: number | undefined;
             if (packages.length > 0) {
-                logger.info({ sprite: sprite.name, packages }, 'Installing agent runtime packages on Sprite');
-                await step(() => sprite.execFile('sudo', ['-n', ...agentRuntimePackageInstallCommand(packages)], { signal, timeout: 15 * 60_000 }));
+                const installing = Date.now();
+                await step(() => sprite.execFile('sudo', ['-n', ...agentRuntimePackageInstallCommand(packages)],
+                    { signal, timeout: AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS }));
+                packageInstallMs = Date.now() - installing;
+                logger.info({ sprite: sprite.name, ...agentRuntimePackagesLogFields(packages), installMs: packageInstallMs },
+                    'Installed agent runtime packages on Sprite');
             }
             const comment = 'propr clean setup';
             await step(async () => complete(await sprite.createCheckpoint(comment)));
@@ -128,7 +136,7 @@ export class SpritePool {
             const restoring = Date.now();
             await step(async () => complete(await sprite.restoreCheckpoint(checkpoint.id)));
             return { sprite, lease: this.inventory?.signal(name), checkpoint: checkpoint.id, packagesDigest: agentRuntimePackagesDigest(packages),
-                provisioningMs: restoring - started, restoreMs: Date.now() - restoring };
+                ...(packageInstallMs !== undefined && { packageInstallMs }), provisioningMs: restoring - started, restoreMs: Date.now() - restoring };
         } catch (cause) {
             const stderr = cause instanceof Error && 'stderr' in cause ? String(cause.stderr).slice(-4096).trim() : '';
             const detail = stderr || (cause instanceof Error ? cause.message : String(cause));

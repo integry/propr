@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import type { AgentConfig } from '../types.js';
+import { dockerAgentRuntimeInUse, FLY_MACHINES_AGENT_RUNTIME, selectedAgentRuntimeName, SPRITES_AGENT_RUNTIME } from './runtimeSelection.js';
 
 /**
  * The configured instance runtime package list, without the Docker image
@@ -54,9 +56,46 @@ export async function loadConfiguredAgentRuntimePackages(): Promise<string[]> {
     return validation.packages;
 }
 
+/**
+ * How the configured packages are applied when no enabled agent runs on Docker,
+ * e.g. "Installed when Sprites are provisioned"; undefined when Docker is in use
+ * (the derived image build applies them). Such a worker has no Docker daemon,
+ * so Settings must not run the image build or the image-based package checks.
+ */
+export async function remoteAgentRuntimePackageInstall(
+    configs?: ReadonlyArray<Pick<AgentConfig, 'runtime' | 'enabled'>>, environment: NodeJS.ProcessEnv = process.env,
+): Promise<string | undefined> {
+    let agents = configs;
+    if (!agents) {
+        const { getConfig } = await import('../../config/configStore.js');
+        agents = await getConfig<AgentConfig[]>('agents', []);
+    }
+    if (dockerAgentRuntimeInUse(agents, environment)) return undefined;
+    const enabled = agents.filter(config => config.enabled !== false);
+    const runtimes = new Set((enabled.length > 0 ? enabled : [null]).map(config => selectedAgentRuntimeName(config, environment)));
+    const ways = [
+        ...(runtimes.has(SPRITES_AGENT_RUNTIME) ? ['when Sprites are provisioned'] : []),
+        ...(runtimes.has(FLY_MACHINES_AGENT_RUNTIME) ? ['at every Fly Machine start'] : []),
+    ];
+    return `Installed ${ways.join(' and ')}; no Docker image is built`;
+}
+
 /** Stable digest of a normalized package list; the empty list has its own digest. */
 export function agentRuntimePackagesDigest(packages: readonly string[]): string {
     return crypto.createHash('sha256').update(JSON.stringify(normalizeAgentRuntimePackageList([...packages]))).digest('hex').slice(0, 16);
+}
+
+/** Upper bound on one runtime package install (Sprite provisioning, Fly Machine start). */
+export const AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS = 15 * 60_000;
+const LOGGED_PACKAGE_NAMES = 5;
+
+/**
+ * Log fields identifying an installed package list: its digest and count,
+ * plus the names only while the list is short enough to read in one line.
+ */
+export function agentRuntimePackagesLogFields(packages: readonly string[]): { packagesDigest: string; packageCount: number; packages?: string[] } {
+    return { packagesDigest: agentRuntimePackagesDigest(packages), packageCount: packages.length,
+        ...(packages.length <= LOGGED_PACKAGE_NAMES && { packages: [...packages] }) };
 }
 
 /**

@@ -355,4 +355,45 @@ describe('agent runtime package routes', () => {
         assert.equal(record.status, 403);
         assert.equal(called, false);
     });
+    test('with only remote runtimes, validation and queueing use the syntax validator and skip the Docker image checks', async () => {
+        let state = initialState();
+        let queued: unknown;
+        const dockerOnly = async () => { throw new Error('Cannot connect to the Docker daemon'); };
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: { add: async (_name: string, data: unknown) => { queued = data; } } as never,
+            services: {
+                loadState: async () => state,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
+                remoteInstall: async () => 'Installed at every Fly Machine start; no Docker image is built',
+                requestBuild: async (packages, baseImages) => {
+                    state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-remote' };
+                    return { buildId: 'build-remote', packages: packages as string[], baseImages };
+                },
+                search: dockerOnly,
+                validateAvailability: dockerOnly,
+                warmCatalog: dockerOnly
+            }
+        });
+        const request = (body?: unknown, query: Record<string, string> = {}) =>
+            ({ body, query, user: { username: 'admin' }, authorization: adminAuthorization }) as unknown as Request;
+
+        const validated = responseRecorder();
+        await routes.validateRuntimePackages(request({ packages: ['postgresql-client'] }), validated.response);
+        assert.equal(validated.record.status, 200);
+        assert.deepEqual((validated.record.body as { packages: string[] }).packages, ['postgresql-client']);
+
+        const invalid = responseRecorder();
+        await routes.validateRuntimePackages(request({ packages: ['bad;name'] }), invalid.response);
+        assert.equal(invalid.record.status, 400, 'the same syntax validator still rejects bad specs');
+
+        const searched = responseRecorder();
+        await routes.searchRuntimePackages(request(undefined, { q: 'postgres' }), searched.response);
+        assert.equal(searched.record.status, 200);
+        assert.deepEqual(searched.record.body, { query: 'postgres', suggestions: [], sources: [] });
+
+        const put = responseRecorder();
+        await routes.putRuntimePackages(request({ packages: ['postgresql-client'] }), put.response);
+        assert.equal(put.record.status, 202);
+        assert.deepEqual(queued, { buildId: 'build-remote', packages: ['postgresql-client'], baseImages: ['propr/agent:bundle-test'] });
+    });
 });

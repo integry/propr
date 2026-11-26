@@ -18,38 +18,36 @@ after(closeConnection);
 const docker = { kind: 'docker', capabilities: DOCKER_RUNTIME_CAPABILITIES };
 const fly = { kind: 'fly-machines', capabilities: FlyMachinesRuntime.capabilities };
 const sprites = { kind: 'sprites', capabilities: SpritesRuntime.capabilities };
+// A runtime that cannot install packages: one that declares nothing.
+const custom = { kind: 'custom', capabilities: {} };
 
-test('runtimes declare whether they apply runtime packages; Fly Machines are refused while packages are configured', () => {
+test('Docker, Sprites and Fly Machines apply runtime packages; a runtime that cannot is refused while packages are configured', () => {
     assert.equal(DOCKER_RUNTIME_CAPABILITIES.supportsRuntimePackages, true);
     assert.equal(SpritesRuntime.capabilities.supportsRuntimePackages, true);
-    assert.equal(FlyMachinesRuntime.capabilities.supportsRuntimePackages, false);
-    assert.equal(runtimePackagesRefusal(docker, ['postgresql-client']), undefined);
-    assert.equal(runtimePackagesRefusal(sprites, ['postgresql-client']), undefined);
-    assert.equal(runtimePackagesRefusal(fly, []), undefined, 'no packages configured: nothing to refuse');
-    const refusal = runtimePackagesRefusal(fly, ['postgresql-client']);
-    assert.match(refusal!, /"fly-machines" cannot install the configured runtime packages \(postgresql-client\)/);
-    assert.match(refusal!, /\(docker, sprites\)/);
+    assert.equal(FlyMachinesRuntime.capabilities.supportsRuntimePackages, true);
+    for (const runtime of [docker, sprites, fly]) assert.equal(runtimePackagesRefusal(runtime, ['postgresql-client']), undefined);
+    assert.equal(runtimePackagesRefusal(custom, []), undefined, 'no packages configured: nothing to refuse');
+    const refusal = runtimePackagesRefusal(custom, ['postgresql-client']);
+    assert.match(refusal!, /"custom" cannot install the configured runtime packages \(postgresql-client\)/);
+    assert.match(refusal!, /\(docker, fly-machines, sprites\)/);
     assert.match(refusal!, /\.propr\/setup\.sh/);
-    // A custom runtime that declares nothing is not assumed to install them.
-    assert.ok(runtimePackagesRefusal({ kind: 'custom', capabilities: {} }, ['jq']));
-    assert.match(runtimePackagesRefusal(fly, ['a', 'b', 'c', 'd', 'e', 'f', 'g'])!, /\(a, b, c, d, e, and 2 more\)/);
+    assert.match(runtimePackagesRefusal(custom, ['a', 'b', 'c', 'd', 'e', 'f', 'g'])!, /\(a, b, c, d, e, and 2 more\)/);
 });
 
 test('the launch check refuses with a typed capability error and reads packages only for runtimes that cannot apply them', async () => {
     let reads = 0;
     const load = async () => { reads++; return ['postgresql-client']; };
-    await assertRuntimePackagesSupported(docker, { name: 'run-1' }, load);
-    await assertRuntimePackagesSupported(sprites, { name: 'run-1' }, load);
+    for (const runtime of [docker, sprites, fly]) await assertRuntimePackagesSupported(runtime, { name: 'run-1' }, load);
     assert.equal(reads, 0);
-    await assert.rejects(assertRuntimePackagesSupported(fly, { name: 'run-1' }, load), (error: unknown) => {
+    await assert.rejects(assertRuntimePackagesSupported(custom, { name: 'run-1' }, load), (error: unknown) => {
         assert.ok(error instanceof AgentRuntimeCapabilityError);
         assert.equal(error.capability, 'runtime_packages');
-        assert.equal(error.runtime, 'fly-machines');
+        assert.equal(error.runtime, 'custom');
         assert.match(error.message, /\(run run-1\)$/);
         return true;
     });
-    await assertRuntimePackagesSupported(fly, { name: 'run-2' }, async () => []);
-    await assert.rejects(assertRuntimePackagesSupported(fly, { name: 'run-3' }, async () => { throw new Error('settings unreadable'); }),
+    await assertRuntimePackagesSupported(custom, { name: 'run-2' }, async () => []);
+    await assert.rejects(assertRuntimePackagesSupported(custom, { name: 'run-3' }, async () => { throw new Error('settings unreadable'); }),
         /settings unreadable/, 'an unreadable package list fails closed');
 });
 

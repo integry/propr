@@ -75,6 +75,23 @@ describe('AgentRuntimePackagesSection', () => {
     expect(await screen.findByText('pending')).toBeInTheDocument();
   });
 
+  it('shows packages applied by remote runtimes instead of an image count', async () => {
+    getState.mockResolvedValueOnce({
+      installationId: 'test-installation',
+      packages: ['postgresql-client'],
+      activePackages: ['postgresql-client'],
+      status: 'ready',
+      images: {},
+      appliedBy: 'Installed at every Fly Machine start; no Docker image is built',
+      updatedAt: 'now'
+    });
+    render(<AgentRuntimePackagesSection />);
+
+    expect(await screen.findByText('1 active · Installed at every Fly Machine start; no Docker image is built')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('ready');
+    expect(screen.queryByText(/active across/)).not.toBeInTheDocument();
+  });
+
   it('explains why packages are needed and how to find their names', async () => {
     render(<AgentRuntimePackagesSection />);
     await screen.findByText('jq');

@@ -16,6 +16,8 @@ import { flyConfig } from './fly/config.js';
 import { OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
 import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
 import { RUN } from './fly/wrapper.js';
+import { flyPackageInstallError, logFlyPackageInstall, readFlyPackageInstall, type FlyPackageInstall } from './fly/packages.js';
+import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, loadConfiguredAgentRuntimePackages } from './agentRuntimePackageProfile.js';
 import { startRunPipeline } from './runPipeline.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
@@ -23,6 +25,8 @@ const POLL_FAILURE_TOLERANCE = 15_000;
 
 interface ExitPollCallbacks {
     bootDeadline: number;
+    /** Latest time a runtime package install may still be running; the boot deadline without packages. */
+    installDeadline: number;
     start(machine: string): Promise<boolean>;
     activity(): void;
     readUsage(id: string): Promise<boolean>;
@@ -30,12 +34,14 @@ interface ExitPollCallbacks {
 
 async function probe(api: MachinesApi, id: string, signal: AbortSignal) {
     const res = await api.exec(id, [...helper, 'probe'], signal).catch(() => undefined);
-    return res?.exit_code === 0 && /^(ready|running|exited (\d{1,3}))\n(\d+)$/.exec(res.stdout.trim());
+    return res?.exit_code === 0 && /^(ready|running|installing|install-failed|exited (\d{1,3}))\n(\d+)$/.exec(res.stdout.trim());
 }
+
+const probeState = (status: Awaited<ReturnType<typeof probe>>) => status ? status[1] : undefined;
 
 /** Poll the atomic status and consume new usage when a cap is active.
  * Changing byte counts are activity for the stall watchdog. */
-async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { bootDeadline, start, activity, readUsage }: ExitPollCallbacks) {
+async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { bootDeadline, installDeadline, start, activity, readUsage }: ExitPollCallbacks) {
     let deadline = bootDeadline;
     let failures = 0;
     let retryUsage = false;
@@ -45,7 +51,12 @@ async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { 
         if (remaining <= 0) return;
         const status = await probe(api, id, AbortSignal.any([forced, AbortSignal.timeout(remaining)]));
         let retry = !status;
-        if (status && status[1] === 'ready') {
+        const state = probeState(status);
+        if (state === 'install-failed') return state;
+        if (state === 'installing') {
+            // The wrapper bounds the install itself; keep polling while it reports progress.
+            deadline = Math.max(deadline, Math.min(Date.now() + POLL_FAILURE_TOLERANCE, installDeadline));
+        } else if (state === 'ready') {
             if (Date.now() >= deadline) return;
             retry = !await start(id);
         } else if (status) {
@@ -65,7 +76,8 @@ async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { 
     // The grace period may expire between polls, after the clone transport
     // has finished publishing its bundle. Check before forcing deletion.
     const last = await probe(api, id, AbortSignal.timeout(1500));
-    if (last && last[1] !== 'ready') return last[2] === undefined ? 'running' : Number(last[2]);
+    // A Machine still installing packages has not started the agent, like one that is ready.
+    if (last && !['ready', 'installing', 'install-failed'].includes(last[1])) return last[2] === undefined ? 'running' : Number(last[2]);
 }
 
 function applyOutputDiagnostics(result: ExecutionResult, truncated: string[], missing: string[], failures: string[]) {
@@ -80,12 +92,14 @@ function applyOutputDiagnostics(result: ExecutionResult, truncated: string[], mi
 
 export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'fly-machines';
-    static readonly capabilities = { supportsExtensions: false, supportsRuntimePackages: false, supportsBindMounts: false, supportsRestrictedNetwork: false,
+    static readonly capabilities = { supportsExtensions: false, supportsRuntimePackages: true, supportsBindMounts: false, supportsRestrictedNetwork: false,
         supportsMcpPrivateNetwork: false, supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly capabilities = FlyMachinesRuntime.capabilities;
     readonly unsupportedMount = unsupportedFlyMount;
 
-    constructor(private readonly client?: MachinesApi, private readonly environment = process.env) {}
+    constructor(private readonly client?: MachinesApi, private readonly environment = process.env,
+        // Fly Machines are ephemeral: the configured runtime packages are installed at every Machine start.
+        private readonly loadPackages: () => Promise<readonly string[]> = loadConfiguredAgentRuntimePackages) {}
 
     unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec) {
         if (!['claude', 'codex'].includes(spec.profile.agentType)) return 'Fly Machines supports Claude Code and Codex';
@@ -157,6 +171,13 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             external.throwIfAborted();
             const refusal = await admitCostExecution(this.kind, [], runOptions);
             if (refusal) return refuseCostExecution(refusal, preserve);
+            external.throwIfAborted();
+            if (stopping) throw new Error('Fly run stopped before creation');
+            // Read for every run, so a Settings change applies to the next Machine. An unreadable
+            // or invalid list fails the run rather than starting it without its packages.
+            const packages = await this.loadPackages();
+            prepared.installPackages(packages);
+            let packageInstall: FlyPackageInstall | undefined;
             external.throwIfAborted();
             if (stopping) throw new Error('Fly run stopped before creation');
             const failures: string[] = [];
@@ -261,6 +282,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 missing.push('status');
             };
             let exitCode = -1;
+            const createdAt = Date.now();
             try {
                 let bootStart = Date.now();
                 id = await api.create(prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); });
@@ -268,8 +290,13 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 let usageFailureSince: number | undefined;
                 const code = stopping ? undefined : await waitForExit(api, id, forced.signal, {
                     bootDeadline: bootStart + config.bootTimeout,
+                    installDeadline: bootStart + config.bootTimeout + (packages.length ? AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS + POLL_FAILURE_TOLERANCE : 0),
                     async start(machine) {
                         if (stopping) return false;
+                        if (packages.length && !packageInstall) {
+                            packageInstall = await readFlyPackageInstall(api, machine, forced.signal);
+                            logFlyPackageInstall(spec.name, machine, packages, packageInstall);
+                        }
                         // A lost exec response can still have opened the guest gate.
                         mayHaveStarted = true;
                         const response = await api.exec(machine, ['/usr/bin/touch', RUN + '/start'], forced.signal).catch(() => undefined);
@@ -301,6 +328,16 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 clearTimeout(timeoutTimer);
                 clearTimeout(graceTimer);
                 logs.abort();
+                if (code === 'install-failed') {
+                    // Nothing ran as the agent: no workspace result or credentials to keep.
+                    const install = await readFlyPackageInstall(api, id, AbortSignal.timeout(5000));
+                    logFlyPackageInstall(spec.name, id, packages, install);
+                    void api.exec(id, ['/usr/bin/touch', RUN + '/packages-read']).catch(() => {});
+                    credentialsPending = false;
+                    workspaceSafeToDestroy = true;
+                    await destroy();
+                    throw flyPackageInstallError(packages, install);
+                }
                 const confirmed = typeof code === 'number' ? code : await recoverUnconfirmedExit(id, code === 'running');
                 if (typeof confirmed === 'number') {
                     exited = true;
@@ -319,6 +356,11 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             }
             if (callbackError) throw callbackError;
             const result: ExecutionResult = pipeline.result(exitCode);
+            if (packageInstall) {
+                // The install is the Machine's provisioning before the agent; record it so its per-run cost shows.
+                result.computeUsage = { runtime: this.kind, wallTimeMs: Date.now() - createdAt, provisioningMs: packageInstall.ms,
+                    packageInstallMs: packageInstall.ms, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null };
+            }
             applyOutputDiagnostics(result, truncated, missing, failures);
             return new Promise((resolve, reject) => {
                 if (costMessage) settleCostCapStop(costMessage, result, { preserveOutput: preserve, resolve, reject });

@@ -174,6 +174,13 @@ export function SpritePoolSummary({ pool }: { pool: SpritePoolStatus }) {
   </section>;
 }
 
+/** Remote runtimes install the packages themselves, so there are no images to count. */
+function runtimePackageSummary(state: AgentRuntimePackageState): string {
+  if (state.appliedBy) return `${state.activePackages.length} active · ${state.appliedBy}`;
+  const images = Object.keys(state.images).length;
+  return `${state.activePackages.length} active across ${images} agent image${images === 1 ? '' : 's'}`;
+}
+
 function RuntimeSpritePoolSummary() {
   const pool = useSharedSystemStatus().status?.spritePool;
   return pool ? <SpritePoolSummary pool={pool} /> : null;
@@ -379,7 +386,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
 
       <div className="mt-3 flex items-center justify-between gap-3">
         <span className="text-[12px] text-slate-500">
-          {state.activePackages.length} active across {Object.keys(state.images).length} agent image{Object.keys(state.images).length === 1 ? '' : 's'}
+          {runtimePackageSummary(state)}
         </span>
         <button
           type="button"

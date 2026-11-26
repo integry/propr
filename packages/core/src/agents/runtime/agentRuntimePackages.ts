@@ -6,6 +6,7 @@ import { buildAgentRuntimeImage } from './agentRuntimeImageBuilder.js';
 import {
     AGENT_RUNTIME_PACKAGES_CONFIG_KEY,
     normalizeAgentRuntimePackageList as normalizePackageList,
+    remoteAgentRuntimePackageInstall,
     validateAgentRuntimePackages,
     type RuntimePackageValidation,
 } from './agentRuntimePackageProfile.js';
@@ -50,6 +51,8 @@ export interface AgentRuntimePackageState {
     images: Record<string, AgentRuntimeImageRecord>;
     error?: string;
     buildLog?: string;
+    /** Set when a remote runtime installs the packages itself instead of a Docker image build, e.g. "Installed when Sprites are provisioned; …". */
+    appliedBy?: string;
     updatedAt: string;
 }
 
@@ -89,6 +92,7 @@ function normalizeState(value: unknown): AgentRuntimePackageState {
         images: raw.images && typeof raw.images === 'object' ? raw.images : {},
         error: typeof raw.error === 'string' ? raw.error : undefined,
         buildLog: typeof raw.buildLog === 'string' ? raw.buildLog : undefined,
+        appliedBy: typeof raw.appliedBy === 'string' ? raw.appliedBy : undefined,
         updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : new Date(0).toISOString()
     };
 }
@@ -269,7 +273,10 @@ function summarizeBuildError(message: string): string {
     return (lines.at(-1) || 'Agent runtime image build failed').slice(0, 500);
 }
 
-export async function buildAgentRuntimePackageProfile(job: AgentRuntimeBuildJobData): Promise<AgentRuntimePackageState> {
+export async function buildAgentRuntimePackageProfile(
+    job: AgentRuntimeBuildJobData,
+    { remoteInstall = () => remoteAgentRuntimePackageInstall() }: { remoteInstall?: () => Promise<string | undefined> } = {},
+): Promise<AgentRuntimePackageState> {
     const validation = validateAgentRuntimePackages(job.packages);
     if (!validation.valid) throw new Error(validation.errors.join('; '));
     let current = await loadAgentRuntimePackageState();
@@ -287,6 +294,9 @@ export async function buildAgentRuntimePackageProfile(job: AgentRuntimeBuildJobD
     };
     await saveAgentRuntimePackageState(current);
 
+    // A worker running only remote runtimes has no Docker daemon: those runtimes
+    // install the validated list themselves, so it is applied without a build.
+    const remote = await remoteInstall();
     if (validation.packages.length === 0) {
         const disabled: AgentRuntimePackageState = {
             ...current,
@@ -294,11 +304,29 @@ export async function buildAgentRuntimePackageProfile(job: AgentRuntimeBuildJobD
             status: 'disabled',
             images: {},
             buildLog: 'Runtime package profile disabled',
+            appliedBy: undefined,
             updatedAt: new Date().toISOString()
         };
         await saveAgentRuntimePackageState(disabled);
-        await cleanupRuntimeImages(current.images, {}, installationId);
+        if (!remote) await cleanupRuntimeImages(current.images, {}, installationId);
         return disabled;
+    }
+    if (remote) {
+        const latest = await loadAgentRuntimePackageState();
+        if (latest.buildId !== job.buildId) return latest;
+        const applied: AgentRuntimePackageState = {
+            ...latest,
+            activePackages: validation.packages,
+            status: 'ready',
+            images: {},
+            error: undefined,
+            buildLog: `${remote}.`,
+            appliedBy: remote,
+            updatedAt: new Date().toISOString()
+        };
+        await saveAgentRuntimePackageState(applied);
+        logger.info({ buildId: job.buildId, packageCount: validation.packages.length, appliedBy: remote }, 'Agent runtime packages applied by remote runtimes');
+        return applied;
     }
 
     const images: Record<string, AgentRuntimeImageRecord> = {};
@@ -331,6 +359,7 @@ export async function buildAgentRuntimePackageProfile(job: AgentRuntimeBuildJobD
             images,
             error: undefined,
             buildLog: tailBuildLog(logs.join('\n\n')),
+            appliedBy: undefined,
             updatedAt: new Date().toISOString()
         };
         await saveAgentRuntimePackageState(ready);

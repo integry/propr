@@ -3,6 +3,7 @@ import type { Queue } from 'bullmq';
 import {
     loadAgentRuntimePackageState,
     loadEffectiveAgentBaseImages,
+    remoteAgentRuntimePackageInstall,
     requestAgentRuntimePackageBuild,
     saveAgentRuntimePackageState,
     searchAgentRuntimePackages,
@@ -34,6 +35,8 @@ class RuntimePackageRequestTimeoutError extends Error {
 interface AgentRuntimeRouteServices {
     loadState: typeof loadAgentRuntimePackageState;
     loadBaseImages: typeof loadEffectiveAgentBaseImages;
+    /** How remote runtimes apply the packages when no agent runs on Docker; undefined when Docker is in use. */
+    remoteInstall: () => Promise<string | undefined>;
     requestBuild: typeof requestAgentRuntimePackageBuild;
     saveState: typeof saveAgentRuntimePackageState;
     search: typeof searchAgentRuntimePackages;
@@ -97,6 +100,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
     const services: AgentRuntimeRouteServices = {
         loadState: loadAgentRuntimePackageState,
         loadBaseImages: loadEffectiveAgentBaseImages,
+        remoteInstall: () => remoteAgentRuntimePackageInstall(),
         requestBuild: requestAgentRuntimePackageBuild,
         saveState: saveAgentRuntimePackageState,
         search: searchAgentRuntimePackages,
@@ -107,14 +111,26 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         ...overrides
     };
 
+    // Package availability is checked against the agent images with Docker. With
+    // only remote runtimes there is no Docker daemon: the list passes on the same
+    // syntax validator, and the runtime's own apt install reports a bad name.
+    async function checkAvailability(packages: string[]) {
+        if (await services.remoteInstall()) return { valid: true, packages, errors: [], availability: [], sources: [] };
+        const images = await configuredBaseImages(services.loadBaseImages);
+        return withRuntimePackageRequestTimeout(
+            'Agent runtime package availability validation',
+            services.validateAvailability(packages, images)
+        );
+    }
+
     async function getRuntimePackages(req: Request, res: Response): Promise<void> {
         if (!requireRuntimeAdmin(req, res)) return;
         try {
             // An admin loading the runtime state is about to search/validate
             // packages; warm the catalog off the request path so their first
             // search does not wait on a container running apt-get update.
-            void configuredBaseImages(services.loadBaseImages)
-                .then(images => services.warmCatalog(images))
+            void services.remoteInstall()
+                .then(async remote => { if (!remote) await services.warmCatalog(await configuredBaseImages(services.loadBaseImages)); })
                 .catch(() => { /* Best-effort warm-up only. */ });
             res.json(runtimeStateResponse(await services.loadState()));
         } catch (error) {
@@ -130,11 +146,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 res.status(400).json(syntax);
                 return;
             }
-            const images = await configuredBaseImages(services.loadBaseImages);
-            const result = await withRuntimePackageRequestTimeout(
-                'Agent runtime package availability validation',
-                services.validateAvailability(syntax.packages, images)
-            );
+            const result = await checkAvailability(syntax.packages);
             res.status(result.valid ? 200 : 400).json(result);
         } catch (error) {
             sendRuntimePackageError(error, res);
@@ -145,6 +157,11 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         if (!requireRuntimeAdmin(req, res)) return;
         try {
             const query = typeof req.query.q === 'string' ? req.query.q : '';
+            // The catalog is read from the agent images, which need Docker.
+            if (await services.remoteInstall()) {
+                res.json({ query, suggestions: [], sources: [] });
+                return;
+            }
             const images = await configuredBaseImages(services.loadBaseImages);
             res.json(await withRuntimePackageRequestTimeout(
                 'Agent runtime package search',
@@ -164,15 +181,12 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 res.status(400).json({ error: syntax.errors.join('; '), errors: syntax.errors });
                 return;
             }
-            const images = await configuredBaseImages(services.loadBaseImages);
-            const availability = await withRuntimePackageRequestTimeout(
-                'Agent runtime package availability validation',
-                services.validateAvailability(syntax.packages, images)
-            );
+            const availability = await checkAvailability(syntax.packages);
             if (!availability.valid) {
                 res.status(400).json({ error: availability.errors.join('; '), ...availability });
                 return;
             }
+            const images = await configuredBaseImages(services.loadBaseImages);
             jobData = await services.requestBuild(availability.packages, images);
             const queue = getRuntimeBuildQueue?.() || runtimeBuildQueue;
             if (!queue) throw new Error('Agent runtime build queue is not initialized');

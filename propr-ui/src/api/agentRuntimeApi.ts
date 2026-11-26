@@ -17,6 +17,8 @@ export interface AgentRuntimePackageState {
   }>;
   error?: string;
   buildLog?: string;
+  /** Set when remote runtimes (Sprites, Fly Machines) install the packages instead of a Docker image build. */
+  appliedBy?: string;
   canManage?: boolean;
   updatedAt: string;
 }
