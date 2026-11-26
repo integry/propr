@@ -18,15 +18,24 @@ import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntim
 import logger from '../../utils/logger.js';
 import { LiveOutputLog } from '../impl/utils/liveOutputLog.js';
 import { SpriteInventory, type SpritePoolRedis } from './sprites/spritesInventory.js';
-import { spritesMcpForwardTarget, type SpritesMcpForwardTarget } from './sprites/spritesMcpForwardConfig.js';
+import { isSpritesMcpForwardUrl, spritesMcpForwardTarget, type SpritesMcpForwardTarget } from './sprites/spritesMcpForwardConfig.js';
 import type { SpritesMcpForward } from './sprites/spritesMcpForward.js';
 
-/** The forward target a run's `ssh-reverse-forward` MCP grant needs, or undefined for any other grant. */
-function mcpForwardTarget(spec: AgentRunSpec, environment: NodeJS.ProcessEnv): SpritesMcpForwardTarget | undefined {
-    if (spec.mcpGrant?.transport !== 'ssh-reverse-forward') return undefined;
+/**
+ * The per-run SSH reverse forward a run needs: for a ProPR MCP grant over the
+ * forward, or for an extension gateway on the forward listener (URL MCP servers
+ * of a run without a public MCP URL, which may carry no ProPR MCP grant).
+ */
+function mcpForwardTarget(spec: AgentRunSpec, environment: NodeJS.ProcessEnv, gatewayUrl?: string): SpritesMcpForwardTarget | undefined {
+    const grant = spec.mcpGrant?.transport === 'ssh-reverse-forward' ? spec.mcpGrant : undefined;
+    const gateway = gatewayUrl && isSpritesMcpForwardUrl(gatewayUrl) ? gatewayUrl : undefined;
+    if (!grant && !gateway) return undefined;
     const target = spritesMcpForwardTarget(environment);
     if ('reason' in target) throw new Error(`Sprites cannot start the ProPR MCP SSH reverse forward: ${target.reason}`);
-    if (spec.mcpGrant.url !== target.url) throw new Error('The ProPR MCP grant URL does not match the Sprites SSH reverse forward listener');
+    if (grant && grant.url !== target.url) throw new Error('The ProPR MCP grant URL does not match the Sprites SSH reverse forward listener');
+    if (gateway && gateway.replace(/\/+$/, '') !== target.url.replace(/\/api\/mcp$/, '/api/extensions/mcp')) {
+        throw new Error('The extension gateway URL does not match the Sprites SSH reverse forward listener');
+    }
     return target;
 }
 
@@ -102,7 +111,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
         // Named networks, private MCP endpoints and malformed policies stay refused.
         // URL MCP servers go through the extension gateway: a restricted Sprite allows its host too.
         const networkPolicy = spriteNetworkPolicy(spec, extension?.gatewayUrl ? [extension.gatewayUrl] : []);
-        const forwardTarget = mcpForwardTarget(spec, this.environment);
+        const forwardTarget = mcpForwardTarget(spec, this.environment, extension?.gatewayUrl);
         process.env.SPRITES_CLIENT_SIGNALS ??= '0';
         if (this.closing) throw new Error('Sprites runtime is closed');
         const pool = this.getPool(token);
@@ -178,7 +187,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             try {
                 signal.throwIfAborted();
                 if (forwardTarget) {
-                    // Before the agent starts: its ProPR MCP config names the loopback listener.
+                    // Before the agent starts: its ProPR MCP or extension gateway config names the loopback listener.
                     const starting = import('./sprites/spritesMcpForward.js').then(({ SpritesMcpForward }) => SpritesMcpForward.start({
                         sprite, target: forwardTarget, signal, run: spec.name,
                         onLost: error => {

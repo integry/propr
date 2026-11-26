@@ -140,8 +140,35 @@ test('the run\'s runtime decides support: Docker applies all, Sprites and Fly up
   const fly = await extensionRuntimeSupport({ runtime: 'fly-machines' }, 'open', { API_PUBLIC_URL: 'https://propr.example' });
   assert.equal(fly.mcpEndpoint, 'https://propr.example/api/mcp');
   assert.equal(fly.capabilities.remoteMcp, true);
-  // Without a URL the run can reach, URL servers have no gateway: they are treated as unsupported.
-  assert.equal((await extensionRuntimeSupport({ runtime: 'sprites' }, 'open', {})).capabilities.remoteMcp, false);
+  // Fly Machines have no reverse forward: without a URL the run can reach, URL servers have no gateway and are unsupported.
+  assert.equal((await extensionRuntimeSupport({ runtime: 'fly-machines' }, 'open', {})).capabilities.remoteMcp, false);
+});
+
+test('Sprites without a public MCP URL reach the gateway through the SSH reverse forward; with the forward off URL servers are dropped', async t => {
+  // No public URL: #3817's transport plan picks the per-run forward, in open and restricted runs alike.
+  for (const mode of ['open', 'restricted'] as const) {
+    const support = await extensionRuntimeSupport({ runtime: 'sprites' }, mode, {});
+    assert.equal(support.capabilities.remoteMcp, true, `${mode}: URL servers count as supported without a public URL`);
+    assert.equal(support.mcpEndpoint, 'http://127.0.0.1:39080/api/mcp');
+  }
+  // The forward relays to PROPR_INTERNAL_API_URL, base path included.
+  assert.equal((await extensionRuntimeSupport({ runtime: 'sprites' }, 'open', { PROPR_INTERNAL_API_URL: 'http://api:4000/propr' })).mcpEndpoint, 'http://127.0.0.1:39080/propr/api/mcp');
+  const off = await extensionRuntimeSupport({ runtime: 'sprites' }, 'open', { PROPR_SPRITES_MCP_FORWARD: '0' });
+  assert.equal(off.capabilities.remoteMcp, false);
+  assert.equal(off.mcpEndpoint, undefined);
+
+  const { save, run } = await fixture(t);
+  await save({ servers: [server()], skills: [] });
+  const forwarded = await run(issueTask(), await extensionRuntimeSupport({ runtime: 'sprites' }, 'open', {}));
+  assert.equal(forwarded.launched.launch!.gatewayUrl, 'http://127.0.0.1:39080/api/extensions/mcp');
+  assert.deepEqual(forwarded.launched.prepared.toolPolicy!.mcpServers!.map(s => s.url), ['http://127.0.0.1:39080/api/extensions/mcp/docs']);
+  assert.deepEqual(forwarded.launched.launch!.requires!.remoteMcp, ['docs']);
+  assert.equal(forwarded.returned.extensionNotice, undefined);
+
+  const dropped = await run(issueTask(), off);
+  assert.equal(dropped.launched.launch, undefined, 'nothing left to apply');
+  assert.deepEqual(dropped.event.skipped, [{ kind: 'server', name: 'docs', reason: 'agent_runtime_unsupported', source: 'auto' }]);
+  assert.match(dropped.returned.extensionNotice!, /Agent runtime "sprites" cannot run URL MCP servers.*MCP server "docs"/);
 });
 
 test('a run with only skills does not need a gateway URL; an MCP URL the gateway cannot be derived from leaves URL servers unsupported', async t => {

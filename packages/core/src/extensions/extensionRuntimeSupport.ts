@@ -21,6 +21,8 @@ export interface ExtensionRuntimeSupport {
   /**
    * The ProPR MCP URL the run reaches without a private network: the
    * extension gateway is derived from it so remote runs reach the gateway too.
+   * On Sprites without a public URL this is the loopback SSH reverse forward
+   * listener (`http://127.0.0.1:39080/api/mcp`).
    */
   mcpEndpoint?: string;
 }
@@ -42,13 +44,13 @@ export async function extensionRuntimeSupport(config: Pick<AgentConfig, 'runtime
   if (runtime.capabilities.supportsBindMounts && runtime.capabilities.supportsMcpPrivateNetwork) return { kind: runtime.kind, capabilities, bindMounts: true };
   const { planAgentRunMcpTransport } = await import('../agents/runtime/agentRunMcpTransport.js');
   const plan = planAgentRunMcpTransport(runtime, environment, networkMode);
-  // Without an endpoint the run reaches, URL servers have no gateway to call.
-  // TODO(#3817): once Sprites reach ProPR MCP through the per-run SSH reverse forward
-  // (127.0.0.1:39080 -> internal API) when there is no public URL, point the gateway
-  // at that forward's /api/extensions/mcp instead of treating URL servers as unsupported.
+  // URL servers reach the gateway beside ProPR MCP: at the run's reachable URL, or,
+  // on Sprites without one, through the per-run SSH reverse forward
+  // (127.0.0.1:39080 -> PROPR_INTERNAL_API_URL), which carries /api/extensions/mcp
+  // as well as /api/mcp. Without either, URL servers have no gateway to call.
   // The gateway sits beside ProPR MCP: an endpoint it cannot be derived from
   // (a proxy path not ending in /api/mcp) leaves URL servers unsupported too.
-  const mcpEndpoint = plan.transport === 'reachable-url' ? plan.url : undefined;
+  const mcpEndpoint = plan.transport === 'reachable-url' || plan.transport === 'ssh-reverse-forward' ? plan.url : undefined;
   if (!mcpEndpoint || !tryExtensionGatewayBaseUrl(environment, mcpEndpoint)) capabilities.remoteMcp = false;
   return { kind: runtime.kind, capabilities, bindMounts: runtime.capabilities.supportsBindMounts, ...(mcpEndpoint ? { mcpEndpoint } : {}) };
 }
