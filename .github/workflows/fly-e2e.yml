@@ -117,8 +117,17 @@ jobs:
           docker push "$ref"
           image=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" |
             grep -m1 -E "^registry\.fly\.io/$AGENT_APP@sha256:[0-9a-f]{64}$")
-          # A deploy token scoped to the agent app, as the runtime docs require.
-          agent_token=$(flyctl tokens create deploy --app "$AGENT_APP" --expiry 2h --name "$APP agents")
+          # Org tokens can't create tokens, so derive one locally from FLY_E2E_TOKEN, scoped to the agent
+          # app only: read (images, logs), write, create, delete and control (start/stop) Machines, for 2 h.
+          # Fly's Apps caveat uses the internal numeric ID. Zero would grant access to all apps.
+          agent_app_id=$(curl --fail --silent --show-error -H "Authorization: $FLY_API_TOKEN" \
+            "https://api.machines.dev/v1/apps/$AGENT_APP" | jq -er '.internal_numeric_id | numbers | select(. > 0)')
+          [[ $agent_app_id =~ ^[1-9][0-9]*$ ]]
+          agent_token=$(jq -n --arg id "$agent_app_id" '[
+            {type: "Apps", body: {apps: {($id): "rwcdC"}}},
+            {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
+          ]' | flyctl tokens attenuate)
+          [[ -n $agent_token ]]
           echo "::add-mask::$agent_token"
           {
             echo "PROPR_FLY_APP=$AGENT_APP"
@@ -391,7 +400,8 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: flyctl apps destroy "$APP" --yes
       - name: Destroy the Fly Machines agent app
-        if: always() && steps.app.outcome == 'success' && env.AGENT_RUNTIME == 'fly-machines'
+        # Keyed only on the marker written right after the app is created, so it runs whatever failed.
+        if: always()
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: if [[ -f $OUT/destroy-agent-app ]]; then flyctl apps destroy "$AGENT_APP" --yes; fi
