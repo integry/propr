@@ -15,17 +15,21 @@ import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
 import { flyConfig } from './fly/config.js';
 import { OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
-import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
+import { helper, PACKAGE_SERVERS, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
 import { RUN } from './fly/wrapper.js';
-import { flyPackageServerInstallError, logFlyPackageServerInstall, readFlyPackageServerInstall, waitForPackageServerInstall, type FlyPackageServerInstall } from './fly/packageServers.js';
+import { flyPackageServerInstallError, logFlyPackageServerInstall, readFlyPackageServerInstall, type FlyPackageServerInstall } from './fly/packageServers.js';
 import { PACKAGE_SERVER_INSTALL_TIMEOUT_MS } from '../../extensions/remotePackageServers.js';
 import { startRunPipeline } from './runPipeline.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 
 const POLL_FAILURE_TOLERANCE = 15_000;
+/** The installer bounds npm; a Machine reporting `installing` is waited for up to this past the boot deadline. */
+const INSTALL_WAIT_MS = PACKAGE_SERVER_INSTALL_TIMEOUT_MS + 60_000 + POLL_FAILURE_TOLERANCE;
 
 interface ExitPollCallbacks {
     bootDeadline: number;
+    /** With package servers: `installing` extends the boot deadline to `installDeadline`; the first `ready` after it gets a fresh `bootWindow`. */
+    install?: { installDeadline: number; bootWindow: number };
     start(machine: string): Promise<boolean>;
     activity(): void;
     readUsage(id: string): Promise<boolean>;
@@ -41,17 +45,28 @@ const NOT_STARTED = ['ready', 'installing', 'install-failed'];
 
 /** Poll the atomic status and consume new usage when a cap is active.
  * Changing byte counts are activity for the stall watchdog. */
-async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { bootDeadline, start, activity, readUsage }: ExitPollCallbacks) {
+// eslint-disable-next-line complexity -- one state machine for install, start gate and agent exit
+async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { bootDeadline, install, start, activity, readUsage }: ExitPollCallbacks) {
     let deadline = bootDeadline;
     let failures = 0;
     let retryUsage = false;
     let previousSize = -1;
+    let installFinished = false;
     while (!forced.aborted) {
         const remaining = deadline - Date.now();
         if (remaining <= 0) return;
         const status = await probe(api, id, AbortSignal.any([forced, AbortSignal.timeout(remaining)]));
         let retry = !status;
-        if (status && status[1] === 'ready') {
+        if (status && status[1] === 'install-failed') return 'install-failed';
+        // Installing is not the agent: no activity or usage. Exec outages during the install wait up to its own limit.
+        if (status && status[1] === 'installing') deadline = install ? Math.max(deadline, install.installDeadline) : deadline;
+        else if (status && status[1] === 'ready') {
+            if (install && !installFinished) {
+                // The install finished: the agent's start gets a full boot window, and retry backoff, of its own.
+                installFinished = true;
+                failures = 0;
+                deadline = Date.now() + install.bootWindow;
+            }
             if (Date.now() >= deadline) return;
             retry = !await start(id);
         } else if (status) {
@@ -71,6 +86,7 @@ async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { 
     // The grace period may expire between polls, after the clone transport
     // has finished publishing its bundle. Check before forcing deletion.
     const last = await probe(api, id, AbortSignal.timeout(1500));
+    if (last && last[1] === 'install-failed') return 'install-failed';
     if (last && !NOT_STARTED.includes(last[1])) return last[2] === undefined ? 'running' : Number(last[2]);
 }
 
@@ -274,10 +290,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 }
                 missing.push('status');
             };
-            let exitCode = -1;
             const packageServers = prepared.packageServers;
-            let packageInstall: FlyPackageServerInstall | undefined;
-            let createdAt = Date.now();
+            let exitCode = -1, packageInstall: FlyPackageServerInstall | undefined, createdAt = Date.now();
             try {
                 // The physical launch boundary: revalidates the library items and activates the run's gateway grant.
                 await extension?.beforeLaunch();
@@ -288,11 +302,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 let usageFailureSince: number | undefined;
                 const bootDeadline = bootStart + config.bootTimeout;
                 // The agent never starts before the run's package servers are installed.
-                const install = stopping || !packageServers.length ? { failed: false, deadline: bootDeadline }
-                    : await waitForPackageServerInstall(async signal => { const status = await probe(api, id!, signal); return status ? status[1] : undefined; }, forced.signal,
-                        { bootDeadline, installDeadline: bootDeadline + PACKAGE_SERVER_INSTALL_TIMEOUT_MS + 60_000 + POLL_FAILURE_TOLERANCE, tolerance: POLL_FAILURE_TOLERANCE });
-                const code = stopping ? undefined : install.failed ? 'install-failed' : await waitForExit(api, id, forced.signal, {
-                    bootDeadline: install.deadline,
+                const code = stopping ? undefined : await waitForExit(api, id, forced.signal, {
+                    bootDeadline,
+                    ...(packageServers.length && { install: { installDeadline: bootDeadline + INSTALL_WAIT_MS, bootWindow: config.bootTimeout } }),
                     async start(machine) {
                         if (stopping) return false;
                         if (packageServers.length && !packageInstall) {
@@ -334,7 +346,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                     // Nothing ran as the agent: no workspace result or credentials to keep.
                     const install = await readFlyPackageServerInstall(api, id, AbortSignal.timeout(5000));
                     logFlyPackageServerInstall(spec.name, id, packageServers, install);
-                    void api.exec(id, ['/usr/bin/touch', RUN + '/package-servers-read']).catch(() => {});
+                    void api.exec(id, ['/usr/bin/touch', PACKAGE_SERVERS.read]).catch(() => {});
                     credentialsPending = false;
                     workspaceSafeToDestroy = true;
                     await destroy();
@@ -358,11 +370,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             }
             if (callbackError) throw callbackError;
             const result: ExecutionResult = pipeline.result(exitCode);
-            if (packageInstall) {
-                // The install is the Machine's provisioning before the agent; record it so its per-run cost shows.
-                result.computeUsage = { runtime: this.kind, wallTimeMs: Date.now() - createdAt, provisioningMs: packageInstall.ms,
-                    packageServerInstallMs: packageInstall.ms, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null };
-            }
+            // Every Fly run reports wall time from Machine create to settlement; a package server install is part of it, reported on its own.
+            result.computeUsage = { runtime: this.kind, wallTimeMs: Date.now() - createdAt, ...(packageInstall && { packageServerInstallMs: packageInstall.ms }),
+                cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null };
             applyOutputDiagnostics(result, truncated, missing, failures);
             return new Promise((resolve, reject) => {
                 if (costMessage) settleCostCapStop(costMessage, result, { preserveOutput: preserve, resolve, reject });

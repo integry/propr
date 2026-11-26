@@ -143,3 +143,24 @@ test('the run\'s runtime decides support: Docker applies all, Sprites and Fly up
   // Without a URL the run can reach, URL servers have no gateway: they are treated as unsupported.
   assert.equal((await extensionRuntimeSupport({ runtime: 'sprites' }, 'open', {})).capabilities.remoteMcp, false);
 });
+
+test('a run with only skills does not need a gateway URL; an MCP URL the gateway cannot be derived from leaves URL servers unsupported', async t => {
+  const { save, run, bundle } = await fixture(t);
+  await save({ servers: [], skills: [{ bundleId: bundle.id, enabled: true, repositories: [], agents: [], autoApply: true }] });
+  // A proxy path not ending in /api/mcp: the gateway URL cannot be derived, but no URL server needs it.
+  const proxied = { ...remote(), mcpEndpoint: 'https://proxy.example/propr-mcp' };
+  const { launched } = await run(issueTask(), proxied);
+  assert.deepEqual(launched.launch!.requires!.skills, ['release-notes']);
+  assert.equal(launched.launch!.gatewayUrl, undefined);
+  const support = await extensionRuntimeSupport({ runtime: 'sprites' }, 'open', { PROPR_SPRITES_MCP_URL: 'https://proxy.example/propr-mcp' });
+  assert.equal(support.capabilities.remoteMcp, false, 'auto-applied URL servers are dropped with the note instead of failing the run');
+  assert.equal(support.capabilities.skills, true);
+});
+
+test('a catalog server that does not resolve is unavailable, not a URL server the runtime lacks', async () => {
+  const stdio = { kind: 'catalog', name: 'gone', catalogId: 'tool' } as ExtensionLibraryServer;
+  const set: ResolvedExtensionSet = { servers: [stdio], skills: [], skipped: [], omitted: [] };
+  const filtered = await applyRuntimeSupport(set, issueTask(), remote({ remoteMcp: false }), () => 'unavailable');
+  assert.equal(filtered.dropped, undefined, 'not dropped as an unsupported class; the launch reports the catalog error as on Docker');
+  assert.deepEqual(filtered.set.servers.map(s => s.name), ['gone']);
+});

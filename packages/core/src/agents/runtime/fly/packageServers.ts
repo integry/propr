@@ -1,4 +1,3 @@
-import { setTimeout as delay } from 'node:timers/promises';
 import logger from '../../../utils/logger.js';
 import { formatComputeDuration } from '../computeUsage.js';
 import { packageServersLogFields, type RemotePackageServer } from '../../../extensions/remotePackageServers.js';
@@ -38,23 +37,4 @@ export function flyPackageServerInstallError(servers: readonly RemotePackageServ
     return new Error(`Fly Machine could not install the run's package MCP servers (${servers.map(s => `${s.package}@${s.version}`).join(', ')}; digest ${packageServersDigest}): `
         + `npm ${outcome}. The agent was not started without them; check that the Machine can reach the npm registry, or remove the servers from the run.`
         + (tail ? `\n${tail}` : ''));
-}
-
-/**
- * Poll while the Machine installs package servers, before it reports ready.
- * The installer bounds itself; the deadline follows it, `tolerance` past the
- * last `installing` report, up to `installDeadline`. Returns the deadline for
- * the boot wait that follows, or failed.
- */
-export async function waitForPackageServerInstall(state: (signal: AbortSignal) => Promise<string | undefined>, forced: AbortSignal,
-    { bootDeadline, installDeadline, tolerance }: { bootDeadline: number; installDeadline: number; tolerance: number }) {
-    let deadline = bootDeadline;
-    while (!forced.aborted && Date.now() < deadline) {
-        const current = await state(AbortSignal.any([forced, AbortSignal.timeout(deadline - Date.now())]));
-        if (current === 'install-failed') return { failed: true, deadline };
-        if (current === 'installing') deadline = Math.max(deadline, Math.min(Date.now() + tolerance, installDeadline));
-        else if (current) return { failed: false, deadline };
-        await delay(Math.min(500, Math.max(0, deadline - Date.now())), undefined, { signal: forced }).catch(() => {});
-    }
-    return { failed: false, deadline };
 }

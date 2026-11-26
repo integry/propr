@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { ExtensionLibraryPackageServer } from '@propr/shared';
-import { ExtensionPackageError, type ExtensionPackageCache, type InstalledPackage } from './packageCache.js';
+import type { ExtensionLibraryPackageServer, ExtensionSkippedItem, ResolvedExtensionSet } from '@propr/shared';
+import type { AgentExtensionRequest } from '../agents/types.js';
+import { type ExtensionPackageCache, type InstalledPackage } from './packageCache.js';
 import { PACKAGE_MOUNT_ROOT } from './packageLaunch.js';
 
 /**
@@ -40,14 +41,53 @@ export const PACKAGE_SERVER_INSTALL_TIMEOUT_MS = 10 * 60_000;
 
 export const remotePackageDirectory = (key: string) => `${PACKAGE_MOUNT_ROOT}/${key}`;
 
+/** Why a verified install cannot be replayed in the sandbox: a lock file is missing or too large to carry. */
+export class RemotePackageLockError extends Error {
+  constructor(readonly problem: 'missing' | 'too_large', readonly server: string, file: string, runtime: string) {
+    super(problem === 'missing'
+      ? `Package MCP server "${server}" has no ${file} in its verified install, and agent runtime "${runtime}" needs it to install the server in the sandbox.`
+      : `Package MCP server "${server}" has a ${file} larger than ${MAX_LOCK_BYTES / 1024 / 1024} MiB, the most agent runtime "${runtime}" can carry into the sandbox.`);
+    this.name = 'RemotePackageLockError';
+  }
+}
+
 /** The install the sandbox replays for one verified package server. */
-export async function remotePackageServer(server: ExtensionLibraryPackageServer, installed: InstalledPackage, cache: ExtensionPackageCache): Promise<RemotePackageServer> {
+export async function remotePackageServer(server: ExtensionLibraryPackageServer, installed: InstalledPackage, cache: ExtensionPackageCache, runtime = 'remote'): Promise<RemotePackageServer> {
   const read = async (name: string) => {
     const content = await fs.readFile(path.join(installed.localDirectory, name), 'utf8').catch(() => undefined);
-    if (content === undefined || Buffer.byteLength(content) > MAX_LOCK_BYTES) throw new ExtensionPackageError('package_unavailable', 'The package server install is too large for this agent runtime');
+    if (content === undefined) throw new RemotePackageLockError('missing', server.name, name, runtime);
+    if (Buffer.byteLength(content) > MAX_LOCK_BYTES) throw new RemotePackageLockError('too_large', server.name, name, runtime);
     return content;
   };
   return { key: cache.key(server), package: server.package, version: server.version, integrity: server.integrity!, entry: installed.entry, packageJson: await read('package.json'), lock: await read('package-lock.json') };
+}
+
+/**
+ * The replayable install of each prepared package server, for a runtime
+ * without bind mounts. A server whose lock files cannot travel follows the
+ * runtime rule: an auto-applied one leaves the set and is named in `dropped`,
+ * an explicitly added one is returned in `refused` and refuses the run.
+ */
+export async function prepareRemotePackageServers(set: ResolvedExtensionSet, request: AgentExtensionRequest,
+  { installed, cache, runtime }: { installed: ReadonlyMap<string, InstalledPackage>; cache: ExtensionPackageCache; runtime: string }): Promise<{ set: ResolvedExtensionSet; remote: Map<string, RemotePackageServer>; dropped?: { servers: string[]; message: string }; refused?: RemotePackageLockError }> {
+  const remote = new Map<string, RemotePackageServer>();
+  const problems: RemotePackageLockError[] = [];
+  for (const server of set.servers) {
+    if (server.kind !== 'package' || !installed.has(server.name)) continue;
+    try { remote.set(server.name, await remotePackageServer(server, installed.get(server.name)!, cache, runtime)); }
+    catch (error) {
+      if (!(error instanceof RemotePackageLockError)) throw error;
+      if (request.servers.includes(server.name)) return { set, remote, refused: error };
+      problems.push(error);
+    }
+  }
+  if (!problems.length) return { set, remote };
+  const names = new Set(problems.map(problem => problem.server));
+  const skipped: ExtensionSkippedItem[] = problems.map(problem => ({ kind: 'server', name: problem.server, reason: 'package_unavailable', source: 'auto' }));
+  return {
+    set: { ...set, servers: set.servers.filter(s => !names.has(s.name)), skipped: [...set.skipped, ...skipped] }, remote,
+    dropped: { servers: [...names], message: `This run launched without these auto-applied Extension Library items: ${problems.map(problem => problem.message).join(' ')}` },
+  };
 }
 
 /** One value for a set of package servers; equal sets of pinned packages give the same digest. */

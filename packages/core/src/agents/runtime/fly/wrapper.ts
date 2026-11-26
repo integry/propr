@@ -3,6 +3,9 @@
 export const RUN = '/root/propr-run';
 export const WRAPPER = '/opt/propr/fly-run.py';
 export const AGENT = '/opt/propr/fly-agent.json';
+/** Where the wrapper finds the package server installer and its input; it records the outcome next to them. */
+export const PACKAGE_SERVERS = { installer: '/opt/propr/fly-package-servers.py', spec: RUN + '/package-servers.json',
+    result: RUN + '/package-servers-result', read: RUN + '/package-servers-read' } as const;
 export const wrapper = String.raw`
 import base64, errno, json, os, pwd, signal, stat, subprocess, sys, threading, time
 from pathlib import Path
@@ -48,13 +51,13 @@ def install_package_servers():
     # Before dropping to node and before reporting ready: the agent never starts
     # without its package MCP servers. The installer bounds npm and records
     # {ms, code, tail}; only trusted values form its environment.
-    spec = run / 'package-servers.json'
+    spec = Path('${PACKAGE_SERVERS.spec}')
     if not spec.exists():
         return True
     status('installing')
-    result = run / 'package-servers-result'
+    result = Path('${PACKAGE_SERVERS.result}')
     try:
-        subprocess.run([python, '-I', '/opt/propr/fly-package-servers.py', str(spec), str(result)], env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8'},
+        subprocess.run([python, '-I', '${PACKAGE_SERVERS.installer}', str(spec), str(result)], env={'PATH': '/usr/local/bin:/usr/bin:/bin', 'LANG': 'C.UTF-8'},
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=json.loads(spec.read_bytes())['timeout'] / 1000 + 60)
     except subprocess.TimeoutExpired:
         pass
@@ -66,7 +69,7 @@ def install_package_servers():
     status('install-failed')
     # Keep the Machine for the worker to read the failure, then exit (auto_destroy).
     deadline = time.monotonic() + 300
-    while time.monotonic() < deadline and not (run / 'package-servers-read').exists():
+    while time.monotonic() < deadline and not Path('${PACKAGE_SERVERS.read}').exists():
         time.sleep(.2)
     return False
 

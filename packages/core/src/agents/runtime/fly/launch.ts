@@ -13,7 +13,7 @@ import type { AgentRunOptions } from '../dockerRuntime.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
 import type { MachineLaunch, MachinesApi } from './api.js';
 import type { FlyConfig } from './config.js';
-import { RUN, AGENT, WRAPPER, wrapper } from './wrapper.js';
+import { RUN, AGENT, WRAPPER, PACKAGE_SERVERS, wrapper } from './wrapper.js';
 import { PACKAGE_SERVER_INSTALLER, packageServerInstallSpec, type RemotePackageInstall } from '../../../extensions/remotePackageServers.js';
 
 export const helper = ['/usr/bin/python3', '-I', WRAPPER];
@@ -102,9 +102,10 @@ function providerArgv(spec: AgentRunSpec, provider: 'claude' | 'codex') {
 /** What the run's extension launch adds to the Machine: skill bundle files, package servers to install and secrets to redact. */
 export interface FlyExtensionLaunch { skillFiles?: readonly ExtensionSkillFile[]; secrets?: readonly string[]; packageInstall?: RemotePackageInstall }
 
-/** Where the wrapper finds the package server installer and its input; it records the outcome next to them. */
-export const PACKAGE_SERVERS = { installer: '/opt/propr/fly-package-servers.py', spec: RUN + '/package-servers.json',
-    result: RUN + '/package-servers-result', read: RUN + '/package-servers-read' } as const;
+export { PACKAGE_SERVERS };
+
+/** Fly Machine create requests carry every file base64-encoded in the config; refuse a launch past this before sending it. */
+export const MAX_FLY_MACHINE_CONFIG_BYTES = 4 * 1024 * 1024;
 
 /** Library skill bundles: root-owned and read-only for the agent, like Docker's read-only mount. */
 function stageExtension(extension: FlyExtensionLaunch | undefined, add: AddFile) {
@@ -117,6 +118,18 @@ function stageExtension(extension: FlyExtensionLaunch | undefined, add: AddFile)
         add(PACKAGE_SERVERS.spec, packageServerInstallSpec(extension!.packageInstall!));
     }
     return { secrets: extension?.secrets ?? [], skills: files.length > 0, packageServers };
+}
+
+const mib = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+
+/** A clear refusal, before any Machine is created, for a configuration Fly would reject with an opaque create error. */
+function assertMachineConfigSize(bytes: number, extension: FlyExtensionLaunch | undefined) {
+    if (bytes <= MAX_FLY_MACHINE_CONFIG_BYTES) return;
+    const skillBytes = (extension?.skillFiles ?? []).reduce((sum, file) => sum + file.content.length, 0);
+    const lockBytes = (extension?.packageInstall?.servers ?? []).reduce((sum, server) => sum + Buffer.byteLength(server.lock) + Buffer.byteLength(server.packageJson), 0);
+    throw new Error(`Fly Machine configuration is ${mib(bytes)}, over the ${mib(MAX_FLY_MACHINE_CONFIG_BYTES)} limit for one Machine create request. `
+        + `It carries ${mib(skillBytes)} of skill bundle files and ${mib(lockBytes)} of package server lock files (base64-encoded in the request). `
+        + 'Remove large skill bundles or package MCP servers from the run, or run it on the sprites or docker runtime.');
 }
 
 export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, config: FlyConfig, extension?: FlyExtensionLaunch) {
@@ -171,7 +184,9 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
         image: config.image, guest: config.guest, metadata: { propr_run_id: name }, auto_destroy: true, restart: { policy: 'no' },
         processes: [{ user: 'root', ignore_app_secrets: true, entrypoint: ['/usr/bin/setpriv', '--no-new-privs', ...helper], cmd: ['launch'] }], files,
     } };
-    if (JSON.stringify(launch).includes(config.token)) throw new Error('Fly API credential found in Machine configuration');
+    const serialized = JSON.stringify(launch);
+    if (serialized.includes(config.token)) throw new Error('Fly API credential found in Machine configuration');
+    assertMachineConfigSize(Buffer.byteLength(serialized), extension);
     return { launch, credentialPath, secrets: [...new Set([config.token, ...secrets].filter(Boolean))], packageServers: extensionStaged.packageServers,
         markerArgs: transportEnv.PROPR_REPO_SETUP === '0' || !setup ? [] : [setup.script],
         async commit(api: MachinesApi, id: string) {

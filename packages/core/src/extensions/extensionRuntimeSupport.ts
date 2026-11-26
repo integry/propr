@@ -6,6 +6,7 @@ import {
 } from '../agents/runtime/extensionCapabilities.js';
 import { DEFAULT_AGENT_RUNTIME, selectedAgentRuntimeName } from '../agents/runtime/runtimeSelection.js';
 import type { AgentNetworkMode } from '../network/networkPolicy.js';
+import { tryExtensionGatewayBaseUrl } from './extensionGateway.js';
 
 /** What the run's runtime can do with library items, resolved before any item is prepared. */
 export interface ExtensionRuntimeSupport {
@@ -45,8 +46,11 @@ export async function extensionRuntimeSupport(config: Pick<AgentConfig, 'runtime
   // TODO(#3817): once Sprites reach ProPR MCP through the per-run SSH reverse forward
   // (127.0.0.1:39080 -> internal API) when there is no public URL, point the gateway
   // at that forward's /api/extensions/mcp instead of treating URL servers as unsupported.
-  if (plan.transport !== 'reachable-url') capabilities.remoteMcp = false;
-  return { kind: runtime.kind, capabilities, bindMounts: runtime.capabilities.supportsBindMounts, ...(plan.transport === 'reachable-url' ? { mcpEndpoint: plan.url } : {}) };
+  // The gateway sits beside ProPR MCP: an endpoint it cannot be derived from
+  // (a proxy path not ending in /api/mcp) leaves URL servers unsupported too.
+  const mcpEndpoint = plan.transport === 'reachable-url' ? plan.url : undefined;
+  if (!mcpEndpoint || !tryExtensionGatewayBaseUrl(environment, mcpEndpoint)) capabilities.remoteMcp = false;
+  return { kind: runtime.kind, capabilities, bindMounts: runtime.capabilities.supportsBindMounts, ...(mcpEndpoint ? { mcpEndpoint } : {}) };
 }
 
 /**
@@ -54,7 +58,7 @@ export async function extensionRuntimeSupport(config: Pick<AgentConfig, 'runtime
  * Package servers are installed next to the agent; operator catalog stdio
  * servers run an executable that must already be in the run's image.
  */
-export type ServerClassifier = (server: ExtensionLibraryServer) => Promise<AgentRuntimeExtensionClass> | AgentRuntimeExtensionClass;
+export type ServerClassifier = (server: ExtensionLibraryServer) => Promise<AgentRuntimeExtensionClass | 'unavailable'> | AgentRuntimeExtensionClass | 'unavailable';
 export const serverExtensionClass = (server: ExtensionLibraryServer, catalogKind?: 'stdio' | 'https'): AgentRuntimeExtensionClass =>
   server.kind === 'package' ? 'packageMcp' : server.kind === 'catalog' && catalogKind === 'stdio' ? 'catalogMcp' : 'remoteMcp';
 
@@ -78,7 +82,8 @@ export async function applyRuntimeSupport(set: ResolvedExtensionSet, request: Ag
   const unsupportedServers = new Map<string, AgentRuntimeExtensionClass>();
   for (const server of set.servers) {
     const extensionClass = await classify(server);
-    if (!capabilities[extensionClass]) unsupportedServers.set(server.name, extensionClass);
+    // An unavailable server (a catalog entry that no longer resolves) is not a runtime gap: it fails at launch as on Docker.
+    if (extensionClass !== 'unavailable' && !capabilities[extensionClass]) unsupportedServers.set(server.name, extensionClass);
   }
   const unsupportedSkills = capabilities.skills ? [] : set.skills;
   // Explicit items keep their strict behaviour: refused, never silently dropped.
@@ -101,6 +106,13 @@ export async function applyRuntimeSupport(set: ResolvedExtensionSet, request: Ag
     set: { ...set, servers: set.servers.filter(s => !unsupportedServers.has(s.name)), skills: capabilities.skills ? set.skills : [], skipped: [...set.skipped, ...skipped] },
     dropped: { runtime: kind, servers, skills, message: `Agent runtime "${kind}" cannot run ${classes.join(' or ')}, so this run launched without these auto-applied Extension Library items: ${names}.` },
   };
+}
+
+/** One note for the items a remote run launched without: runtime gaps and package servers whose install cannot travel. */
+export function mergeRuntimeDrops(runtime: string, ...drops: ({ servers: string[]; skills?: string[]; message: string } | undefined)[]): ExtensionRuntimeDrop | undefined {
+  const present = drops.filter(drop => drop !== undefined);
+  if (!present.length) return undefined;
+  return { runtime, servers: present.flatMap(drop => drop.servers), skills: present.flatMap(drop => drop.skills ?? []), message: present.map(drop => drop.message).join(' ') };
 }
 
 /** The Markdown note a run's issue or pull request comment carries for dropped items. */

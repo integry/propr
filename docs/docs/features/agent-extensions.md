@@ -485,7 +485,7 @@ scripts, so such a package would not work.
   `package.json` and `package-lock.json`, against the same registry, so every
   dependency is checked against its integrity value. The result is root-owned and
   read-only at `/opt/propr/packages/<key>`. Sprites install while provisioning,
-  before the clean checkpoint, and match warm Sprites on the package-server set;
+  before the clean checkpoint, and keep warm Sprites per package-server set;
   Fly Machines install at Machine start, before the agent. See
   [Extensions by runtime](../architecture/agent-runtime.md#extensions-by-runtime).
 

@@ -799,15 +799,35 @@ test('package MCP servers are installed before the clean checkpoint and select t
     const second = await launch(packageInstall());
     assert.equal(client.created.length, 1);
     assert.equal(second.computeUsage?.packageServerInstallMs, undefined);
-    // Another set (another library revision) retires the warm Sprite instead of reusing it.
+    // Another set gets its own Sprite; the warm Sprite for the first set is kept, not retired.
     await launch(packageInstall('b'));
     assert.equal(client.created.length, 2);
-    assert.deepEqual(client.deleted, [client.created[0].name]);
+    assert.deepEqual(client.deleted, []);
     assert.deepEqual(client.created[1].events.slice(0, 2), ['install-packages', 'checkpoint']);
-    // No package servers: no install step, and the Sprite built for servers is not reused either.
+    // No package servers: no install step, and neither Sprite built for servers is used.
     await launch();
     assert.equal(client.created.length, 3);
     assert.ok(!client.created[2].events.includes('install-packages'));
+    await runtime.close();
+});
+
+test('runs alternating between package server sets reuse their own warm Sprites', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, client, builder } = fixture();
+    watchPackageInstalls(client);
+    const launch = async (install?: ReturnType<typeof packageInstall>) => launchContext.run({ taskId: 'ext', secrets: [], mounts: [],
+        requires: { packageMcp: install ? ['local-tools'] : [] }, ...(install ? { packageInstall: install } : {}), beforeLaunch: async () => {} }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+    });
+    // A (package servers), B (none), then A and B again: only the first two provision.
+    for (const install of [packageInstall(), undefined, packageInstall(), undefined, packageInstall()]) await launch(install);
+    assert.equal(client.created.length, 2);
+    assert.deepEqual(client.deleted, []);
+    assert.equal(client.created[0].events.filter(event => event === 'launch').length, 3);
+    assert.equal(client.created[1].events.filter(event => event === 'launch').length, 2);
+    assert.ok(client.created[0].events.includes('install-packages') && !client.created[1].events.includes('install-packages'));
     await runtime.close();
 });
 

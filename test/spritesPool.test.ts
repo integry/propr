@@ -663,3 +663,58 @@ test('abort, timeout and lease expiry stop inventory retries', async t => {
     assert.equal(calls, errors.length);
     await inventory.finish(name, 'gone');
 });
+
+const packageSet = (key: string) => ({
+    registry: 'https://registry.npmjs.org',
+    servers: [{ key: key.repeat(40), package: 'propr-fixture-mcp', version: '1.0.0', integrity: 'sha512-fixture', entry: 'bin/server.js', packageJson: '{}', lock: '{}' }],
+});
+
+test('idle Sprites are kept per package server set; at the cap the least recently used other set is evicted', async t => {
+    for (const cap of ['1', '2']) {
+        const { start, provider } = fixture();
+        const inventory = await start({ PROPR_SPRITES_MAX: cap });
+        await inventory.sweep();
+        const pool = new SpritePool(provider, inventory);
+        t.after(() => pool.close());
+        const signal = new AbortController().signal;
+        const run = async (packages?: ReturnType<typeof packageSet>) => {
+            const slot = await pool.acquire(signal, undefined, packages);
+            await pool.release(slot);
+            return slot.sprite.name;
+        };
+        const a = await run(packageSet('a'));
+        const b = await run();
+        if (cap === '1') {
+            // No room for a second Sprite: the idle one built for the other set makes room.
+            assert.deepEqual(provider.deleted, [a]);
+            assert.equal(await run(packageSet('a')) === a, false);
+            assert.deepEqual(provider.deleted, [a, b]);
+        } else {
+            // A, B, A, B: each set reuses its own warm Sprite.
+            assert.equal(await run(packageSet('a')), a);
+            assert.equal(await run(), b);
+            assert.equal(provider.created.length, 2);
+            assert.deepEqual(provider.deleted, []);
+        }
+    }
+});
+
+test('a background replacement is provisioned with the package servers of the Sprite it replaces', async t => {
+    const provider = new FakeSpriteOrganization();
+    const pool = new SpritePool(provider);
+    t.after(() => pool.close());
+    const signal = new AbortController().signal;
+    const first = await pool.acquire(signal, undefined, packageSet('a'));
+    provider.created[0].failWipe = true;
+    await pool.release(first);
+    assert.deepEqual(provider.deleted, [first.sprite.name]);
+    // A run with another set does not take the replacement built for set A.
+    const other = await pool.acquire(signal);
+    assert.equal(other.packageServersDigest, 'none');
+    const replacement = await pool.acquire(signal, undefined, packageSet('a'));
+    assert.equal(replacement.packageServersDigest, first.packageServersDigest);
+    assert.equal(typeof replacement.packageServerInstallMs, 'number', 'the replacement installed set A');
+    assert.equal(provider.created.length, 3);
+    await pool.release(other);
+    await pool.release(replacement);
+});

@@ -329,3 +329,27 @@ test('a missing secret skips the server; a native export erases package secrets'
   assert.deepEqual(exported.secrets['local-tools'], { count: 1, configured: false, configuredEnv: [] });
   assert.ok(!JSON.stringify(await database('extension_library_revisions').select('*')).includes(secret));
 });
+
+test('a package server whose lock files cannot travel to a remote runtime is dropped when auto-applied and refuses the run when explicit', async () => {
+  const { prepareRemotePackageServers } = await import('../src/extensions/remotePackageServers.js');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-locks-'));
+  try {
+    const missing = path.join(dir, 'missing'); const large = path.join(dir, 'large'); const ok = path.join(dir, 'ok');
+    for (const directory of [missing, large, ok]) { await fs.mkdir(directory); await fs.writeFile(path.join(directory, 'package.json'), '{}'); }
+    await fs.writeFile(path.join(large, 'package-lock.json'), 'x'.repeat(2 * 1024 * 1024 + 1));
+    await fs.writeFile(path.join(ok, 'package-lock.json'), '{}');
+    const pkg = (name: string) => ({ kind: 'package', name, package: 'propr-fixture-mcp', version: '1.0.0', integrity: 'sha512-x' }) as any;
+    const installed = new Map([['missing', missing], ['large', large], ['ok', ok]].map(([name, localDirectory]) => [name, { localDirectory, entry: 'bin/server.js' } as any]));
+    const set = { servers: [pkg('missing'), pkg('large'), pkg('ok')], skills: [], skipped: [], omitted: [] };
+    const cache = { key: (server: { name: string }) => server.name.padEnd(40, '0') } as any;
+    const auto = await prepareRemotePackageServers(set, issueTask(), { installed, cache, runtime: 'fly-machines' });
+    assert.deepEqual(auto.set.servers.map(s => s.name), ['ok']);
+    assert.deepEqual([...auto.remote.keys()], ['ok']);
+    assert.deepEqual(auto.set.skipped.map(s => [s.name, s.reason, s.source]), [['missing', 'package_unavailable', 'auto'], ['large', 'package_unavailable', 'auto']]);
+    assert.deepEqual(auto.dropped!.servers, ['missing', 'large']);
+    assert.match(auto.dropped!.message, /"missing" has no package-lock\.json in its verified install, and agent runtime "fly-machines" needs it/);
+    assert.match(auto.dropped!.message, /"large" has a package-lock\.json larger than 2 MiB/);
+    const explicit = await prepareRemotePackageServers(set, { ...issueTask(), servers: ['large'] }, { installed, cache, runtime: 'sprites' });
+    assert.match(explicit.refused!.message, /"large" has a package-lock\.json larger than 2 MiB, the most agent runtime "sprites" can carry/);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});

@@ -11,7 +11,7 @@ import { configuredExtensionRefusal, getAgentRuntime } from '../packages/core/sr
 import { agentRunMcpTransportFor } from '../packages/core/src/agents/runtime/agentRunMcpTransport.ts';
 import { dockerAgentRuntimeInUse } from '../packages/core/src/agents/runtime/runtimeSelection.ts';
 import type { MachineLaunch, MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
-import { RUN, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
+import { PACKAGE_SERVERS, RUN, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { buildAgentRunRepoSetup } from '../packages/core/src/claude/docker/repoSetupWrapper.ts';
 import { executeWithRepositoryWorkflow, repositoryWorkflowExecution } from '../packages/core/src/workflow/workflowExecution.ts';
@@ -565,7 +565,8 @@ test('package MCP servers are installed at Machine start before the agent; the i
     });
     assert.equal(result!.exitCode, 0);
     assert.equal(result!.computeUsage?.packageServerInstallMs, 4200);
-    assert.equal(result!.computeUsage?.provisioningMs, 4200);
+    assert.equal(result!.computeUsage?.provisioningMs, undefined, 'the install is counted once, in packageServerInstallMs');
+    assert.equal(typeof result!.computeUsage?.wallTimeMs, 'number');
     assert.deepEqual(reads, [RUN + '/package-servers-result']);
     const files = new Map(api.launch!.config.files.map(f => [f.guest_path, f]));
     assert.equal(Buffer.from(files.get('/opt/propr/fly-package-servers.py')!.raw_value, 'base64').toString(), PACKAGE_SERVER_INSTALLER);
@@ -573,13 +574,18 @@ test('package MCP servers are installed at Machine start before the agent; the i
     assert.deepEqual(spec.servers, packageInstall.servers);
     assert.equal(spec.root, '/opt/propr/packages');
     assert.equal(files.get(RUN + '/package-servers.json')!.mode, 0o600);
-    assert.match(wrapper, /'\/opt\/propr\/fly-package-servers.py'/, 'the wrapper runs the installer the launch stages');
+    assert.ok(wrapper.includes(`'${PACKAGE_SERVERS.installer}'`), 'the wrapper runs the installer the launch stages');
 });
 
 test('without package MCP servers the Machine has no install step', async () => {
     const { runtime, api, builder } = fixture();
     const run = runtime.start(builder.build());
-    assert.equal((await run.wait()).computeUsage, undefined);
+    const usage = (await run.wait()).computeUsage;
+    // Wall time is measured on the same basis as for runs with package servers.
+    assert.equal(usage?.runtime, 'fly-machines');
+    assert.equal(typeof usage?.wallTimeMs, 'number');
+    assert.equal(usage?.packageServerInstallMs, undefined);
+    assert.equal(usage?.provisioningMs, undefined);
     await run.release!();
     assert.ok(!api.launch!.config.files.some(f => /package-servers/.test(f.guest_path)));
 });
@@ -599,13 +605,63 @@ test('a failed package MCP server install fails the run with the end of npm\'s o
     assert.ok(reads.includes(RUN + '/package-servers-read'), 'the Machine is told it may exit');
 });
 
+test('a long install with an exec outage still starts the agent, which gets a fresh boot window after the install', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { api, builder } = fixture();
+    const runtime = new FlyMachinesRuntime(api, { ...env, PROPR_FLY_BOOT_TIMEOUT: '2' });
+    const started = Date.now();
+    const states: string[] = [];
+    let touches = 0;
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => {
+        if (args[0] === '/bin/cat') return { stdout: JSON.stringify({ ms: 2500, code: 0, tail: '' }), exit_code: 0 };
+        if (args[3] === 'probe' && !api.started) {
+            const elapsed = Date.now() - started;
+            // Installing past the 2 s boot window, with a 2.4 s exec outage in the middle.
+            if (elapsed < 4500) {
+                if (elapsed > 300 && elapsed < 2700) { states.push('outage'); throw new Error('exec unavailable'); }
+                states.push('installing');
+                return { stdout: 'installing\n0', exit_code: 0 };
+            }
+            states.push('ready');
+        }
+        // The first start request after the install fails transiently.
+        if (args[0] === '/usr/bin/touch' && touches++ === 0) return { stdout: '', exit_code: 1 };
+        return exec(id, args);
+    };
+    let result;
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { packageMcp: ['local-tools'] }, packageInstall, beforeLaunch: async () => {} }, async () => {
+        const run = runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true });
+        result = await run.wait();
+        await run.release!();
+    });
+    assert.ok(states.includes('outage') && states.includes('ready'), states.join());
+    assert.equal(api.started, true, 'the agent started after the install');
+    assert.equal(result!.exitCode, 0);
+    assert.equal(result!.computeUsage?.packageServerInstallMs, 2500);
+});
+
+test('a Machine configuration over 4 MiB is refused before the Machine is created, naming what it carries', async () => {
+    const { launchContext } = await import('../packages/core/src/extensions/extensionLaunchContext.ts');
+    const { runtime, api, builder } = fixture();
+    let created = false;
+    api.create = async () => { created = true; return 'machine'; };
+    const large = Buffer.alloc(3.5 * 1024 * 1024, 'a');
+    await launchContext.run({ taskId: 'ext', mounts: [], secrets: [], requires: { skills: ['Big'] },
+        skillFiles: [{ path: 'bundle-1/SKILL.md', content: large }], beforeLaunch: async () => {} }, async () => {
+        assert.throws(() => runtime.start(builder.build(), { taskId: 'ext', extensionAgentLaunch: true }),
+            /Fly Machine configuration is 4\.\d MiB, over the 4\.0 MiB limit for one Machine create request\. It carries 3\.5 MiB of skill bundle files and 0\.0 MiB of package server lock files/);
+    });
+    assert.equal(created, false);
+});
+
 test('the Fly wrapper installs package servers before reporting ready, and reports install-failed otherwise', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-install-'));
     try {
         const installer = path.join(root, 'installer.py');
-        assert.ok(wrapper.includes(`run = Path('${RUN}')`) && wrapper.includes("'/opt/propr/fly-package-servers.py'"));
-        const script = wrapper.replace(`run = Path('${RUN}')`, `run = Path(${JSON.stringify(root)})`)
-            .replace("'/opt/propr/fly-package-servers.py'", JSON.stringify(installer))
+        assert.ok(wrapper.includes(`run = Path('${RUN}')`) && wrapper.includes(`'${PACKAGE_SERVERS.installer}'`));
+        // The wrapper names the paths the launch stages; point them all at the temporary run directory.
+        const script = wrapper.replace(`'${PACKAGE_SERVERS.installer}'`, JSON.stringify(installer)).replaceAll(RUN, root)
             .replace(/\nif __name__ == '__main__':[\s\S]*$/, '\n') + '\nprint(install_package_servers())\n';
         fs.writeFileSync(path.join(root, 'package-servers.json'), JSON.stringify({ timeout: 5000 }));
         // Already acknowledged, so a failed install does not wait for the worker.
