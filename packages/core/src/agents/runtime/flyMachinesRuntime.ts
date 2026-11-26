@@ -80,7 +80,7 @@ function applyOutputDiagnostics(result: ExecutionResult, truncated: string[], mi
 
 export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'fly-machines';
-    static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: false,
+    static readonly capabilities = { supportsExtensions: false, supportsRuntimePackages: false, supportsBindMounts: false, supportsRestrictedNetwork: false,
         supportsMcpPrivateNetwork: false, supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly capabilities = FlyMachinesRuntime.capabilities;
     readonly unsupportedMount = unsupportedFlyMount;

@@ -3,11 +3,17 @@ import logger from '../../utils/logger.js';
 import { getConfig, saveConfig } from '../../config/configStore.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { buildAgentRuntimeImage } from './agentRuntimeImageBuilder.js';
+import {
+    AGENT_RUNTIME_PACKAGES_CONFIG_KEY,
+    normalizeAgentRuntimePackageList as normalizePackageList,
+    validateAgentRuntimePackages,
+    type RuntimePackageValidation,
+} from './agentRuntimePackageProfile.js';
+
+export { validateAgentRuntimePackages, type RuntimePackageValidation };
 
 export const AGENT_RUNTIME_BUILD_QUEUE_NAME = 'agent-runtime-build';
-const CONFIG_KEY = 'agent_runtime_packages';
-const MAX_PACKAGES = 100;
-const PACKAGE_SPEC = /^[a-z0-9][a-z0-9+.-]*(?::[a-z0-9][a-z0-9-]*)?(?:=[A-Za-z0-9.+:~_-]+)?$/;
+const CONFIG_KEY = AGENT_RUNTIME_PACKAGES_CONFIG_KEY;
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
 const SAFE_USER = /^[A-Za-z0-9_.:-]+$/;
 const INSTALLATION_ID = /^[a-z0-9-]{1,64}$/;
@@ -54,7 +60,6 @@ export interface AgentRuntimeBuildJobData {
     baseImages: string[];
 }
 
-export interface RuntimePackageValidation { valid: boolean; packages: string[]; errors: string[]; }
 
 const defaultState = (): AgentRuntimePackageState => ({
     installationId: crypto.randomUUID(),
@@ -64,32 +69,6 @@ const defaultState = (): AgentRuntimePackageState => ({
     images: {},
     updatedAt: new Date(0).toISOString()
 });
-
-function normalizePackageList(packages: unknown): string[] {
-    if (!Array.isArray(packages)) return [];
-    return [...new Set(packages
-        .filter((value): value is string => typeof value === 'string')
-        .map(value => {
-            const trimmed = value.trim();
-            const separator = trimmed.indexOf('=');
-            if (separator === -1) return trimmed.toLowerCase();
-            return `${trimmed.slice(0, separator).toLowerCase()}=${trimmed.slice(separator + 1)}`;
-        })
-        .filter(Boolean))].sort();
-}
-
-export function validateAgentRuntimePackages(packages: unknown): RuntimePackageValidation {
-    if (!Array.isArray(packages)) {
-        return { valid: false, packages: [], errors: ['packages must be an array of system package names'] };
-    }
-    const normalized = normalizePackageList(packages);
-    const errors: string[] = [];
-    if (normalized.length > MAX_PACKAGES) errors.push(`at most ${MAX_PACKAGES} packages may be configured`);
-    for (const packageSpec of normalized) {
-        if (!PACKAGE_SPEC.test(packageSpec)) errors.push(`invalid package spec: ${packageSpec}`);
-    }
-    return { valid: errors.length === 0, packages: normalized, errors };
-}
 
 function normalizeState(value: unknown): AgentRuntimePackageState {
     if (!value || typeof value !== 'object') return defaultState();

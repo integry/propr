@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mock, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import { Writable } from 'node:stream';
 
 type Call = { command: string; args: string[]; options: Record<string, any> };
@@ -16,6 +16,9 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
     },
 });
 
+// Runs on runtimes without runtime-package support read the configured package list (opens the database).
+const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+after(closeConnection);
 const { getAgentRuntime, registerAgentRuntime, resolveAgentRuntimeKind, runAgent, assertAgentRuntimeSupports, assertNativeGoalRuntime, AGENT_RUNTIME_ENV } = await import('../packages/core/src/agents/runtime/registry.ts');
 const { DockerRuntime, AgentRunStoppedError, AGENT_RUN_OUTPUT_BUFFER_LIMIT_BYTES } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
 const { OPEN_AGENT_RUN_NETWORK_POLICY } = await import('../packages/core/src/agents/runtime/agentRunNetworkPolicy.ts');

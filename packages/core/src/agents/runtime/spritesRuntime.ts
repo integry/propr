@@ -11,7 +11,8 @@ import { AgentRunStoppedError, LazyOutputStreams, type AgentRunOptions } from '.
 import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
 import { applySpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWORK_ENFORCEMENT } from './sprites/spritesNetwork.js';
-import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
+import { SpritePool, startupStep, type Slot, type SpriteClient, type SpritePackageSource } from './sprites/spritesProvisioning.js';
+import { loadConfiguredAgentRuntimePackages } from './agentRuntimePackageProfile.js';
 import { prepareSpriteRun, unsupportedMount, validateSpriteRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 import logger from '../../utils/logger.js';
@@ -20,7 +21,7 @@ import { SpriteInventory, type SpritePoolRedis } from './sprites/spritesInventor
 
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
-    static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: true,
+    static readonly capabilities = { supportsExtensions: false, supportsRuntimePackages: true, supportsBindMounts: false, supportsRestrictedNetwork: true,
         restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
         supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly capabilities = SpritesRuntime.capabilities;
@@ -30,7 +31,9 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     private startupRetry?: NodeJS.Timeout;
 
     constructor(private readonly client?: SpriteClient | ((token: string) => Promise<SpriteClient>), private readonly environment = process.env,
-        private readonly poolRedis?: SpritePoolRedis) {}
+        private readonly poolRedis?: SpritePoolRedis,
+        // Sprites have no image: the configured runtime packages are installed while provisioning.
+        private readonly loadPackages: SpritePackageSource = loadConfiguredAgentRuntimePackages) {}
 
     close(): Promise<void> {
         clearTimeout(this.startupRetry);
@@ -65,7 +68,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     ? await SpriteInventory.open({ listAllSprites: sdk.listAllSprites.bind(sdk), getSprite: sdk.getSprite.bind(sdk),
                         deleteSprite: sdk.deleteSprite.bind(sdk) }, this.environment, this.poolRedis)
                     : undefined;
-                return new SpritePool(sdk, inventory);
+                return new SpritePool(sdk, inventory, this.loadPackages);
             };
             pool = load();
             this.pools.set(token, pool);

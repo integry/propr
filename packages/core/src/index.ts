@@ -385,7 +385,7 @@ export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type 
 export {
     AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, closeAgentRuntimes, getAgentRuntime, registerAgentRuntime,
     registeredAgentRuntimes, resolveAgentRuntimeKind, runAgent, withAgentRunNetworkRequirement, type AgentRuntimeFactory, type ProviderAgentRuntime,
-    AgentRuntimeCapabilityError, restrictedNetworkRefusal, runtimeSupportsMcpReachableUrl, type AgentRuntimeCapability,
+    AgentRuntimeCapabilityError, restrictedNetworkRefusal, runtimePackagesRefusal, runtimeSupportsMcpReachableUrl, type AgentRuntimeCapability,
 } from './agents/runtime/registry.js';
 export { OPEN_AGENT_RUN_NETWORK_POLICY, agentRunEgressRules, agentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agents/runtime/agentRunNetworkPolicy.js';
 export { agentRunMcpReachableUrl, agentRunMcpTransportFor, planAgentRunMcpTransport, type AgentRunMcpTransportPlan } from './agents/runtime/agentRunMcpTransport.js';
