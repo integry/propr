@@ -80,7 +80,7 @@ export const AgentRunAdmissionRuntime = component('AgentRunAdmissionRuntime', z.
     unavailable: z.string().optional(),
   }),
   mcp: z.object({
-    transport: z.enum(['private-network', 'reachable-url', 'unavailable']).describe('How runs granted ProPR MCP reach it on this runtime.'),
+    transport: z.enum(['private-network', 'reachable-url', 'ssh-reverse-forward', 'unavailable']).describe('How runs granted ProPR MCP reach it on this runtime.'),
     reason: z.string(),
   }),
 }), 'What the default agent runtime can enforce. Admission refuses a run whose spec needs a capability its runtime lacks.');

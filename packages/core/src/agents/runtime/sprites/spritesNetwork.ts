@@ -1,12 +1,13 @@
 import { isIP } from 'node:net';
 import type { NetworkPolicy, PolicyRule, Sprite } from '@fly/sprites';
 import { normalizeEgressHost } from '../../../network/egressAllowlist.js';
+import { SPRITES_MCP_FORWARD_HOST, SPRITES_MCP_FORWARD_PORT, isSpritesMcpForwardUrl } from './spritesMcpForwardConfig.js';
 import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy } from '../agentRunNetworkPolicy.js';
 import type { AgentRunSpec, AgentRuntimeRestrictedNetworkEnforcement } from '../types.js';
 
 export const SPRITES_RESTRICTED_NETWORK_ENFORCEMENT: AgentRuntimeRestrictedNetworkEnforcement = Object.freeze({
     method: 'sprites-dns-allowlist',
-    description: 'The Sprite gets a DNS allowlist network policy covering the run\'s allowed hosts, the granted ProPR MCP host and the extension gateway host, with every other domain denied. The policy is applied before the agent starts and cleared after checkpoint restoration and before reuse. Ports are not confined, raw IP connections are denied, and private addresses are never reachable.',
+    description: 'The Sprite gets a DNS allowlist network policy covering the run\'s allowed hosts, the granted ProPR MCP host (none when MCP arrives over the loopback SSH reverse forward) and the extension gateway host, with every other domain denied. The policy is applied before the agent starts and cleared after checkpoint restoration and before reuse. Ports are not confined, raw IP connections are denied, and private addresses are never reachable.',
 });
 
 /** Sprites' unrestricted state: no rules, no enforcement. */
@@ -32,6 +33,35 @@ export function restrictedSpriteMcpEndpoint(endpoint: string): { host: string } 
 }
 
 /**
+ * Refuses an MCP grant Sprites cannot serve and returns the endpoint a
+ * restricted run must allow: none for the loopback SSH reverse forward.
+ */
+function spriteMcpGrantHost(grant: AgentRunSpec['mcpGrant']) {
+    if (!grant) return undefined;
+    if (grant.network || (grant.transport !== 'reachable-url' && grant.transport !== 'ssh-reverse-forward')) {
+        throw new Error(`Sprites cannot join MCP network "${grant.network ?? 'unnamed'}"; set PROPR_SPRITES_MCP_URL to a public ProPR MCP URL`);
+    }
+    if (grant.transport === 'ssh-reverse-forward') {
+        if (!isSpritesMcpForwardUrl(grant.url)) throw new Error('Sprites refuses an SSH reverse forward MCP grant whose URL is not the loopback forward listener');
+        return undefined;
+    }
+    if (grant.url && isLoopbackMcpUrl(grant.url)) throw new Error(loopbackMcpUrlRefusal(grant.url));
+    return grant.url ? restrictedSpriteMcpEndpoint(grant.url) : undefined;
+}
+
+/** Why a loopback ProPR MCP URL other than the forward listener cannot serve a Sprites run. */
+export function loopbackMcpUrlRefusal(url: string): string {
+    return `Sprites refuses a ProPR MCP grant for loopback URL ${new URL(url).origin} without the SSH reverse forward: nothing inside the Sprite listens there. Use the forward listener http://${SPRITES_MCP_FORWARD_HOST}:${SPRITES_MCP_FORWARD_PORT}/api/mcp or a public HTTPS MCP URL.`;
+}
+
+/** A loopback host (`localhost`, 127.0.0.0/8, ::1): inside a Sprite that is the Sprite itself. */
+export function isLoopbackMcpUrl(url: string): boolean {
+    let host: string;
+    try { host = normalizeEgressHost(new URL(url).hostname); } catch { return false; }
+    return host === 'localhost' || host.endsWith('.localhost') || host === '::1' || (isIP(host) === 4 && host.startsWith('127.'));
+}
+
+/**
  * The Sprites network policy a run gets, or undefined when it runs open.
  * Throws for anything Sprites cannot enforce: a named (private) network, a
  * malformed restricted policy, or two representations that disagree.
@@ -45,10 +75,7 @@ export function restrictedSpriteMcpEndpoint(endpoint: string): { host: string } 
  */
 export function spriteNetworkPolicy(spec: AgentRunSpec, gatewayUrls: readonly string[] = []): NetworkPolicy | undefined {
     if (spec.network.mode === 'named') throw new Error(`Sprites cannot join network "${spec.network.name}"`);
-    const grant = spec.mcpGrant;
-    if (grant && (grant.network || grant.transport !== 'reachable-url')) {
-        throw new Error(`Sprites cannot join MCP network "${grant.network ?? 'unnamed'}"; set PROPR_SPRITES_MCP_URL to a public ProPR MCP URL`);
-    }
+    const mcpHost = spriteMcpGrantHost(spec.mcpGrant);
     const { restriction, policy } = spec.network;
     if (!restriction && policy?.mode !== 'restricted') return undefined;
     assertAgentRunNetworkRepresentationsAgree(spec);
@@ -62,7 +89,11 @@ export function spriteNetworkPolicy(spec: AgentRunSpec, gatewayUrls: readonly st
         if (rule.wildcard) zones.add(host);
         allowed.add(rule.wildcard ? `*.${host}` : host);
     }
-    for (const host of restrictedSpriteMcpHosts(grant?.url, gatewayUrls)) allowed.add(host);
+    if (mcpHost) {
+        if ('reason' in mcpHost) throw new Error(mcpHost.reason);
+        allowed.add(mcpHost.host);
+    }
+    for (const host of restrictedSpriteGatewayHosts(gatewayUrls)) allowed.add(host);
     const wildcardZones = [...zones];
     const denied = wildcardZones.filter(zone => !allowed.has(zone)
         && !wildcardZones.some(parent => zone.endsWith(`.${parent}`)));
@@ -75,9 +106,9 @@ export function spriteNetworkPolicy(spec: AgentRunSpec, gatewayUrls: readonly st
     };
 }
 
-/** The ProPR MCP host, and the extension gateway host a run's URL MCP servers are reached through. */
-function restrictedSpriteMcpHosts(grantUrl: string | undefined, gatewayUrls: readonly string[]): string[] {
-    return [grantUrl, ...gatewayUrls].filter((url): url is string => !!url).map(url => {
+/** The extension gateway host a run's URL MCP servers are reached through. */
+function restrictedSpriteGatewayHosts(gatewayUrls: readonly string[]): string[] {
+    return gatewayUrls.filter(url => !!url).map(url => {
         const endpoint = restrictedSpriteMcpEndpoint(url);
         if ('reason' in endpoint) throw new Error(endpoint.reason);
         return endpoint.host;

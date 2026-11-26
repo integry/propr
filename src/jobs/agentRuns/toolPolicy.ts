@@ -7,7 +7,10 @@ export interface AgentRunMcpGrant {
     token: string;
     /** Docker network the container joins so `url` resolves; null keeps the default bridge. */
     network?: string | null;
-    /** `reachable-url` when the runtime cannot join a private network and `url` is reachable without one. */
+    /**
+     * `reachable-url` when the runtime cannot join a private network and `url` is reachable without one;
+     * `ssh-reverse-forward` when `url` is the loopback end of the runtime's per-run SSH reverse forward.
+     */
     transport?: AgentRunMcpTransport;
 }
 

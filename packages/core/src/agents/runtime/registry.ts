@@ -129,6 +129,9 @@ export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: 
     if (grant && grant.transport === 'reachable-url' && !runtimeSupportsMcpReachableUrl(capabilities)) {
         throw new AgentRuntimeCapabilityError(`Agent runtime "${kind}" cannot reach the ProPR MCP endpoint at a reachable URL for ${spec.name}`, kind, 'mcp_reachable_url');
     }
+    if (grant && grant.transport === 'ssh-reverse-forward' && !capabilities.supportsMcpReverseForward) {
+        throw new AgentRuntimeCapabilityError(`Agent runtime "${kind}" cannot carry ProPR MCP over an SSH reverse forward for ${spec.name}`, kind, 'mcp_reverse_forward');
+    }
     const restricted = spec.network.restriction ?? (spec.network.policy?.mode === 'restricted' ? spec.network.policy : undefined);
     const refusal = restricted ? restrictedNetworkRefusal(runtime, restricted.source) : undefined;
     if (refusal) throw new AgentRuntimeCapabilityError(`${refusal} (run ${spec.name})`, kind, 'restricted_network');

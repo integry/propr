@@ -9,7 +9,8 @@
  *                 reused volume smaller than the plan is extended and its new
  *                 size confirmed, and the deploy is sized from that capacity
  *   3. secrets    pin GITHUB_EVENT_INTAKE_MODE to a mode the Machine can run
- *                 (see flyIntake.ts), then upload the given secrets; generated ones (SESSION_SECRET)
+ *                 (see flyIntake.ts), then upload the given secrets; generated ones (SESSION_SECRET, SYSTEM_TASK_SECRET,
+ *                 MCP_ENCRYPTION_KEY; see flyGeneratedSecrets.ts)
  *                 only when the app does not already have them, so a redeploy
  *                 never logs everybody out or rotates encryption keys; a
  *                 GitHub App key left by an earlier deploy stays wired into

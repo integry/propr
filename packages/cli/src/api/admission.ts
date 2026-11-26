@@ -75,7 +75,7 @@ export interface AdmissionRuntime {
     refusingRuns: boolean;
     unavailable?: string;
   };
-  mcp: { transport: "private-network" | "reachable-url" | "unavailable"; reason: string };
+  mcp: { transport: "private-network" | "reachable-url" | "ssh-reverse-forward" | "unavailable"; reason: string };
 }
 
 export async function getAgentRunAdmission(client?: ApiClient): Promise<AgentRunAdmissionReport> {

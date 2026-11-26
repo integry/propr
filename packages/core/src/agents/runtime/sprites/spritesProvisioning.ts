@@ -64,7 +64,7 @@ async function complete(stream: AsyncIterable<StreamMessage>) {
     if (!finished) throw new Error('Sprite checkpoint operation ended before completion');
 }
 
-const setupFiles = ['sprites-agent-setup.sh', 'sprites-launcher.py', 'gh-wrapper.sh', 'extension-stdio-bridge.mjs',
+const setupFiles = ['sprites-agent-setup.sh', 'sprites-launcher.py', 'sprites-mcp-forward.sh', 'gh-wrapper.sh', 'extension-stdio-bridge.mjs',
     'claude-entrypoint.sh', 'codex-entrypoint.sh', 'antigravity-entrypoint.sh'];
 
 export class SpritePool {
