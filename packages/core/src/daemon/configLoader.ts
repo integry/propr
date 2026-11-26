@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { isGitHubLogin } from '@propr/shared';
 import logger from '../utils/logger.js';
 import { getAuthenticatedOctokit } from '../auth/githubAuth.js';
-import { loadMonitoredRepos, loadMonitoredReposRaw, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels } from '../config/configManager.js';
+import { loadMonitoredRepos, loadMonitoredReposRaw, loadSettings, loadAiPrimaryTag, loadPrimaryProcessingLabels, type RepoToMonitor } from '../config/configManager.js';
 import { invalidateSettingsCache } from '../services/relevance/keywordExtractor.js';
 import type { RepositoryFilter } from '../webhook/webhookHandler.js';
 
@@ -357,7 +358,45 @@ export async function loadPrimaryProcessingLabelsFromConfig(): Promise<void> {
     }
 }
 
+export interface MonitoredRepoSeedDependencies {
+    loadStored?: () => Promise<RepoToMonitor[]>;
+    save?: (repos: RepoToMonitor[]) => Promise<unknown>;
+    newId?: () => string;
+}
+
+/**
+ * Seed the stored repository list from GITHUB_REPOS_TO_MONITOR when it is empty.
+ * The daemon watches the environment list, but automation admission,
+ * list_repositories and the Repositories page read the stored list, so a fresh
+ * instance configured only through the environment (any `propr deploy fly`, or
+ * a stack .env) would otherwise refuse every automation with "Repositories are
+ * not enabled". Only an empty list is seeded: once anything is stored, the
+ * stored list is the user's and is never changed here. The read is strict, so a
+ * failed read never overwrites a stored list. Returns the seeded names.
+ */
+export async function seedMonitoredReposFromEnvironment(
+    environment: NodeJS.ProcessEnv = process.env,
+    deps: MonitoredRepoSeedDependencies = {},
+): Promise<string[]> {
+    if (environment.CONFIG_REPO || environment.PROPR_DEMO_MODE === 'true') return [];
+    const names = [...new Map(getReposFromEnv(environment).map(name => [name.toLowerCase(), name])).values()];
+    if (names.length === 0) return [];
+    const configManager = deps.loadStored && deps.save ? undefined : await import('../config/configManager.js');
+    const loadStored = deps.loadStored ?? configManager!.loadMonitoredReposStrict;
+    const save = deps.save ?? configManager!.saveMonitoredRepos;
+    if ((await loadStored()).length > 0) return [];
+    const newId = deps.newId ?? randomUUID;
+    await save(names.map(name => ({ id: newId(), name, enabled: true })));
+    logger.info({ repos: names }, 'Seeded the stored repository list from GITHUB_REPOS_TO_MONITOR');
+    return names;
+}
+
 export async function loadAllConfigs(): Promise<void> {
+    try {
+        await seedMonitoredReposFromEnvironment();
+    } catch (error) {
+        logger.warn({ error: (error as Error).message }, 'Could not seed the stored repository list from GITHUB_REPOS_TO_MONITOR');
+    }
     await loadReposFromConfig();
     await loadSettingsFromConfig();
     await loadAiPrimaryTagFromConfig();

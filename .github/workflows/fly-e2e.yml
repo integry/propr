@@ -114,22 +114,20 @@ jobs:
             echo "PROPR_SPRITES_MAX=1"
             echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
           } >> "$ENV_FILE"
+          # propr deploy fly generates SYSTEM_TASK_SECRET; one from the fixture env would hide a deploy that does not.
+          sed -i '/^SYSTEM_TASK_SECRET=/d' "$ENV_FILE"
           if [[ $MCP == true ]]; then
             # The automation's owner is the fixture token's user; ProPR MCP grants need an admitted user.
             owner=$(GH_TOKEN="$OWNER_TOKEN" gh api user --jq .login)
             sed -n 's/^PROPR_ADMIN_USERS=//p' "$ENV_FILE" | tr ',' '\n' | tr -d ' ' | grep -qixF "$owner" ||
               { echo "::error::MCP mode needs the FLY_E2E_GITHUB_TOKEN user ($owner) in PROPR_ADMIN_USERS"; exit 1; }
-            # The forward relays to the in-Machine API; MCP is served at the app's public origin,
-            # which the Sprites never use under PROPR_SPRITES_MCP_TRANSPORT=forward.
+            # MCP itself (MCP_ENABLED, origin, instance id, key, internal API URL) is the deploy's default,
+            # so drop any fixture MCP settings. The forward relays to the in-Machine API, so the Sprites
+            # never use the app's public origin.
             mcp_keys='MCP_ENABLED|MCP_PUBLIC_ORIGIN|MCP_INSTANCE_ID|MCP_ENCRYPTION_KEY|PROPR_SPRITES_MCP_TRANSPORT|PROPR_SPRITES_MCP_FORWARD|PROPR_SPRITES_MCP_URL|PROPR_INTERNAL_API_URL|PROPR_E2E_MCP_OWNER_TOKEN'
             sed -i -E "/^($mcp_keys)=/d" "$ENV_FILE"
             {
-              echo "MCP_ENABLED=true"
-              echo "MCP_PUBLIC_ORIGIN=https://$APP.fly.dev"
-              echo "MCP_INSTANCE_ID=$APP"
-              echo "MCP_ENCRYPTION_KEY=$(openssl rand -base64 32)"
               echo "PROPR_SPRITES_MCP_TRANSPORT=forward"
-              echo "PROPR_INTERNAL_API_URL=http://127.0.0.1:4000"
               # Read once over SSH to record the owner's GitHub grant, as a browser sign-in would.
               echo "PROPR_E2E_MCP_OWNER_TOKEN=$OWNER_TOKEN"
             } >> "$ENV_FILE"
@@ -271,8 +269,7 @@ jobs:
           # Record the owner's GitHub grant (a browser sign-in does this); agent-run MCP grants require it.
           seed=$(base64 -w0 <<'JS'
           const { githubUserGrantService } = await import('/usr/src/app/dist/packages/api/githubUserGrantService.js');
-          const { closeConnection, getReposFromEnv, loadMonitoredReposRaw, saveMonitoredRepos } = await import('@propr/core');
-          const { randomUUID } = await import('node:crypto');
+          const { closeConnection } = await import('@propr/core');
           const token = process.env.PROPR_E2E_MCP_OWNER_TOKEN;
           const response = await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'propr-fly-e2e' } });
           if (!response.ok) throw new Error(`GitHub /user returned ${response.status}`);
@@ -281,17 +278,7 @@ jobs:
             email: null, avatarUrl: null, accessToken: token, oauthSource: 'github' });
           if (!captured) throw new Error('The GitHub user grant was not recorded');
           console.log(`Recorded the GitHub grant for ${login}`);
-          // The daemon monitors GITHUB_REPOS_TO_MONITOR, but automation admission and list_repositories
-          // read the persisted repository configuration, which a fresh instance leaves empty.
-          const configured = await loadMonitoredReposRaw();
-          const missing = getReposFromEnv().filter(name => !configured.some(repo => repo.enabled && repo.name.toLowerCase() === name.toLowerCase()));
-          for (const name of missing) {
-            const repo = await fetch(`https://api.github.com/repos/${name}`, { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'propr-fly-e2e' } });
-            if (!repo.ok) throw new Error(`GitHub /repos/${name} returned ${repo.status}`);
-            configured.push({ id: randomUUID(), name, enabled: true, baseBranch: (await repo.json()).default_branch });
-          }
-          await saveMonitoredRepos(configured);
-          console.log(`Persisted monitored repositories: ${configured.filter(repo => repo.enabled).map(repo => repo.name).join(', ')}`);
+          // No repository seed: the daemon seeds the stored list from GITHUB_REPOS_TO_MONITOR at startup.
           await closeConnection();
           process.exit(0);
           JS

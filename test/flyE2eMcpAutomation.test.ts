@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -96,13 +95,16 @@ test('the Fly MCP payload is created and started through the REST routes under P
     },
   });
 
-  // The live run's 400: the daemon monitors the env repository, but admission reads the persisted list.
+  // The live run's 400: the daemon monitors the env repository, but admission reads the stored list.
   assert.deepEqual(core.getReposFromEnv(), [REPOSITORY]);
   const refused = await call(routes.create, request({ body }));
   assert.deepEqual([refused.status, refused.body], [400, { error: `Repositories are not enabled: ${REPOSITORY}`, code: 'AGENT_INVALID' }]);
 
-  // What the workflow's sign-in seed now persists.
-  await core.saveMonitoredRepos([{ id: randomUUID(), name: REPOSITORY, enabled: true, baseBranch: 'main' }]);
+  // The daemon's startup (loadAllConfigs) seeds the empty stored list from GITHUB_REPOS_TO_MONITOR;
+  // the workflow no longer seeds it.
+  assert.doesNotMatch(workflow, /saveMonitoredRepos/);
+  assert.deepEqual(await core.seedMonitoredReposFromEnvironment(), [REPOSITORY]);
+  assert.deepEqual((await core.loadMonitoredReposRaw()).map(repo => [repo.name, repo.enabled]), [[REPOSITORY, true]]);
   const created = await call(routes.create, request({ body }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const definition = created.body.definition;
@@ -124,6 +126,8 @@ test('the Fly MCP payload is created and started through the REST routes under P
     requests.push(url);
     return Response.json({ grantId: 'grant-1', url: 'http://api:4000/api/mcp', token: 'propr_mcp_run', expiresAt: Date.now() + 60_000, scopes: ['read'] });
   }) as unknown as typeof fetch;
+  // `propr deploy fly` generates SYSTEM_TASK_SECRET; the workflow must not set it.
+  assert.doesNotMatch(workflow, /echo "SYSTEM_TASK_SECRET=/);
   const grant = await requestAgentRunMcpGrant(started.body.run.id, 'report', {
     environment: { ...process.env, SYSTEM_TASK_SECRET: 'fixture-secret' }, fetchImpl,
   });

@@ -13,7 +13,6 @@
  */
 
 import { Command } from "commander";
-import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,6 +24,7 @@ import { createFlyctlRunner, detectFlyctl, FlyctlBackend } from "./deploy/flyctl
 import { FlyMachinesApi } from "./deploy/flyMachinesApi.js";
 import { planFlyRelay, plannedFlyRelaySecrets, resolveFlyRelaySecrets, type FlyRelayDeps } from "./deploy/flyRelay.js";
 import { selectFlyIntakeMode } from "./deploy/flyIntake.js";
+import { flyDeployEnablesMcp, generateFlySecrets } from "./deploy/flyGeneratedSecrets.js";
 import { describeFlyBrowserAuth, flyOAuthCallbackUrl, planFlyBrowserAuth, type FlyBrowserAuth } from "./deploy/flyBrowserAuth.js";
 import {
   createFlyctlTarget,
@@ -305,6 +305,7 @@ export function prepareFlyDeploy(
   // by an earlier deploy would keep the API in demo mode (no sign-in at all)
   // while this run reports GitHub or Connect sign-in, so switch it off explicitly.
   if (browserAuth !== "demo" && !secrets.PROPR_DEMO_MODE) secrets.PROPR_DEMO_MODE = "false";
+  plan.mcp = flyDeployEnablesMcp(secrets, browserAuth);
   return { plan, secrets, notes, relayPlan, browserAuth };
 }
 
@@ -335,11 +336,13 @@ export async function runDeployFly(options: DeployFlyOptions): Promise<void> {
   // Fails before any Fly call when the Machine could not work (see prepareFlyDeploy).
   const prepared = prepareFlyDeploy(options, manifest.images, {
     PROPR_ADMIN_USERS: process.env.PROPR_ADMIN_USERS ?? "",
+    // Uploaded instead of a generated one; the stack .env still wins.
+    SYSTEM_TASK_SECRET: process.env.SYSTEM_TASK_SECRET ?? "",
     ...envFile.values,
   }, githubToken);
   const { plan, notes, relayPlan, browserAuth } = prepared;
   const outDir = resolve(options.out ?? "propr-fly");
-  const generatedSecrets = { SESSION_SECRET: randomBytes(32).toString("hex") };
+  const generatedSecrets = generateFlySecrets(plan);
 
   if (options.dryRun) {
     const { secrets: dryRunSecrets, intake } = planFlyDryRunSecrets(prepared, generatedSecrets);

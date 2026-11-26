@@ -9,6 +9,7 @@ const {
     isAutoCiFollowupEnabledForRepository,
     isMonitoredRepository,
     resolveMonitoredRepositories,
+    seedMonitoredReposFromEnvironment,
 } = await import('../packages/core/src/daemon/configLoader.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');
 
@@ -110,4 +111,48 @@ test('the selected follow-up CI cancellation workflows are read across the branc
         await getCancelCiDuringFollowupWorkflowsForRepository('owner', 'repo', async () => { throw new Error('database is down'); }),
         null,
     );
+});
+
+test('an empty stored repository list is seeded from GITHUB_REPOS_TO_MONITOR', async () => {
+    const saved: unknown[] = [];
+    let id = 0;
+    const seeded = await seedMonitoredReposFromEnvironment(
+        { GITHUB_REPOS_TO_MONITOR: 'owner/one, Owner/Two,owner/two' },
+        { loadStored: async () => [], save: async repos => { saved.push(repos); }, newId: () => `id-${++id}` },
+    );
+    assert.deepEqual(seeded, ['owner/one', 'owner/two']);
+    assert.deepEqual(saved, [[
+        { id: 'id-1', name: 'owner/one', enabled: true },
+        { id: 'id-2', name: 'owner/two', enabled: true },
+    ]]);
+});
+
+test('a stored repository list is never changed by the environment seed', async () => {
+    let saves = 0;
+    const deps = {
+        loadStored: async () => [{ id: 'kept', name: 'owner/other', enabled: false }],
+        save: async () => { saves += 1; },
+    };
+    assert.deepEqual(await seedMonitoredReposFromEnvironment({ GITHUB_REPOS_TO_MONITOR: 'owner/one' }, deps), []);
+    assert.equal(saves, 0);
+});
+
+test('the environment seed skips CONFIG_REPO, demo mode, an empty list and a failed read', async () => {
+    let reads = 0;
+    let saves = 0;
+    const deps = { loadStored: async () => { reads += 1; return []; }, save: async () => { saves += 1; } };
+    for (const environment of [
+        { GITHUB_REPOS_TO_MONITOR: 'owner/one', CONFIG_REPO: 'owner/config' },
+        { GITHUB_REPOS_TO_MONITOR: 'owner/one', PROPR_DEMO_MODE: 'true' },
+        { GITHUB_REPOS_TO_MONITOR: ' , ' },
+        {},
+    ]) {
+        assert.deepEqual(await seedMonitoredReposFromEnvironment(environment, deps), []);
+    }
+    assert.equal(reads, 0);
+    await assert.rejects(seedMonitoredReposFromEnvironment({ GITHUB_REPOS_TO_MONITOR: 'owner/one' }, {
+        loadStored: async () => { throw new Error('database is locked'); },
+        save: async () => { saves += 1; },
+    }), /database is locked/);
+    assert.equal(saves, 0);
 });
