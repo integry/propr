@@ -22,6 +22,7 @@ export const FLY_PACKAGE_IMAGE_RECIPE = 1;
 const LAYER_LIMIT = 4 * 1024 ** 3;
 const FAILURE_BACKOFF_MS = 10 * 60_000;
 const POLL_MS = 2000;
+const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
 /** The build could not produce an image in a way that a start-time install would not avoid (apt failed), or its Machine may still exist. */
@@ -85,27 +86,37 @@ export class FlyPackageImages {
             logger.warn({ ...fields, image: config.image }, 'PROPR_FLY_IMAGE is not a registry.fly.io image; installing agent runtime packages at Fly Machine start');
             return;
         }
-        const key = JSON.stringify([config.app, config.image, packages]);
-        if (Date.now() - (failures.get(key) ?? -Infinity) < FAILURE_BACKOFF_MS) return;
-        let pending = images.get(key);
-        if (!pending) {
-            pending = this.prepare(options, base.repository, base.reference);
-            images.set(key, pending);
-            pending.catch(() => images.delete(key));
-        }
+        // Failures back off per configured image and package list, whichever base manifest it resolved to.
+        const configured = JSON.stringify([config.app, config.image, packages]);
+        if (Date.now() - (failures.get(configured) ?? -Infinity) < FAILURE_BACKOFF_MS) return;
         try {
+            const registry = this.registryFor(config);
+            // A tag can be pushed to while the worker runs: resolve it for every run, so the cached
+            // image follows the base manifest it names now. A digest names one manifest for good.
+            const resolved = DIGEST.test(base.reference) ? undefined : await until(registry.manifest(base.repository, base.reference), signal);
+            const key = JSON.stringify([config.app, base.repository, resolved?.digest ?? base.reference, packages]);
+            let pending = images.get(key);
+            if (!pending) {
+                signal.throwIfAborted();
+                // The preparation is shared and outlives this run's cancellation, and may create a
+                // build Machine after the run has finished: hold the run's slot until it settles.
+                const hold = options.reservation.track();
+                pending = this.prepare(options, registry, base.repository, resolved ?? base.reference);
+                images.set(key, pending);
+                pending.then(hold, () => { images.delete(key); hold(); });
+            }
             return await until(pending, signal);
         } catch (error) {
             if (signal.aborted || error instanceof FlyPackageImageError) throw error;
-            failures.set(key, Date.now());
+            failures.set(configured, Date.now());
             logger.warn({ ...fields, err: error }, 'Could not prepare the derived Fly Machine image; installing agent runtime packages at Fly Machine start');
             return;
         }
     }
 
-    private async prepare(options: SelectOptions, repository: string, reference: string) {
-        const registry = this.registryFor(options.config);
-        const { digest, manifest } = await registry.manifest(repository, reference);
+    private async prepare(options: SelectOptions, registry: RegistryApi, repository: string,
+        base: string | { digest: string; manifest: ImageManifest }) {
+        const { digest, manifest } = typeof base === 'string' ? await registry.manifest(repository, base) : base;
         const tag = flyPackageImageTag(digest, options.packages);
         const existing = await registry.resolve(repository, tag);
         const image = (manifestDigest: string) => `${FLY_REGISTRY}/${repository}@${manifestDigest}`;
@@ -149,7 +160,7 @@ async function buildLayer(options: SelectOptions, baseImage: string, target: str
         try { result = read?.exit_code === 0 ? JSON.parse(read.stdout) as BuildResult : undefined; } catch { result = undefined; }
         if (state === 'build-failed') throw new FlyPackageImageError(flyPackageInstallError(packages, result).message);
         const layer = result?.layer;
-        if (state !== 'built' || !layer || !/^sha256:[0-9a-f]{64}$/.test(layer.digest) || !/^sha256:[0-9a-f]{64}$/.test(layer.diffId)
+        if (state !== 'built' || !layer || !DIGEST.test(layer.digest) || !DIGEST.test(layer.diffId)
             || !Number.isSafeInteger(layer.size) || layer.size <= 0 || layer.size > LAYER_LIMIT)
             throw new Error(`Fly image build Machine ${id} produced no layer (${state ?? 'no status'}${result?.error ? ': ' + result.error : ''})`);
         await download(api, id, layer, target);

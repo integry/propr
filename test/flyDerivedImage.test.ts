@@ -36,6 +36,10 @@ class Registry implements RegistryApi {
     uploads: string[] = [];
     fail?: Error;
     lookups = 0;
+    /** Base tags and the manifest digest each names now; a test may move one. */
+    baseTags = new Map<string, string>([['current', BASE_DIGEST]]);
+    /** When set, base manifest reads wait for it. */
+    gate?: Promise<void>;
     baseConfig = Buffer.from(JSON.stringify({ architecture: 'amd64', os: 'linux', config: { User: 'node' },
         rootfs: { type: 'layers', diff_ids: ['sha256:' + '1'.repeat(64)] }, history: [{ created_by: 'base' }] }));
     base: ImageManifest = { schemaVersion: 2, mediaType: MEDIA.dockerManifest,
@@ -44,10 +48,12 @@ class Registry implements RegistryApi {
     constructor() { this.blobs.set(sha256(this.baseConfig), this.baseConfig); }
     async manifest(repository: string, reference: string) {
         this.lookups++;
+        await this.gate;
         if (this.fail) throw this.fail;
         assert.equal(repository, 'agents');
-        assert.equal(reference, BASE_DIGEST);
-        return { digest: BASE_DIGEST, manifest: this.base };
+        const digest = this.baseTags.get(reference) ?? reference;
+        assert.ok([...this.baseTags.values(), BASE_DIGEST].includes(digest), reference);
+        return { digest, manifest: this.base };
     }
     async resolve(_repository: string, tag: string) { return this.tags.get(tag); }
     async blob(_repository: string, digest: string) { return this.blobs.get(digest)!; }
@@ -256,6 +262,59 @@ test('the run waits for the build Machine to be gone before creating its agent M
     assert.equal((await run.wait()).exitCode, 0);
     assert.deepEqual(api.events, ['create build', 'create launch', 'destroy launch']);
     await run.release!();
+});
+
+test('a cancelled run holds its slot until the build it started settles', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    let open!: () => void;
+    registry.gate = new Promise(resolve => { open = resolve; });
+    const fly = runtime(api, registry, 'cancelled', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' });
+    const cancel = new AbortController();
+    const first = fly.start(spec('first'), { signal: cancel.signal });
+    while (!registry.lookups) await delay(5);
+    cancel.abort(new Error('cancelled')); // while the shared preparation awaits the registry, before its build Machine exists
+    await assert.rejects(first.wait(), /cancelled/);
+    await first.release?.().catch(() => {});
+    // Settings now list no packages: the next run needs no image and creates its Machine once it has a slot.
+    const second = runtime(api, registry, 'cancelled', [], { PROPR_FLY_MACHINES_MAX: '1' }).start(spec('second'));
+    await delay(50);
+    assert.deepEqual(api.events, [], 'the next run queues behind the preparation instead of taking the cancelled run\'s slot');
+    open();
+    assert.equal((await second.wait()).exitCode, 0);
+    // The build Machine the cancelled run's preparation created is gone before the next run's agent Machine exists.
+    assert.deepEqual(api.events, ['create build', 'destroy build', 'create launch', 'destroy launch']);
+    assert.equal(api.peak, 1);
+    assert.ok(registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet'])), 'the shared build still completed');
+    await second.release!();
+});
+
+test('a base tag is resolved for every run, and a push to it selects a new derived image', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'tagged', ['figlet'], { PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' });
+    const go = async (name: string) => {
+        const run = fly.start(spec(name));
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+        return api.launches.at(-1)!;
+    };
+    const first = await go('first');
+    const derivedA = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet']));
+    assert.equal(first.config.image, derivedA);
+    assert.equal((await go('unchanged')).config.image, derivedA, 'an unchanged tag reuses the cached image');
+    assert.equal(api.launches.filter(l => l.config.processes[0].cmd[0] === 'build').length, 1);
+
+    const moved = 'sha256:' + 'b'.repeat(64);
+    registry.baseTags.set('current', moved); // the operator pushes a new base image to the same tag
+    const third = await go('moved');
+    const builds = api.launches.filter(l => l.config.processes[0].cmd[0] === 'build');
+    assert.equal(builds.length, 2);
+    assert.equal(builds[1].config.image, 'registry.fly.io/agents@' + moved, 'the new build starts from the manifest the tag names now');
+    const derivedB = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(moved, ['figlet']));
+    assert.notEqual(derivedB, derivedA);
+    assert.equal(third.config.image, derivedB);
+    assert.equal(registry.lookups, 3, 'one base manifest read per run');
 });
 
 function python(code: string, ...args: string[]) {
