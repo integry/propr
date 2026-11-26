@@ -8,6 +8,12 @@
 
 set -euo pipefail
 
+# Standalone keeps the server lifetime and state scoped to this container.
+log_flags=(--standalone --log-level error)
+if [[ "$(opencode --version)" == 1.* ]]; then
+    log_flags=(--print-logs --log-level ERROR)
+fi
+
 prompt_file=""
 cleanup() {
     if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
@@ -24,7 +30,7 @@ cat > "$prompt_file"
 if [ ! -s "$prompt_file" ]; then
     rm -f "$prompt_file"
     prompt_file=""
-    exec opencode run --print-logs --log-level ERROR "$@"
+    exec opencode run "${log_flags[@]}" "$@"
 fi
 
 # Guard against pathologically large prompts (default 20 MiB). Overridable via
@@ -41,5 +47,5 @@ if [ "$max_prompt_bytes" -gt 0 ] && [ "$prompt_bytes" -gt "$max_prompt_bytes" ];
 fi
 
 status=0
-opencode run --print-logs --log-level ERROR "$@" --file "$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run. Follow the instructions in that file exactly." || status=$?
+opencode run "${log_flags[@]}" "$@" --file "$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run. Follow the instructions in that file exactly." || status=$?
 exit "$status"

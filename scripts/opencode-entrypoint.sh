@@ -78,6 +78,16 @@ if [ $# -gt 0 ]; then
     if [ "$(id -u)" = "0" ] && [ "$opencode_ephemeral" = "1" ]; then
         echo "Switching to node user with disposable OpenCode state..." >&2
         cd /home/node/workspace
+        source_db="$opencode_source_data/opencode.db"
+        runtime_db="$opencode_data_dir/opencode.db"
+        sync_database=0
+        if [ -n "$opencode_source_data" ] && [ -f "$source_db" ] && [[ "$(opencode --version)" == "opencode v2."* ]]; then
+            # Initialize the disposable schema (including v1 JSON migration)
+            # before importing credentials. Keep the host session DB out of it.
+            su-exec node env HOME=/home/node opencode auth list --standalone >/dev/null
+            su-exec node python3 /opt/propr/opencode-credentials.py seed "$source_db" "$runtime_db"
+            sync_database=1
+        fi
         set +e
         su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
         command_status=$?
@@ -99,6 +109,9 @@ if [ $# -gt 0 ]; then
             done
         fi
 
+        if [ "$sync_database" = "1" ]; then
+            su-exec node python3 /opt/propr/opencode-credentials.py sync "$source_db" "$runtime_db"
+        fi
         exit "$command_status"
     elif [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2

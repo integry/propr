@@ -107,25 +107,29 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     const configMode = 'rw';
     // Single execution path for every OpenCode run (task and analysis alike):
     // the prompt always arrives over stdin and is attached via the opencode-run
-    // wrapper. Normal runs skip permissions inside the task container. Scout
+    // wrapper. Normal runs auto-approve prompts inside the task container. Scout
     // runs instead use an inline, highest-precedence deny-first policy and auto
     // mode, which still enforces explicit denies.
     const title = issueNumber === 0 ? 'ProPR analysis' : 'ProPR task';
-    const commandArgs = repositoryInspection
-        ? ['opencode-run', '--format', 'json', '--title', title, '--pure', '--auto']
-        : ['opencode-run', '--format', 'json', '--title', title, '--dangerously-skip-permissions'];
+    const legacyCli = (config.cliVersionResolved ?? config.cliVersion)?.startsWith('1.') ?? false;
+    const permissionFlags = legacyCli
+        ? (repositoryInspection ? ['--pure', '--auto'] : ['--dangerously-skip-permissions'])
+        : ['--auto'];
+    const commandArgs = ['opencode-run', '--format', 'json', '--title', title, ...permissionFlags];
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
         '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMode}`,
         ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, workspaceMode === 'ro')),
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
         ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
-        '-e', 'OPENCODE_CONFIG_DIR=/home/node/.config/opencode',
-        ...(repositoryInspection ? ['-e', `OPENCODE_CONFIG_CONTENT=${buildOpenCodeRepositoryScoutConfig()}`] : []),
+        ...envVars,
+        '-e', `OPENCODE_CONFIG_DIR=${repositoryInspection && !legacyCli ? '/tmp/propr-opencode-scout-config' : CONTAINER_CONFIG_PATH}`,
+        ...(repositoryInspection && !legacyCli ? ['-e', 'OPENCODE_CONFIG_PROJECT_DISABLE=1', '-e', 'OPENCODE_DISABLE_CLAUDE_CODE=1', '-e', 'OPENCODE_CONFIG='] : []),
+        ...(repositoryInspection ? ['-e', `OPENCODE_CONFIG_CONTENT=${buildOpenCodeRepositoryScoutConfig(legacyCli)}`] : []),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', `XDG_DATA_HOME=${CONTAINER_RUNTIME_DATA_HOME}`,
         '-e', 'PROPR_EPHEMERAL_STATE=1',
-        ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...envVars, ...buildAgentGitCredentialArgs(),
+        ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...buildAgentGitCredentialArgs(),
         '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
     ];
     appendOpenCodeDataMount(dockerArgs, dataMount);

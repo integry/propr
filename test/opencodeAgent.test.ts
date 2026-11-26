@@ -365,7 +365,7 @@ describe('OpenCodeAgent Docker args', () => {
         assert.match(routedArgs[routedArgs.indexOf('--name') + 1], /^open-code-test-issue-42-opencode-provider-model-12345678-[a-f0-9]{8}$/);
         assert.match(openAiArgs[openAiArgs.indexOf('--name') + 1], /openai-gpt-5.5-12345678-[a-f0-9]{8}$/);
         assert.match(goArgs[goArgs.indexOf('--name') + 1], /opencode-go-qwen3.7-max-12345678-[a-f0-9]{8}$/);
-        assert.ok(routedArgs.includes('--dangerously-skip-permissions'));
+        assert.ok(routedArgs.includes('--auto'));
     });
 
     test('uses opencode-run wrapper and JSON output mode', () => {
@@ -407,7 +407,7 @@ describe('OpenCodeAgent Docker args', () => {
         // No bespoke "direct" shell mode any more — one wrapper for everything.
         assert.ok(!analysisArgs.includes('/bin/sh'));
         assert.ok(analysisArgs.includes('opencode-run'));
-        assert.ok(analysisArgs.includes('--dangerously-skip-permissions'));
+        assert.ok(analysisArgs.includes('--auto'));
         assert.ok(analysisArgs.includes('/tmp/worktree:/home/node/workspace:ro'));
         assert.strictEqual(analysisArgs[analysisArgs.indexOf('--format') + 1], 'json');
         assert.strictEqual(analysisArgs[analysisArgs.indexOf('--title') + 1], 'ProPR analysis');
@@ -505,13 +505,13 @@ describe('OpenCodeAgent Docker args', () => {
     test('opencode-run keeps prompt attachment separate from the final message', () => {
         const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
 
-        assert.match(script, /opencode run --print-logs --log-level ERROR "\$@" --file "\$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run\. Follow the instructions in that file exactly\."/);
+        assert.match(script, /opencode run "\$\{log_flags\[@\]\}" "\$@" --file "\$prompt_file" -- "The attached file is the trusted user prompt for this non-interactive CLI run\. Follow the instructions in that file exactly\."/);
     });
 
-    test('opencode-run streams error-level logs so a failure reason can name the logged cause', () => {
+    test('opencode-run passes version-specific logging flags for empty input', () => {
         const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), 'utf8');
 
-        assert.match(script, /exec opencode run --print-logs --log-level ERROR "\$@"\n/);
+        assert.match(script, /exec opencode run "\$\{log_flags\[@\]\}" "\$@"\n/);
         assert.doesNotMatch(script, /\.local\/share\/opencode\/log/);
     });
 
@@ -523,7 +523,7 @@ describe('OpenCodeAgent Docker args', () => {
         assert.match(script, /could not sync refreshed OpenCode credential file/);
     });
 
-    test('always skips permissions for isolated non-interactive runs, like the other agents', () => {
+    test('auto-approves permissions for isolated non-interactive runs, like the other agents', () => {
         const taskArgs = buildOpenCodeDockerArgs({
             config: createAgent().config,
             worktreePath: '/tmp/worktree',
@@ -539,8 +539,8 @@ describe('OpenCodeAgent Docker args', () => {
             ensureConfigPath: () => undefined
         });
 
-        assert.ok(taskArgs.includes('--dangerously-skip-permissions'));
-        assert.ok(analysisArgs.includes('--dangerously-skip-permissions'));
+        assert.ok(taskArgs.includes('--auto'));
+        assert.ok(analysisArgs.includes('--auto'));
     });
 
     test('filters unsafe and GitHub credential env vars before forwarding to the container', () => {

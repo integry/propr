@@ -139,9 +139,12 @@ RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
 
 
 FROM agent-base AS opencode-cli
-ARG OPENCODE_CLI_VERSION=1.19.6
+ARG OPENCODE_CLI_VERSION=2.4.2
 USER root
-RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
+# Series 1 pins remain available for installations that selected an exact version.
+RUN case "$OPENCODE_CLI_VERSION" in 1.*) package=opencode-ai ;; *) package=@opencode/cli ;; esac \
+    && npm install -g --prefix /opt/opencode "$package@${OPENCODE_CLI_VERSION}" \
+    && ln -sf /opt/opencode/bin/opencode /usr/local/bin/opencode \
     && npm cache clean --force \
     && rm -rf /root/.npm \
     && opencode --version \
@@ -235,7 +238,7 @@ FROM agent-base AS agent-image-build
 USER root
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
 COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
-COPY --from=opencode-cli /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
+COPY --from=opencode-cli /opt/opencode /opt/opencode
 COPY --from=agent-tank-cli /usr/local/lib/node_modules/agent-tank /usr/local/lib/node_modules/agent-tank
 COPY --from=vibe-cli /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=vibe-cli /usr/local/bin/uvx /usr/local/bin/uvx
@@ -260,6 +263,7 @@ COPY --chown=node:node \
     scripts/vibe-entrypoint.sh \
     /home/node/
 COPY scripts/extension-stdio-bridge.mjs /opt/propr/extension-stdio-bridge.mjs
+COPY scripts/opencode-credentials.py /opt/propr/opencode-credentials.py
 COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
 COPY --chown=node:node scripts/vibe-prompt-file-runner.py /usr/local/bin/propr-vibe-prompt-file
 RUN set -eu; \
@@ -271,7 +275,7 @@ RUN set -eu; \
     }; \
     link_npm_bin @anthropic-ai/claude-code claude \
     && link_npm_bin @openai/codex codex \
-    && link_npm_bin opencode-ai opencode \
+    && ln -sf /opt/opencode/bin/opencode /usr/local/bin/opencode \
     && link_npm_bin agent-tank agent-tank \
     && ln -sf /home/node/.local/bin/agy /usr/local/bin/agy \
     && chmod +x \
@@ -312,7 +316,7 @@ ARG AGENT_YARN_VERSION
 ARG CLAUDE_CLI_VERSION=2.1.330
 ARG CODEX_CLI_VERSION=0.171.0
 ARG ANTIGRAVITY_CLI_VERSION=1.5.15
-ARG OPENCODE_CLI_VERSION=1.19.6
+ARG OPENCODE_CLI_VERSION=2.4.2
 ARG VIBE_CLI_VERSION=2.25.8
 ARG AGENT_TANK_CLI_VERSION=0.10.0
 
