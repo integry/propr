@@ -373,6 +373,8 @@ interface AgentMachineCreate {
     state: { selection: FlyPackageSelection; imageWaitMs: number };
     /** False once the run is stopping: no second create. */
     mayRetry(): boolean;
+    /** Called immediately before each create request: the boot window of that attempt starts here. */
+    onAttempt(): void;
     onBootStart(timestamp: number): void;
 }
 
@@ -382,8 +384,11 @@ interface AgentMachineCreate {
  * registry is checked once more and the create retried with what that selects, a rebuilt image or the
  * start-time install. The same image selected again fails the run with Fly's error.
  */
-export async function createAgentMachine({ api, images, prepared, options, state, mayRetry, onBootStart }: AgentMachineCreate) {
-    try { return await api.create(prepared.launch, onBootStart); }
+export async function createAgentMachine({ api, images, prepared, options, state, mayRetry, onAttempt, onBootStart }: AgentMachineCreate) {
+    try {
+        onAttempt();
+        return await api.create(prepared.launch, onBootStart);
+    }
     catch (error) {
         const derived = state.selection.derived;
         if (!derived || !images) throw error;
@@ -394,6 +399,8 @@ export async function createAgentMachine({ api, images, prepared, options, state
         state.selection = await selectFlyPackageImage(images, prepared, options);
         state.imageWaitMs += Date.now() - waiting;
         if (state.selection.derived === derived || !mayRetry()) throw error;
+        // The image preparation above may outlast the boot timeout: the replacement Machine gets its own window.
+        onAttempt();
         return api.create(prepared.launch, onBootStart);
     }
 }

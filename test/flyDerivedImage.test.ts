@@ -806,6 +806,38 @@ test('a Machine create refused for a cached derived image re-checks the registry
     await second.release!();
 });
 
+test('a rebuild after a refused create that outlasts the boot timeout still gives the replacement Machine its boot window', async () => {
+    const registry = new Registry();
+    class Refusing extends Machines {
+        refuse?: string;
+        override async create(launch: MachineLaunch) {
+            if (!isBuild(launch) && launch.config.image === this.refuse) {
+                this.refuse = undefined;
+                this.events.push('refused launch');
+                registry.gate = delay(1500); // preparing the replacement image takes longer than the 1 s boot timeout
+                throw new MachinesHttpError('POST', 422, 'image not found');
+            }
+            return super.create(launch);
+        }
+    }
+    const api = new Refusing();
+    const fly = runtime(api, registry, 'refused-slow', ['figlet'], { PROPR_FLY_BOOT_TIMEOUT: '1' });
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    api.refuse = api.launches.at(-1)!.config.image;
+    registry.tags.clear();
+    const second = fly.start(spec('second'));
+    const result = await second.wait();
+    assert.ok(api.events.includes('refused launch'));
+    assert.equal(api.launches.filter(isBuild).length, 2, 'the missing tag was rebuilt');
+    const replacement = 'm' + (api.launches.length - 1);
+    assert.ok(api.started.has(replacement), 'the replacement Machine was started');
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.computeUsage!.imageWaitMs! >= 1400, String(result.computeUsage!.imageWaitMs));
+    await second.release!();
+});
+
 test('a Machine create refused for a derived image, then a registry failure, retries on the base image with a start-time install', async () => {
     class Refusing extends Machines {
         refuse?: string;

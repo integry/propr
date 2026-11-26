@@ -288,7 +288,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             try {
                 let bootStart = Date.now();
                 id = await createAgentMachine({ api, images: this.images, prepared, options: selectOptions, state: image,
-                    mayRetry: () => !stopping && !external.aborted, onBootStart: timestamp => { bootStart = Math.min(bootStart, timestamp); } });
+                    // Each create attempt starts its own boot window; its provider timestamps can only move it earlier.
+                    mayRetry: () => !stopping && !external.aborted, onAttempt: () => { bootStart = Date.now(); },
+                    onBootStart: timestamp => { bootStart = Math.min(bootStart, timestamp); } });
                 const packages = image.selection.install;
                 void api.logs(id, display, logs.signal).catch(() => {});
                 let usageFailureSince: number | undefined;
