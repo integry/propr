@@ -374,6 +374,86 @@ with tarfile.open(sys.argv[1]) as tar:
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+// Applies a layer the way container runtimes do: a whiteout removes its target,
+// an entry replaces a path of another type. Unlike tarfile it refuses to resolve
+// a member's parent through anything but a real directory.
+const APPLY_AND_COMPARE = `
+import shutil, tarfile
+def tree(root):
+    out = {}
+    for d, dirs, files in os.walk(root):
+        for name in dirs + files:
+            p = os.path.join(d, name)
+            st = os.lstat(p)
+            kind = 'link:' + os.readlink(p) if stat.S_ISLNK(st.st_mode) else 'dir' if stat.S_ISDIR(st.st_mode) else 'file:' + open(p).read()
+            out[os.path.relpath(p, root)] = kind
+    return out
+lower, upper, layer = sys.argv[1], sys.argv[2], sys.argv[3]
+with tarfile.open(layer) as tar:
+    for m in tar.getmembers():
+        parent = lower
+        for part in os.path.dirname(m.name).split('/') if os.path.dirname(m.name) else []:
+            parent = os.path.join(parent, part)
+            if not stat.S_ISDIR(os.lstat(parent).st_mode):
+                raise SystemExit('member ' + m.name + ' resolves through a non-directory')
+        base = os.path.basename(m.name)
+        if base.startswith('.wh.'):
+            p = os.path.join(parent, base[4:])
+            if os.path.isdir(p) and not os.path.islink(p): shutil.rmtree(p)
+            elif os.path.lexists(p): os.remove(p)
+            continue
+        p = os.path.join(lower, m.name)
+        if os.path.lexists(p) and not (m.isdir() and os.path.isdir(p) and not os.path.islink(p)):
+            shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
+        tar.extract(m, lower)
+print(json.dumps({'applied': tree(lower), 'expected': tree(upper)}))
+`;
+
+for (const kind of ['symlink', 'regular file'] as const) {
+    test(`a directory replaced by a ${kind} applies to the post-install tree`, () => {
+        const base = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-replace-'));
+        const root = path.join(base, 'root');
+        const lower = path.join(base, 'lower');
+        const out = path.join(base, 'layer.tar.gz');
+        try {
+            // '-tool' sorts before '.wh.-tool': the whiteout must still come first.
+            for (const name of ['tool', '-tool']) {
+                fs.mkdirSync(path.join(root, 'usr/share', name, 'nested'), { recursive: true });
+                fs.writeFileSync(path.join(root, 'usr/share', name, 'old'), 'v1');
+                fs.writeFileSync(path.join(root, 'usr/share', name, 'nested/deep'), 'v1');
+            }
+            fs.mkdirSync(path.join(root, 'opt/tool-2'), { recursive: true });
+            fs.cpSync(root, lower, { recursive: true, verbatimSymlinks: true });
+            const result = JSON.parse(python(`
+root, kind = sys.argv[1], sys.argv[3]
+before = snapshot(root)
+time.sleep(0.05)
+import shutil
+for name in ['tool', '-tool']:
+    target = os.path.join(root, 'usr/share', name)
+    shutil.rmtree(target)
+    if kind == 'symlink':
+        os.symlink('/opt/tool-2', target)
+    else:
+        open(target, 'w').write('now a file')
+print(json.dumps(write_layer(before, snapshot(root), sys.argv[2], root)))
+`, root, out, kind));
+            assert.equal(result.removed, 2, 'one whiteout per replaced directory, none for its children');
+            const members = python(`
+import tarfile
+with tarfile.open(sys.argv[1]) as tar:
+    for m in tar.getmembers():
+        print(m.name, m.type.decode(), m.linkname)
+`, out).trim().split('\n').map(line => line.trimEnd());
+            const entry = (name: string) => kind === 'symlink' ? `usr/share/${name} 2 /opt/tool-2` : `usr/share/${name} 0`;
+            assert.deepEqual(members, ['usr 5', 'usr/share 5',
+                'usr/share/.wh.-tool 0', entry('-tool'), 'usr/share/.wh.tool 0', entry('tool')]);
+            const { applied, expected } = JSON.parse(python(APPLY_AND_COMPARE, lower, root, out));
+            assert.deepEqual(applied, expected);
+        } finally { fs.rmSync(base, { recursive: true, force: true }); }
+    });
+}
+
 test('digests in the test fixtures are real sha256 values', () => {
     assert.equal(layer.digest, 'sha256:' + crypto.createHash('sha256').update(layerGz).digest('hex'));
 });
