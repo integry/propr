@@ -111,11 +111,8 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     // runs instead use an inline, highest-precedence deny-first policy and auto
     // mode, which still enforces explicit denies.
     const title = issueNumber === 0 ? 'ProPR analysis' : 'ProPR task';
-    const legacyCli = (config.cliVersionResolved ?? config.cliVersion)?.startsWith('1.') ?? false;
-    const permissionFlags = legacyCli
-        ? (repositoryInspection ? ['--pure', '--auto'] : ['--dangerously-skip-permissions'])
-        : ['--auto'];
-    const commandArgs = ['opencode-run', '--format', 'json', '--title', title, ...permissionFlags];
+    const legacyCli = isLegacyOpenCodeCli(config);
+    const commandArgs = ['opencode-run', '--format', 'json', '--title', title, ...buildOpenCodePermissionFlags(legacyCli, repositoryInspection)];
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
         '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMode}`,
@@ -123,9 +120,7 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
         ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
         ...envVars,
-        '-e', `OPENCODE_CONFIG_DIR=${repositoryInspection && !legacyCli ? '/tmp/propr-opencode-scout-config' : CONTAINER_CONFIG_PATH}`,
-        ...(repositoryInspection && !legacyCli ? ['-e', 'OPENCODE_CONFIG_PROJECT_DISABLE=1', '-e', 'OPENCODE_DISABLE_CLAUDE_CODE=1', '-e', 'OPENCODE_CONFIG='] : []),
-        ...(repositoryInspection ? ['-e', `OPENCODE_CONFIG_CONTENT=${buildOpenCodeRepositoryScoutConfig(legacyCli)}`] : []),
+        ...buildOpenCodeConfigEnvArgs(legacyCli, repositoryInspection),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', `XDG_DATA_HOME=${CONTAINER_RUNTIME_DATA_HOME}`,
         '-e', 'PROPR_EPHEMERAL_STATE=1',
@@ -142,6 +137,26 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     }
 
     return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, 'opencode');
+}
+
+function isLegacyOpenCodeCli(config: AgentConfig): boolean {
+    return (config.cliVersionResolved ?? config.cliVersion)?.startsWith('1.') ?? false;
+}
+
+function buildOpenCodePermissionFlags(legacyCli: boolean, repositoryInspection: boolean): string[] {
+    if (!legacyCli) return ['--auto'];
+    return repositoryInspection ? ['--pure', '--auto'] : ['--dangerously-skip-permissions'];
+}
+
+function buildOpenCodeConfigEnvArgs(legacyCli: boolean, repositoryInspection: boolean): string[] {
+    if (!repositoryInspection) return ['-e', `OPENCODE_CONFIG_DIR=${CONTAINER_CONFIG_PATH}`];
+    const scoutConfig = ['-e', `OPENCODE_CONFIG_CONTENT=${buildOpenCodeRepositoryScoutConfig(legacyCli)}`];
+    if (legacyCli) return ['-e', `OPENCODE_CONFIG_DIR=${CONTAINER_CONFIG_PATH}`, ...scoutConfig];
+    return [
+        '-e', 'OPENCODE_CONFIG_DIR=/tmp/propr-opencode-scout-config',
+        '-e', 'OPENCODE_CONFIG_PROJECT_DISABLE=1', '-e', 'OPENCODE_DISABLE_CLAUDE_CODE=1', '-e', 'OPENCODE_CONFIG=',
+        ...scoutConfig,
+    ];
 }
 
 function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyWorkspace: boolean | undefined): void {
