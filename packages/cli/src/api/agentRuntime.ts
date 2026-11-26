@@ -12,6 +12,8 @@ export interface AgentRuntimePackageState {
   error?: string;
   buildLog?: string;
   updatedAt: string;
+  /** Set on a save that could not be fully checked, e.g. "could not verify availability: ..." when the package index is unreachable. */
+  warnings?: string[];
 }
 
 export type AgentRuntimeVerificationStatus = 'healthy' | 'unhealthy' | 'disabled';

@@ -7,6 +7,7 @@ import { Redis } from 'ioredis';
 import type { SpritesClient } from '@fly/sprites';
 import { spritePoolKey } from '@propr/shared';
 import logger from '../../../utils/logger.js';
+import { logSpriteLeaseExpiry, readSpriteLeaseHolder, spriteLeaseExpiredError, SpriteLeaseExpired, SpriteLeaseReleased, type OwnedSpriteLease, type SpriteLeaseHolder } from './spritesLease.js';
 
 type Provider = Pick<SpritesClient, 'listAllSprites' | 'getSprite' | 'deleteSprite'>;
 export type SpritePoolRedis = Pick<Redis, 'eval' | 'set' | 'get' | 'hsetnx' | 'hget' | 'hset' | 'hgetall'>;
@@ -169,15 +170,12 @@ async function deploymentMarker(redis: SpritePoolRedis, env: NodeJS.ProcessEnv, 
     return marker;
 }
 
-class SpriteLeaseExpired extends Error {
-    constructor(message = 'Sprite lease expired') { super(message); }
-}
 const retryOptions = { baseDelay: 100, maxDelay: 1000, shouldRetry: (error: unknown) =>
     !(error instanceof SpriteLeaseExpired || ['AbortError', 'TimeoutError'].includes((error as Error)?.name)) };
 
 export class SpriteInventory {
     private readonly owner = randomUUID();
-    private readonly owned = new Map<string, { lost: AbortController; expiry?: NodeJS.Timeout; deadline: number; createDeadline: number }>();
+    private readonly owned = new Map<string, OwnedSpriteLease>();
     private cleanup?: Promise<void>;
     private closing = false;
     private timers: NodeJS.Timeout[] = [];
@@ -285,7 +283,7 @@ export class SpriteInventory {
                     result = await this.admission(name, speculative);
                 }
                 if (result !== 1) return false;
-                this.owned.set(name, { lost: new AbortController(), deadline: 0, createDeadline: sent + dispatchMs });
+                this.owned.set(name, { lost: new AbortController(), deadline: 0, createDeadline: sent + dispatchMs, reservedAt: sent });
                 if (!this.arm(name, sent)) {
                     await this.change(name, 'gone'); // No create can have started.
                     throw new SpriteLeaseExpired('Sprite reservation expired before acknowledgement');
@@ -305,13 +303,14 @@ export class SpriteInventory {
         const deadline = Math.max(lease.deadline, sent + localLeaseMs);
         const now = performance.now();
         if (deadline <= now || (lease.deadline && lease.deadline <= now)) {
-            this.stopRenewing(name);
+            this.expire(name, `Redis confirmed the lease ${Math.round(now - sent)} ms ago, after its local deadline`);
             return false;
         }
         if (deadline > lease.deadline) {
             clearTimeout(lease.expiry);
             lease.deadline = deadline;
-            lease.expiry = setTimeout(() => this.stopRenewing(name), deadline - now).unref();
+            lease.renewedAt = sent;
+            lease.expiry = setTimeout(() => this.expire(name, 'no renewal reached Redis before the local deadline'), deadline - now).unref();
         }
         return true;
     }
@@ -324,16 +323,27 @@ export class SpriteInventory {
 
     signal(name: string) {
         const lease = this.owned.get(name);
-        if (lease && performance.now() >= lease.deadline) this.stopRenewing(name);
-        return this.owned.get(name)?.lost.signal ?? AbortSignal.abort(new SpriteLeaseExpired());
+        if (lease && performance.now() >= lease.deadline) this.expire(name, 'no renewal reached Redis before the local deadline');
+        return this.owned.get(name)?.lost.signal ?? AbortSignal.abort(new SpriteLeaseExpired(`Sprite lease expired for ${name}: this worker holds no lease on it`));
     }
 
-    private dropLease(name: string) {
+    private dropLease(name: string, reason: Error = new SpriteLeaseReleased(name)) {
         const lease = this.owned.get(name);
         if (!lease) return;
         clearTimeout(lease.expiry);
         this.owned.delete(name);
-        lease.lost.abort(new SpriteLeaseExpired());
+        lease.lost.abort(reason);
+    }
+
+    /** The lease is lost: fail everything under it with the reason, and log who holds the key now and when it expires. */
+    private expire(name: string, cause: string, holder?: SpriteLeaseHolder) {
+        const lease = this.owned.get(name);
+        if (!lease) return;
+        const loss = { sprite: name, owner: this.owner, cause, now: performance.now(), reservedAt: lease.reservedAt, renewedAt: lease.renewedAt, deadline: lease.deadline };
+        this.dropLease(name, spriteLeaseExpiredError(loss, holder));
+        // Read the key before a closing inventory disconnects.
+        logSpriteLeaseExpiry(loss, holder ?? readSpriteLeaseHolder(this.redis, this.lease(name)));
+        this.disconnectWhenReleased();
     }
 
     private lease(name: string) { return this.config.key + ':lease:' + name; }
@@ -343,7 +353,8 @@ export class SpriteInventory {
         if (extendsLease && owner === this.owner && this.signal(name).aborted) return false;
         const sent = performance.now();
         const changed = await this.redis.eval(update, 3, this.runners, this.lease(name), this.config.key, name, owner, leaseMs, action);
-        if (owner === this.owner && !changed) this.dropLease(name);
+        if (owner === this.owner && !changed && this.owned.has(name)) this.expire(name, `Redis refused to ${action === 'renew' ? 'renew' : `record "${action}" under`} the lease`,
+            await readSpriteLeaseHolder(this.redis, this.lease(name)).catch(() => undefined));
         if (!changed || !extendsLease) return !!changed;
         return owner === this.owner ? this.arm(name, sent) : performance.now() < sent + localLeaseMs;
     }

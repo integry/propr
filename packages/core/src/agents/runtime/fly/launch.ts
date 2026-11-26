@@ -13,9 +13,9 @@ import type { AgentRunMount, AgentRunSpec } from '../types.js';
 import type { MachineLaunch, MachinesApi } from './api.js';
 import type { FlyConfig } from './config.js';
 import { RUN, AGENT, WRAPPER, wrapper } from './wrapper.js';
+import { FLY_PATH as PATH, flyPackageInstallSpec } from './packages.js';
 
 export const helper = ['/usr/bin/python3', '-I', WRAPPER];
-const PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const shim = '/opt/propr/fly-provider';
 type Bind = Extract<AgentRunMount, { type: 'bind' }>;
 export function unsupportedFlyMount(m: Bind) {
@@ -151,6 +151,11 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     if (JSON.stringify(launch).includes(config.token)) throw new Error('Fly API credential found in Machine configuration');
     return { launch, credentialPath, secrets: [...new Set([config.token, ...secrets].filter(Boolean))],
         markerArgs: transportEnv.PROPR_REPO_SETUP === '0' || !setup ? [] : [setup.script],
+        /** Have the Machine install the instance runtime packages as root before the agent starts (none: no apt step at all). */
+        installPackages(packages: readonly string[]) {
+            if (packages.length === 0) return;
+            add(RUN + '/packages.json', JSON.stringify(flyPackageInstallSpec(packages)));
+        },
         async commit(api: MachinesApi, id: string) {
             if (!store) return;
             const returned: ReturnedCredentialFile[] = [];

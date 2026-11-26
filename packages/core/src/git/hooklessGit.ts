@@ -24,7 +24,12 @@ export const GIT_AUTHENTICATION_ENVIRONMENT = [
 export function createHooklessGit(baseDir?: string): SimpleGit {
     return simpleGit({
         ...(baseDir ? { baseDir } : {}),
-        config: [`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`, 'gc.auto=0', 'gc.worktreePruneExpire=never', 'gc.pruneExpire=never'],
+        // Git 2.54+ auto maintenance defaults to geometric repacking, which
+        // ignores gc.auto and deletes packs in a detached process.
+        config: [
+            `core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`, 'gc.auto=0', 'maintenance.auto=false',
+            'gc.worktreePruneExpire=never', 'gc.pruneExpire=never',
+        ],
         allowEnvironment: GIT_AUTHENTICATION_ENVIRONMENT,
         // simple-git treats every hooksPath override as potentially dangerous.
         // This one is a fixed, non-executable sink rather than caller input.

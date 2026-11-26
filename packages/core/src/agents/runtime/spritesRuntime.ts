@@ -12,6 +12,9 @@ import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
 import { applySpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWORK_ENFORCEMENT } from './sprites/spritesNetwork.js';
 import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
+import type { SpritePackageSource } from './sprites/spritesPackageBase.js';
+import { remoteRuntimePackageSource } from './agentRuntimeRemotePackages.js';
+import { detectSpritePackageBase } from './agentRuntimePackageBases.js';
 import { prepareSpriteRun, unsupportedMount, validateSpriteRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 import logger from '../../utils/logger.js';
@@ -31,7 +34,7 @@ function mcpForwardTarget(spec: AgentRunSpec, environment: NodeJS.ProcessEnv): S
 
 export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'sprites';
-    static readonly capabilities = { supportsExtensions: false, supportsBindMounts: false, supportsRestrictedNetwork: true,
+    static readonly capabilities = { supportsExtensions: false, supportsRuntimePackages: true, supportsBindMounts: false, supportsRestrictedNetwork: true,
         restrictedNetworkEnforcement: SPRITES_RESTRICTED_NETWORK_ENFORCEMENT, supportsMcpPrivateNetwork: false,
         supportsMcpReachableUrl: true, supportsMcpReverseForward: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly capabilities = SpritesRuntime.capabilities;
@@ -41,7 +44,12 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
     private startupRetry?: NodeJS.Timeout;
 
     constructor(private readonly client?: SpriteClient | ((token: string) => Promise<SpriteClient>), private readonly environment = process.env,
-        private readonly poolRedis?: SpritePoolRedis) {}
+        private readonly poolRedis?: SpritePoolRedis,
+        // Sprites have no image: the list Sprites accepted is installed while provisioning. It is
+        // re-checked against the Sprite base image's package index (Ubuntu, detected from each new
+        // Sprite) before a Sprite is provisioned with it, not when a warm Sprite's checkpoint has it.
+        // Each new Sprite also reports its distribution and apt sources (`detectBase`).
+        private readonly loadPackages: SpritePackageSource = Object.assign(remoteRuntimePackageSource('sprites'), { detectBase: detectSpritePackageBase })) {}
 
     close(): Promise<void> {
         clearTimeout(this.startupRetry);
@@ -76,7 +84,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     ? await SpriteInventory.open({ listAllSprites: sdk.listAllSprites.bind(sdk), getSprite: sdk.getSprite.bind(sdk),
                         deleteSprite: sdk.deleteSprite.bind(sdk) }, this.environment, this.poolRedis)
                     : undefined;
-                return new SpritePool(sdk, inventory);
+                return new SpritePool(sdk, inventory, this.loadPackages);
             };
             pool = load();
             this.pools.set(token, pool);
@@ -129,7 +137,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             const launch = { spec, options, token, inputPath };
             const validated = validateSpriteRun(launch, envDefaults);
             const ready = await startupStep(signal, () => pool);
-            const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs } = await startupStep(signal, async () => {
+            const { sprite, prepared, checkedOutAt, queueMs, provisioningMs, restoreMs, packageInstallMs } = await startupStep(signal, async () => {
                 const acquired = await ready.acquire(signal, () => {
                     diagnostics.push('Waiting for a Sprite');
                     announce('Waiting for a Sprite');
@@ -152,7 +160,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     await startupStep(AbortSignal.any([signal, AbortSignal.timeout(60_000)]), () => payload.upload(acquired.sprite));
                     signal.throwIfAborted();
                     slot = acquired;
-                    return { sprite: acquired.sprite, prepared: payload, checkedOutAt, queueMs: acquired.queueMs, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs };
+                    return { sprite: acquired.sprite, prepared: payload, checkedOutAt, queueMs: acquired.queueMs, provisioningMs: acquired.provisioningMs, restoreMs: acquired.restoreMs,
+                        packageInstallMs: acquired.packageInstallMs };
                 } catch (error) {
                     // An interrupted policy change or upload can still write to the Sprite.
                     if (prepared || (networkPolicy && !acquired.restricted)) await ready.discard(acquired.sprite);
@@ -188,7 +197,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
                 });
                 return { ...executed, computeUsage: { runtime: 'sprites', wallTimeMs: Date.now() - checkedOutAt + provisioningMs + restoreMs,
-                    queueMs, provisioningMs, restoreMs, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
+                    queueMs, provisioningMs, restoreMs, ...(packageInstallMs !== undefined && { packageInstallMs }), cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,
                     costUsd: null, costSource: null } };
             } finally {
                 // Torn down with the run: success, failure, cancellation, timeout or a lost reattach.

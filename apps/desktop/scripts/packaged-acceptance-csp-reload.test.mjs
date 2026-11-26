@@ -562,7 +562,13 @@ test('exact observer preserves native denied evidence across real Chromium navig
     response.end(`<meta http-equiv="Content-Security-Policy" content="${policy}"><title>CSP fixture</title>`);
   });
   const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const close = server => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  // Teardown hooks run in registration order without the test timeout, and the
+  // browser closes last. Drop Chromium's preconnected or in-flight sockets so a
+  // server close cannot wait on them until the job timeout cancels the step.
+  const close = server => new Promise((resolve, reject) => {
+    server.close(error => error ? reject(error) : resolve());
+    server.closeAllConnections();
+  });
   await listen(api);
   t.after(() => close(api));
   const fixtureOrigin = `http://127.0.0.1:${api.address().port}`;
@@ -570,7 +576,7 @@ test('exact observer preserves native denied evidence across real Chromium navig
   t.after(() => close(document));
   const documentOrigin = `http://127.0.0.1:${document.address().port}`;
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
-  t.after(() => browser.close());
+  t.after(() => browser.close(), { timeout: 15_000 });
   t.diagnostic(`Chromium ${browser.version()}`);
   const page = await browser.newPage();
   await page.goto(documentOrigin + '/denied');

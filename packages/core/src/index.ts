@@ -364,6 +364,13 @@ export type {
     RuntimePackageValidation
 } from './agents/runtime/agentRuntimePackages.js';
 export * from './agents/runtime/agentRuntimePackageVerification.js';
+export { agentRuntimePackagesDigest, agentRuntimeUsage, describeRemoteAgentRuntimePackageInstall, publishWorkerAgentRuntime, remoteAgentRuntimeConfigured,
+    remoteAgentRuntimePackageInstall, type AgentRuntimeUsage } from './agents/runtime/agentRuntimePackageProfile.js';
+export { acceptRemoteAgentRuntimePackages, describeAgentRuntimePackageRuntimes, loadAcceptedRemoteAgentRuntimePackages, remoteAgentRuntimePackageTargets,
+    warmRemoteAgentRuntimePackageIndexes, type AgentRuntimePackageRuntimeState, type RemoteRuntimePackageRecord,
+    type RemoteRuntimePackageRecords } from './agents/runtime/agentRuntimeRemotePackages.js';
+export { AGENT_IMAGE_PACKAGE_BASE, DEFAULT_SPRITE_PACKAGE_BASE, loadSpritePackageBase, parseSpritePackageBaseProbe,
+    type AgentRuntimePackageBase } from './agents/runtime/agentRuntimePackageBases.js';
 export type * from './agents/runtime/types.js';
 export { AgentRunSpecBuilder, agentRunEnvironment, agentRunMounts, agentRunMcpGrant, agentRunNetwork } from './agents/runtime/agentRunSpec.js';
 export { renderDockerRunArgs } from './agents/runtime/dockerRunArgs.js';
@@ -385,7 +392,7 @@ export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type 
 export {
     AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, closeAgentRuntimes, getAgentRuntime, registerAgentRuntime,
     registeredAgentRuntimes, resolveAgentRuntimeKind, runAgent, withAgentRunNetworkRequirement, type AgentRuntimeFactory, type ProviderAgentRuntime,
-    AgentRuntimeCapabilityError, restrictedNetworkRefusal, runtimeSupportsMcpReachableUrl, type AgentRuntimeCapability,
+    AgentRuntimeCapabilityError, restrictedNetworkRefusal, runtimePackagesRefusal, runtimeSupportsMcpReachableUrl, type AgentRuntimeCapability,
 } from './agents/runtime/registry.js';
 export { OPEN_AGENT_RUN_NETWORK_POLICY, agentRunEgressRules, agentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agents/runtime/agentRunNetworkPolicy.js';
 export { agentRunMcpReachableUrl, agentRunMcpTransportFor, planAgentRunMcpTransport, type AgentRunMcpTransportPlan } from './agents/runtime/agentRunMcpTransport.js';
@@ -408,6 +415,17 @@ export type {
     AgentRuntimePackageSearchResult,
     AgentRuntimePackageSource
 } from './agents/runtime/agentRuntimePackageCatalog.js';
+export {
+    AGENT_IMAGE_APT_SOURCES,
+    AGENT_RUNTIME_PACKAGE_INDEX_WARNING,
+    AgentRuntimePackageUnavailableError,
+    assertAgentRuntimePackagesInIndex,
+    createAgentImagePackageIndex,
+    findUnavailableAgentRuntimePackages,
+    setAgentImagePackageIndexLoader,
+    validateAgentRuntimePackagesWithIndex
+} from './agents/runtime/agentRuntimePackageIndex.js';
+export type { AgentImagePackageIndex, AgentRuntimePackageIndexValidation, AgentRuntimePackageTarget } from './agents/runtime/agentRuntimePackageIndex.js';
 export { generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 

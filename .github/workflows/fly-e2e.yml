@@ -3,6 +3,11 @@ name: Fly end-to-end smoke
 on:
   workflow_dispatch:
     inputs:
+      agent_runtime:
+        description: Agent runtime the control plane runs the fixture issue on
+        type: choice
+        options: [sprites, fly-machines]
+        default: sprites
       mcp:
         description: >-
           Also check ProPR MCP from Sprites: deploy with PROPR_SPRITES_MCP_TRANSPORT=forward
@@ -28,6 +33,7 @@ jobs:
     steps:
       - id: check
         env:
+          AGENT_RUNTIME: ${{ inputs.agent_runtime || 'sprites' }}
           FLY_E2E_TOKEN: ${{ secrets.FLY_E2E_TOKEN != '' }}
           FLY_E2E_SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN != '' }}
           FLY_E2E_APP_ENV: ${{ secrets.FLY_E2E_APP_ENV != '' }}
@@ -36,8 +42,9 @@ jobs:
           FLY_E2E_GH_OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET != '' }}
         run: |
           missing=()
-          for name in FLY_E2E_TOKEN FLY_E2E_SPRITES_TOKEN FLY_E2E_APP_ENV FLY_E2E_GITHUB_TOKEN \
-            FLY_E2E_GH_OAUTH_CLIENT_ID FLY_E2E_GH_OAUTH_CLIENT_SECRET; do
+          required=(FLY_E2E_TOKEN FLY_E2E_APP_ENV FLY_E2E_GITHUB_TOKEN FLY_E2E_GH_OAUTH_CLIENT_ID FLY_E2E_GH_OAUTH_CLIENT_SECRET)
+          [[ $AGENT_RUNTIME != sprites ]] || required+=(FLY_E2E_SPRITES_TOKEN)
+          for name in "${required[@]}"; do
             [[ ${!name} == true ]] || missing+=("$name")
           done
           if (( ${#missing[@]} )); then
@@ -60,6 +67,18 @@ jobs:
       REPO: ${{ vars.FLY_E2E_REPO }}
       REGION: iad
       IDLE_AFTER: 2m
+      # The nightly schedule has no inputs, so it always runs on Sprites.
+      AGENT_RUNTIME: ${{ inputs.agent_runtime || 'sprites' }}
+      # Fly Machines start agents in a separate app with their own image and token.
+      AGENT_APP: propr-e2e-agents-${{ github.run_id }}-${{ github.run_attempt }}
+      # A small instance runtime package absent from Dockerfile.agent's explicit apt
+      # set, so the fixture file can only contain its banner if the runtime installed it.
+      RUNTIME_PACKAGE: figlet
+      RUNTIME_PACKAGE_COMMAND: figlet -v | head -1
+      RUNTIME_PACKAGE_BANNER: '^FIGlet Copyright \(C\) [0-9]'
+      # Sprites run Fly's Ubuntu base, not Dockerfile.agent's Debian: an Ubuntu-only name (bookworm has
+      # libssl3 instead) must pass the Sprite base's package check rather than be refused by the Debian one.
+      SPRITE_DISTRO_PACKAGE: libssl3t64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -71,6 +90,11 @@ jobs:
       - name: Prepare the fixture and build this checkout
         run: |
           : "${ORG:?Set FLY_E2E_ORG}" "${REPO:?Set FLY_E2E_REPO}"
+          [[ $AGENT_RUNTIME == sprites || $AGENT_RUNTIME == fly-machines ]]
+          # ProPR MCP mode checks the Sprites SSH reverse forward, so it needs the Sprites runtime.
+          [[ $MCP != true || $AGENT_RUNTIME == sprites ]] || { echo "::error::MCP mode requires agent_runtime=sprites"; exit 1; }
+          # The package must be missing from the agent image, or the smoke proves nothing.
+          ! grep -Eq "(^|[^a-z0-9.+-])${RUNTIME_PACKAGE}([^a-z0-9.+-]|$)" Dockerfile.agent scripts/sprites-agent-setup.sh
           [[ "$REPO" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ && "${REPO,,}" != "${GITHUB_REPOSITORY,,}" ]]
           npm ci
           npm run test:prepare
@@ -90,11 +114,47 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: flyctl apps create "$APP" --org "$ORG"
 
-      - name: Run propr deploy fly with Sprites and idle shutdown
+      - name: Create the disposable agent app, image and token for Fly Machines
+        if: env.AGENT_RUNTIME == 'fly-machines'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          flyctl apps create "$AGENT_APP" --org "$ORG"
+          touch "$OUT/destroy-agent-app"
+          DOCKERHUB_NS=propr GIT_SHA="$GITHUB_SHA" ./scripts/build-images.sh --sha-only --only agent --platform linux/amd64
+          ref="registry.fly.io/$AGENT_APP:agent-$GITHUB_SHA"
+          docker tag "propr/agent:$GITHUB_SHA" "$ref"
+          flyctl auth docker
+          docker push "$ref"
+          image=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" |
+            grep -m1 -E "^registry\.fly\.io/$AGENT_APP@sha256:[0-9a-f]{64}$")
+          # Org tokens can't create tokens, so derive one locally from FLY_E2E_TOKEN, scoped to the agent
+          # app only: read (images, logs), write, create, delete and control (start/stop) Machines, for 2 h.
+          # Fly's Apps caveat uses the internal numeric ID. Zero would grant access to all apps.
+          agent_app_id=$(curl --fail --silent --show-error -H "Authorization: $FLY_API_TOKEN" \
+            "https://api.machines.dev/v1/apps/$AGENT_APP" | jq -er '.internal_numeric_id | numbers | select(. > 0)')
+          [[ $agent_app_id =~ ^[1-9][0-9]*$ ]]
+          agent_token=$(jq -n --arg id "$agent_app_id" '[
+            {type: "Apps", body: {apps: {($id): "rwcdC"}}},
+            {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
+          ]' | flyctl tokens attenuate)
+          [[ -n $agent_token ]]
+          echo "::add-mask::$agent_token"
+          {
+            echo "PROPR_FLY_APP=$AGENT_APP"
+            echo "PROPR_FLY_IMAGE=$image"
+            echo "PROPR_FLY_REGION=$REGION"
+            echo "PROPR_FLY_API_TOKEN=$agent_token"
+          } > "$OUT/agent-runtime.env"
+          echo "Fly Machines agent image: $image"
+
+      - name: Run propr deploy fly with the selected agent runtime and idle shutdown
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
           APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
-          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+          SPRITES_TOKEN: ${{ (inputs.agent_runtime || 'sprites') == 'sprites' && secrets.FLY_E2E_SPRITES_TOKEN || '' }}
           OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID }}
           OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET }}
           OWNER_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
@@ -111,9 +171,10 @@ jobs:
             echo "GH_OAUTH_CLIENT_SECRET=$OAUTH_CLIENT_SECRET"
             echo "GITHUB_REPOS_TO_MONITOR=$REPO"
             echo "WORKER_CONCURRENCY=1"
-            echo "PROPR_SPRITES_MAX=1"
+            [[ $AGENT_RUNTIME != sprites ]] || echo "PROPR_SPRITES_MAX=1"
             echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
           } >> "$ENV_FILE"
+          [[ $AGENT_RUNTIME != fly-machines ]] || cat "$OUT/agent-runtime.env" >> "$ENV_FILE"
           # propr deploy fly generates SYSTEM_TASK_SECRET; one from the fixture env would hide a deploy that does not.
           sed -i '/^SYSTEM_TASK_SECRET=/d' "$ENV_FILE"
           if [[ $MCP == true ]]; then
@@ -144,26 +205,59 @@ jobs:
           flyctl auth docker
           docker push "$IMAGE"
           propr deploy fly --app "$APP" --org "$ORG" --region "$REGION" --image "$IMAGE" \
-            --backend flyctl --agent-runtime sprites --idle-shutdown "$IDLE_AFTER" \
+            --backend flyctl --agent-runtime "$AGENT_RUNTIME" --idle-shutdown "$IDLE_AFTER" \
             --machine-stop-token "$stop_token" --env-file "$ENV_FILE" --no-relay --out "$OUT/propr-fly"
           status=$(curl --fail --retry 8 --retry-all-errors -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/health")
           [[ $status == 200 ]]
 
-      - name: Configure the fixture Claude agent before idle shutdown
+      - name: Configure the fixture Claude agent and runtime package before idle shutdown
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: |
-          setup=$(base64 -w0 <<'JS'
-          const { saveAgents, closeConnection, AGENT_DEFAULTS } = await import('@propr/core');
+          set -euo pipefail
+          [[ $RUNTIME_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ && $SPRITE_DISTRO_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ ]]
+          packages=$(jq -cn --arg pkg "$RUNTIME_PACKAGE" --arg distro "$SPRITE_DISTRO_PACKAGE" --arg runtime "$AGENT_RUNTIME" \
+            '[$pkg] + (if $runtime == "sprites" then [$distro] else [] end) | sort')
+          setup=$(sed -e "s/__RUNTIME_PACKAGES__/$packages/" -e "s/__AGENT_RUNTIME__/$AGENT_RUNTIME/" <<'JS' | base64 -w0
+          const {
+            saveAgents, closeConnection, AGENT_DEFAULTS, agentRuntimePackagesDigest,
+            requestAgentRuntimePackageBuild, buildAgentRuntimePackageProfile,
+          } = await import('@propr/core');
           const { getManagedAgentConfigPath } = await import('@propr/shared');
           const { dockerImage, defaultModels } = AGENT_DEFAULTS.claude;
           await saveAgents([{ id: 'claude', type: 'claude', alias: 'claude', enabled: true,
             configPath: getManagedAgentConfigPath('claude', 'claude'), dockerImage,
             supportedModels: defaultModels, defaultModel: 'claude-sonnet-5-5' }]);
+          // Settings → Agent runtime packages → Apply: the API records the list
+          // (requestAgentRuntimePackageBuild) and the worker's build job applies it.
+          // The runtime accepts the list once it passes its own package index check (Sprites: the Sprite base's).
+          const packages = __RUNTIME_PACKAGES__;
+          const job = await requestAgentRuntimePackageBuild(packages, [dockerImage]);
+          const state = await buildAgentRuntimePackageProfile(job);
           await closeConnection();
+          const accepted = state.remote?.['__AGENT_RUNTIME__'];
+          const summary = { status: state.status, packages: state.activePackages,
+            packagesDigest: agentRuntimePackagesDigest(state.activePackages), appliedBy: state.appliedBy, error: state.error,
+            accepted: accepted?.packages, base: accepted?.base, warning: accepted?.warning };
+          console.log('PROPR_RUNTIME_PACKAGES ' + JSON.stringify(summary));
+          if (state.status !== 'ready' || !state.appliedBy || state.activePackages.join() !== packages.join()
+            || accepted?.packages.join() !== packages.join()) process.exit(1);
           JS
           )
-          flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'"
+          flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'" |
+            tee "$OUT/runtime-packages.log"
+          applied=$(sed -n 's/^PROPR_RUNTIME_PACKAGES //p' "$OUT/runtime-packages.log" | tr -d '\r' | tail -n 1)
+          expected=$([[ $AGENT_RUNTIME == sprites ]] && echo 'when Sprites are provisioned' || echo 'at every Fly Machine start')
+          jq -e --argjson pkgs "$packages" --arg expected "$expected" \
+            '.status == "ready" and .packages == $pkgs and .accepted == $pkgs and (.appliedBy | contains($expected))' <<< "$applied" > /dev/null || {
+            echo "::error::Runtime packages $packages were not applied for $AGENT_RUNTIME: $applied"
+            exit 1
+          }
+          echo "RUNTIME_PACKAGE_COUNT=$(jq length <<< "$packages")" >> "$GITHUB_ENV"
+          jq -r '"Accepted for \(.base // "unknown base"): \(.accepted | join(" "))\(if .warning then " (" + .warning + ")" else "" end)"' <<< "$applied"
+          digest=$(jq -er '.packagesDigest | strings | select(test("^[0-9a-f]{16}$"))' <<< "$applied")
+          echo "RUNTIME_PACKAGES_DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "Configured runtime packages $packages (packagesDigest $digest) before the idle stop"
           # Install and verify the settings over SSH after the volume is mounted.
           awk '/^```bash title="Install headless Claude settings"$/{copy=1; next}
                copy && /^```$/{exit} copy' docs/docs/tutorials/setup-fly.md > "$OUT/claude-settings.sh"
@@ -217,7 +311,7 @@ jobs:
           bash "$OUT/installation-token.sh" > /dev/null
 
           issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" -F 'labels[]=llm-claude' \
-            -f body="Create $APP.txt containing exactly the line $APP. Open a PR resolving this issue." --jq .number)
+            -f body="Create $APP.txt with exactly two lines. The first line is exactly $APP. The second line is the output of running \`$RUNTIME_PACKAGE_COMMAND\` in your shell, copied verbatim; do not install anything or edit that output. Open a PR resolving this issue." --jq .number)
           echo "ISSUE=$issue" >> "$GITHUB_ENV"
           # GET /app does not expose the Active checkbox. Verify the actual delivery.
           for _ in {1..12}; do
@@ -249,6 +343,8 @@ jobs:
             return 1
           }
           wait_state stopped
+          # Anything the runtime installs after this point ran for the post-wake run.
+          echo "STOPPED_AT_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
           if [[ $MCP == true ]]; then
             # Keep the worker log from the wake on: `flyctl logs --no-tail` only returns the latest lines.
             nohup flyctl logs --app "$APP" --json > "$OUT/app-logs.jsonl" 2> "$OUT/app-logs.err" &
@@ -295,7 +391,7 @@ jobs:
           echo "Started automation run $run"
           echo "AUTOMATION_RUN=$run" >> "$GITHUB_ENV"
 
-      - name: Verify the linked PR and its Sprites execution
+      - name: Verify the linked PR, its runtime package and its agent execution
         timeout-minutes: 40
         env:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
@@ -325,15 +421,32 @@ jobs:
           sha=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
           token=$(bash "$OUT/installation-token.sh")
           echo "::add-mask::$token"
-          contents=$(GH_TOKEN="$token" gh api "repos/$REPO/contents/$APP.txt?ref=$sha" --jq .content | base64 -d)
-          [[ $contents == "$APP" ]]
+          GH_TOKEN="$token" gh api "repos/$REPO/contents/$APP.txt?ref=$sha" --jq .content | base64 -d > "$OUT/fixture.txt"
+          mapfile -t lines < <(tr -d '\r' < "$OUT/fixture.txt")
+          printf 'Fixture file line %s: %s\n' 1 "${lines[0]-}" 2 "${lines[1]-}"
+          [[ ${#lines[@]} == 2 && ${lines[0]} == "$APP" ]] || { echo "::error::$APP.txt must have exactly two lines, the first being $APP"; exit 1; }
+          if [[ -z ${lines[1]// } || ${lines[1]} == *"not found"* ]] || ! grep -Eq -- "$RUNTIME_PACKAGE_BANNER" <<< "${lines[1]}"; then
+            echo "::error::Line 2 of $APP.txt is not the $RUNTIME_PACKAGE version banner, so the runtime package was not installed for the run"
+            exit 1
+          fi
+          # Evidence: the runtime installed the configured list after the idle stop (Sprite provisioning or Fly Machine start).
+          expected_log=$([[ $AGENT_RUNTIME == sprites ]] && echo 'Installed agent runtime packages on Sprite' ||
+            echo 'Installed agent runtime packages at Fly Machine start')
+          install=$(flyctl logs --app "$APP" --no-tail --json |
+            jq -sc --argjson since "$STOPPED_AT_MS" --arg msg "$expected_log" '[.[] | .message | fromjson?
+              | select((.msg // "") == $msg and (.time // 0) >= $since)] | last // empty')
+          [[ -n $install ]] || { echo "::error::Missing '$expected_log' log after the idle stop"; exit 1; }
+          jq -r '"\(.msg): packagesDigest=\(.packagesDigest) packageCount=\(.packageCount) installMs=\(.installMs)"' <<< "$install"
+          jq -e --arg digest "$RUNTIME_PACKAGES_DIGEST" --argjson count "$RUNTIME_PACKAGE_COUNT" \
+            '.packagesDigest == $digest and .packageCount == $count and (.installMs | numbers) >= 0' \
+            <<< "$install" > /dev/null || { echo "::error::Runtime package install log does not match packagesDigest $RUNTIME_PACKAGES_DIGEST"; exit 1; }
           # Read the worker's measurement for this issue AND PR, after wake was observed.
           check=$(base64 -w0 <<JS
           const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
           const run = db.prepare(\`SELECT e.compute_runtime, e.compute_wall_time_ms, e.compute_cost_usd
             FROM llm_executions e JOIN tasks t USING (task_id)
             WHERE t.repository = ? COLLATE NOCASE AND t.issue_number = ? AND t.pr_number = ?
-              AND e.success = 1 AND e.compute_runtime = 'sprites' LIMIT 1\`).get('$REPO', $ISSUE, $pr);
+              AND e.success = 1 AND e.compute_runtime = ? LIMIT 1\`).get('$REPO', $ISSUE, $pr, '$AGENT_RUNTIME');
           if (!run) process.exit(1);
           console.log(JSON.stringify(run));
           JS
@@ -344,7 +457,7 @@ jobs:
             fi
             sleep 5
           done
-          echo "Missing successful Sprites execution for $REPO#$ISSUE, PR #$pr"
+          echo "Missing successful compute_runtime: $AGENT_RUNTIME execution for $REPO#$ISSUE, PR #$pr"
           exit 1
 
       - name: Verify the ProPR MCP automation over the SSH reverse forward
@@ -435,8 +548,14 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: flyctl apps destroy "$APP" --yes
+      - name: Destroy the Fly Machines agent app
+        # Keyed only on the marker written right after the app is created, so it runs whatever failed.
+        if: always()
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: if [[ -f $OUT/destroy-agent-app ]]; then flyctl apps destroy "$AGENT_APP" --yes; fi
       - name: Reap remaining Sprites owned by this deployment
-        if: always() && steps.app.outcome == 'success'
+        if: always() && steps.app.outcome == 'success' && env.AGENT_RUNTIME == 'sprites'
         env:
           SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
         run: |

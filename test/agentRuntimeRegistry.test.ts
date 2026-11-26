@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mock, test } from 'node:test';
+import { after, mock, test } from 'node:test';
 import { Writable } from 'node:stream';
 
 type Call = { command: string; args: string[]; options: Record<string, any> };
@@ -16,6 +16,9 @@ await mock.module('../packages/core/src/claude/docker/dockerExecutor.js', {
     },
 });
 
+// Runs on runtimes without runtime-package support read the configured package list (opens the database).
+const { closeConnection } = await import('../packages/core/src/db/connection.ts');
+after(closeConnection);
 const { getAgentRuntime, registerAgentRuntime, resolveAgentRuntimeKind, runAgent, assertAgentRuntimeSupports, assertNativeGoalRuntime, AGENT_RUNTIME_ENV } = await import('../packages/core/src/agents/runtime/registry.ts');
 const { DockerRuntime, AgentRunStoppedError, AGENT_RUN_OUTPUT_BUFFER_LIMIT_BYTES } = await import('../packages/core/src/agents/runtime/dockerRuntime.ts');
 const { OPEN_AGENT_RUN_NETWORK_POLICY } = await import('../packages/core/src/agents/runtime/agentRunNetworkPolicy.ts');
@@ -372,7 +375,7 @@ function recordingRuntime(kind: string, supportsRestrictedNetwork: boolean) {
     const started: any[] = [];
     registerAgentRuntime(kind, () => ({
         kind,
-        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork, supportsMcpPrivateNetwork: true, reattach: false },
+        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork, supportsMcpPrivateNetwork: true, reattach: false, supportsRuntimePackages: true },
         start: (runSpec: any) => {
             started.push(runSpec);
             return { wait: async () => ({ stdout: '', stderr: '', exitCode: 0, messageTimestamps: new Map() }) } as any;
@@ -536,7 +539,7 @@ test('a read-only run dispatched under PROPR_WORKSPACE_TRANSPORT=clone is refuse
     const started: any[] = [];
     registerAgentRuntime('clone-capable', () => ({
         kind: 'clone-capable',
-        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork: true, supportsMcpPrivateNetwork: true, reattach: false, workspaceTransports: ['bind', 'clone'] },
+        capabilities: { supportsBindMounts: true, supportsRestrictedNetwork: true, supportsMcpPrivateNetwork: true, reattach: false, supportsRuntimePackages: true, workspaceTransports: ['bind', 'clone'] },
         start: (runSpec: any) => { started.push(runSpec); throw new Error('must not start'); },
     }) as any);
     const readOnly = spec();

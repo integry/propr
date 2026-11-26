@@ -2,10 +2,24 @@ import assert from 'node:assert/strict';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { Request, Response } from 'express';
 import { createAgentRuntimeRoutes } from '../routes/agentRuntimeRoutes.js';
-import { closeConnection, type AgentRuntimePackageState } from '@propr/core';
+import {
+    closeConnection,
+    createAgentImagePackageIndex,
+    setAgentImagePackageIndexLoader,
+    validateAgentRuntimePackagesWithIndex,
+    type AgentImagePackageIndex,
+    type AgentRuntimePackageState
+} from '@propr/core';
 import type { InstanceAuthorization } from '../authorization.js';
 
 after(async () => closeConnection());
+
+// The agent image's Debian package index, as the Docker-free check would read it.
+const packageIndex = (): AgentImagePackageIndex => createAgentImagePackageIndex(
+    { 'postgresql-client': ['15+248'], figlet: ['2.2.5-3+b1'], postfix: ['3.7.11-0+deb12u1'] },
+    ['mail-transport-agent', 'default-mta']
+);
+afterEach(() => setAgentImagePackageIndexLoader());
 
 const originalAdminUsers = process.env.PROPR_ADMIN_USERS;
 const originalRuntimeRequestTimeoutMs = process.env.PROPR_AGENT_RUNTIME_REQUEST_TIMEOUT_MS;
@@ -354,5 +368,83 @@ describe('agent runtime package routes', () => {
 
         assert.equal(record.status, 403);
         assert.equal(called, false);
+    });
+    test('with only remote runtimes, validation and queueing use the package index and skip the Docker image checks', async () => {
+        let state = initialState();
+        let queued: unknown;
+        const dockerOnly = async () => { throw new Error('Cannot connect to the Docker daemon'); };
+        const routes = createAgentRuntimeRoutes({
+            runtimeBuildQueue: { add: async (_name: string, data: unknown) => { queued = data; } } as never,
+            services: {
+                loadState: async () => state,
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
+                remoteInstall: async () => 'Installed at every Fly Machine start; no Docker image is built',
+                requestBuild: async (packages, baseImages) => {
+                    state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-remote' };
+                    return { buildId: 'build-remote', packages: packages as string[], baseImages };
+                },
+                search: dockerOnly,
+                validateAvailability: dockerOnly,
+                validateWithIndex: validateAgentRuntimePackagesWithIndex,
+                warmCatalog: dockerOnly
+            }
+        });
+        setAgentImagePackageIndexLoader(async () => packageIndex());
+        const request = (body?: unknown, query: Record<string, string> = {}) =>
+            ({ body, query, user: { username: 'admin' }, authorization: adminAuthorization }) as unknown as Request;
+
+        const validated = responseRecorder();
+        await routes.validateRuntimePackages(request({ packages: ['postgresql-client'] }), validated.response);
+        assert.equal(validated.record.status, 200);
+        assert.deepEqual((validated.record.body as { packages: string[] }).packages, ['postgresql-client']);
+
+        const invalid = responseRecorder();
+        await routes.validateRuntimePackages(request({ packages: ['bad;name'] }), invalid.response);
+        assert.equal(invalid.record.status, 400, 'the same syntax validator still rejects bad specs');
+
+        const searched = responseRecorder();
+        await routes.searchRuntimePackages(request(undefined, { q: 'postgres' }), searched.response);
+        assert.equal(searched.record.status, 200);
+        assert.deepEqual(searched.record.body, { query: 'postgres', suggestions: [], sources: [] });
+
+        const put = responseRecorder();
+        await routes.putRuntimePackages(request({ packages: ['postgresql-client'] }), put.response);
+        assert.equal(put.record.status, 202);
+        assert.deepEqual(queued, { buildId: 'build-remote', packages: ['postgresql-client'], baseImages: ['propr/agent:bundle-test'] });
+    });
+
+    test('when Docker is unreachable but a remote runtime is configured somewhere, validation falls back to the package index', async () => {
+        let remote = true;
+        const unreachable = async () => {
+            throw new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?');
+        };
+        const routes = createAgentRuntimeRoutes({
+            services: {
+                loadState: async () => initialState(),
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
+                remoteInstall: async () => undefined, // this process alone would decide Docker
+                remoteConfigured: async () => remote,
+                search: unreachable,
+                validateAvailability: unreachable,
+                validateWithIndex: validateAgentRuntimePackagesWithIndex,
+                warmCatalog: () => {}
+            }
+        });
+        setAgentImagePackageIndexLoader(async () => packageIndex());
+        const request = (body?: unknown, query: Record<string, string> = {}) =>
+            ({ body, query, user: { username: 'admin' }, authorization: adminAuthorization }) as unknown as Request;
+        const validated = responseRecorder();
+        await routes.validateRuntimePackages(request({ packages: ['postgresql-client'] }), validated.response);
+        assert.equal(validated.record.status, 200);
+        assert.equal((validated.record.body as { valid: boolean }).valid, true);
+        const searched = responseRecorder();
+        await routes.searchRuntimePackages(request(undefined, { q: 'postgres' }), searched.response);
+        assert.deepEqual(searched.record.body, { query: 'postgres', suggestions: [], sources: [] });
+
+        remote = false; // Docker-only instance: an unreachable daemon is still an error
+        const failed = responseRecorder();
+        await routes.validateRuntimePackages(request({ packages: ['postgresql-client'] }), failed.response);
+        assert.equal(failed.record.status, 500);
+        assert.match((failed.record.body as { error: string }).error, /Cannot connect to the Docker daemon/);
     });
 });

@@ -19,7 +19,7 @@ export { AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, FLY_MACHINES_AGENT_RUNTIME, S
 export type ProviderAgentRuntime = AgentRuntime<AgentRunOptions, ExecutionResult>;
 export type AgentRuntimeFactory = () => ProviderAgentRuntime;
 
-type ExtensionRuntime = { kind: string; capabilities: Pick<AgentRuntimeCapabilities, 'supportsExtensions'> };
+type ExtensionRuntime = { kind: string; capabilities: Pick<AgentRuntimeCapabilities, 'supportsExtensions' | 'supportsRuntimePackages'> };
 const registrations = new Map<string, { factory: AgentRuntimeFactory; capabilities?: ExtensionRuntime['capabilities'] }>([
     [DEFAULT_AGENT_RUNTIME, { factory: () => new DockerRuntime(), capabilities: DOCKER_RUNTIME_CAPABILITIES }],
     [FLY_MACHINES_AGENT_RUNTIME, { factory: () => new FlyMachinesRuntime(), capabilities: FlyMachinesRuntime.capabilities }],
@@ -75,7 +75,7 @@ export function getAgentRuntime(
     return runtime;
 }
 
-export type AgentRuntimeCapability = 'extensions' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'mcp_reverse_forward' | 'agent_config';
+export type AgentRuntimeCapability = 'extensions' | 'runtime_packages' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'mcp_reverse_forward' | 'agent_config';
 
 /**
  * A run refused before launch because its runtime cannot provide what the
@@ -99,6 +99,34 @@ export function configuredExtensionRefusal(kind: string): string | undefined {
 export function extensionRuntimeRefusal(runtime: ExtensionRuntime): string | undefined {
     if (runtime.capabilities.supportsExtensions ?? (runtime.kind === DEFAULT_AGENT_RUNTIME)) return undefined;
     return `Agent runtime "${runtime.kind}" does not support extensions. Choose a runtime that supports extensions (docker).`;
+}
+
+/** Runtimes that install the configured runtime packages, for refusal messages. */
+function runtimePackageRuntimes(): string[] {
+    return [...registrations].filter(([kind, { capabilities }]) => capabilities?.supportsRuntimePackages ?? kind === DEFAULT_AGENT_RUNTIME).map(([kind]) => kind);
+}
+
+/**
+ * The refusal a run gets when instance runtime packages are configured and its
+ * runtime cannot install them, or undefined. Refused rather than started
+ * without the packages, which would fail mid-task instead.
+ */
+export function runtimePackagesRefusal(runtime: ExtensionRuntime, packages: readonly string[]): string | undefined {
+    if (packages.length === 0) return undefined;
+    if (runtime.capabilities.supportsRuntimePackages ?? (runtime.kind === DEFAULT_AGENT_RUNTIME)) return undefined;
+    const shown = packages.slice(0, 5).join(', ') + (packages.length > 5 ? `, and ${packages.length - 5} more` : '');
+    return `Agent runtime "${runtime.kind}" cannot install the configured runtime packages (${shown}). Choose a runtime that applies runtime packages (${runtimePackageRuntimes().join(', ')}), remove the packages in Settings, or install them per repository in .propr/setup.sh.`;
+}
+
+/** Refuse a run whose runtime cannot install the configured runtime packages; reads them only for such runtimes. */
+export async function assertRuntimePackagesSupported(
+    runtime: Pick<ProviderAgentRuntime, 'kind' | 'capabilities'>, spec: Pick<AgentRunSpec, 'name'>,
+    loadPackages?: () => Promise<readonly string[]>,
+): Promise<void> {
+    if (runtime.capabilities.supportsRuntimePackages ?? (runtime.kind === DEFAULT_AGENT_RUNTIME)) return;
+    const load = loadPackages ?? (await import('./agentRuntimePackageProfile.js')).loadConfiguredAgentRuntimePackages;
+    const refusal = runtimePackagesRefusal(runtime, await load());
+    if (refusal) throw new AgentRuntimeCapabilityError(`${refusal} (run ${spec.name})`, runtime.kind, 'runtime_packages');
 }
 
 /** Absent `supportsMcpReachableUrl` counts as supported. */
@@ -211,6 +239,7 @@ export async function runAgent(
     if (extensionRefusal && extensionLaunchForRun(runtime.kind, [], { ...options, agentRun: { spec } })) {
         throw new AgentRuntimeCapabilityError(extensionRefusal, runtime.kind, 'extensions');
     }
+    await assertRuntimePackagesSupported(runtime, spec);
     const resolved = await withAgentRunNetworkRequirement(spec, options);
     const mode = resolveWorkspaceTransportMode(resolved, runtime.capabilities);
     if (!runtimeWorkspaceTransports(runtime.capabilities).includes(mode)) {

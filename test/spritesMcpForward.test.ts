@@ -555,11 +555,15 @@ function forwardSpec(network = agentRunNetwork('bridge'), url = FORWARD_URL) {
     }).command('agy', '--version').build();
 }
 
+// No runtime packages: the run must not read them from the (unmigrated) test database.
+const noPackages = async () => [];
+
 function runtimeFixture(configure: (sprite: FakeSprite) => void = () => {}) {
     const client = new FakeSprites();
     const daemons: FakeSpriteSshd[] = [];
     client.setup = sprite => { daemons.push(new FakeSpriteSshd(sprite)); configure(sprite); };
-    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-secret', PROPR_INTERNAL_API_URL: `http://127.0.0.1:${apiPort}` });
+    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: 'org-secret', PROPR_INTERNAL_API_URL: `http://127.0.0.1:${apiPort}` },
+        undefined, noPackages);
     return { client, daemons, runtime };
 }
 
