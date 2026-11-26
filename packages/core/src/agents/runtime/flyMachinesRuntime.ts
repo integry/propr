@@ -12,6 +12,7 @@ import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.js';
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
+import { acquireFlyMachineSlot } from './fly/capacity.js';
 import { flyConfig } from './fly/config.js';
 import { OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
 import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
@@ -132,6 +133,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         let workspaceSafeToDestroy = false;
         let credentialsPending = !!prepared.credentialPath;
         let keepLocalBundle = false;
+        let releaseSlot = () => {};
         const machineLocation = () => `Fly app ${config.app}, Machine ${id}, ${RUN}/workspace`;
         const credentialRecovery = () => `Recover credentials from Fly app ${config.app}, Machine ${id}, ${prepared.credentialPath}`;
         let destroyed: Promise<void> | undefined;
@@ -173,6 +175,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             if (refusal) return refuseCostExecution(refusal, preserve);
             external.throwIfAborted();
             if (stopping) throw new Error('Fly run stopped before creation');
+            // Over PROPR_FLY_MACHINES_MAX the run queues here; the slot is held until the Machine is destroyed.
+            releaseSlot = await acquireFlyMachineSlot(config.app, config.maxMachines, AbortSignal.any([external, forced.signal]), spec.name)
+                .catch(error => { external.throwIfAborted(); throw stopping ? new Error('Fly run stopped before creation') : error; });
             // Read for every run, so a Settings change applies to the next Machine. An unreadable
             // or invalid list fails the run rather than starting it without its packages.
             const packages = await this.loadPackages();
@@ -377,7 +382,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             external.removeEventListener('abort', abort);
             logs.abort();
             output.end();
-            await destroy();
+            try { await destroy(); } finally { releaseSlot(); }
         }).catch(async error => {
             // Transport cleanup calls release even when wait rejected before complete.
             keepLocalBundle = workspace.hasBundle;
