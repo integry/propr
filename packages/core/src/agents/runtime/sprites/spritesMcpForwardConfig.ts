@@ -29,7 +29,8 @@ export const SPRITES_MCP_FORWARD_ENV = 'PROPR_SPRITES_MCP_FORWARD';
 /**
  * Which transport Sprites runs prefer: `auto` (default) uses an explicit or
  * public HTTPS MCP URL when one exists and the forward otherwise; `forward`
- * always uses the forward, keeping ProPR MCP off the public internet.
+ * always uses the forward, so agent runs never depend on a public MCP URL.
+ * It does not change whether the API serves MCP publicly.
  */
 export const SPRITES_MCP_TRANSPORT_ENV = 'PROPR_SPRITES_MCP_TRANSPORT';
 export type SpritesMcpTransportPreference = 'auto' | 'forward';

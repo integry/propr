@@ -73,7 +73,7 @@ Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an
 Automation runs (and every other run with a ProPR MCP grant) reach ProPR MCP from the Sprite in one of two ways. The worker picks one before it requests the run's grant. `PROPR_SPRITES_MCP_TRANSPORT` sets the preference:
 
 - `auto` (the default) follows the order below: a public or explicit URL when one exists, otherwise the forward.
-- `forward` always uses the SSH reverse forward, even when `PROPR_SPRITES_MCP_URL`, a public `PROPR_AGENT_MCP_URL` or `API_PUBLIC_URL` is set. ProPR MCP then never has to be reachable from the internet: the Sprite reaches it only through the worker's outbound connection. A run is refused rather than falling back to a URL when the forward is turned off (`PROPR_SPRITES_MCP_FORWARD=0`) or `PROPR_INTERNAL_API_URL` is unusable. Any other value refuses Sprites runs that need ProPR MCP, so a typo never silently picks a public URL.
+- `forward` always uses the SSH reverse forward, even when `PROPR_SPRITES_MCP_URL`, a public `PROPR_AGENT_MCP_URL` or `API_PUBLIC_URL` is set. ProPR MCP then never has to be reachable from the internet: the Sprite reaches it only through the worker's outbound connection. This does not disable or hide a public MCP endpoint: if the API is publicly routed with MCP enabled, OAuth clients can still reach it there. A run is refused rather than falling back to a URL when the forward is turned off (`PROPR_SPRITES_MCP_FORWARD=0`) or `PROPR_INTERNAL_API_URL` is unusable. Any other value refuses Sprites runs that need ProPR MCP, so a typo never silently picks a public URL.
 
 With `auto`:
 
