@@ -75,7 +75,7 @@ export function getAgentRuntime(
     return runtime;
 }
 
-export type AgentRuntimeCapability = 'extensions' | 'runtime_packages' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'agent_config';
+export type AgentRuntimeCapability = 'extensions' | 'runtime_packages' | 'bind_mounts' | 'restricted_network' | 'mcp_private_network' | 'mcp_reachable_url' | 'mcp_reverse_forward' | 'agent_config';
 
 /**
  * A run refused before launch because its runtime cannot provide what the
@@ -163,6 +163,9 @@ export function assertAgentRuntimeSupports(runtime: ProviderAgentRuntime, spec: 
     }
     if (grant && grant.transport === 'reachable-url' && !runtimeSupportsMcpReachableUrl(capabilities)) {
         throw new AgentRuntimeCapabilityError(`Agent runtime "${kind}" cannot reach the ProPR MCP endpoint at a reachable URL for ${spec.name}`, kind, 'mcp_reachable_url');
+    }
+    if (grant && grant.transport === 'ssh-reverse-forward' && !capabilities.supportsMcpReverseForward) {
+        throw new AgentRuntimeCapabilityError(`Agent runtime "${kind}" cannot carry ProPR MCP over an SSH reverse forward for ${spec.name}`, kind, 'mcp_reverse_forward');
     }
     const restricted = spec.network.restriction ?? (spec.network.policy?.mode === 'restricted' ? spec.network.policy : undefined);
     const refusal = restricted ? restrictedNetworkRefusal(runtime, restricted.source) : undefined;

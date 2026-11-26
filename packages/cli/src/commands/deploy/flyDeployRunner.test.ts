@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { createFlyctlRunner, FlyctlBackend, renderSecretsImport, type FlyctlRunner } from "./flyctlBackend.js";
 import { createFlyctlTarget, createMachinesApiTarget, runFlyDeploy, writeFlyFiles, type FlyDeployTarget } from "./flyDeployRunner.js";
 import { FlyMachinesApi } from "./flyMachinesApi.js";
+import { generateFlySecrets } from "./flyGeneratedSecrets.js";
 import { FLY_MACHINE_STOP_TOKEN_SECRET, renderFlyToml, type FlyDeployPlan } from "./flyMachineConfig.js";
 
 const plan: FlyDeployPlan = {
@@ -88,6 +89,51 @@ test("generated SESSION_SECRET is set once and kept on redeploy", async () => {
   const second = await runFlyDeploy({ plan, secrets: {}, generatedSecrets: { SESSION_SECRET: "other" } }, again.target);
   assert.deepEqual(again.set[0], ROUTED);
   assert.deepEqual(second.secretsKept, ["SESSION_SECRET"]);
+});
+
+test("generated SYSTEM_TASK_SECRET (and the MCP key) is set once, kept on redeploy and reported", async () => {
+  const generatedSecrets = generateFlySecrets({ mcp: true });
+  const first = fakeTarget([]);
+  const lines: string[] = [];
+  const result = await runFlyDeploy({ plan, secrets: { ...RELAY }, generatedSecrets }, first.target, (l) => lines.push(l));
+  assert.equal(first.set[0].SYSTEM_TASK_SECRET, generatedSecrets.SYSTEM_TASK_SECRET);
+  assert.equal(first.set[0].MCP_ENCRYPTION_KEY, generatedSecrets.MCP_ENCRYPTION_KEY);
+  assert.deepEqual(result.secretsSet, ["GITHUB_EVENT_INTAKE_MODE", "MCP_ENCRYPTION_KEY", "PROPR_GH_RELAY_TOKEN", "SESSION_SECRET", "SYSTEM_TASK_SECRET"]);
+  assert.deepEqual(result.secretsKept, []);
+  assert.ok(lines.some((l) => l.includes("SYSTEM_TASK_SECRET")), "the secret name is reported");
+  for (const value of Object.values(generatedSecrets)) assert.equal(lines.join("\n").includes(value), false, "secret values are never logged");
+
+  const again = fakeTarget(["SESSION_SECRET", "SYSTEM_TASK_SECRET", "MCP_ENCRYPTION_KEY", "PROPR_GH_RELAY_TOKEN"]);
+  const second = await runFlyDeploy({ plan, secrets: {}, generatedSecrets: generateFlySecrets({ mcp: true }) }, again.target);
+  assert.deepEqual(again.set[0], ROUTED, "a redeploy never rotates a generated secret");
+  assert.deepEqual(second.secretsKept, ["MCP_ENCRYPTION_KEY", "SESSION_SECRET", "SYSTEM_TASK_SECRET"]);
+
+  // Upgrading an app deployed before SYSTEM_TASK_SECRET was generated adds it and keeps the session secret.
+  const upgrade = fakeTarget(["SESSION_SECRET", "PROPR_GH_RELAY_TOKEN"]);
+  const third = await runFlyDeploy({ plan, secrets: {}, generatedSecrets: generateFlySecrets({}) }, upgrade.target);
+  assert.deepEqual(Object.keys(upgrade.set[0]).sort(), ["GITHUB_EVENT_INTAKE_MODE", "SYSTEM_TASK_SECRET"]);
+  assert.deepEqual(third.secretsKept, ["SESSION_SECRET"]);
+});
+
+test("a user-supplied SYSTEM_TASK_SECRET is never overwritten by a generated one", async () => {
+  const fake = fakeTarget([]);
+  const result = await runFlyDeploy({ plan, secrets: { SYSTEM_TASK_SECRET: "from-env", ...RELAY }, generatedSecrets: generateFlySecrets({}) }, fake.target);
+  assert.equal(fake.set[0].SYSTEM_TASK_SECRET, "from-env");
+  assert.ok(result.secretsKept.includes("SYSTEM_TASK_SECRET"));
+});
+
+test("generated secrets are 32 random bytes each, and the MCP key only when the deploy turns MCP on", () => {
+  const sizes: number[] = [];
+  const random = (size: number) => { sizes.push(size); return Buffer.alloc(size, sizes.length); };
+  const secrets = generateFlySecrets({ mcp: true }, random);
+  assert.deepEqual(sizes, [32, 32, 32]);
+  assert.equal(secrets.SESSION_SECRET, Buffer.alloc(32, 1).toString("hex"));
+  assert.equal(secrets.SYSTEM_TASK_SECRET, Buffer.alloc(32, 2).toString("hex"));
+  assert.equal(Buffer.from(secrets.MCP_ENCRYPTION_KEY, "base64").length, 32);
+  assert.deepEqual(Object.keys(generateFlySecrets({})).sort(), ["SESSION_SECRET", "SYSTEM_TASK_SECRET"]);
+  const real = generateFlySecrets({});
+  assert.notEqual(real.SESSION_SECRET, real.SYSTEM_TASK_SECRET);
+  assert.match(real.SYSTEM_TASK_SECRET, /^[0-9a-f]{64}$/);
 });
 
 test("an explicit secret wins over a generated one", async () => {

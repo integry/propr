@@ -113,7 +113,9 @@ async function defaultTransportPlan(runtime: string | null | undefined, environm
  * private (API-only Compose) network gets the internal URL and that network;
  * one that cannot falls back to a reachable URL (`PROPR_AGENT_MCP_URL`, or
  * `API_PUBLIC_URL` + `/api/mcp`) authenticated by the per-run grant token
- * alone. When neither is possible no grant is issued at all.
+ * alone, or, on Sprites without a public HTTPS URL, to a loopback URL that a
+ * per-run SSH reverse forward carries to the internal API. When none is
+ * possible no grant is issued at all.
  */
 export async function requestAgentRunMcpGrant(runId: string, phase: AgentRunPhase, options: McpGrantClientOptions = {}): Promise<IssuedAgentRunMcpGrant> {
     const environment = options.environment ?? process.env;
@@ -126,6 +128,8 @@ export async function requestAgentRunMcpGrant(runId: string, phase: AgentRunPhas
     }
     const scopes = Array.isArray(payload.scopes) ? payload.scopes.filter((scope): scope is string => typeof scope === 'string') : [];
     if (plan.transport === 'reachable-url') return { grantId, phase, url: plan.url, token, expiresAt, network: null, transport: 'reachable-url', scopes };
+    // The URL is the loopback end of the runtime's per-run SSH reverse forward.
+    if (plan.transport === 'ssh-reverse-forward') return { grantId, phase, url: plan.url, token, expiresAt, network: null, transport: 'ssh-reverse-forward', scopes };
     // An explicit worker-side URL wins: it describes the network the worker launches containers on.
     const mcpUrl = environment.PROPR_AGENT_MCP_URL || (typeof url === 'string' && url ? url : agentContainerMcpUrl(environment));
     // A custom endpoint does not authorize joining any Compose network.

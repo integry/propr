@@ -78,6 +78,46 @@ verify_node_sudo() {
     esac
 }
 
+# openssh-server for the per-run ProPR MCP reverse forward (scripts/sprites-mcp-forward.sh).
+# Package scripts must not start a system sshd (it would listen on every
+# address); the forward starts its own loopback-only sshd per run.
+install_forward_sshd() {
+    local policy=/usr/sbin/policy-rc.d had_policy=0
+    if [ -x /usr/sbin/sshd ]; then return 0; fi
+    command -v apt-get >/dev/null 2>&1 || { log "apt-get is unavailable; runs without a public ProPR MCP URL will be refused"; return 0; }
+    log "installing openssh-server for the ProPR MCP reverse forward"
+    if [ -e "$policy" ]; then had_policy=1; mv "$policy" "$policy.propr"; fi
+    printf '#!/bin/sh\nexit 101\n' > "$policy"
+    chmod 755 "$policy"
+    if ! DEBIAN_FRONTEND=noninteractive apt-get update -qq >&2 \
+        || ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends openssh-server >&2; then
+        log "openssh-server could not be installed; runs without a public ProPR MCP URL will be refused"
+    fi
+    rm -f "$policy"
+    if [ "$had_policy" = 1 ]; then mv "$policy.propr" "$policy"; fi
+}
+
+# Keep any packaged sshd from starting at boot and stop one that is running now.
+disable_system_sshd() {
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now ssh.service ssh.socket sshd.service >/dev/null 2>&1 || true
+        systemctl mask ssh.service ssh.socket sshd.service >/dev/null 2>&1 || true
+    fi
+    pkill -x sshd >/dev/null 2>&1 || true
+}
+
+# The forward's login user: no shell, no password (non-locked so key auth works without PAM).
+ensure_forward_user() {
+    local shell=/usr/sbin/nologin
+    [ -x "$shell" ] || shell=/bin/false
+    if ! id propr-mcp >/dev/null 2>&1; then
+        useradd --system --no-create-home --home-dir /nonexistent --shell "$shell" --user-group propr-mcp
+    fi
+    [ "$(id -u propr-mcp)" != "0" ] || die "the propr-mcp user must not be root"
+    usermod -p '*' propr-mcp
+    for group in sudo wheel admin; do gpasswd -d propr-mcp "$group" >/dev/null 2>&1 || true; done
+}
+
 # Sourcing the script (the unit tests do) only defines the functions above.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
@@ -148,4 +188,10 @@ for script in claude-entrypoint.sh codex-entrypoint.sh antigravity-entrypoint.sh
 done
 install -m 0755 "$source_dir/gh-wrapper.sh" /usr/local/bin/gh-wrapper
 install -m 0755 "$source_dir/sprites-launcher.py" /opt/propr/launcher.py
+
+# --- ProPR MCP reverse forward -------------------------------------------
+install_forward_sshd
+disable_system_sshd
+ensure_forward_user
+install -m 0755 "$source_dir/sprites-mcp-forward.sh" /opt/propr/mcp-forward.sh
 configure_agent_git node /home/node

@@ -247,8 +247,11 @@ test('restricted Sprites admission refuses incompatible MCP endpoints before iss
         requests++;
         return Response.json({ grantId: 'g', token: 'test', expiresAt: 5 });
     };
-    for (const setting of ['PROPR_SPRITES_MCP_URL', 'PROPR_AGENT_MCP_URL', 'API_PUBLIC_URL']) {
-        const environment = { PROPR_AGENT_RUNTIME: 'sprites', SYSTEM_TASK_SECRET: 'test', [setting]: url };
+    // An explicit Sprites URL is never replaced; with the forward off, no setting falls back to it.
+    const refusals = [['PROPR_SPRITES_MCP_URL', {}], ...['PROPR_SPRITES_MCP_URL', 'PROPR_AGENT_MCP_URL', 'API_PUBLIC_URL']
+        .map(setting => [setting, { PROPR_SPRITES_MCP_FORWARD: '0' }] as const)] as const;
+    for (const [setting, extra] of refusals) {
+        const environment = { PROPR_AGENT_RUNTIME: 'sprites', SYSTEM_TASK_SECRET: 'test', [setting]: url, ...extra };
         const report = await readAgentRuntimeCapabilityReport({ environment, loadPolicy: async () => ({
             mode: 'restricted', enforced: true, allow: [], ignoreRepositoryAllow: false,
         }) });
@@ -261,6 +264,18 @@ test('restricted Sprites admission refuses incompatible MCP endpoints before iss
         }
     }
     assert.equal(requests, 0);
+    // A generic URL that is not public HTTPS leaves the run on the SSH reverse forward instead.
+    for (const setting of ['PROPR_AGENT_MCP_URL', 'API_PUBLIC_URL']) {
+        const environment = { PROPR_AGENT_RUNTIME: 'sprites', SYSTEM_TASK_SECRET: 'test', [setting]: url };
+        const report = await readAgentRuntimeCapabilityReport({ environment, loadPolicy: async () => ({
+            mode: 'restricted', enforced: true, allow: [], ignoreRepositoryAllow: false,
+        }) });
+        assert.equal(report.mcp.transport, 'ssh-reverse-forward', setting);
+        const forwarded = await executeWithNetworkPolicy(workflowPolicy, () => requestAgentRunMcpGrant('run-1', 'report', { environment, fetchImpl }));
+        assert.deepEqual([forwarded.result.transport, forwarded.result.url], ['ssh-reverse-forward', 'http://127.0.0.1:39080/api/mcp']);
+    }
+    assert.equal(requests, 2);
+    requests = 0;
     const environment = { SYSTEM_TASK_SECRET: 'test', PROPR_SPRITES_MCP_URL: url };
     const open = await executeWithNetworkPolicy({ mode: 'open', source: 'workflow', allow: [] }, () =>
         requestAgentRunMcpGrant('run-1', 'report', { runtime: 'sprites', environment, fetchImpl }));

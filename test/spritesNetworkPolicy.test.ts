@@ -71,7 +71,17 @@ test('Sprites still refuses what it cannot enforce', () => {
     assert.throws(() => spriteNetworkPolicy(build(malformed)), /malformed/);
     const disagree = { ...agentRunNetwork('bridge'), restriction, policy: agentRunNetworkPolicy('claude', { ...restriction, allow: ['*'] }) };
     assert.throws(() => spriteNetworkPolicy(build(disagree)), /differs/);
-    for (const url of ['http://propr.example.net/api/mcp', 'https://api:4000/api/mcp', 'https://localhost/api/mcp', 'https://1.1.1.1/api/mcp', 'https://[2001:db8::1]/api/mcp',
+    // A loopback URL other than the forward listener reaches nothing inside a Sprite: refused in every mode.
+    for (const url of ['https://localhost/api/mcp', 'http://127.0.0.1:4000/api/mcp']) {
+        for (const mode of ['open', 'restricted'] as const) {
+            const plan = planAgentRunMcpTransport(new SpritesRuntime(new FakeSprites(), {}), { PROPR_SPRITES_MCP_URL: url }, mode);
+            assert.equal(plan.transport, 'unavailable', `${mode} ${url}`);
+            assert.match(plan.reason, /loopback URL .* without the SSH reverse forward/);
+        }
+        assert.throws(() => spriteNetworkPolicy(build(undefined, url)), /loopback URL/, url);
+        assert.throws(() => spriteNetworkPolicy(restricted(url)), /loopback URL/, url);
+    }
+    for (const url of ['http://propr.example.net/api/mcp', 'https://api:4000/api/mcp', 'https://1.1.1.1/api/mcp', 'https://[2001:db8::1]/api/mcp',
         ...['LOCAL.', 'lan', 'home.arpa', 'svc.cluster.local', 'internal'].map(zone => `https://service.${zone}/api/mcp`)]) {
         const plan = planAgentRunMcpTransport(new SpritesRuntime(new FakeSprites(), {}, undefined, noPackages), { PROPR_SPRITES_MCP_URL: url }, 'restricted');
         assert.equal(plan.transport, 'unavailable');
@@ -90,7 +100,9 @@ test('admission accepts restricted Sprites runs, and the Sprites MCP URL wins ov
     assert.equal(runtime.capabilities.restrictedNetworkEnforcement.method, 'sprites-dns-allowlist');
     const plan = planAgentRunMcpTransport(runtime, { PROPR_SPRITES_MCP_URL: ' https://gateway.example.net/api/mcp ', API_PUBLIC_URL: 'https://propr.example.net', PROPR_AGENT_MCP_URL: 'http://api:4000/api/mcp' }, 'restricted');
     assert.deepEqual([plan.transport, (plan as { url: string }).url], ['reachable-url', 'https://gateway.example.net/api/mcp']);
-    assert.equal(planAgentRunMcpTransport({ kind: 'docker', capabilities: runtime.capabilities }, { PROPR_SPRITES_MCP_URL: 'https://gateway.example.net' }).transport, 'unavailable');
+    // PROPR_SPRITES_MCP_URL is Sprites-only: another runtime kind ignores it (and gets the forward, or nothing without it).
+    assert.equal(planAgentRunMcpTransport({ kind: 'docker', capabilities: runtime.capabilities }, { PROPR_SPRITES_MCP_URL: 'https://gateway.example.net' }).transport, 'ssh-reverse-forward');
+    assert.equal(planAgentRunMcpTransport({ kind: 'docker', capabilities: runtime.capabilities }, { PROPR_SPRITES_MCP_URL: 'https://gateway.example.net', PROPR_SPRITES_MCP_FORWARD: '0' }).transport, 'unavailable');
 });
 
 test('the policy is applied before upload and launch, cleared after restore, and a Sprite that keeps it is discarded', async t => {

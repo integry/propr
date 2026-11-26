@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { getWorktreeChanges } from '../src/services/worktreeMonitorService.js';
+import logger from '../src/utils/logger.js';
 
 for (const tracking of [true, false]) {
   test(`committing preserves file patches and counts ${tracking ? 'against the tracking branch' : 'without an upstream'}`, async t => {
@@ -94,3 +95,43 @@ test('the final scan preserves all task commits after pushing to the task upstre
   assert.equal(final.length, 2);
   assert.match(final.find(file => file.path === 'existing.txt')!.diff, /-original\n\+live edit/);
 });
+
+for (const shape of ['single-commit', 'shallow'] as const) {
+  test(`a clean ${shape} clone without an upstream has no changes and logs once, not per poll`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), `propr-root-changes-${shape}-`));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' }).toString();
+    const commit = (cwd: string) => git(cwd, '-c', 'user.name=Acceptance Test', '-c', 'user.email=acceptance@example.invalid', 'commit', '-m', 'fixture');
+    let worktree = directory;
+    git(directory, 'init', '-b', 'main');
+    await writeFile(join(directory, 'README.md'), 'fixture\n');
+    git(directory, 'add', '.');
+    commit(directory);
+    if (shape === 'shallow') {
+      await writeFile(join(directory, 'README.md'), 'fixture\nsecond\n');
+      git(directory, 'add', '.');
+      commit(directory);
+      worktree = join(directory, 'clone');
+      git(directory, 'clone', '--depth=1', `file://${directory}`, worktree);
+      git(worktree, 'branch', '--unset-upstream');
+    }
+    git(worktree, 'switch', '-c', 'task');
+
+    const logged = { info: 0, error: 0 };
+    t.mock.method(logger, 'info', () => { logged.info += 1; });
+    t.mock.method(logger, 'error', () => { logged.error += 1; });
+    for (let poll = 0; poll < 3; poll += 1) assert.deepEqual(await getWorktreeChanges(worktree, undefined, `task-${shape}-1`), []);
+    assert.deepEqual(logged, { info: 1, error: 0 });
+    // A later task reusing the same worktree path reports the condition again.
+    for (let poll = 0; poll < 2; poll += 1) assert.deepEqual(await getWorktreeChanges(worktree, undefined, `task-${shape}-2`), []);
+    assert.deepEqual(logged, { info: 2, error: 0 });
+
+    // Once the task commits, the commit's own changes appear as before.
+    if (shape === 'single-commit') {
+      await writeFile(join(worktree, 'added.txt'), 'one\n');
+      git(worktree, 'add', '.');
+      commit(worktree);
+      assert.deepEqual((await getWorktreeChanges(worktree)).map(file => [file.path, file.status]), [['added.txt', 'added']]);
+    }
+  });
+}

@@ -8,6 +8,12 @@ on:
         type: choice
         options: [sprites, fly-machines]
         default: sprites
+      mcp:
+        description: >-
+          Also check ProPR MCP from Sprites: deploy with PROPR_SPRITES_MCP_TRANSPORT=forward
+          and run one automation that calls a ProPR MCP tool over the SSH reverse forward.
+        type: boolean
+        default: false
   schedule:
     - cron: '17 4 * * *'
 
@@ -52,9 +58,11 @@ jobs:
     needs: fixture
     if: needs.fixture.outputs.enabled == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: ${{ (inputs.mcp || vars.FLY_E2E_NIGHTLY_MCP == 'true') && 130 || 100 }}
     env:
       APP: propr-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+      # ProPR MCP mode: on when dispatched with mcp, and nightly only when FLY_E2E_NIGHTLY_MCP=true.
+      MCP: ${{ (github.event_name == 'workflow_dispatch' && inputs.mcp) || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_MCP == 'true') }}
       ORG: ${{ vars.FLY_E2E_ORG }}
       REPO: ${{ vars.FLY_E2E_REPO }}
       REGION: iad
@@ -80,6 +88,8 @@ jobs:
         run: |
           : "${ORG:?Set FLY_E2E_ORG}" "${REPO:?Set FLY_E2E_REPO}"
           [[ $AGENT_RUNTIME == sprites || $AGENT_RUNTIME == fly-machines ]]
+          # ProPR MCP mode checks the Sprites SSH reverse forward, so it needs the Sprites runtime.
+          [[ $MCP != true || $AGENT_RUNTIME == sprites ]] || { echo "::error::MCP mode requires agent_runtime=sprites"; exit 1; }
           # The package must be missing from the agent image, or the smoke proves nothing.
           ! grep -Eq "(^|[^a-z0-9.+-])${RUNTIME_PACKAGE}([^a-z0-9.+-]|$)" Dockerfile.agent scripts/sprites-agent-setup.sh
           [[ "$REPO" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ && "${REPO,,}" != "${GITHUB_REPOSITORY,,}" ]]
@@ -144,6 +154,7 @@ jobs:
           SPRITES_TOKEN: ${{ (inputs.agent_runtime || 'sprites') == 'sprites' && secrets.FLY_E2E_SPRITES_TOKEN || '' }}
           OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID }}
           OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET }}
+          OWNER_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
           umask 077
           echo "::add-mask::$OAUTH_CLIENT_SECRET"
@@ -161,6 +172,24 @@ jobs:
             echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
           } >> "$ENV_FILE"
           [[ $AGENT_RUNTIME != fly-machines ]] || cat "$OUT/agent-runtime.env" >> "$ENV_FILE"
+          # propr deploy fly generates SYSTEM_TASK_SECRET; one from the fixture env would hide a deploy that does not.
+          sed -i '/^SYSTEM_TASK_SECRET=/d' "$ENV_FILE"
+          if [[ $MCP == true ]]; then
+            # The automation's owner is the fixture token's user; ProPR MCP grants need an admitted user.
+            owner=$(GH_TOKEN="$OWNER_TOKEN" gh api user --jq .login)
+            sed -n 's/^PROPR_ADMIN_USERS=//p' "$ENV_FILE" | tr ',' '\n' | tr -d ' ' | grep -qixF "$owner" ||
+              { echo "::error::MCP mode needs the FLY_E2E_GITHUB_TOKEN user ($owner) in PROPR_ADMIN_USERS"; exit 1; }
+            # MCP itself (MCP_ENABLED, origin, instance id, key, internal API URL) is the deploy's default,
+            # so drop any fixture MCP settings. The forward relays to the in-Machine API, so the Sprites
+            # never use the app's public origin.
+            mcp_keys='MCP_ENABLED|MCP_PUBLIC_ORIGIN|MCP_INSTANCE_ID|MCP_ENCRYPTION_KEY|PROPR_SPRITES_MCP_TRANSPORT|PROPR_SPRITES_MCP_FORWARD|PROPR_SPRITES_MCP_URL|PROPR_INTERNAL_API_URL|PROPR_E2E_MCP_OWNER_TOKEN'
+            sed -i -E "/^($mcp_keys)=/d" "$ENV_FILE"
+            {
+              echo "PROPR_SPRITES_MCP_TRANSPORT=forward"
+              # Read once over SSH to record the owner's GitHub grant, as a browser sign-in would.
+              echo "PROPR_E2E_MCP_OWNER_TOKEN=$OWNER_TOKEN"
+            } >> "$ENV_FILE"
+          fi
           # Fly's Apps caveat uses the internal numeric ID. Zero would grant access to all apps.
           app_id=$(curl --fail --silent --show-error -H "Authorization: $FLY_API_TOKEN" \
             "https://api.machines.dev/v1/apps/$APP" | jq -er '.internal_numeric_id | numbers | select(. > 0)')
@@ -304,8 +333,51 @@ jobs:
           wait_state stopped
           # Anything the runtime installs after this point ran for the post-wake run.
           echo "STOPPED_AT_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
+          if [[ $MCP == true ]]; then
+            # Keep the worker log from the wake on: `flyctl logs --no-tail` only returns the latest lines.
+            nohup flyctl logs --app "$APP" --json > "$OUT/app-logs.jsonl" 2> "$OUT/app-logs.err" &
+          fi
           gh issue edit "$ISSUE" --repo "$REPO" --add-label AI
           wait_state started
+
+      - name: Start an automation run that uses ProPR MCP
+        if: env.MCP == 'true'
+        timeout-minutes: 10
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          status=$(curl --fail --retry 12 --retry-all-errors -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/health")
+          [[ $status == 200 ]]
+          # Record the owner's GitHub grant (a browser sign-in does this); agent-run MCP grants require it.
+          seed=$(base64 -w0 <<'JS'
+          const { githubUserGrantService } = await import('/usr/src/app/dist/packages/api/githubUserGrantService.js');
+          const { closeConnection } = await import('@propr/core');
+          const token = process.env.PROPR_E2E_MCP_OWNER_TOKEN;
+          const response = await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'propr-fly-e2e' } });
+          if (!response.ok) throw new Error(`GitHub /user returned ${response.status}`);
+          const { id, login } = await response.json();
+          const captured = await githubUserGrantService.capture({ id: String(id), login, username: login, displayName: login,
+            email: null, avatarUrl: null, accessToken: token, oauthSource: 'github' });
+          if (!captured) throw new Error('The GitHub user grant was not recorded');
+          console.log(`Recorded the GitHub grant for ${login}`);
+          // No repository seed: the daemon seeds the stored list from GITHUB_REPOS_TO_MONITOR at startup.
+          await closeConnection();
+          process.exit(0);
+          JS
+          )
+          flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $seed | base64 -d | node --input-type=module'"
+          source .github/fly-e2e/propr-api.sh
+          # The same payload test/flyE2eMcpAutomation.test.ts pushes through the real route handlers.
+          definition=$(jq --arg repo "$REPO" '.repositories = [$repo]' .github/fly-e2e/mcp-automation-definition.json |
+            propr_api POST /automation-definitions --data-binary @- | jq -er '.definition.id | strings')
+          echo "Created automation definition $definition"
+          echo "MCP_TRIGGERED_AT=$(( $(date +%s) * 1000 ))" >> "$GITHUB_ENV"
+          run=$(propr_api POST "/automation-definitions/$definition/runs" -H "Idempotency-Key: $APP-mcp" --data '{"source":"fly-e2e"}' |
+            jq -er '.run.id | strings')
+          echo "Started automation run $run"
+          echo "AUTOMATION_RUN=$run" >> "$GITHUB_ENV"
 
       - name: Verify the linked PR, its runtime package and its agent execution
         timeout-minutes: 40
@@ -376,6 +448,71 @@ jobs:
           echo "Missing successful compute_runtime: $AGENT_RUNTIME execution for $REPO#$ISSUE, PR #$pr"
           exit 1
 
+      - name: Verify the ProPR MCP automation over the SSH reverse forward
+        if: env.MCP == 'true'
+        timeout-minutes: 30
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${AUTOMATION_RUN:?The automation run was not started}"
+          source .github/fly-e2e/propr-api.sh
+          # On any failure, read the run, its task timeline and logs, and the worker lines that name
+          # them while the app is still up: the failure dump only has flyctl's last few minutes.
+          trap 'status=$?; (( status == 0 )) || bash .github/fly-e2e/mcp-run-diagnostics.sh "$AUTOMATION_RUN" "$OUT/app-logs.jsonl"; exit $status' EXIT
+          # 25 minutes, which leaves the step time for the diagnostics.
+          for _ in {1..100}; do
+            run=$(propr_api GET "/automation-runs/$AUTOMATION_RUN" | jq -ec '.run | objects')
+            state=$(jq -r .state <<< "$run")
+            case $state in completed|failed|skipped|rejected|cancelled) break ;; esac
+            sleep 15
+          done
+          echo "Automation run $AUTOMATION_RUN: $state"
+          [[ $state == completed ]] || {
+            echo "::error::Automation run ended $state: $(jq -r '.failureReason // .skipReason // .error // "no reason recorded"' <<< "$run" | propr_redact)"
+            exit 1
+          }
+          task=$(jq -er '.reportTaskId | strings' <<< "$run")
+
+          # 1. The report carries the tool's deterministic result: this fixture's only repository.
+          line=$(jq -r '.report // ""' <<< "$run" | grep -m1 '^PROPR_MCP_' || true)
+          echo "Report: $line"
+          [[ ${line,,} == "propr_mcp_repositories: ${REPO,,}" ]] ||
+            { echo "::error::The automation report does not show list_repositories returning $REPO"; exit 1; }
+
+          # 2. The API recorded that tool call: the report cannot have been guessed.
+          check=$(base64 -w0 <<JS
+          const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
+          const row = db.prepare(\`SELECT COUNT(*) AS calls FROM mcp_access_log
+            WHERE kind = 'tool' AND name = 'list_repositories' AND outcome = 'success' AND occurred_at >= ?\`).get($MCP_TRIGGERED_AT);
+          console.log(JSON.stringify(row));
+          if (!row.calls) process.exit(1);
+          JS
+          )
+          flyctl ssh console --app "$APP" --container app -C "node -e \"eval(Buffer.from('$check','base64').toString())\"" ||
+            { echo "::error::No successful list_repositories call in the MCP access log"; exit 1; }
+
+          # 3. The run's task log line, which the worker also logs with the task id.
+          transport() {
+            jq -c --arg task "$1" '.message | fromjson? | objects
+              | select(.taskId == $task and .mcpTransport == "ssh-reverse-forward"
+                and (.msg | strings | startswith("ProPR MCP transport: ssh-reverse-forward")))' "${@:2}"
+          }
+          found=$(transport "$task" "$OUT/app-logs.jsonl" 2>/dev/null | head -n1 || true)
+          if [[ -z $found ]]; then
+            timeout 60s flyctl logs --app "$APP" --no-tail --json > "$OUT/app-logs-recent.jsonl" || true
+            found=$(transport "$task" "$OUT/app-logs-recent.jsonl" 2>/dev/null | head -n1 || true)
+          fi
+          [[ -n $found ]] || { echo "::error::No 'ProPR MCP transport: ssh-reverse-forward' line for task $task"; exit 1; }
+          echo "Task $task: $(jq -r .msg <<< "$found")"
+          {
+            echo "### ProPR MCP over the SSH reverse forward"
+            echo "- Automation run \`$AUTOMATION_RUN\` completed; report: \`$line\`"
+            echo "- Task \`$task\` log: \`$(jq -r .msg <<< "$found")\`"
+            echo "- Issue-labeled runs get no ProPR MCP grant, so the issue run has no MCP transport line."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Reset the fixture App webhook to its placeholder URL
         if: always() && steps.app.outcome == 'success'
         run: |
@@ -391,11 +528,8 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: |
-          timeout 60s flyctl logs --app "$APP" --no-tail 2>&1 |
-            perl -pe '
-              s{((?:token|secret|key|password|authorization)\w*"?\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|(?:Bearer\s+|Basic\s+)?(?!ENOENT:)[^\s,"]+)}{$1<masked>}gi;
-              s{[A-Za-z0-9+/_=-]{32,}}{<long>}g;
-            ' | tail -n 200 || true
+          source .github/fly-e2e/propr-api.sh
+          timeout 60s flyctl logs --app "$APP" --no-tail 2>&1 | propr_redact | tail -n 200 || true
 
       - name: Destroy test app, Machines and volume
         if: always() && steps.app.outcome == 'success'
@@ -430,23 +564,37 @@ jobs:
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          token=$(bash "$OUT/installation-token.sh")
+          echo "::add-mask::$token"
+          # $1 is the URI-encoded branch name; a branch already gone is fine.
+          delete_branch() {
+            status=$(curl --silent --show-error -o "$OUT/delete-ref.json" -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer $token" "https://api.github.com/repos/$REPO/git/refs/heads/$1")
+            [[ $status == 204 ]] && return 0
+            if [[ $status == 404 || $status == 422 ]] && jq -e --arg status "$status" '
+              .message | test("^Reference does not exist[.]?$"; "i") or ($status == "404" and . == "Not Found")
+            ' "$OUT/delete-ref.json" >/dev/null; then
+              return 0
+            fi
+            echo "::error::Deleting branch $1 returned HTTP $status"
+            return 1
+          }
+          encode='split("/") | map(@uri) | join("/")'
           prs=$(gh pr list --repo "$REPO" --json number,headRefName,closingIssuesReferences,isCrossRepository |
-            jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | [.number, (.headRefName | split("/") | map(@uri) | join("/"))] | @tsv')
+            jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | [.number, (.headRefName | '"$encode"')] | @tsv')
           if [[ -n $prs ]]; then
-            token=$(bash "$OUT/installation-token.sh")
-            echo "::add-mask::$token"
             while IFS=$'\t' read -r pr ref; do
               gh pr close "$pr" --repo "$REPO"
-              status=$(curl --silent --show-error -o "$OUT/delete-ref.json" -w '%{http_code}' -X DELETE \
-                -H "Authorization: Bearer $token" "https://api.github.com/repos/$REPO/git/refs/heads/$ref")
-              [[ $status == 204 ]] && continue
-              if [[ $status == 404 || $status == 422 ]] && jq -e --arg status "$status" '
-                .message | test("^Reference does not exist[.]?$"; "i") or ($status == "404" and . == "Not Found")
-              ' "$OUT/delete-ref.json" >/dev/null; then
-                continue
-              fi
-              echo "::error::Deleting the head branch for PR #$pr returned HTTP $status"
-              exit 1
+              delete_branch "$ref"
             done <<< "$prs"
+          fi
+          # A run that failed before opening a PR still leaves its "<issue>/..." branch behind.
+          branches=$(gh api --paginate "repos/$REPO/git/matching-refs/heads/$ISSUE/" |
+            jq -r '.[].ref | ltrimstr("refs/heads/") | '"$encode")
+          if [[ -n $branches ]]; then
+            while read -r ref; do
+              echo "Deleting leftover fixture branch $ref"
+              delete_branch "$ref"
+            done <<< "$branches"
           fi
           gh issue close "$ISSUE" --repo "$REPO"

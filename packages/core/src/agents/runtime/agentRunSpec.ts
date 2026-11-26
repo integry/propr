@@ -1,5 +1,6 @@
 import { PROPR_MCP_SERVER_NAME } from '../agentToolPolicy.js';
 import type { AgentToolPolicy, AgentType } from '../types.js';
+import { isSpritesMcpForwardUrl } from './sprites/spritesMcpForwardConfig.js';
 import type {
     AgentRunCredentialStore, AgentRunMcpGrant, AgentRunMount, AgentRunMountPurpose, AgentRunNetwork, AgentRunSecurity, AgentRunSpec, AgentRunWorkspace,
 } from './types.js';
@@ -27,8 +28,11 @@ export function agentRunNetwork(name: string): AgentRunNetwork {
 
 /**
  * The MCP grant a tool policy gives a run: server names plus how they are
- * reached, over the private network the policy names, or else at a URL the
- * runtime's default network reaches (authenticated by the per-run token).
+ * reached, over the private network the policy names, over the runtime's SSH
+ * reverse forward when the ProPR MCP URL is the forward's loopback listener,
+ * or else at a URL the runtime's default network reaches (authenticated by the
+ * per-run token). The transport is derived from the URL itself, so a policy
+ * rebuilt anywhere cannot silently lose the forward.
  */
 export function agentRunMcpGrant(policy: Pick<AgentToolPolicy, 'mcpServers' | 'dockerNetwork'> | undefined): AgentRunMcpGrant | undefined {
     if (!policy?.mcpServers?.length) return undefined;
@@ -37,7 +41,7 @@ export function agentRunMcpGrant(policy: Pick<AgentToolPolicy, 'mcpServers' | 'd
     return {
         servers: policy.mcpServers.map(server => server.name),
         ...(network ? { network } : {}),
-        transport: network ? 'private-network' : 'reachable-url',
+        transport: network ? 'private-network' : isSpritesMcpForwardUrl(url) ? 'ssh-reverse-forward' : 'reachable-url',
         ...(url ? { url } : {}),
     };
 }

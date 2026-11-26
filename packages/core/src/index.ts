@@ -436,6 +436,7 @@ export type {
 export {
     getReposFromEnv,
     getRepos,
+    seedMonitoredReposFromEnvironment,
     isMonitoredRepository, monitoredRepositoryFilter, isAutoCiFollowupEnabledForRepository, isCancelCiDuringFollowupEnabledForRepository,
     getCancelCiDuringFollowupWorkflowsForRepository,
     getNonBlockingChecksForRepository,

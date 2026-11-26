@@ -211,9 +211,12 @@ export interface AgentRunSecurity {
  *   network) where the MCP URL resolves;
  * - `reachable-url`: the URL is reachable from the runtime's default network
  *   (a public or explicitly configured endpoint) and the run authenticates
- *   with its per-run grant token only.
+ *   with its per-run grant token only;
+ * - `ssh-reverse-forward`: the URL is a loopback listener inside the run that a
+ *   per-run SSH reverse forward from the worker carries to the internal API
+ *   (Sprites without a public MCP URL); the grant token is still required.
  */
-export type AgentRunMcpTransport = 'private-network' | 'reachable-url';
+export type AgentRunMcpTransport = 'private-network' | 'reachable-url' | 'ssh-reverse-forward';
 
 export interface AgentRunMcpGrant {
     servers: string[];
@@ -221,7 +224,7 @@ export interface AgentRunMcpGrant {
     network?: string;
     transport: AgentRunMcpTransport;
     /**
-     * The ProPR MCP URL a `reachable-url` grant names, so a runtime that
+     * The ProPR MCP URL a `reachable-url` or `ssh-reverse-forward` grant names, so a runtime that
      * confines egress (Sprites) can allow exactly that endpoint.
      */
     url?: string;
@@ -272,6 +275,11 @@ export interface AgentRuntimeCapabilities {
      * Absent counts as supported (any runtime with outbound HTTP has it).
      */
     supportsMcpReachableUrl?: boolean;
+    /**
+     * The runtime can carry ProPR MCP into the run over a per-run SSH reverse
+     * forward from the worker (`ssh-reverse-forward`), so no public URL is needed.
+     */
+    supportsMcpReverseForward?: boolean;
     /** A worker can reattach to a run it did not start (after restart). */
     reattach: boolean;
     /** Workspace transports the runtime can run; `['bind']` when bind mounts are supported and this is omitted. */
