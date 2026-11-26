@@ -4,13 +4,10 @@ import { formatComputeDuration } from '../computeUsage.js';
 import type { MachinesApi } from './api.js';
 import { RUN } from './wrapper.js';
 
-/** `PATH` for root processes on a Fly Machine: the agent launch, its start-time install and the image build Machine. */
+/** `PATH` for root processes on a Fly Machine: the agent launch and its start-time install. */
 export const FLY_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
-/**
- * The install the wrapper runs as root (`packages.json` at Machine start, `build.json` on an image build Machine).
- * One builder for both, so the derived image and the start-time fallback install the same way.
- */
+/** The install the wrapper runs as root at Machine start (`packages.json`), before the agent. */
 export function flyPackageInstallSpec(packages: readonly string[]) {
     return { argv: agentRuntimePackageInstallCommand(packages), path: FLY_PATH, timeout: AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS };
 }

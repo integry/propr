@@ -11,8 +11,6 @@ import {
 import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachinesRuntime.ts';
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import type { MachineLaunch, MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
-import { FlyPackageImages } from '../packages/core/src/agents/runtime/fly/derivedImage.ts';
-import type { RegistryApi } from '../packages/core/src/agents/runtime/fly/registry.ts';
 import { SpritePool } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { FakeSprites } from './helpers/fakeSprites.ts';
@@ -160,28 +158,38 @@ test('the runtime package source checks a list against the index before an insta
     assert.equal(loads, 0, 'no packages, no index read');
 });
 
-test('a Fly run whose list the index rejects never starts a build or agent Machine', async () => {
-    setAgentImagePackageIndexLoader(async () => index());
+function flyRun(packages: readonly string[]) {
     const launches: MachineLaunch[] = [];
-    let registryCalls = 0;
     const api = {
-        create: async (launch: MachineLaunch) => { launches.push(launch); return 'm0'; },
-        exec: async () => ({ stdout: '', exit_code: 1 }), logs: async () => {}, signal: async () => {},
-        destroy: async () => {}, gone: async () => true,
+        create: async (launch: MachineLaunch) => { launches.push(launch); throw new Error('stop after create'); },
+        exec: async () => ({ stdout: '', exit_code: 1 }), logs: async () => {}, signal: async () => {}, destroy: async () => {},
     } as unknown as MachinesApi;
-    const registry = new Proxy({}, { get: () => async () => { registryCalls++; throw new Error('unexpected registry call'); } }) as RegistryApi;
     const fly = new FlyMachinesRuntime(api, { PROPR_FLY_APP: 'index', PROPR_FLY_API_TOKEN: 'FlyV1 synthetic', PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' },
-        indexCheckedAgentRuntimePackages(async () => ['figlett']), new FlyPackageImages(() => registry));
+        indexCheckedAgentRuntimePackages(async () => packages));
     const spec = new AgentRunSpecBuilder({
         agentType: 'claude', image: 'propr/agent', name: 'task', stdin: true, user: '0:0', network: agentRunNetwork('bridge'),
         workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',
             clone: { remote: 'unused', baseRef: 'base', baseCommit: '0123', branch: 'test', resultDir: RESULT, script: WORKSPACE_TRANSPORT_SCRIPT } },
     }).command('claude', '--version').build();
-    const run = fly.start(spec);
+    return { run: fly.start(spec), launches };
+}
+
+test('a Fly run whose list the index rejects never creates a Machine', async () => {
+    setAgentImagePackageIndexLoader(async () => index());
+    const { run, launches } = flyRun(['figlett']);
     await assert.rejects(run.wait(), /Unknown package: figlett/);
-    assert.deepEqual(launches, [], 'no build Machine and no agent Machine');
-    // The registry is asked whether a derived image already has the list (here it fails), then the start-time install is refused.
-    assert.ok(registryCalls > 0);
+    assert.deepEqual(launches, [], 'no agent Machine to install the list');
+});
+
+test('every Fly Machine start installs the list, so a name the refreshed index lost is refused before the next Machine', async () => {
+    setAgentImagePackageIndexLoader(async () => index());
+    const first = flyRun(['figlet']);
+    await assert.rejects(first.run.wait(), /stop after create/);
+    assert.equal(first.launches.length, 1, 'checked and created while the index has the name');
+    setAgentImagePackageIndexLoader(async () => ({ ...index(), packages: new Map([['postfix', new Set(['3.7.11-0+deb12u1'])]]) }));
+    const next = flyRun(['figlet']);
+    await assert.rejects(next.run.wait(), /Unknown package: figlet/);
+    assert.deepEqual(next.launches, []);
 });
 
 test('a Sprite is never created for a list the index rejects', async () => {
@@ -209,6 +217,23 @@ test('a warm Sprite keeps serving a pinned version the refreshed index no longer
     // With the warm Sprite in use, the next run needs a new one: that installation is checked and refused.
     await assert.rejects(pool.acquire(signal), /Unknown version: figlet=2\.2\.5-3\+b1/);
     assert.equal(client.created.length, 1, 'no Sprite created to install a version the archive lacks');
+    await pool.release(reused);
+    await pool.close();
+});
+
+test('a warm Sprite keeps serving a package the refreshed index no longer has at all; a new Sprite for it is refused', async () => {
+    setAgentImagePackageIndexLoader(async () => index());
+    const client = new FakeSprites();
+    const pool = new SpritePool(client, undefined, indexCheckedAgentRuntimePackages(async () => ['figlet']));
+    const signal = new AbortController().signal;
+    const first = await pool.acquire(signal);
+    await pool.release(first);
+    // The name leaves the archive entirely.
+    setAgentImagePackageIndexLoader(async () => ({ ...index(), packages: new Map([['postfix', new Set(['3.7.11-0+deb12u1'])]]) }));
+    const reused = await pool.acquire(signal);
+    assert.equal(reused.sprite.name, first.sprite.name, 'the clean checkpoint with the same packages digest is reused');
+    await assert.rejects(pool.acquire(signal), /Unknown package: figlet/);
+    assert.equal(client.created.length, 1, 'no Sprite created to install a name the archive lacks');
     await pool.release(reused);
     await pool.close();
 });

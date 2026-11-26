@@ -237,7 +237,7 @@ jobs:
           flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'" |
             tee "$OUT/runtime-packages.log"
           applied=$(sed -n 's/^PROPR_RUNTIME_PACKAGES //p' "$OUT/runtime-packages.log" | tr -d '\r' | tail -n 1)
-          expected=$([[ $AGENT_RUNTIME == sprites ]] && echo 'when Sprites are provisioned' || echo 'in a derived Fly Machine image')
+          expected=$([[ $AGENT_RUNTIME == sprites ]] && echo 'when Sprites are provisioned' || echo 'at every Fly Machine start')
           jq -e --arg pkg "$RUNTIME_PACKAGE" --arg expected "$expected" \
             '.status == "ready" and .packages == [$pkg] and (.appliedBy | contains($expected))' <<< "$applied" > /dev/null || {
             echo "::error::Runtime package $RUNTIME_PACKAGE was not applied for $AGENT_RUNTIME: $applied"
@@ -417,10 +417,9 @@ jobs:
             echo "::error::Line 2 of $APP.txt is not the $RUNTIME_PACKAGE version banner, so the runtime package was not installed for the run"
             exit 1
           fi
-          # Evidence: the runtime installed the configured list after the idle stop (Sprite provisioning, or the
-          # derived Fly Machine image built by the first run; a fallback install at Machine start does not count).
+          # Evidence: the runtime installed the configured list after the idle stop (Sprite provisioning or Fly Machine start).
           expected_log=$([[ $AGENT_RUNTIME == sprites ]] && echo 'Installed agent runtime packages on Sprite' ||
-            echo 'Installed agent runtime packages in a derived Fly Machine image')
+            echo 'Installed agent runtime packages at Fly Machine start')
           install=$(flyctl logs --app "$APP" --no-tail --json |
             jq -sc --argjson since "$STOPPED_AT_MS" --arg msg "$expected_log" '[.[] | .message | fromjson?
               | select((.msg // "") == $msg and (.time // 0) >= $since)] | last // empty')

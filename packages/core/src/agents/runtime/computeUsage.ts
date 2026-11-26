@@ -22,8 +22,6 @@ export interface AgentRunComputeUsage {
     restoreMs?: number;
     /** Time spent installing the instance runtime packages for this run (Fly Machine start, or a Sprite provisioned for it). */
     packageInstallMs?: number;
-    /** Time a Fly run waited for its derived runtime package image (registry lookups, or a shared build, including one that then failed). */
-    imageWaitMs?: number;
     /** CPU time the sandbox consumed; null when the runtime could not measure it. */
     cpuSeconds: number | null;
     /** Highest memory charged to the sandbox; null when unmeasured. */
@@ -143,7 +141,6 @@ export function normalizeComputeUsage(value: unknown): AgentRunComputeUsage | nu
         ...(finiteOrNull(record.provisioningMs) !== null && { provisioningMs: Number(record.provisioningMs) }),
         ...(finiteOrNull(record.restoreMs) !== null && { restoreMs: Number(record.restoreMs) }),
         ...(finiteOrNull(record.packageInstallMs) !== null && { packageInstallMs: Number(record.packageInstallMs) }),
-        ...(finiteOrNull(record.imageWaitMs) !== null && { imageWaitMs: Number(record.imageWaitMs) }),
         cpuSeconds: finiteOrNull(record.cpuSeconds),
         peakMemoryBytes: finiteOrNull(record.peakMemoryBytes),
         avgMemoryBytes: finiteOrNull(record.avgMemoryBytes),
@@ -185,7 +182,6 @@ export function formatComputeCost(costUsd: number): string {
 export function formatComputeUsage(usage: AgentRunComputeUsage): string {
     const parts = [usage.runtime, `${formatComputeDuration(usage.wallTimeMs)} wall`];
     if (usage.queueMs) parts.push(`${formatComputeDuration(usage.queueMs)} queued`);
-    if (usage.imageWaitMs) parts.push(`${formatComputeDuration(usage.imageWaitMs)} waiting for the package image`);
     if (usage.packageInstallMs) parts.push(`${formatComputeDuration(usage.packageInstallMs)} installing packages`);
     if (usage.cpuSeconds !== null) parts.push(`${usage.cpuSeconds.toFixed(1)} CPU-s`);
     if (usage.peakMemoryBytes !== null) {

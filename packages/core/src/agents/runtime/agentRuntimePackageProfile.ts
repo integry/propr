@@ -118,7 +118,7 @@ export async function remoteAgentRuntimePackageInstall(
     const runtimes = new Set((enabled.length > 0 ? enabled : [null]).map(config => selectedAgentRuntimeName(config, effective)));
     const ways = [
         ...(runtimes.has(SPRITES_AGENT_RUNTIME) ? ['when Sprites are provisioned'] : []),
-        ...(runtimes.has(FLY_MACHINES_AGENT_RUNTIME) ? ['in a derived Fly Machine image'] : []),
+        ...(runtimes.has(FLY_MACHINES_AGENT_RUNTIME) ? ['at every Fly Machine start'] : []),
     ];
     return `Installed ${ways.join(' and ')}; no Docker image is built`;
 }

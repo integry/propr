@@ -59,7 +59,7 @@ function remoteOnlyRoutes(queued: unknown[]) {
         services: {
             loadState: async () => state,
             loadBaseImages: async () => ['propr/agent:bundle-test'],
-            remoteInstall: async () => 'Installed in a derived Fly Machine image; no Docker image is built',
+            remoteInstall: async () => 'Installed at every Fly Machine start; no Docker image is built',
             requestBuild: async (packages, baseImages) => {
                 state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-index' };
                 return { buildId: 'build-index', packages: packages as string[], baseImages };

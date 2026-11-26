@@ -84,7 +84,7 @@ describe('AgentRuntimePackagesSection', () => {
       activePackages: ['jq'],
       status: 'pending',
       images: {},
-      appliedBy: 'Installed in a derived Fly Machine image; no Docker image is built',
+      appliedBy: 'Installed at every Fly Machine start; no Docker image is built',
       updatedAt: 'now',
       warnings: [warning]
     });

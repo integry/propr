@@ -1,12 +1,10 @@
-import { BUILD_PYTHON } from './wrapperBuild.js';
-
 // The config files are installed before any repository code runs. Root owns the
 // capture directory and the transport environment. Only agent.json is shared.
 export const RUN = '/root/propr-run';
 export const WRAPPER = '/opt/propr/fly-run.py';
 export const AGENT = '/opt/propr/fly-agent.json';
 export const wrapper = String.raw`
-import base64, errno, fnmatch, gzip, hashlib, json, os, pwd, re, signal, stat, subprocess, sys, tarfile, threading, time
+import base64, errno, json, os, pwd, signal, stat, subprocess, sys, threading, time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -46,9 +44,11 @@ def live(stream, secrets, done):
                 pending = b''
                 dropping = False
 
-def run_install(spec):
-    # The argv carries the specs as arguments, never as shell text; only
-    # trusted values form the environment.
+def install_packages(spec):
+    # Before dropping to node and before reporting ready: the run never starts
+    # without its packages. The argv carries the specs as arguments, never as
+    # shell text; only trusted values form the environment.
+    status('installing')
     started = time.monotonic()
     child = subprocess.Popen(spec['argv'], env={'PATH': spec['path'], 'HOME': '/root', 'LANG': 'C.UTF-8'}, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
@@ -62,33 +62,19 @@ def run_install(spec):
             pass
         output, _ = child.communicate()
         code = 'timeout'
-    return {'ms': round((time.monotonic() - started) * 1000), 'code': code, 'tail': output[-4096:].decode('utf8', 'replace')}
-
-def write_json(name, value):
-    tmp = run / (name + '.tmp')
-    tmp.write_text(json.dumps(value))
-    tmp.replace(run / name)
-
-def wait_for_ack(idle):
-    # Keep the Machine while the worker reads it (chunk reads touch the run
-    # directory), then exit so auto_destroy removes it.
-    while not (run / 'packages-read').exists() and time.time() - run.stat().st_mtime < idle:
-        time.sleep(.2)
-
-def install_packages(spec):
-    # Before dropping to node and before reporting ready: the run never starts
-    # without its packages.
-    status('installing')
-    result = run_install(spec)
-    write_json('packages-result', result)
-    if result['code'] == 0:
+    result = {'ms': round((time.monotonic() - started) * 1000), 'code': code, 'tail': output[-4096:].decode('utf8', 'replace')}
+    tmp = run / 'packages-result.tmp'
+    tmp.write_text(json.dumps(result))
+    tmp.replace(run / 'packages-result')
+    if code == 0:
         return True
     status('install-failed')
-    os.utime(run, None)
-    wait_for_ack(300)
+    # Keep the Machine for the worker to read the failure, then exit (auto_destroy).
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline and not (run / 'packages-read').exists():
+        time.sleep(.2)
     return False
 
-${BUILD_PYTHON}
 def launch():
     run.chmod(0o700)
     packages = run / 'packages.json'
@@ -207,8 +193,6 @@ if __name__ == '__main__':
     mode = sys.argv[1]
     if mode == 'launch':
         launch()
-    elif mode == 'build':
-        build()
     elif mode in ('agent', 'hook'):
         data = json.loads(agent.read_bytes())
         argv = data['argv'] if mode == 'agent' else sys.argv[2:]
