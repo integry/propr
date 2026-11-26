@@ -80,33 +80,34 @@ export interface VibeConversationLogEntry {
 
 const FINAL_EVENT_TYPES = new Set(['final', 'result', 'completed', 'complete', 'response']);
 
+function jsonEventsFromGenerationEntry(entry: VibeJsonOutput): VibeJsonOutput[] {
+    if (entry.generationStatus !== 'completed' || entry.outcome?.type === 'discarded') return [{ sessionId: entry.sessionId }];
+    const identity = { sessionId: entry.sessionId, message_id: entry.id };
+    if (entry.type === 'reasoning') {
+        return [{ ...identity, role: 'assistant', reasoning_content: entry.text }];
+    }
+    if (entry.type === 'effect' && entry.detail?.toolName) {
+        const id = entry.toolCallId || entry.id;
+        const call = { id, function: { name: entry.detail.toolName, arguments: entry.detail.input } };
+        const state = entry.state;
+        const result = state?.outputText || state?.error?.message || state?.reason || state?.output;
+        return [
+            { ...identity, role: 'assistant', tool_calls: [call] },
+            { sessionId: entry.sessionId, role: 'tool', tool_call_id: id, content: result,
+                tool_result_failed: state?.status === 'failed' }
+        ];
+    }
+    if (entry.type === 'message') return [{ ...entry, ...identity }];
+    return [identity];
+}
+
 function jsonEventsFromValue(value: unknown): VibeJsonOutput[] {
     if (Array.isArray(value)) {
         return value.flatMap(item => jsonEventsFromValue(item));
     }
     if (value && typeof value === 'object') {
         const entry = value as VibeJsonOutput;
-        if (entry.generationStatus) {
-            if (entry.generationStatus !== 'completed' || entry.outcome?.type === 'discarded') return [{ sessionId: entry.sessionId }];
-            const identity = { sessionId: entry.sessionId, message_id: entry.id };
-            if (entry.type === 'reasoning') {
-                return [{ ...identity, role: 'assistant', reasoning_content: entry.text }];
-            }
-            if (entry.type === 'effect' && entry.detail?.toolName) {
-                const id = entry.toolCallId || entry.id;
-                const call = { id, function: { name: entry.detail.toolName, arguments: entry.detail.input } };
-                const state = entry.state;
-                const result = state?.outputText || state?.error?.message || state?.reason || state?.output;
-                return [
-                    { ...identity, role: 'assistant', tool_calls: [call] },
-                    { sessionId: entry.sessionId, role: 'tool', tool_call_id: id, content: result,
-                        tool_result_failed: state?.status === 'failed' }
-                ];
-            }
-            if (entry.type === 'message') return [{ ...entry, ...identity }];
-            return [identity];
-        }
-        return [entry];
+        return entry.generationStatus ? jsonEventsFromGenerationEntry(entry) : [entry];
     }
     return [];
 }

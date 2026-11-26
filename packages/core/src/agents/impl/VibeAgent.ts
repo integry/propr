@@ -401,19 +401,18 @@ export class VibeAgent implements Agent {
         return { configPath, resolvedApiKey, hasUsableConfig, configMountArgs: hasUsableConfig ? ['-v', `${configPath}:${CONTAINER_CONFIG_PATH}:ro`] : [] };
     }
 
-    private buildPromptMountArgs(promptFilePath: string | undefined, cliArgs: string[]): string[] {
-        if (!promptFilePath) return [];
-        const hostPromptPath = resolveHostBindPath(promptFilePath);
+    private buildCliAndPromptArgs(repositoryInspection: boolean, mode: string, maxTurns: number, promptFilePath?: string): { cliArgs: string[]; promptMountArgs: string[] } {
+        const cliArgs = this.getCliArgs(repositoryInspection, mode === 'execute' && this.usesVibe3());
+        if (!promptFilePath) return { cliArgs, promptMountArgs: [] };
+        if (!cliArgs.some(arg => arg === '--max-turns' || arg.startsWith('--max-turns='))) cliArgs.push('--max-turns', String(maxTurns));
         const containerPromptPath = '/home/node/propr-prompt.txt';
         cliArgs.push('--prompt-file', containerPromptPath);
-        return ['-v', `${hostPromptPath}:${containerPromptPath}:ro`];
+        return { cliArgs, promptMountArgs: ['-v', `${resolveHostBindPath(promptFilePath)}:${containerPromptPath}:ro`] };
     }
 
     private buildDockerArgs(params: VibeDockerArgsParams): string[] {
         const { worktreePath, modelName, mistralApiKey, issueNumber, taskId, executionType, maxTurns = this.maxTurns, mode = 'execute', promptFilePath, envFilePath, runtimeHomePath, repositoryInspection = false } = params;
-        if (repositoryInspection && mode !== 'analysis') {
-            throw new Error('Repository inspection requires analysis mode');
-        }
+        if (repositoryInspection && mode !== 'analysis') throw new Error('Repository inspection requires analysis mode');
         const { configPath, hasUsableConfig, configMountArgs } = this.resolveCredentialsAndConfig(mistralApiKey);
         const cleanModelName = modelName?.includes(':') ? modelName.split(':').pop()! : modelName;
         const mistralEnvFileArgs = envFilePath ? ['--env-file', envFilePath] : [];
@@ -421,11 +420,7 @@ export class VibeAgent implements Agent {
 
         const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
-        const cliArgs = this.getCliArgs(repositoryInspection, mode === 'execute' && this.usesVibe3());
-        if (promptFilePath && !cliArgs.some(arg => arg === '--max-turns' || arg.startsWith('--max-turns='))) {
-            cliArgs.push('--max-turns', String(maxTurns));
-        }
-        const promptMountArgs = this.buildPromptMountArgs(promptFilePath, cliArgs);
+        const { cliArgs, promptMountArgs } = this.buildCliAndPromptArgs(repositoryInspection, mode, maxTurns, promptFilePath);
         const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:/tmp/propr-vibe-home:rw`] : [];
         const dockerArgs: string[] = [
             'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
