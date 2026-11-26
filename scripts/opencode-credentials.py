@@ -12,6 +12,11 @@ def seed(source, runtime):
         return
     columns = "id, integration_id, label, value, connector_id, method_id, active, time_created, time_updated"
     rows = source.execute(f"SELECT {columns} FROM credential").fetchall()
+    if not rows:
+        # OpenCode 1.x creates the table but leaves it empty; its credentials
+        # live in auth.json, which OpenCode already imported into the runtime
+        # database. Replacing those rows with nothing would log the task out.
+        return
     with runtime:
         # The source DB is authoritative even if a stale legacy auth.json remains.
         runtime.execute("DELETE FROM credential")
