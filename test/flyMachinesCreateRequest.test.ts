@@ -30,8 +30,6 @@ class RecordingMachines implements MachinesApi {
     async exec(): Promise<{ stdout: string; exit_code: number }> { throw new Error('no Machine'); }
     async signal() {}
     async destroy() {}
-    async gone() { return true; }
-    async find() { return undefined; }
     async logs() {}
 }
 

@@ -28,7 +28,6 @@ export const pollBackoff = (attempt: number) => calculateDelay(attempt, {
 interface MachineRecord {
     id: string;
     name: string;
-    state?: string;
     events?: { timestamp: number; type: string }[];
 }
 
@@ -37,10 +36,6 @@ export interface MachinesApi {
     exec(id: string, args: string[], signal?: AbortSignal): Promise<{ stdout: string; exit_code: number }>;
     signal(id: string, signal: NodeJS.Signals): Promise<void>;
     destroy(id: string): Promise<void>;
-    /** True once Fly reports the Machine destroyed or unknown; a failed lookup throws and is not evidence of absence. */
-    gone(id: string): Promise<boolean>;
-    /** The ID of the Machine created with this unique launch name, or undefined when Fly lists none. Throws when the lookup fails. */
-    find(name: string): Promise<string | undefined>;
     logs(id: string, publish: (message: string) => void, signal: AbortSignal): Promise<void>;
 }
 
@@ -58,9 +53,6 @@ class MachinesHttpError extends Error {
         super(`Fly Machines API ${method} returned HTTP ${status}` + (detail ? ': ' + detail : ''));
     }
 }
-
-/** A create whose response was lost and whose lookup also failed: the Machine may or may not exist. */
-export class MachineCreateUnconfirmedError extends Error {}
 
 async function readBounded(response: Response) {
     const reader = response.body?.getReader();
@@ -140,35 +132,13 @@ export class MachinesClient implements MachinesApi {
             // only this request's UUID-named Machine; never POST a second run.
             for (let attempt = 0; attempt < 3; attempt++) {
                 if (attempt) await delay(1000);
-                let found: MachineRecord | undefined;
-                try { found = await this.lookup(launch.name); }
-                catch (lookupError) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    throw new MachineCreateUnconfirmedError(message, { cause: lookupError });
-                }
+                const response = await this.request('GET', this.url + '?metadata.propr_run_id=' + encodeURIComponent(launch.name));
+                const machines = await response.json() as MachineRecord[];
+                const found = machines.find(m => m.name === launch.name && /^[a-zA-Z0-9-]+$/.test(m.id));
                 if (found) return identify(found);
             }
-            // Every lookup succeeded without finding it. A create still in flight at Fly
-            // could appear later; that race between the two API calls cannot be closed here.
             throw error;
         }
-    }
-
-    async find(name: string) {
-        return (await this.lookup(name))?.id;
-    }
-
-    private async lookup(name: string) {
-        const response = await this.request('GET', this.url + '?metadata.propr_run_id=' + encodeURIComponent(name));
-        const machines = await response.json() as MachineRecord[];
-        return machines.find(m => m.name === name && /^[a-zA-Z0-9-]+$/.test(m.id));
-    }
-
-    async gone(id: string) {
-        let record: MachineRecord;
-        try { record = await (await this.request('GET', this.url + '/' + id)).json() as MachineRecord; }
-        catch (error) { if (error instanceof MachinesHttpError && error.status === 404) return true; throw error; }
-        return record.state === 'destroyed';
     }
 
     async exec(id: string, command: string[], signal?: AbortSignal) {
