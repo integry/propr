@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -208,3 +209,50 @@ test('a refused or pending change keeps the records of runtimes not in use', asy
     await packages.requestAgentRuntimePackageBuild(['postgresql-client'], [BASE_IMAGE]);
     assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq']);
 });
+
+// A Settings request B saved while remote-only build A is between its index checks and its outcome
+// write. B is written on a second connection the moment A's outcome write is issued (A's "building"
+// save is skipped), the latest point a concurrent request can land before A's write runs.
+for (const [label, requestA] of [['an applied list', ['jq']], ['a cleared list', []]] as const) {
+    test(`a newer Settings request saved before a remote-only build writes ${label} is kept, and its own build applies`, async () => {
+        const usage = async () => sprites;
+        await packages.buildAgentRuntimePackageProfile(await packages.requestAgentRuntimePackageBuild(['postgresql-client'], [BASE_IMAGE]), { usage });
+        const jobA = await packages.requestAgentRuntimePackageBuild([...requestA], [BASE_IMAGE]);
+        const { default: Database } = await import('better-sqlite3');
+        const config = connection.db.client.config as { connection: { filename: string } };
+        const settings = new Database(config.connection.filename);
+        let jobB: Awaited<ReturnType<typeof packages.requestAgentRuntimePackageBuild>> | undefined;
+        const onQuery = (query: { sql: string; bindings?: unknown[] }) => {
+            if (jobB || !/^(insert|update)\b/i.test(query.sql) || !query.sql.includes('system_configs')) return;
+            const value = query.bindings?.find((binding): binding is string => typeof binding === 'string' && binding.includes(jobA.buildId));
+            if (!value || JSON.parse(value).status === 'building') return;
+            // What `requestAgentRuntimePackageBuild` writes for B.
+            const row = settings.prepare('SELECT value FROM system_configs WHERE key = ?').get('agent_runtime_packages') as { value: string };
+            const pending = { ...JSON.parse(row.value), packages: ['jq', 'libssl3t64'], status: 'pending', buildId: crypto.randomUUID(),
+                error: undefined, buildLog: undefined, updatedAt: new Date().toISOString() };
+            settings.prepare('UPDATE system_configs SET value = ? WHERE key = ?').run(JSON.stringify(pending), 'agent_runtime_packages');
+            jobB = { buildId: pending.buildId, installationId: pending.installationId, packages: pending.packages, baseImages: [BASE_IMAGE] };
+        };
+        connection.db.on('query', onQuery);
+        let superseded;
+        try {
+            superseded = await packages.buildAgentRuntimePackageProfile(jobA, { usage });
+        } finally {
+            connection.db.off('query', onQuery);
+            settings.close();
+        }
+        assert.ok(jobB, 'build A issued its outcome write');
+        assert.equal(superseded.buildId, jobB.buildId, 'build A returns the newer state');
+        const pending = await packages.loadAgentRuntimePackageState();
+        assert.equal(pending.buildId, jobB.buildId);
+        assert.equal(pending.status, 'pending');
+        assert.deepEqual(pending.packages, ['jq', 'libssl3t64']);
+        assert.deepEqual(pending.activePackages, ['postgresql-client'], 'build A activated nothing');
+        assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['postgresql-client']);
+
+        const applied = await packages.buildAgentRuntimePackageProfile(jobB, { usage });
+        assert.equal(applied.status, 'ready');
+        assert.deepEqual(applied.activePackages, ['jq', 'libssl3t64']);
+        assert.deepEqual(await remotePackages.loadAcceptedRemoteAgentRuntimePackages('sprites'), ['jq', 'libssl3t64']);
+    });
+}

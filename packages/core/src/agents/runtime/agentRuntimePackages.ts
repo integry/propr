@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import logger from '../../utils/logger.js';
 import { getConfig, saveConfig } from '../../config/configStore.js';
+import { db } from '../../db/connection.js';
 import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
 import { buildAgentRuntimeImage } from './agentRuntimeImageBuilder.js';
 import {
@@ -12,7 +13,7 @@ import {
     type AgentRuntimeUsage,
     type RuntimePackageValidation,
 } from './agentRuntimePackageProfile.js';
-import { acceptRemoteAgentRuntimePackages, isRemoteAgentRuntime, normalizeRemoteRuntimePackageRecords, remoteOnlyBuildOutcome,
+import { acceptRemoteAgentRuntimePackages, buildOutcomeWithoutDocker, isRemoteAgentRuntime, normalizeRemoteRuntimePackageRecords,
     remoteRecordsForAppliedProfile, type RemoteRuntimePackageRecords } from './agentRuntimeRemotePackages.js';
 
 export { validateAgentRuntimePackages, type RuntimePackageValidation };
@@ -120,6 +121,20 @@ export async function loadAgentRuntimePackageState(): Promise<AgentRuntimePackag
 
 export async function saveAgentRuntimePackageState(state: AgentRuntimePackageState): Promise<void> {
     await saveConfig(CONFIG_KEY, normalizeState(state));
+}
+
+/**
+ * Saves a build's state only while the persisted profile still belongs to that build, in one statement,
+ * so a Settings request that queued a newer build in the meantime is never replaced by an older build's
+ * outcome. Returns `state` once saved, otherwise the newer state, unchanged.
+ */
+async function saveAgentRuntimePackageStateForBuild(state: AgentRuntimePackageState, buildId: string): Promise<AgentRuntimePackageState> {
+    const updated = await db('system_configs').where({ key: CONFIG_KEY }).whereRaw("json_extract(value, '$.buildId') = ?", [buildId])
+        .update({ value: JSON.stringify(normalizeState(state)), updated_at: db.fn.now() });
+    if (Number(updated) > 0) return state;
+    const latest = await loadAgentRuntimePackageState();
+    logger.info({ buildId, currentBuildId: latest.buildId }, 'Agent runtime build superseded before its outcome was saved');
+    return latest;
 }
 
 export async function requestAgentRuntimePackageBuild(
@@ -313,35 +328,20 @@ export async function buildAgentRuntimePackageProfile(
         const latest = await loadAgentRuntimePackageState();
         if (latest.buildId !== job.buildId) return latest;
         current = { ...latest, remote: records, appliedBy: remote, updatedAt: new Date().toISOString() };
-        await saveAgentRuntimePackageState(current);
     }
-    if (validation.packages.length === 0) {
-        // Every remote runtime's record goes too, including runtimes not in use now: an empty list needs
-        // no index check, and a kept record would reinstall the cleared packages once that runtime is
-        // selected again (its loader prefers the record over `activePackages`).
-        const disabled: AgentRuntimePackageState = {
-            ...current,
-            activePackages: [],
-            status: 'disabled',
-            images: {},
-            buildLog: 'Runtime package profile disabled',
-            appliedBy: undefined,
-            remote: undefined,
-            updatedAt: new Date().toISOString()
-        };
-        await saveAgentRuntimePackageState(disabled);
-        if (usage.docker) await cleanupRuntimeImages(current.images, {}, installationId);
-        return disabled;
+    const outcome = buildOutcomeWithoutDocker(current, { packages: validation.packages, runtimes: remoteRuntimes, records, appliedBy: remote });
+    if (outcome) {
+        const saved = await saveAgentRuntimePackageStateForBuild(outcome, job.buildId);
+        if (saved !== outcome) return saved;
+        if (outcome.status === 'disabled' && usage.docker) await cleanupRuntimeImages(current.images, {}, installationId);
+        logger.info({ buildId: job.buildId, packageCount: validation.packages.length, appliedBy: remote, status: outcome.status, error: outcome.error },
+            'Agent runtime packages applied without a Docker image build');
+        return outcome;
     }
-    if (remote) {
-        const outcome = remoteOnlyBuildOutcome(validation.packages, remoteRuntimes, records, { activePackages: current.activePackages, appliedBy: remote });
-        const applied: AgentRuntimePackageState = { ...current, ...outcome, images: {}, appliedBy: remote, updatedAt: new Date().toISOString(),
-            // An applied list supersedes the records of remote runtimes not in this build.
-            ...(outcome.status === 'ready' && { remote: remoteRecordsForAppliedProfile(current.remote, remoteRuntimes) }) };
-        await saveAgentRuntimePackageState(applied);
-        logger.info({ buildId: job.buildId, packageCount: validation.packages.length, appliedBy: remote, status: applied.status, error: applied.error },
-            'Agent runtime packages applied by remote runtimes');
-        return applied;
+    // The Docker build runs long after this, so the remote runtimes' records are kept now.
+    if (remoteRuntimes.length) {
+        const saved = await saveAgentRuntimePackageStateForBuild(current, job.buildId);
+        if (saved !== current) return saved;
     }
 
     const images: Record<string, AgentRuntimeImageRecord> = {};

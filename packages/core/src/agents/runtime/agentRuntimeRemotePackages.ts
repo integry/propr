@@ -8,6 +8,7 @@ import {
 import { AGENT_RUNTIME_PACKAGES_CONFIG_KEY, agentRuntimeUsage, normalizeAgentRuntimePackageList, validateAgentRuntimePackages,
     type AgentRuntimeUsage, type RemoteAgentRuntimeOptions } from './agentRuntimePackageProfile.js';
 import { FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME } from './runtimeSelection.js';
+import type { AgentRuntimePackageState } from './agentRuntimePackages.js';
 
 /**
  * Remote runtimes (Sprites, Fly Machines) have no image build to wait for, so each keeps its own
@@ -175,18 +176,32 @@ export function describeAgentRuntimePackageRuntimes(state: DescribedState, usage
 }
 
 /**
- * The build job's outcome on a worker with only remote runtimes: `ready` with the list applied when every
- * runtime accepted it, otherwise `failed` with each refusal, and the last applied list kept.
+ * The build job's outcome when it builds no Docker image, or undefined when it does. A cleared list is
+ * `disabled` and drops every remote runtime's record, including runtimes not in use now: an empty list
+ * needs no index check, and a kept record would reinstall the cleared packages once that runtime is
+ * selected again (its loader prefers the record over `activePackages`). On a worker with only remote
+ * runtimes (`appliedBy` set) it is `ready` with the list applied when every runtime accepted it, otherwise
+ * `failed` with each refusal, and the last applied list kept.
  */
-export function remoteOnlyBuildOutcome(packages: readonly string[], runtimes: readonly RemoteAgentRuntime[], records: RemoteRuntimePackageRecords | undefined,
-    { activePackages: previous, appliedBy }: { activePackages: string[]; appliedBy: string }) {
+export function buildOutcomeWithoutDocker(current: AgentRuntimePackageState, { packages, runtimes, records, appliedBy }:
+    { packages: readonly string[]; runtimes: readonly RemoteAgentRuntime[]; records: RemoteRuntimePackageRecords | undefined; appliedBy?: string },
+): AgentRuntimePackageState | undefined {
+    const updatedAt = new Date().toISOString();
+    if (packages.length === 0) {
+        return { ...current, activePackages: [], status: 'disabled', images: {}, buildLog: 'Runtime package profile disabled',
+            appliedBy: undefined, remote: undefined, updatedAt };
+    }
+    if (!appliedBy) return undefined;
     const failures = runtimes.flatMap(runtime => records?.[runtime]?.status === 'failed' ? [records[runtime]!.error ?? `${runtimeLabel(runtime)} refused the list`] : []);
     const warnings = runtimes.flatMap(runtime => records?.[runtime]?.warning ?? []);
     return {
-        activePackages: failures.length ? previous : [...packages],
-        status: failures.length ? 'failed' as const : 'ready' as const,
+        ...current, images: {}, appliedBy, updatedAt,
+        activePackages: failures.length ? current.activePackages : [...packages],
+        status: failures.length ? 'failed' : 'ready',
         error: failures.length ? failures.join('; ') : undefined,
         buildLog: [`${appliedBy}.`, ...warnings, ...failures].join('\n'),
+        // An applied list supersedes the records of remote runtimes not in this build.
+        remote: failures.length ? records : remoteRecordsForAppliedProfile(records, runtimes),
     };
 }
 
