@@ -32,16 +32,13 @@ interface MachineRecord {
     events?: { timestamp: number; type: string }[];
 }
 
-/** A Machine this worker may have created: its ID once known, and always its unique request name. */
-export interface MachineRef { id?: string; name: string }
-
 export interface MachinesApi {
     create(launch: MachineLaunch, onBootStart?: (timestamp: number) => void): Promise<string>;
     exec(id: string, args: string[], signal?: AbortSignal): Promise<{ stdout: string; exit_code: number }>;
     signal(id: string, signal: NodeJS.Signals): Promise<void>;
     destroy(id: string): Promise<void>;
     /** True only when Fly confirms the Machine no longer exists (absent or `destroyed`); false while it may still exist. */
-    gone(machine: MachineRef): Promise<boolean>;
+    gone(id: string): Promise<boolean>;
     logs(id: string, publish: (message: string) => void, signal: AbortSignal): Promise<void>;
 }
 
@@ -68,7 +65,7 @@ class MachineNotCreatedError extends Error {
 /**
  * Whether a create failure proves no Machine was created: Fly rejected the request
  * (HTTP 4xx), or a lookup by the request's name after a lost response found none.
- * Otherwise the Machine may exist and must keep counting toward capacity.
+ * Otherwise the Machine may exist.
  */
 export function createRejected(error: unknown): boolean {
     return (error instanceof MachinesHttpError && error.status < 500) || error instanceof MachineNotCreatedError;
@@ -167,13 +164,11 @@ export class MachinesClient implements MachinesApi {
         return machines.find(m => m.name === name && /^[a-zA-Z0-9-]+$/.test(m.id));
     }
 
-    async gone({ id, name }: MachineRef) {
-        let record: MachineRecord | undefined;
-        if (id) {
-            try { record = await (await this.request('GET', this.url + '/' + id)).json() as MachineRecord; }
-            catch (error) { if (error instanceof MachinesHttpError && error.status === 404) return true; throw error; }
-        } else record = await this.find(name);
-        return !record || record.state === 'destroyed';
+    async gone(id: string) {
+        let record: MachineRecord;
+        try { record = await (await this.request('GET', this.url + '/' + id)).json() as MachineRecord; }
+        catch (error) { if (error instanceof MachinesHttpError && error.status === 404) return true; throw error; }
+        return record.state === 'destroyed';
     }
 
     async exec(id: string, command: string[], signal?: AbortSignal) {

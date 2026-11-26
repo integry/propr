@@ -12,7 +12,6 @@ import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.js';
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
-import { acquireFlyMachineSlot, MachineReservation } from './fly/capacity.js';
 import { flyConfig } from './fly/config.js';
 import { FlyPackageImages, selectFlyPackageImage } from './fly/derivedImage.js';
 import { applyOutputDiagnostics, OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
@@ -126,8 +125,6 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         let workspaceSafeToDestroy = false;
         let credentialsPending = !!prepared.credentialPath;
         let keepLocalBundle = false;
-        let reservation: MachineReservation | undefined;
-        let machineGone = () => {};
         const machineLocation = () => `Fly app ${config.app}, Machine ${id}, ${RUN}/workspace`;
         const credentialRecovery = () => `Recover credentials from Fly app ${config.app}, Machine ${id}, ${prepared.credentialPath}`;
         let destroyed: Promise<void> | undefined;
@@ -149,9 +146,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         const destroy = () => {
             const machine = id;
             if (machine && workspaceSafeToDestroy && !credentialsPending)
-                // The Machine stops counting toward capacity at the deletion that succeeds, including a
-                // background retry after the run settled, so a Machine still awaiting deletion keeps counting.
-                return destroyed ??= retryCleanup(machine, 'destroy', async () => { await api.destroy(machine); machineGone(); });
+                return destroyed ??= retryCleanup(machine, 'destroy', () => api.destroy(machine));
         };
         let mayHaveStarted = false;
         const requestStop = (signal: NodeJS.Signals = 'SIGTERM', grace = 10_000) => {
@@ -171,14 +166,11 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             if (refusal) return refuseCostExecution(refusal, preserve);
             external.throwIfAborted();
             if (stopping) throw new Error('Fly run stopped before creation');
-            // Over PROPR_FLY_MACHINES_MAX the run queues here; the slot is held until its Machines are confirmed gone.
             const signal = AbortSignal.any([external, forced.signal]);
             const beforeCreation = (error: unknown): never => { external.throwIfAborted(); throw stopping ? new Error('Fly run stopped before creation') : error; };
-            const releaseSlot = await acquireFlyMachineSlot(config.app, config.maxMachines, signal, spec.name).catch(beforeCreation);
-            reservation = new MachineReservation(releaseSlot, config.maxMachines !== undefined);
             // Read for every run, so a Settings change applies to the next Machine. An unreadable
             // or invalid list fails the run rather than starting it without its packages.
-            const packages = await selectFlyPackageImage(this.images, prepared, { api, config, packages: await this.loadPackages(), reservation, signal, run: spec.name })
+            const packages = await selectFlyPackageImage(this.images, prepared, { api, config, packages: await this.loadPackages(), signal, run: spec.name })
                 .catch(beforeCreation);
             let packageInstall: FlyPackageInstall | undefined;
             external.throwIfAborted();
@@ -288,7 +280,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             const createdAt = Date.now();
             try {
                 let bootStart = Date.now();
-                ({ id, gone: machineGone } = await reservation.create(api, prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); }));
+                id = await api.create(prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); });
                 void api.logs(id, display, logs.signal).catch(() => {});
                 let usageFailureSince: number | undefined;
                 const code = stopping ? undefined : await waitForExit(api, id, forced.signal, {
@@ -380,13 +372,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             external.removeEventListener('abort', abort);
             logs.abort();
             output.end();
-            // A Machine kept for recovery is never deleted by this worker: it keeps its slot until
-            // Fly confirms it gone (its guest exits after the retention window and auto-destroys,
-            // or an operator deletes it). Without any Machine the slot is free at once.
-            try { await destroy(); } finally {
-                if (id && !destroyed) reservation?.watch(api, { id, name: prepared.launch.name }, machineGone);
-                reservation?.close();
-            }
+            await destroy();
         }).catch(async error => {
             // Transport cleanup calls release even when wait rejected before complete.
             keepLocalBundle = workspace.hasBundle;

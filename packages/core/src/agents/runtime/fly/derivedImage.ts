@@ -9,7 +9,6 @@ import { createGunzip } from 'node:zlib';
 import logger from '../../../utils/logger.js';
 import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, agentRuntimePackageInstallCommand, agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
 import { createRejected, type MachineLaunch, type MachinesApi } from './api.js';
-import type { MachineReservation } from './capacity.js';
 import type { FlyConfig } from './config.js';
 import { scanFile } from './files.js';
 import { helper } from './launch.js';
@@ -37,8 +36,6 @@ export interface SelectOptions {
     api: MachinesApi;
     config: FlyConfig;
     packages: readonly string[];
-    /** The selecting run's capacity reservation; a build Machine it starts counts against it. */
-    reservation: MachineReservation;
     signal: AbortSignal;
     run: string;
 }
@@ -98,12 +95,10 @@ export class FlyPackageImages {
             let pending = images.get(key);
             if (!pending) {
                 signal.throwIfAborted();
-                // The preparation is shared and outlives this run's cancellation, and may create a
-                // build Machine after the run has finished: hold the run's slot until it settles.
-                const hold = options.reservation.track();
+                // Shared, and outlives this run's cancellation: it deletes its own build Machine.
                 pending = this.prepare(options, registry, base.repository, resolved ?? base.reference);
                 images.set(key, pending);
-                pending.then(hold, () => { images.delete(key); hold(); });
+                pending.catch(() => { images.delete(key); });
             }
             return await until(pending, signal);
         } catch (error) {
@@ -137,7 +132,7 @@ export class FlyPackageImages {
 }
 
 async function buildLayer(options: SelectOptions, baseImage: string, target: string) {
-    const { api, config, packages, reservation } = options;
+    const { api, config, packages } = options;
     const name = 'propr-build-' + randomUUID();
     const file = (guest_path: string, content: string, mode = 0o600) => ({ guest_path, mode, raw_value: Buffer.from(content).toString('base64') });
     const launch: MachineLaunch = { name, skip_service_registration: true, skip_secrets: true, region: config.region, config: {
@@ -148,8 +143,8 @@ async function buildLayer(options: SelectOptions, baseImage: string, target: str
     } };
     // Boot, install, snapshot and transfer; the build is shared, so no single run's cancellation stops it.
     const deadline = Date.now() + config.bootTimeout + AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS + 30 * 60_000;
-    const { id, gone } = await reservation.create(api, launch).catch(error => {
-        // A build Machine that may exist still holds the slot: do not go on to create the agent Machine beside it.
+    const id = await api.create(launch).catch(error => {
+        // A build Machine that may exist is not confirmed gone: do not go on to create the agent Machine beside it.
         if (createRejected(error)) throw error;
         throw new FlyPackageImageError('Fly image build Machine creation could not be confirmed', { cause: error });
     });
@@ -167,7 +162,7 @@ async function buildLayer(options: SelectOptions, baseImage: string, target: str
         return { layer, install: result!, machine: id };
     } finally {
         void api.exec(id, ['/usr/bin/touch', RUN + '/packages-read']).catch(() => {});
-        await removeBuilder(options, { id, name }, gone, deadline);
+        await removeBuilder(api, id, deadline);
     }
 }
 
@@ -196,15 +191,13 @@ async function download(api: MachinesApi, id: string, layer: NonNullable<BuildRe
     if ('sha256:' + raw.digest('hex') !== layer.diffId) throw new Error('Fly image build layer does not match its recorded diff ID');
 }
 
-/** The build Machine stops counting only once Fly confirms it gone; the run must not create its agent Machine before then. */
-async function removeBuilder({ api, reservation }: SelectOptions, machine: { id: string; name: string }, gone: () => void, deadline: number) {
+/** Returns once Fly confirms the build Machine gone; the run must not create its agent Machine before then. */
+async function removeBuilder(api: MachinesApi, id: string, deadline: number) {
     for (;;) {
-        try { await api.destroy(machine.id); gone(); return; } catch (error) {
-            if (await api.gone(machine).catch(() => false)) { gone(); return; }
-            if (Date.now() >= deadline) {
-                reservation.watch(api, machine, gone);
-                throw new FlyPackageImageError(`Could not confirm deletion of Fly image build Machine ${machine.id}`, { cause: error });
-            }
+        try { await api.destroy(id); return; } catch (error) {
+            if (await api.gone(id).catch(() => false)) return;
+            if (Date.now() >= deadline)
+                throw new FlyPackageImageError(`Could not confirm deletion of Fly image build Machine ${id}`, { cause: error });
         }
         await delay(5000);
     }

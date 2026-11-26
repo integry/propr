@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachinesRuntime.ts';
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { agentRuntimePackageInstallCommand } from '../packages/core/src/agents/runtime/agentRuntimePackageProfile.ts';
-import type { MachineLaunch, MachineRef, MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import type { MachineLaunch, MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
 import { flyPackageImageTag, FlyPackageImages, resetFlyPackageImages } from '../packages/core/src/agents/runtime/fly/derivedImage.ts';
 import { MEDIA, parseFlyImage, sha256, type ImageManifest, type RegistryApi } from '../packages/core/src/agents/runtime/fly/registry.ts';
 import { RUN, WRAPPER, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
@@ -112,7 +112,7 @@ class Machines implements MachinesApi {
     }
     async signal() {}
     async destroy(id: string) { this.live.delete(id); this.events.push('destroy ' + (this.isBuild(id) ? 'build' : 'launch')); }
-    async gone(machine: MachineRef) { return !this.live.has(machine.id!); }
+    async gone(id: string) { return !this.live.has(id); }
     file(launch: MachineLaunch, guestPath: string) {
         const entry = launch.config.files.find(f => f.guest_path === guestPath);
         return entry && Buffer.from(entry.raw_value, 'base64').toString();
@@ -144,7 +144,7 @@ test('only registry.fly.io images with a tag or digest can be derived', () => {
 test('the first run builds the derived image, the Machine runs it with nothing to install, and the next run reuses it', async () => {
     const api = new Machines();
     const registry = new Registry();
-    const fly = runtime(api, registry, 'derive', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' });
+    const fly = runtime(api, registry, 'derive', ['figlet']);
     const first = fly.start(spec());
     assert.equal((await first.wait()).exitCode, 0);
     const [build, agent] = api.launches;
@@ -157,7 +157,7 @@ test('the first run builds the derived image, the Machine runs it with nothing t
     assert.equal(api.file(build, WRAPPER), wrapper);
     assert.ok(!JSON.stringify(build).includes('synthetic-worker-credential'));
     assert.ok(!JSON.stringify(build).includes(Buffer.from(TOKEN).toString('base64')));
-    // The build Machine is deleted before the agent Machine is created, within one capacity slot.
+    // The build Machine is deleted before the agent Machine is created.
     assert.deepEqual(api.events.slice(0, 3), ['create build', 'destroy build', 'create launch']);
     assert.equal(api.peak, 1);
     // The pushed manifest is the base plus the verified layer; the configuration gains its diff ID.
@@ -250,12 +250,12 @@ class StuckBuilder extends Machines {
         if (this.launches[Number(id.slice(1))].config.processes[0].cmd[0] === 'build') throw new Error('Fly API 503');
         return super.destroy(id);
     }
-    override async gone(machine: MachineRef) { return machine.id === 'm0' ? !this.present : super.gone(machine); }
+    override async gone(id: string) { return id === 'm0' ? !this.present : super.gone(id); }
 }
 
 test('the run waits for the build Machine to be gone before creating its agent Machine', async () => {
     const api = new StuckBuilder();
-    const run = runtime(api, new Registry(), 'stuck', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' }).start(spec());
+    const run = runtime(api, new Registry(), 'stuck', ['figlet']).start(spec());
     await delay(200);
     assert.deepEqual(api.events, ['create build'], 'no agent Machine while the build Machine may still exist');
     api.present = false; // its guest exited and Fly destroyed it
@@ -264,29 +264,40 @@ test('the run waits for the build Machine to be gone before creating its agent M
     await run.release!();
 });
 
-test('a cancelled run holds its slot until the build it started settles', async () => {
+test('a run cancelled during a shared build leaves the build to finish and delete its Machine before the next agent Machine', async () => {
     const api = new Machines();
     const registry = new Registry();
     let open!: () => void;
     registry.gate = new Promise(resolve => { open = resolve; });
-    const fly = runtime(api, registry, 'cancelled', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' });
+    const fly = runtime(api, registry, 'cancelled', ['figlet']);
     const cancel = new AbortController();
     const first = fly.start(spec('first'), { signal: cancel.signal });
     while (!registry.lookups) await delay(5);
     cancel.abort(new Error('cancelled')); // while the shared preparation awaits the registry, before its build Machine exists
     await assert.rejects(first.wait(), /cancelled/);
     await first.release?.().catch(() => {});
-    // Settings now list no packages: the next run needs no image and creates its Machine once it has a slot.
-    const second = runtime(api, registry, 'cancelled', [], { PROPR_FLY_MACHINES_MAX: '1' }).start(spec('second'));
-    await delay(50);
-    assert.deepEqual(api.events, [], 'the next run queues behind the preparation instead of taking the cancelled run\'s slot');
+    assert.deepEqual(api.events, [], 'the cancelled run created no Machine');
+    const second = fly.start(spec('second'));
     open();
     assert.equal((await second.wait()).exitCode, 0);
-    // The build Machine the cancelled run's preparation created is gone before the next run's agent Machine exists.
+    // The next run joins the shared build; its build Machine is gone before the agent Machine exists.
     assert.deepEqual(api.events, ['create build', 'destroy build', 'create launch', 'destroy launch']);
     assert.equal(api.peak, 1);
-    assert.ok(registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet'])), 'the shared build still completed');
+    assert.equal(api.launches.at(-1)!.config.image, 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet'])));
     await second.release!();
+});
+
+test('a build Machine create with an unknown outcome fails the run and creates no agent Machine', async () => {
+    const api = new Machines();
+    const create = api.create.bind(api);
+    api.create = async launch => {
+        if (launch.config.processes[0].cmd[0] === 'build') { await create(launch); throw new Error('socket hang up'); }
+        return create(launch);
+    };
+    const run = runtime(api, new Registry(), 'unknown', ['figlet']).start(spec());
+    await assert.rejects(run.wait(), /build Machine creation could not be confirmed/);
+    assert.deepEqual(api.events, ['create build']);
+    await run.release?.().catch(() => {});
 });
 
 test('a base tag is resolved for every run, and a push to it selects a new derived image', async () => {
