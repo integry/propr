@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { parseVibeOutput } from './vibeOutputParser.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
-import { readVibeExportTokenUsage } from './vibeExportUsage.js';
+import { readVibeExportTokenUsage, splitVibeTokenUsage } from './vibeExportUsage.js';
 export { appendVibeExportDirArg, VIBE_CONTAINER_RUNTIME_HOME } from './vibeExportUsage.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -57,7 +57,7 @@ export function readLatestVibeSessionMessages(runtimeHomePath: string | undefine
     catch { return ''; }
 }
 
-export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefined, sessionId?: string): { input_tokens?: number; output_tokens?: number } | undefined {
+export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefined, sessionId?: string): { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number } | undefined {
     if (!runtimeHomePath) return undefined;
     const exportedUsage = readVibeExportTokenUsage(runtimeHomePath);
     if (exportedUsage) return exportedUsage;
@@ -69,8 +69,7 @@ export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefi
                 if (!/^\d{16}$/.test(current.generation)) return undefined;
                 const projection = path.join(sessionDir, 'generations', current.generation, 'projection-state.json');
                 const usage = JSON.parse(fs.readFileSync(projection, 'utf8')).snapshot?.session?.tokenUsage;
-                if (typeof usage?.inputTokens !== 'number' || typeof usage.outputTokens !== 'number') return undefined;
-                return { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens };
+                return splitVibeTokenUsage(usage?.inputTokens, usage?.outputTokens, usage?.cachedInputTokens);
             } catch { return undefined; }
         }
     }

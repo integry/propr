@@ -341,9 +341,11 @@ describe('readLatestVibeSessionTokenUsage', () => {
                 usage: { input_tokens: 8211, output_tokens: 2, cached_input_tokens: 3200, total_tokens: 8213 }
             }));
 
+            // Vibe's input_tokens already includes the cached subset; only the uncached rest stays in input_tokens.
             assert.deepStrictEqual(readLatestVibeSessionTokenUsage(runtimeHome, sessionId), {
-                input_tokens: 8211,
-                output_tokens: 2
+                input_tokens: 5011,
+                output_tokens: 2,
+                cache_read_input_tokens: 3200
             });
         } finally {
             fs.rmSync(runtimeHome, { recursive: true, force: true });
@@ -368,6 +370,33 @@ describe('readLatestVibeSessionTokenUsage', () => {
                 input_tokens: 120,
                 output_tokens: 7
             });
+        } finally {
+            fs.rmSync(runtimeHome, { recursive: true, force: true });
+        }
+    });
+
+    test('moves Vibe 3 cached input into cache_read_input_tokens without counting it twice', () => {
+        const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-cached-usage-test-'));
+        try {
+            const sessionId = 'session-cached';
+            const unifiedDir = path.join(runtimeHome, 'logs', 'session', 'unified', sessionId);
+            fs.mkdirSync(path.join(unifiedDir, 'generations', '0000000000000003'), { recursive: true });
+            fs.writeFileSync(path.join(unifiedDir, 'CURRENT'), JSON.stringify({ generation: '0000000000000003' }));
+            fs.writeFileSync(path.join(unifiedDir, 'generations', '0000000000000003', 'projection-state.json'), JSON.stringify({
+                snapshot: { session: { tokenUsage: { inputTokens: 16573, outputTokens: 14, totalTokens: 16587, cachedInputTokens: 12288 } } }
+            }));
+            const sessionUsage = readLatestVibeSessionTokenUsage(runtimeHome, sessionId);
+            assert.deepStrictEqual(sessionUsage, { input_tokens: 4285, output_tokens: 14, cache_read_input_tokens: 12288 });
+            // Billed input (uncached + cached) must equal Vibe's prompt total, not exceed it.
+            assert.strictEqual((sessionUsage?.input_tokens ?? 0) + (sessionUsage?.cache_read_input_tokens ?? 0), 16573);
+
+            fs.mkdirSync(path.join(runtimeHome, 'propr-export'));
+            const writeExport = (usage: Record<string, number>) => fs.writeFileSync(path.join(runtimeHome, 'propr-export', 'export.json'), JSON.stringify({ outcome: 'completed', usage }));
+            writeExport({ input_tokens: 900, output_tokens: 5, cached_input_tokens: 0, total_tokens: 905 });
+            assert.deepStrictEqual(readLatestVibeSessionTokenUsage(runtimeHome, sessionId), { input_tokens: 900, output_tokens: 5, cache_read_input_tokens: 0 });
+            // A cached count above the prompt total is clamped, never producing negative input.
+            writeExport({ input_tokens: 100, output_tokens: 1, cached_input_tokens: 250, total_tokens: 101 });
+            assert.deepStrictEqual(readLatestVibeSessionTokenUsage(runtimeHome, sessionId), { input_tokens: 0, output_tokens: 1, cache_read_input_tokens: 100 });
         } finally {
             fs.rmSync(runtimeHome, { recursive: true, force: true });
         }
