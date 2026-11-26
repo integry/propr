@@ -364,7 +364,7 @@ export type {
     RuntimePackageValidation
 } from './agents/runtime/agentRuntimePackages.js';
 export * from './agents/runtime/agentRuntimePackageVerification.js';
-export { agentRuntimePackagesDigest, remoteAgentRuntimePackageInstall } from './agents/runtime/agentRuntimePackageProfile.js';
+export { agentRuntimePackagesDigest, publishWorkerAgentRuntime, remoteAgentRuntimeConfigured, remoteAgentRuntimePackageInstall } from './agents/runtime/agentRuntimePackageProfile.js';
 export type * from './agents/runtime/types.js';
 export { AgentRunSpecBuilder, agentRunEnvironment, agentRunMounts, agentRunMcpGrant, agentRunNetwork } from './agents/runtime/agentRunSpec.js';
 export { renderDockerRunArgs } from './agents/runtime/dockerRunArgs.js';

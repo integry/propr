@@ -3,6 +3,7 @@ import type { Queue } from 'bullmq';
 import {
     loadAgentRuntimePackageState,
     loadEffectiveAgentBaseImages,
+    remoteAgentRuntimeConfigured,
     remoteAgentRuntimePackageInstall,
     requestAgentRuntimePackageBuild,
     saveAgentRuntimePackageState,
@@ -37,6 +38,8 @@ interface AgentRuntimeRouteServices {
     loadBaseImages: typeof loadEffectiveAgentBaseImages;
     /** How remote runtimes apply the packages when no agent runs on Docker; undefined when Docker is in use. */
     remoteInstall: () => Promise<string | undefined>;
+    /** Whether any agent, the instance default or the worker's published default selects a remote runtime. */
+    remoteConfigured: () => Promise<boolean>;
     requestBuild: typeof requestAgentRuntimePackageBuild;
     saveState: typeof saveAgentRuntimePackageState;
     search: typeof searchAgentRuntimePackages;
@@ -84,6 +87,15 @@ function sendRuntimePackageError(error: unknown, res: Response): void {
     res.status(500).json({ error: (error as Error).message });
 }
 
+const DOCKER_UNREACHABLE = /cannot connect to the docker daemon|is the docker daemon running|error during connect|spawn docker ENOENT|docker: (?:command )?not found/i;
+
+function dockerUnreachable(error: unknown): boolean {
+    for (let current: unknown = error, depth = 0; current instanceof Error && depth < 5; current = current.cause, depth++) {
+        if (DOCKER_UNREACHABLE.test(current.message)) return true;
+    }
+    return false;
+}
+
 // The effective images are computed the same way the registry computes them
 // (bundle tag from CLI versions + content hash) rather than read from saved
 // agent configs, which can hold stale dockerImage values the registry would
@@ -101,6 +113,7 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
         loadState: loadAgentRuntimePackageState,
         loadBaseImages: loadEffectiveAgentBaseImages,
         remoteInstall: () => remoteAgentRuntimePackageInstall(),
+        remoteConfigured: () => remoteAgentRuntimeConfigured(),
         requestBuild: requestAgentRuntimePackageBuild,
         saveState: saveAgentRuntimePackageState,
         search: searchAgentRuntimePackages,
@@ -115,12 +128,20 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
     // only remote runtimes there is no Docker daemon: the list passes on the same
     // syntax validator, and the runtime's own apt install reports a bad name.
     async function checkAvailability(packages: string[]) {
-        if (await services.remoteInstall()) return { valid: true, packages, errors: [], availability: [], sources: [] };
+        const syntaxOnly = { valid: true, packages, errors: [] as string[], availability: [], sources: [] };
+        if (await services.remoteInstall()) return syntaxOnly;
         const images = await configuredBaseImages(services.loadBaseImages);
-        return withRuntimePackageRequestTimeout(
-            'Agent runtime package availability validation',
-            services.validateAvailability(packages, images)
-        );
+        try {
+            return await withRuntimePackageRequestTimeout(
+                'Agent runtime package availability validation',
+                services.validateAvailability(packages, images)
+            );
+        } catch (error) {
+            // This host has no Docker daemon, but a remote runtime is selected somewhere: the list is
+            // validated like the remote-only path, and the runtime's own apt install reports a bad name.
+            if (dockerUnreachable(error) && await services.remoteConfigured().catch(() => false)) return syntaxOnly;
+            throw error;
+        }
     }
 
     async function getRuntimePackages(req: Request, res: Response): Promise<void> {
@@ -168,6 +189,10 @@ export function createAgentRuntimeRoutes({ runtimeBuildQueue, getRuntimeBuildQue
                 services.search(query, images)
             ));
         } catch (error) {
+            if (dockerUnreachable(error) && await services.remoteConfigured().catch(() => false)) {
+                res.json({ query: typeof req.query.q === 'string' ? req.query.q : '', suggestions: [], sources: [] });
+                return;
+            }
             sendRuntimePackageError(error, res);
         }
     }

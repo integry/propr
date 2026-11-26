@@ -37,6 +37,24 @@ test('remote-only selections report how the packages are installed; any Docker a
         'Installed when Sprites are provisioned and in a derived Fly Machine image; no Docker image is built');
 });
 
+test('the API follows the runtime the worker published when its own environment selects none', async () => {
+    const install = profile.remoteAgentRuntimePackageInstall;
+    const published = async () => 'fly-machines';
+    assert.equal(await install([], {}, { published }), 'Installed in a derived Fly Machine image; no Docker image is built');
+    assert.equal(await install([{ runtime: 'docker' }], {}, { published }), undefined, 'an agent pinned to Docker still builds the image');
+    assert.equal(await install([], { PROPR_AGENT_RUNTIME: 'docker' }, { published }), undefined, 'this process\'s own setting wins');
+    assert.equal(await install([], {}, { published: async () => { throw new Error('db down'); } }), undefined);
+    assert.equal(await profile.remoteAgentRuntimeConfigured([{ runtime: 'docker' }], {}, { published }), true);
+    assert.equal(await profile.remoteAgentRuntimeConfigured([{ runtime: 'docker' }], {}, { published: async () => 'docker' }), false);
+    assert.equal(await profile.remoteAgentRuntimeConfigured([{ runtime: 'sprites', enabled: true }], {}, { published: async () => undefined }), true);
+
+    // Published through the shared config store by the worker, read back by the default reader.
+    await profile.publishWorkerAgentRuntime({ PROPR_AGENT_RUNTIME: 'sprites' });
+    assert.equal(await install([], {}), 'Installed when Sprites are provisioned; no Docker image is built');
+    await profile.publishWorkerAgentRuntime({});
+    assert.equal(await install([], {}), undefined);
+});
+
 test('without Docker the package build validates the list and reports it applied by the remote runtime, not failed', async () => {
     const remoteInstall = async () => 'Installed in a derived Fly Machine image; no Docker image is built';
     const job = await packages.requestAgentRuntimePackageBuild(['postgresql-client', 'jq'], [BASE_IMAGE]);

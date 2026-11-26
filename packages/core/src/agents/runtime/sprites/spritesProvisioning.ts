@@ -7,8 +7,11 @@ import { calculateDelay } from '../../../utils/retryHandler.js';
 import logger from '../../../utils/logger.js';
 import type { NetworkPolicy, Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 import { sameSpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY } from './spritesNetwork.js';
+import { startupStep } from '../startupStep.js';
 import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, agentRuntimePackageInstallCommand, agentRuntimePackagesDigest,
     agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
+
+export { startupStep };
 
 const projectRoot = () => process.env.PROPR_ROOT
     || (existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
@@ -41,21 +44,6 @@ export type Slot = { sprite: Sprite; lease?: AbortSignal; checkpoint: string; pr
     /** Time the package install took while provisioning this slot; absent on recycled slots and without packages. */
     packageInstallMs?: number; restricted?: { policy: NetworkPolicy; run: string; recordDiagnostic: (message: string) => void } };
 
-/** Stop waiting for SDK operations that do not accept a signal. The caller owns any late resource. */
-export async function startupStep<T>(signal: AbortSignal, operation: () => T | Promise<T>): Promise<T> {
-    signal.throwIfAborted();
-    let abort!: () => void;
-    const cancelled = new Promise<never>((_, reject) => {
-        abort = () => reject(signal.reason);
-        signal.addEventListener('abort', abort, { once: true });
-    });
-    try {
-        return await Promise.race([cancelled, operation()]);
-    } finally {
-        signal.removeEventListener('abort', abort);
-    }
-}
-
 async function complete(stream: AsyncIterable<StreamMessage>) {
     let finished = false;
     for await (const message of stream) {
@@ -73,7 +61,8 @@ export class SpritePool {
     private readonly shutdown = new AbortController();
     private readonly pending = new Set<Promise<Slot>>();
     private readonly releases = new Set<Promise<void>>();
-    private readonly replacements: Promise<Slot>[] = [];
+    /** Background replacements, with the digest of the package list each is provisioned with. */
+    private readonly replacements: Array<{ work: Promise<Slot>; packagesDigest: string }> = [];
     private get closed() { return this.shutdown.signal.aborted; }
     constructor(private readonly client: SpriteClient, private readonly inventory?: SpriteInventory,
         private readonly loadPackages: SpritePackageSource = noPackages) {
@@ -233,16 +222,16 @@ export class SpritePool {
             return false;
         };
 
+        // Read once per run: a package change retires warm Sprites instead of reusing them.
+        const packages = await startupStep(signal, () => this.loadPackages());
+        const packagesDigest = agentRuntimePackagesDigest(packages);
         for (;;) {
             signal.throwIfAborted();
             if (performance.now() >= deadline) throw timeout();
-            // Read per attempt: a package change retires warm Sprites instead of reusing them.
-            const packages = await startupStep(signal, () => this.loadPackages());
-            const packagesDigest = agentRuntimePackagesDigest(packages);
             await this.retireStaleIdle(packagesDigest);
             let slot = this.idle.pop();
             let queueMs = elapsedQueueMs();
-            const replacement = !slot && this.replacements.shift();
+            const replacement = slot ? undefined : this.takeReplacement(packagesDigest);
             if (replacement) {
                 try { slot = await this.claim(replacement, signal); }
                 catch {
@@ -261,8 +250,8 @@ export class SpritePool {
                 slot = await this.claim(this.provisionForPool(name, packages), signal);
             }
             if (slot.packagesDigest !== packagesDigest) {
-                // A replacement provisioned before the package change.
-                await this.discard(slot.sprite);
+                // Not expected (stale idle and replacement Sprites are skipped above); never fail the run over it.
+                await this.discardStale(slot);
                 continue;
             }
             if (!await this.checkOut(slot)) continue;
@@ -274,15 +263,33 @@ export class SpritePool {
         }
     }
 
+    /**
+     * The oldest background replacement provisioned with this package list. Replacements started with
+     * another list are dropped without waiting for them, and deleted once they finish, best effort.
+     */
+    private takeReplacement(packagesDigest: string): Promise<Slot> | undefined {
+        while (this.replacements.length) {
+            const { work, packagesDigest: digest } = this.replacements.shift()!;
+            if (digest === packagesDigest) return work;
+            logger.info({ packagesDigest: digest }, 'Agent runtime packages changed; dropping a replacement Sprite provisioned with the old list');
+            void work.then(slot => this.discardStale(slot), () => {});
+        }
+    }
+
+    /** Deletes a Sprite provisioned with another package list; a failed delete is logged, not the run's failure. */
+    private async discardStale(slot: Slot) {
+        await this.discard(slot.sprite).catch(() => {
+            logger.warn({ sprite: slot.sprite.name }, 'Could not retire a Sprite provisioned with other runtime packages');
+        });
+    }
+
     /** Delete idle Sprites provisioned with another package set; they are never handed to a run. */
     private async retireStaleIdle(packagesDigest: string) {
         const stale = this.idle.filter(slot => slot.packagesDigest !== packagesDigest);
         if (stale.length === 0) return;
         this.idle = this.idle.filter(slot => slot.packagesDigest === packagesDigest);
         logger.info({ sprites: stale.map(slot => slot.sprite.name) }, 'Agent runtime packages changed; retiring warm Sprites');
-        await Promise.all(stale.map(slot => this.discard(slot.sprite).catch(() => {
-            logger.warn({ sprite: slot.sprite.name }, 'Could not retire a Sprite provisioned with other runtime packages');
-        })));
+        await Promise.all(stale.map(slot => this.discardStale(slot)));
     }
 
     private async claim(work: Promise<Slot>, signal: AbortSignal) {
@@ -315,9 +322,9 @@ export class SpritePool {
             return;
         }
         const work = this.provisionForPool(name, packages);
-        this.replacements.push(work);
+        this.replacements.push({ work, packagesDigest: agentRuntimePackagesDigest(packages) });
         const unclaimed = () => {
-            const index = this.replacements.indexOf(work);
+            const index = this.replacements.findIndex(entry => entry.work === work);
             if (index < 0) return false;
             this.replacements.splice(index, 1);
             return true;

@@ -13,7 +13,7 @@ import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.j
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
 import { flyConfig } from './fly/config.js';
-import { FlyPackageImages, selectFlyPackageImage } from './fly/derivedImage.js';
+import { createAgentMachine, FlyPackageImages, selectFlyPackageImage } from './fly/derivedImage.js';
 import { applyOutputDiagnostics, OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
 import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
 import { RUN } from './fly/wrapper.js';
@@ -168,10 +168,16 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             if (stopping) throw new Error('Fly run stopped before creation');
             const signal = AbortSignal.any([external, forced.signal]);
             const beforeCreation = (error: unknown): never => { external.throwIfAborted(); throw stopping ? new Error('Fly run stopped before creation') : error; };
+            // Compute time for every Fly run is measured from here: waiting for a derived image
+            // (or a shared build that then failed) is part of the run, reported as its own field.
+            const dispatchedAt = Date.now();
             // Read for every run, so a Settings change applies to the next Machine. An unreadable
             // or invalid list fails the run rather than starting it without its packages.
-            const packages = await selectFlyPackageImage(this.images, prepared, { api, config, packages: await this.loadPackages(), signal, run: spec.name })
-                .catch(beforeCreation);
+            const configured = await this.loadPackages().catch(beforeCreation);
+            const selectOptions = { api, config, packages: configured, signal, run: spec.name };
+            const image = { selection: await selectFlyPackageImage(this.images, prepared, selectOptions).catch(beforeCreation), imageWaitMs: 0 };
+            image.imageWaitMs = Date.now() - dispatchedAt;
+            let agentStartedAt: number | undefined;
             let packageInstall: FlyPackageInstall | undefined;
             external.throwIfAborted();
             if (stopping) throw new Error('Fly run stopped before creation');
@@ -277,10 +283,11 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 missing.push('status');
             };
             let exitCode = -1;
-            const createdAt = Date.now();
             try {
                 let bootStart = Date.now();
-                id = await api.create(prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); });
+                id = await createAgentMachine({ api, images: this.images, prepared, options: selectOptions, state: image,
+                    mayRetry: () => !stopping && !external.aborted, onBootStart: timestamp => { bootStart = Math.min(bootStart, timestamp); } });
+                const packages = image.selection.install;
                 void api.logs(id, display, logs.signal).catch(() => {});
                 let usageFailureSince: number | undefined;
                 const code = stopping ? undefined : await waitForExit(api, id, forced.signal, {
@@ -295,6 +302,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                         // A lost exec response can still have opened the guest gate.
                         mayHaveStarted = true;
                         const response = await api.exec(machine, ['/usr/bin/touch', RUN + '/start'], forced.signal).catch(() => undefined);
+                        if (response?.exit_code === 0) agentStartedAt ??= Date.now();
                         return response?.exit_code === 0;
                     },
                     activity() {
@@ -325,6 +333,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 logs.abort();
                 if (code === 'install-failed') {
                     // Nothing ran as the agent: no workspace result or credentials to keep.
+                    const packages = image.selection.install;
                     const install = await readFlyPackageInstall(api, id, AbortSignal.timeout(5000));
                     logFlyPackageInstall(spec.name, id, packages, install);
                     void api.exec(id, ['/usr/bin/touch', RUN + '/packages-read']).catch(() => {});
@@ -351,11 +360,13 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             }
             if (callbackError) throw callbackError;
             const result: ExecutionResult = pipeline.result(exitCode);
-            if (packageInstall) {
-                // The install is the Machine's provisioning before the agent; record it so its per-run cost shows.
-                result.computeUsage = { runtime: this.kind, wallTimeMs: Date.now() - createdAt, provisioningMs: packageInstall.ms,
-                    packageInstallMs: packageInstall.ms, cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null };
-            }
+            // Every Fly run on the same basis: wall time from dispatch, provisioning up to the agent start,
+            // with the derived-image wait and the start-time install as their own fields.
+            result.computeUsage = { runtime: this.kind, wallTimeMs: Date.now() - dispatchedAt,
+                ...(agentStartedAt !== undefined && { provisioningMs: agentStartedAt - dispatchedAt }),
+                ...(configured.length > 0 && { imageWaitMs: image.imageWaitMs }),
+                ...(packageInstall && { packageInstallMs: packageInstall.ms }),
+                cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null };
             applyOutputDiagnostics(result, truncated, missing, failures);
             return new Promise((resolve, reject) => {
                 if (costMessage) settleCostCapStop(costMessage, result, { preserveOutput: preserve, resolve, reject });

@@ -150,3 +150,43 @@ test('the configured package loader refuses a failed read or an unparsable store
         await store.destroy();
     }
 });
+
+test('a replacement Sprite provisioned with the old package list is not awaited, and is deleted best effort once it finishes', async () => {
+    const { client, calls } = recordingClient();
+    let open!: () => void;
+    const gate = new Promise<void>(resolve => { open = resolve; });
+    let gated: string | undefined;
+    const setup = client.setup;
+    client.setup = sprite => {
+        setup(sprite);
+        if (gated !== undefined) return;
+        gated = sprite.name; // The first Sprite is the background replacement: hold its provisioning.
+        const execFile = sprite.execFile.bind(sprite);
+        sprite.execFile = async (cmd, args, options) => { await gate; return execFile(cmd, args, options); };
+    };
+    const deleteSprite = client.deleteSprite.bind(client);
+    client.deleteSprite = async name => {
+        if (name === gated) throw new Error('Sprites API 503'); // A failed delete of the stale Sprite is not the run's failure.
+        return deleteSprite(name);
+    };
+    let packages = ['postgresql-client'];
+    let reads = 0;
+    const pool = new SpritePool(client, undefined, async () => { reads++; return packages; });
+    await (pool as unknown as { replaceInBackground(): Promise<void> }).replaceInBackground();
+    while (!gated) await new Promise(resolve => setTimeout(resolve, 5));
+    packages = ['jq'];
+    reads = 0;
+    const slot = await pool.acquire(new AbortController().signal);
+    assert.equal(reads, 1, 'the package list is read once per acquire');
+    assert.notEqual(slot.sprite.name, gated, 'the run gets its own Sprite without waiting for the stale replacement');
+    assert.deepEqual(calls.get(slot.sprite.name), ['setup', 'install jq', 'checkpoint']);
+    open();
+    while (!calls.get(gated!)?.includes('checkpoint')) await new Promise(resolve => setTimeout(resolve, 5));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(!client.deleted.includes(gated!), 'its delete failed, and was only logged');
+    await pool.release(slot);
+    const next = await pool.acquire(new AbortController().signal);
+    assert.equal(next.sprite.name, slot.sprite.name, 'the stale replacement never reached the idle pool');
+    await pool.release(next);
+    await pool.close();
+});

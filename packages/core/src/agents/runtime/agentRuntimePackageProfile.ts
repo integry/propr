@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { Knex } from 'knex';
 import type { AgentConfig } from '../types.js';
-import { dockerAgentRuntimeInUse, FLY_MACHINES_AGENT_RUNTIME, selectedAgentRuntimeName, SPRITES_AGENT_RUNTIME } from './runtimeSelection.js';
+import { AGENT_RUNTIME_ENV, dockerAgentRuntimeInUse, FLY_MACHINES_AGENT_RUNTIME, selectedAgentRuntimeName, SPRITES_AGENT_RUNTIME } from './runtimeSelection.js';
 
 /**
  * The configured instance runtime package list, without the Docker image
@@ -60,27 +60,83 @@ export async function loadConfiguredAgentRuntimePackages(client?: Knex): Promise
 }
 
 /**
+ * The worker's default agent runtime (its `PROPR_AGENT_RUNTIME`), published in the shared config
+ * store. The API process often runs without that variable, so on its own it would validate the
+ * package list against Docker on a host that has none.
+ */
+export const WORKER_AGENT_RUNTIME_CONFIG_KEY = 'worker_agent_runtime';
+
+/** Reads the published worker runtime; undefined when none was published or it cannot be read. */
+export type PublishedAgentRuntime = () => Promise<string | undefined>;
+
+async function readPublishedWorkerAgentRuntime(): Promise<string | undefined> {
+    const { getConfig } = await import('../../config/configStore.js');
+    const value = await getConfig<{ runtime?: unknown } | null>(WORKER_AGENT_RUNTIME_CONFIG_KEY, null);
+    return typeof value?.runtime === 'string' && value.runtime.trim() ? value.runtime.trim().toLowerCase() : undefined;
+}
+
+/** Worker startup: record the runtime its agents default to. With several workers, the last one to start wins. */
+export async function publishWorkerAgentRuntime(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
+    const { saveConfig } = await import('../../config/configStore.js');
+    await saveConfig(WORKER_AGENT_RUNTIME_CONFIG_KEY, { runtime: selectedAgentRuntimeName(null, environment), publishedAt: new Date().toISOString() });
+}
+
+/** This process's environment, with the worker's published default when this process selects none itself. */
+async function runtimeEnvironment(environment: NodeJS.ProcessEnv, published: PublishedAgentRuntime): Promise<NodeJS.ProcessEnv> {
+    if (environment[AGENT_RUNTIME_ENV]?.trim()) return environment;
+    const runtime = await published().catch(() => undefined);
+    return runtime ? { ...environment, [AGENT_RUNTIME_ENV]: runtime } : environment;
+}
+
+async function agentSelections(configs?: ReadonlyArray<Pick<AgentConfig, 'runtime' | 'enabled'>>) {
+    if (configs) return configs;
+    const { getConfig } = await import('../../config/configStore.js');
+    return getConfig<AgentConfig[]>('agents', []);
+}
+
+export interface RemoteAgentRuntimeOptions {
+    /** The worker's published default runtime; the worker itself passes `async () => undefined` and uses its own environment. */
+    published?: PublishedAgentRuntime;
+}
+
+/**
  * How the configured packages are applied when no enabled agent runs on Docker,
  * e.g. "Installed when Sprites are provisioned"; undefined when Docker is in use
  * (the derived image build applies them). Such a worker has no Docker daemon,
  * so Settings must not run the image build or the image-based package checks.
+ * The default runtime is this process's `PROPR_AGENT_RUNTIME`, or else the one
+ * the worker published, so the API decides like the worker that runs the agents.
  */
 export async function remoteAgentRuntimePackageInstall(
     configs?: ReadonlyArray<Pick<AgentConfig, 'runtime' | 'enabled'>>, environment: NodeJS.ProcessEnv = process.env,
+    { published = readPublishedWorkerAgentRuntime }: RemoteAgentRuntimeOptions = {},
 ): Promise<string | undefined> {
-    let agents = configs;
-    if (!agents) {
-        const { getConfig } = await import('../../config/configStore.js');
-        agents = await getConfig<AgentConfig[]>('agents', []);
-    }
-    if (dockerAgentRuntimeInUse(agents, environment)) return undefined;
+    const agents = await agentSelections(configs);
+    const effective = await runtimeEnvironment(environment, published);
+    if (dockerAgentRuntimeInUse(agents, effective)) return undefined;
     const enabled = agents.filter(config => config.enabled !== false);
-    const runtimes = new Set((enabled.length > 0 ? enabled : [null]).map(config => selectedAgentRuntimeName(config, environment)));
+    const runtimes = new Set((enabled.length > 0 ? enabled : [null]).map(config => selectedAgentRuntimeName(config, effective)));
     const ways = [
         ...(runtimes.has(SPRITES_AGENT_RUNTIME) ? ['when Sprites are provisioned'] : []),
         ...(runtimes.has(FLY_MACHINES_AGENT_RUNTIME) ? ['in a derived Fly Machine image'] : []),
     ];
     return `Installed ${ways.join(' and ')}; no Docker image is built`;
+}
+
+/**
+ * Whether any agent, the instance default, or the worker's published default selects a remote
+ * runtime. Settings uses it to fall back to name and syntax validation when Docker is unreachable.
+ */
+export async function remoteAgentRuntimeConfigured(
+    configs?: ReadonlyArray<Pick<AgentConfig, 'runtime' | 'enabled'>>, environment: NodeJS.ProcessEnv = process.env,
+    { published = readPublishedWorkerAgentRuntime }: RemoteAgentRuntimeOptions = {},
+): Promise<boolean> {
+    const remote = (name: string) => name === SPRITES_AGENT_RUNTIME || name === FLY_MACHINES_AGENT_RUNTIME;
+    const agents = (await agentSelections(configs).catch(() => [])).filter(config => config.enabled !== false);
+    const publishedRuntime = await published().catch(() => undefined);
+    return agents.some(config => remote(selectedAgentRuntimeName(config, environment)))
+        || remote(selectedAgentRuntimeName(null, environment))
+        || (publishedRuntime !== undefined && remote(publishedRuntime));
 }
 
 /** Stable digest of a normalized package list; the empty list has its own digest. */

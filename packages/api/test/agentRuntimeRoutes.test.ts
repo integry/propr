@@ -396,4 +396,37 @@ describe('agent runtime package routes', () => {
         assert.equal(put.record.status, 202);
         assert.deepEqual(queued, { buildId: 'build-remote', packages: ['postgresql-client'], baseImages: ['propr/agent:bundle-test'] });
     });
+
+    test('when Docker is unreachable but a remote runtime is configured somewhere, validation falls back to the syntax validator', async () => {
+        let remote = true;
+        const unreachable = async () => {
+            throw new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?');
+        };
+        const routes = createAgentRuntimeRoutes({
+            services: {
+                loadState: async () => initialState(),
+                loadBaseImages: async () => ['propr/agent:bundle-test'],
+                remoteInstall: async () => undefined, // this process alone would decide Docker
+                remoteConfigured: async () => remote,
+                search: unreachable,
+                validateAvailability: unreachable,
+                warmCatalog: () => {}
+            }
+        });
+        const request = (body?: unknown, query: Record<string, string> = {}) =>
+            ({ body, query, user: { username: 'admin' }, authorization: adminAuthorization }) as unknown as Request;
+        const validated = responseRecorder();
+        await routes.validateRuntimePackages(request({ packages: ['postgresql-client'] }), validated.response);
+        assert.equal(validated.record.status, 200);
+        assert.equal((validated.record.body as { valid: boolean }).valid, true);
+        const searched = responseRecorder();
+        await routes.searchRuntimePackages(request(undefined, { q: 'postgres' }), searched.response);
+        assert.deepEqual(searched.record.body, { query: 'postgres', suggestions: [], sources: [] });
+
+        remote = false; // Docker-only instance: an unreachable daemon is still an error
+        const failed = responseRecorder();
+        await routes.validateRuntimePackages(request({ packages: ['postgresql-client'] }), failed.response);
+        assert.equal(failed.record.status, 500);
+        assert.match((failed.record.body as { error: string }).error, /Cannot connect to the Docker daemon/);
+    });
 });

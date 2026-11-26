@@ -10,7 +10,7 @@ import zlib from 'node:zlib';
 import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachinesRuntime.ts';
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { agentRuntimePackageInstallCommand } from '../packages/core/src/agents/runtime/agentRuntimePackageProfile.ts';
-import type { MachineLaunch, MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
 import { flyPackageImageTag, FlyPackageImages, resetFlyPackageImages } from '../packages/core/src/agents/runtime/fly/derivedImage.ts';
 import { MEDIA, parseFlyImage, sha256, type ImageManifest, type RegistryApi } from '../packages/core/src/agents/runtime/fly/registry.ts';
 import { RUN, WRAPPER, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
@@ -127,8 +127,11 @@ function spec(name = 'task') {
     }).command('claude', '--version').build();
 }
 
-const runtime = (api: Machines, registry: Registry, app: string, packages: string[], extra: Record<string, string> = {}) =>
-    new FlyMachinesRuntime(api, env(app, extra), async () => packages, new FlyPackageImages(() => registry));
+const FAST = { pollMs: 10, lostCreateWindowMs: 200, removalWindowMs: 200 };
+const runtime = (api: Machines, registry: Registry, app: string, packages: string[] | (() => string[]), extra: Record<string, string> = {},
+    timings: ConstructorParameters<typeof FlyPackageImages>[1] = FAST) =>
+    new FlyMachinesRuntime(api, env(app, extra), async () => typeof packages === 'function' ? packages() : packages, new FlyPackageImages(() => registry, timings));
+const isBuild = (launch: MachineLaunch) => launch.config.processes[0].cmd[0] === 'build';
 
 test('only registry.fly.io images with a tag or digest can be derived', () => {
     assert.deepEqual(parseFlyImage('registry.fly.io/agents@' + BASE_DIGEST), { repository: 'agents', reference: BASE_DIGEST });
@@ -502,4 +505,165 @@ test('the registry client resolves the amd64 manifest, uploads in chunks and kee
     // An upload location elsewhere never receives the token.
     await assert.rejects((registry as unknown as { request(m: string, p: string): Promise<Response> }).request('PATCH', 'https://example.com/upload'),
         /Refusing to send the Fly token/);
+});
+
+test('a lost build Machine create is looked up by name until it appears, and deleted before any agent Machine', async t => {
+    const registry = new Registry();
+    const events: string[] = [];
+    let lookups = 0;
+    let buildName: string | undefined;
+    const original = globalThis.fetch;
+    t.after(() => { globalThis.fetch = original; });
+    globalThis.fetch = (async (input: string | URL, init: RequestInit = {}) => {
+        const url = new URL(String(input));
+        const method = init.method ?? 'GET';
+        if (method === 'POST' && url.pathname === '/v1/apps/lost/machines') {
+            const launch = JSON.parse(String(init.body)) as MachineLaunch;
+            if (isBuild(launch)) {
+                buildName = launch.name;
+                events.push('POST build');
+                throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+            }
+            events.push('POST launch');
+            return Response.json({ error: 'end of test' }, { status: 422 });
+        }
+        if (method === 'GET' && url.searchParams.get('metadata.propr_run_id') === buildName) {
+            lookups++;
+            events.push('GET ' + lookups);
+            // Fly finishes creating it after the client's own three lookups.
+            return Response.json(lookups >= 4 ? [{ id: 'late1', name: buildName, state: 'created' }] : []);
+        }
+        if (method === 'DELETE' && url.pathname === '/v1/apps/lost/machines/late1') {
+            events.push('DELETE late1');
+            return new Response(null, { status: 200 });
+        }
+        throw new Error('unexpected ' + method + ' ' + url);
+    }) as typeof fetch;
+    const fly = new FlyMachinesRuntime(undefined, env('lost'), async () => ['figlet'], new FlyPackageImages(() => registry, { ...FAST, lostCreateWindowMs: 5000 }));
+    const run = fly.start(spec());
+    await assert.rejects(run.wait(), /HTTP 422: end of test/);
+    await run.release?.().catch(() => {});
+    assert.deepEqual(events, ['POST build', 'GET 1', 'GET 2', 'GET 3', 'GET 4', 'DELETE late1', 'POST launch']);
+});
+
+/** Build Machine creates lose their response; `find` answers the lookups by name. */
+class LostBuilder extends Machines {
+    find?: (name: string) => Promise<string | undefined>;
+    override async create(launch: MachineLaunch) {
+        if (isBuild(launch)) { this.launches.push(launch); this.events.push('create build (lost)'); throw new Error('socket hang up'); }
+        return super.create(launch);
+    }
+}
+
+test('a lost build Machine create that stays absent for the lookup window falls back to the start-time install', async () => {
+    const api = new LostBuilder();
+    let lookups = 0;
+    api.find = async () => { lookups++; return undefined; };
+    const run = runtime(api, new Registry(), 'absent', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.ok(lookups >= 2, 'it kept looking for the whole window');
+    assert.deepEqual(api.events, ['create build (lost)', 'create launch', 'destroy launch']);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'));
+    await run.release!();
+});
+
+test('a lost build Machine create whose absence cannot be confirmed fails the run without an agent Machine', async () => {
+    const api = new LostBuilder();
+    api.find = async () => { throw new MachinesHttpError('GET', 403, 'token cannot list Machines'); };
+    const run = runtime(api, new Registry(), 'unconfirmed', ['figlet']).start(spec());
+    await assert.rejects(run.wait(), /build Machine creation could not be confirmed/);
+    assert.deepEqual(api.events, ['create build (lost)']);
+    await run.release?.().catch(() => {});
+});
+
+test('an apt failure is remembered for the base image and package list: later runs fail at once until the list changes', async () => {
+    const api = new Machines();
+    api.buildState = 'build-failed';
+    api.buildResult = { ms: 2000, code: 100, tail: 'E: Unable to locate package figlett' };
+    let packages = ['figlett'];
+    const fly = runtime(api, new Registry(), 'aptcache', () => packages);
+    for (const name of ['first', 'second', 'third']) {
+        const run = fly.start(spec(name));
+        await assert.rejects(run.wait(), /apt exited with code 100[\s\S]*Unable to locate package figlett/);
+        await run.release?.().catch(() => {});
+    }
+    assert.equal(api.launches.filter(isBuild).length, 1, 'one build Machine for three runs');
+    assert.equal(api.launches.filter(l => !isBuild(l)).length, 0);
+    packages = ['figlet'];
+    api.buildState = 'built';
+    api.buildResult = { ms: 12_000, code: 0, tail: '', layer };
+    const fixed = fly.start(spec('fixed'));
+    assert.equal((await fixed.wait()).exitCode, 0);
+    assert.equal(api.launches.filter(isBuild).length, 2, 'a changed list builds again');
+    await fixed.release!();
+});
+
+test('a cached derived image whose tag was deleted is rebuilt instead of launched', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'deleted', ['figlet'], {}, { ...FAST, recheckAfterMs: 0 });
+    const go = async (name: string) => {
+        const run = fly.start(spec(name));
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+    };
+    await go('first');
+    await go('kept');
+    assert.equal(api.launches.filter(isBuild).length, 1, 'the tag still names the image: reused');
+    registry.tags.clear(); // the operator deleted the propr-packages-* tag
+    await go('after-delete');
+    assert.equal(api.launches.filter(isBuild).length, 2);
+    assert.equal(api.launches.at(-1)!.config.image, 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet'])));
+});
+
+test('a Machine create refused for a cached derived image re-checks the registry once and retries', async () => {
+    class Refusing extends Machines {
+        refuse?: string;
+        override async create(launch: MachineLaunch) {
+            if (!isBuild(launch) && launch.config.image === this.refuse) {
+                this.refuse = undefined;
+                this.events.push('refused launch');
+                throw new MachinesHttpError('POST', 422, 'image not found');
+            }
+            return super.create(launch);
+        }
+    }
+    const api = new Refusing();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'refused', ['figlet']);
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    api.refuse = api.launches.at(-1)!.config.image;
+    registry.tags.clear();
+    await delay(2); // a rebuilt image gets another creation time, so another digest
+    const second = fly.start(spec('second'));
+    assert.equal((await second.wait()).exitCode, 0);
+    assert.equal(api.launches.filter(isBuild).length, 2, 'the missing tag was rebuilt');
+    assert.notEqual(api.launches.at(-1)!.config.image, api.launches[1].config.image);
+    assert.ok(api.events.includes('refused launch'));
+    await second.release!();
+});
+
+test('deleting the build Machine has its own window: a delete that never succeeds fails the run in that window', async () => {
+    const api = new StuckBuilder();
+    const started = Date.now();
+    const run = runtime(api, new Registry(), 'stuck-window', ['figlet']).start(spec());
+    await assert.rejects(run.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    assert.ok(Date.now() - started < 5000);
+    assert.deepEqual(api.events, ['create build']);
+    await run.release?.().catch(() => {});
+});
+
+test('compute usage counts the wait for the derived image from dispatch', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    registry.gate = delay(150);
+    const run = runtime(api, registry, 'wait', ['figlet'], { PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' }).start(spec());
+    const result = await run.wait();
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.computeUsage!.imageWaitMs! >= 140, String(result.computeUsage!.imageWaitMs));
+    assert.ok(result.computeUsage!.wallTimeMs >= result.computeUsage!.imageWaitMs!);
+    assert.ok(result.computeUsage!.provisioningMs! >= result.computeUsage!.imageWaitMs!);
+    await run.release!();
 });

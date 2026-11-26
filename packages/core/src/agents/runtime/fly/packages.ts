@@ -1,8 +1,19 @@
-import { agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
+import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, agentRuntimePackageInstallCommand, agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
 import logger from '../../../utils/logger.js';
 import { formatComputeDuration } from '../computeUsage.js';
 import type { MachinesApi } from './api.js';
 import { RUN } from './wrapper.js';
+
+/** `PATH` for root processes on a Fly Machine: the agent launch, its start-time install and the image build Machine. */
+export const FLY_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
+
+/**
+ * The install the wrapper runs as root (`packages.json` at Machine start, `build.json` on an image build Machine).
+ * One builder for both, so the derived image and the start-time fallback install the same way.
+ */
+export function flyPackageInstallSpec(packages: readonly string[]) {
+    return { argv: agentRuntimePackageInstallCommand(packages), path: FLY_PATH, timeout: AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS };
+}
 
 /** What the Machine's wrapper recorded for the runtime package install it ran before the agent. */
 export interface FlyPackageInstall { ms: number; code: number | 'timeout'; tail: string }

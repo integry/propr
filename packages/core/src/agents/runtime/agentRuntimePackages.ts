@@ -275,7 +275,9 @@ function summarizeBuildError(message: string): string {
 
 export async function buildAgentRuntimePackageProfile(
     job: AgentRuntimeBuildJobData,
-    { remoteInstall = () => remoteAgentRuntimePackageInstall() }: { remoteInstall?: () => Promise<string | undefined> } = {},
+    // The build job runs on the worker, which decides from its own environment, not the published default.
+    { remoteInstall = () => remoteAgentRuntimePackageInstall(undefined, process.env, { published: async () => undefined }) }:
+        { remoteInstall?: () => Promise<string | undefined> } = {},
 ): Promise<AgentRuntimePackageState> {
     const validation = validateAgentRuntimePackages(job.packages);
     if (!validation.valid) throw new Error(validation.errors.join('; '));
