@@ -23,3 +23,10 @@ export function provisionedPackages(packages: readonly string[], packageInstallM
         packageServersDigest: packageServersDigest(servers?.servers), ...(servers?.servers.length ? { packages: servers } : {}),
         ...(packageServerInstallMs !== undefined && { packageServerInstallMs }) };
 }
+
+/**
+ * The warm-pool key: a Sprite is reused only by a run whose runtime package list and package MCP
+ * server set both match what its checkpoint has installed.
+ */
+export const spritePoolKey = (packagesDigest: string, serversDigest: string) => packagesDigest + '/' + serversDigest;
+export const slotPoolKey = (slot: Pick<Slot, 'packagesDigest' | 'packageServersDigest'>) => spritePoolKey(slot.packagesDigest, slot.packageServersDigest);

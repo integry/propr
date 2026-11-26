@@ -9,7 +9,7 @@ import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 import { projectRoot, readSpritesCliPins } from './spritesCliPins.js';
 import { sameSpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY } from './spritesNetwork.js';
 import { installSpritePackageServers } from './spritesPackageServers.js';
-import { provisionedPackages, type Slot } from './spritesSlot.js';
+import { provisionedPackages, slotPoolKey, spritePoolKey, type Slot } from './spritesSlot.js';
 import { packageServersDigest, type RemotePackageInstall } from '../../../extensions/remotePackageServers.js';
 import { startupStep } from '../startupStep.js';
 import { checkAgentRuntimePackagesBeforeInstall } from '../agentRuntimePackageIndex.js';
@@ -42,10 +42,10 @@ export class SpritePool {
     private readonly pending = new Set<Promise<Slot>>();
     private readonly releases = new Set<Promise<void>>();
     /**
-     * Background replacements, each for the package server set of the Sprite it replaces, with the
-     * digest of the runtime package list it is provisioned with.
+     * Background replacements, each for the package server set of the Sprite it replaces and the
+     * runtime package list current when it started, with their pool key.
      */
-    private readonly replacements: Array<{ work: Promise<Slot>; packagesDigest: string; serversDigest: string }> = [];
+    private readonly replacements: Array<{ work: Promise<Slot>; packagesDigest: string; key: string }> = [];
     private get closed() { return this.shutdown.signal.aborted; }
     constructor(private readonly client: SpriteClient, private readonly inventory?: SpriteInventory,
         private readonly loadPackages: SpritePackageSource = noPackages) {
@@ -173,34 +173,34 @@ export class SpritePool {
         return false;
     }
 
-    /** The most recently used idle Sprite built for this package server set. */
-    private takeIdle(digest: string) {
-        const index = this.idle.findLastIndex(slot => slot.packageServersDigest === digest);
+    /** The most recently used idle Sprite with this pool key (runtime packages and package MCP servers). */
+    private takeIdle(key: string) {
+        const index = this.idle.findLastIndex(slot => slotPoolKey(slot) === key);
         return index < 0 ? undefined : this.idle.splice(index, 1)[0];
     }
 
     /**
-     * At the cap, make room by deleting the least recently used idle Sprite built
-     * for another package server set. Sprites for other sets are otherwise kept
+     * At the cap, make room by deleting the least recently used idle Sprite with
+     * another pool key. Sprites for other package server sets are otherwise kept
      * warm for the runs that need them.
      */
-    private async evictForCap(digest: string) {
-        const index = this.idle.findIndex(slot => slot.packageServersDigest !== digest);
+    private async evictForCap(key: string) {
+        const index = this.idle.findIndex(slot => slotPoolKey(slot) !== key);
         if (index < 0) return false;
         const [slot] = this.idle.splice(index, 1);
-        logger.info({ sprite: slot.sprite.name, packageServersDigest: slot.packageServersDigest, wanted: digest },
-            'Sprite pool at its cap; deleting the least recently used idle Sprite built for other package MCP servers');
+        logger.info({ sprite: slot.sprite.name, packagesDigest: slot.packagesDigest, packageServersDigest: slot.packageServersDigest, wanted: key },
+            'Sprite pool at its cap; deleting the least recently used idle Sprite built for other packages');
         await this.discard(slot.sprite).catch(() => {
-            logger.warn({ sprite: slot.sprite.name }, 'Could not delete an idle Sprite built for other package MCP servers');
+            logger.warn({ sprite: slot.sprite.name }, 'Could not delete an idle Sprite built for other packages');
         });
         return true;
     }
 
-    /** A clean Sprite whose checkpoint has exactly the run's package MCP servers installed. */
+    /** A clean Sprite whose checkpoint has exactly the current runtime packages and the run's package MCP servers installed. */
     async acquire(signal: AbortSignal, onWaiting?: () => void, servers?: RemotePackageInstall): Promise<Slot & { queueMs: number }> {
         signal.throwIfAborted();
         if (this.closed) throw new Error('Sprite pool is closed');
-        const digest = packageServersDigest(servers?.servers);
+        const serversDigest = packageServersDigest(servers?.servers);
         signal = AbortSignal.any([signal, this.shutdown.signal]);
         const inventory = this.inventory;
         const minutes = inventory?.queueMinutes ?? 10;
@@ -224,7 +224,7 @@ export class SpritePool {
                 throw timeout();
             }
             if (reserved) return true;
-            if (await this.evictForCap(digest)) return false;
+            if (await this.evictForCap(key)) return false;
             if (!attempt) onWaiting?.();
             const backoff = calculateDelay(attempt++, { baseDelay: 1000, maxDelay: 5000, exponentialBase: 2, jitter: true });
             await delay(Math.min(backoff, deadline - performance.now()), undefined, { signal });
@@ -234,14 +234,15 @@ export class SpritePool {
         // Read once per run: a package change retires warm Sprites instead of reusing them.
         const packages = await startupStep(signal, () => this.loadPackages());
         const packagesDigest = agentRuntimePackagesDigest(packages);
+        const key = spritePoolKey(packagesDigest, serversDigest);
         for (;;) {
             signal.throwIfAborted();
             if (performance.now() >= deadline) throw timeout();
             this.retireStaleIdle(packagesDigest);
-            // Only a Sprite built for exactly this package server set is reused.
-            let slot = this.takeIdle(digest);
+            // Only a Sprite built for exactly these runtime packages and package servers is reused.
+            let slot = this.takeIdle(key);
             let queueMs = elapsedQueueMs();
-            const replacement = slot ? undefined : this.takeReplacement(packagesDigest, digest);
+            const replacement = slot ? undefined : this.takeReplacement(packagesDigest, key);
             if (replacement) {
                 try { slot = await this.claim(replacement, signal); }
                 catch {
@@ -262,7 +263,7 @@ export class SpritePool {
                 }
                 slot = await this.claim(this.provisionForPool(name, packages, servers), signal);
             }
-            if (slot.packagesDigest !== packagesDigest) {
+            if (slotPoolKey(slot) !== key) {
                 // Not expected (stale idle and replacement Sprites are skipped above); never fail the run over it.
                 await this.discardStale(slot);
                 continue;
@@ -277,17 +278,17 @@ export class SpritePool {
     }
 
     /**
-     * The oldest background replacement provisioned with this runtime package list and package server set.
+     * The oldest background replacement with this pool key.
      * Replacements started with another runtime package list are dropped without waiting for them, and
      * deleted once they finish, best effort; those for another server set stay for the runs that need them.
      */
-    private takeReplacement(packagesDigest: string, serversDigest: string): Promise<Slot> | undefined {
+    private takeReplacement(packagesDigest: string, key: string): Promise<Slot> | undefined {
         for (const entry of this.replacements.filter(replacement => replacement.packagesDigest !== packagesDigest)) {
             this.replacements.splice(this.replacements.indexOf(entry), 1);
             logger.info({ packagesDigest: entry.packagesDigest }, 'Agent runtime packages changed; dropping a replacement Sprite provisioned with the old list');
             void entry.work.then(slot => this.discardStale(slot), () => {});
         }
-        const index = this.replacements.findIndex(replacement => replacement.serversDigest === serversDigest);
+        const index = this.replacements.findIndex(replacement => replacement.key === key);
         return index < 0 ? undefined : this.replacements.splice(index, 1)[0].work;
     }
 
@@ -343,7 +344,8 @@ export class SpritePool {
             return;
         }
         const work = this.provisionForPool(name, packages, servers);
-        const entry = { work, packagesDigest: agentRuntimePackagesDigest(packages), serversDigest: packageServersDigest(servers?.servers) };
+        const packagesDigest = agentRuntimePackagesDigest(packages);
+        const entry = { work, packagesDigest, key: spritePoolKey(packagesDigest, packageServersDigest(servers?.servers)) };
         this.replacements.push(entry);
         const unclaimed = () => {
             const index = this.replacements.indexOf(entry);

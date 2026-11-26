@@ -718,3 +718,32 @@ test('a background replacement is provisioned with the package servers of the Sp
     await pool.release(other);
     await pool.release(replacement);
 });
+
+test('a warm Sprite is reused only when both its runtime packages and its package servers match', async t => {
+    const { start, provider } = fixture();
+    const inventory = await start({ PROPR_SPRITES_MAX: '3' });
+    await inventory.sweep();
+    let packages = ['postgresql-client'];
+    const pool = new SpritePool(provider, inventory, async () => packages);
+    t.after(() => pool.close());
+    const signal = new AbortController().signal;
+    const run = async (servers?: ReturnType<typeof packageSet>) => {
+        const slot = await pool.acquire(signal, undefined, servers);
+        await pool.release(slot);
+        return slot;
+    };
+    const a = await run(packageSet('a'));
+    const b = await run();
+    // Same runtime packages: each package server set keeps its own warm Sprite.
+    assert.equal((await run(packageSet('a'))).sprite.name, a.sprite.name);
+    assert.equal((await run()).sprite.name, b.sprite.name);
+    assert.equal(provider.created.length, 2);
+    // Same package servers, other runtime packages: no reuse, and the superseded Sprites are retired.
+    packages = ['jq'];
+    const fresh = await run(packageSet('a'));
+    assert.notEqual(fresh.sprite.name, a.sprite.name);
+    assert.equal(fresh.packageServersDigest, a.packageServersDigest);
+    assert.notEqual(fresh.packagesDigest, a.packagesDigest);
+    await pool.close();
+    assert.ok(provider.deleted.includes(a.sprite.name) && provider.deleted.includes(b.sprite.name));
+});
