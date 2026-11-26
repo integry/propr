@@ -6,6 +6,7 @@ import { Check, LoaderCircle, PackagePlus, RefreshCw, X } from 'lucide-react';
 import { SettingsSection, SettingsStatus, type SettingsStatusTone } from './SettingsLayout';
 import { SETTINGS_LABEL } from './settingsStyles';
 import { AgentRuntimePackageNameHelp, AgentRuntimePackagesDescription } from './AgentRuntimePackagesGuide';
+import { AgentRuntimePackageMessages } from './AgentRuntimePackageMessages';
 import {
   getAgentRuntimePackageState,
   searchAgentRuntimePackageCatalog,
@@ -31,24 +32,6 @@ function normalizePackageSpec(value: string): string {
   const separator = trimmed.indexOf('=');
   if (separator === -1) return trimmed.toLowerCase();
   return `${trimmed.slice(0, separator).toLowerCase()}=${trimmed.slice(separator + 1)}`;
-}
-
-function conciseBuildError(value?: string): string | null {
-  if (!value) return null;
-  const clean = value.replace(/\u001b\[[0-9;]*m/g, '');
-  const lines = clean.split('\n').map(line => line.trim()).filter(Boolean);
-  const preferred = [
-    /unable to locate package/i,
-    /no such package/i,
-    /not found/i,
-    /unsupported package manager/i,
-    /returned a non-zero code/i
-  ];
-  for (const pattern of preferred) {
-    const line = [...lines].reverse().find(candidate => pattern.test(candidate));
-    if (line) return line.slice(0, 240);
-  }
-  return (lines[lines.length - 1] || value).slice(0, 240);
 }
 
 interface PackageAutocompleteProps {
@@ -404,20 +387,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
         </button>
       </div>
 
-      {warning && !error && (
-        <p className="mt-2 break-words text-[12px] leading-5 text-amber-700" role="status">Warning: {warning}</p>
-      )}
-      {(error || state.error) && (
-        <p className="mt-2 break-words text-[12px] leading-5 text-red-600">{error || conciseBuildError(state.error)}</p>
-      )}
-      {state.status === 'failed' && (state.buildLog || (state.error && state.error.length > 240)) && (
-        <details className="mt-2 text-[12px] text-slate-500">
-          <summary className="cursor-pointer select-none">Build details</summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap border-l-2 border-slate-200 pl-2 text-[10px] leading-4 text-slate-500">
-            {state.buildLog || state.error}
-          </pre>
-        </details>
-      )}
+      <AgentRuntimePackageMessages warning={warning} error={error} state={state} />
       </div>
     </SettingsSection>
   );
