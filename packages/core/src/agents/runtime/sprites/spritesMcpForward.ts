@@ -44,6 +44,8 @@ export interface SpritesMcpForwardOptions {
     user?: string;
     /** Test seam: opens the worker-side connection to the target. */
     connectTarget?: (target: SpritesMcpForwardTarget) => net.Socket;
+    /** Deadline for one upstream connection to the target, in ms (default 10s); a slower one is refused. */
+    connectTimeoutMs?: number;
 }
 
 function connectTarget(target: SpritesMcpForwardTarget): net.Socket {
@@ -123,8 +125,8 @@ export class SpritesMcpForward {
         }
     }
 
-    /** Reconnect policy for runs that do not pass their own (tests shorten it). */
-    static defaults = { retries: 5, retryDelayMs: 500 };
+    /** Reconnect and upstream-connect policy for runs that do not pass their own (tests shorten it). */
+    static defaults = { retries: 5, retryDelayMs: 500, connectTimeoutMs: 10_000 };
     private get retries() { return this.options.retries ?? SpritesMcpForward.defaults.retries; }
 
     private log(level: 'info' | 'warn', details: Record<string, unknown>, text: string) {
@@ -238,27 +240,52 @@ export class SpritesMcpForward {
         });
     }
 
-    /** Relay one connection the agent opened to the loopback listener to the target, and nothing else. */
+    /**
+     * Relay one connection the agent opened to the loopback listener to the
+     * target, and nothing else. The upstream socket is tracked from the moment
+     * it is created, so closing the forward while it is still connecting
+     * destroys it, and a connection that does not complete within the deadline
+     * is refused instead of waiting on an unreachable target.
+     */
     private relay(accept: () => ClientChannel, reject: () => void) {
         if (this.signal.aborted) return reject();
         const upstream = (this.options.connectTarget ?? connectTarget)(this.options.target);
-        const refuse = () => { upstream.destroy(); reject(); };
+        let channel: ClientChannel | undefined;
+        const entry = { destroy: () => { upstream.destroy(); channel?.destroy(); } };
+        this.channels.add(entry);
+        let pending = true;
+        const refuse = () => {
+            if (!pending) return;
+            pending = false;
+            clearTimeout(deadline);
+            this.channels.delete(entry);
+            // A late error on the abandoned socket must not go unhandled.
+            upstream.on('error', () => {});
+            upstream.destroy();
+            // The SSH connection may already be gone (forward closing); nothing is left to refuse then.
+            try { reject(); } catch { /* connection closed */ }
+        };
+        const deadline = setTimeout(refuse, this.options.connectTimeoutMs ?? SpritesMcpForward.defaults.connectTimeoutMs);
+        deadline.unref();
         upstream.once('error', refuse);
+        upstream.once('close', refuse);
         upstream.once(this.options.target.protocol === 'https:' && !this.options.connectTarget ? 'secureConnect' : 'connect', () => {
-            upstream.off('error', refuse);
+            if (!pending) return;
             if (this.signal.aborted) return refuse();
+            pending = false;
+            clearTimeout(deadline);
+            upstream.off('error', refuse);
+            upstream.off('close', refuse);
             upstream.setNoDelay(true);
-            const channel = accept();
-            const entry = { destroy: () => { upstream.destroy(); channel.destroy(); } };
-            this.channels.add(entry);
+            const opened = channel = accept();
             const done = () => { this.channels.delete(entry); entry.destroy(); };
             upstream.on('error', done);
-            channel.on('error', done);
+            opened.on('error', done);
             upstream.once('close', done);
-            channel.once('close', done);
+            opened.once('close', done);
             // Streamed and SSE responses flow as they arrive: plain byte pipes, no buffering.
-            channel.pipe(upstream);
-            upstream.pipe(channel);
+            opened.pipe(upstream);
+            upstream.pipe(opened);
         });
     }
 

@@ -19,6 +19,22 @@ export const SPRITES_MCP_FORWARD_SCRIPT = '/opt/propr/mcp-forward.sh';
 /** Set to 0/false/off to never use the forward (runs then need a public MCP URL). */
 export const SPRITES_MCP_FORWARD_ENV = 'PROPR_SPRITES_MCP_FORWARD';
 
+/**
+ * Which transport Sprites runs prefer: `auto` (default) uses an explicit or
+ * public HTTPS MCP URL when one exists and the forward otherwise; `forward`
+ * always uses the forward, keeping ProPR MCP off the public internet.
+ */
+export const SPRITES_MCP_TRANSPORT_ENV = 'PROPR_SPRITES_MCP_TRANSPORT';
+export type SpritesMcpTransportPreference = 'auto' | 'forward';
+
+/** The operator's transport preference; an unrecognised value is reported, never guessed. */
+export function spritesMcpTransportPreference(environment: NodeJS.ProcessEnv = process.env): SpritesMcpTransportPreference | { reason: string } {
+    const value = environment[SPRITES_MCP_TRANSPORT_ENV]?.trim().toLowerCase();
+    if (!value || value === 'auto') return 'auto';
+    if (value === 'forward') return 'forward';
+    return { reason: `${SPRITES_MCP_TRANSPORT_ENV} must be "auto" or "forward"` };
+}
+
 /** Where the worker relays forwarded connections, and the URL the agent uses inside the Sprite. */
 export interface SpritesMcpForwardTarget {
     protocol: 'http:' | 'https:';

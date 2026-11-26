@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import http from 'node:http';
-import type net from 'node:net';
+import net from 'node:net';
 import { after, before, test } from 'node:test';
 import ssh2 from 'ssh2';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
@@ -36,7 +36,7 @@ let apiPort = 0;
 const apiRequests: Array<{ url?: string; authorization?: string }> = [];
 let releaseSecondEvent: () => void = () => {};
 before(async () => {
-    SpritesMcpForward.defaults = { retries: 2, retryDelayMs: 10 };
+    SpritesMcpForward.defaults = { ...SpritesMcpForward.defaults, retries: 2, retryDelayMs: 10 };
     api = http.createServer((req, res) => {
         apiRequests.push({ url: req.url, authorization: req.headers.authorization });
         if (req.url === '/api/mcp' && req.headers.accept === 'text/event-stream') {
@@ -126,6 +126,41 @@ test('an explicit or public HTTPS MCP URL is used directly before the forward', 
     }
     // An explicit Sprites endpoint is the operator's choice even when it is not public; open runs use it as given.
     assert.equal(planAgentRunMcpTransport(sprites, { PROPR_SPRITES_MCP_URL: 'http://10.0.0.5/api/mcp' }).transport, 'reachable-url');
+});
+
+test('PROPR_SPRITES_MCP_TRANSPORT=auto keeps the default order; forward uses the forward even when a public URL exists', () => {
+    const publicUrls: NodeJS.ProcessEnv[] = [
+        { PROPR_SPRITES_MCP_URL: 'https://gateway.example.net/api/mcp' },
+        { PROPR_AGENT_MCP_URL: 'https://mcp.example.com/api/mcp' },
+        { API_PUBLIC_URL: 'https://propr.example.com' },
+    ];
+    for (const environment of publicUrls) {
+        for (const auto of [undefined, 'auto', ' AUTO ']) {
+            const plan = planAgentRunMcpTransport(sprites, { ...environment, PROPR_SPRITES_MCP_TRANSPORT: auto });
+            assert.equal(plan.transport, 'reachable-url', `${auto} ${JSON.stringify(environment)}`);
+        }
+        for (const mode of ['open', 'restricted'] as const) {
+            const plan = planAgentRunMcpTransport(sprites, { ...environment, PROPR_SPRITES_MCP_TRANSPORT: 'forward' }, mode);
+            assert.equal(plan.transport, 'ssh-reverse-forward', `${mode} ${JSON.stringify(environment)}`);
+            assert.equal(plan.transport === 'ssh-reverse-forward' && plan.url, FORWARD_URL);
+            assert.match(plan.reason, /PROPR_SPRITES_MCP_TRANSPORT=forward.*no public MCP URL is used/);
+        }
+    }
+    assert.equal(planAgentRunMcpTransport(sprites, { PROPR_SPRITES_MCP_TRANSPORT: 'auto' }).transport, 'ssh-reverse-forward', 'auto still forwards without a public URL');
+    assert.equal(planAgentRunMcpTransport(sprites, { PROPR_SPRITES_MCP_TRANSPORT: 'forward' }).transport, 'ssh-reverse-forward');
+    // forward never falls back to a URL: conflicting or unusable settings refuse the run.
+    const off = planAgentRunMcpTransport(sprites, { API_PUBLIC_URL: 'https://propr.example.com', PROPR_SPRITES_MCP_TRANSPORT: 'forward', PROPR_SPRITES_MCP_FORWARD: '0' });
+    assert.equal(off.transport, 'unavailable');
+    assert.match(off.reason, /PROPR_SPRITES_MCP_TRANSPORT=forward requires the SSH reverse forward, but PROPR_SPRITES_MCP_FORWARD turns it off/);
+    const badTarget = planAgentRunMcpTransport(sprites, { API_PUBLIC_URL: 'https://propr.example.com', PROPR_SPRITES_MCP_TRANSPORT: 'forward', PROPR_INTERNAL_API_URL: 'ftp://api:21' });
+    assert.equal(badTarget.transport, 'unavailable');
+    assert.match(badTarget.reason, /cannot reach the internal API.*PROPR_SPRITES_MCP_TRANSPORT=auto/);
+    const typo = planAgentRunMcpTransport(sprites, { API_PUBLIC_URL: 'https://propr.example.com', PROPR_SPRITES_MCP_TRANSPORT: 'forwrd' });
+    assert.equal(typo.transport, 'unavailable', 'an unrecognised preference is refused, not treated as auto');
+    assert.match(typo.reason, /PROPR_SPRITES_MCP_TRANSPORT must be "auto" or "forward"/);
+    // Other runtimes ignore the Sprites preference.
+    assert.equal(planAgentRunMcpTransport({ kind: 'docker', capabilities: DOCKER_RUNTIME_CAPABILITIES }, { PROPR_SPRITES_MCP_TRANSPORT: 'forward' }).transport, 'private-network');
+    assert.notEqual(planAgentRunMcpTransport(new FlyMachinesRuntime(undefined, {}), { PROPR_SPRITES_MCP_TRANSPORT: 'forward' }).transport, 'ssh-reverse-forward');
 });
 
 test('runs are refused with an actionable message when neither a public URL nor the forward is possible', () => {
@@ -294,6 +329,40 @@ test('a forward that cannot reconnect reports a clear MCP transport error once',
     assert.match(lost[0].message, /ProPR MCP transport lost: .* could not be re-established after 2 reconnect attempts/);
 });
 
+/** An unreachable target: the upstream connection never completes (a black-holed host). */
+function unreachableTarget() {
+    const sockets: net.Socket[] = [];
+    return { sockets, connectTarget: () => { const socket = new net.Socket(); sockets.push(socket); return socket; } };
+}
+
+test('a connection to an unreachable target is refused at the deadline and leaves no socket behind', async () => {
+    const { sprite, sshd: fake } = forwardSprite();
+    const unreachable = unreachableTarget();
+    const forward = await SpritesMcpForward.start({ sprite: sprite as never, target: target(), signal: AbortSignal.timeout(10_000), onLost: () => assert.fail('lost'),
+        connectTarget: unreachable.connectTarget, connectTimeoutMs: 100 });
+    try {
+        const startedAt = Date.now();
+        await assert.rejects(mcpCall(await fake.listenPort!), 'the agent sees the connection refused, not a hang');
+        assert.ok(Date.now() - startedAt >= 90, 'refused at the deadline');
+        assert.equal(unreachable.sockets.length, 1);
+        assert.ok(unreachable.sockets[0].destroyed, 'the pending upstream socket is destroyed');
+        assert.equal(forward.connections, 1, 'the SSH connection survives a refused channel');
+    } finally { await forward.close(); }
+});
+
+test('closing the forward while an upstream connection is pending destroys that socket', async () => {
+    const { sprite, sshd: fake } = forwardSprite();
+    const unreachable = unreachableTarget();
+    const forward = await SpritesMcpForward.start({ sprite: sprite as never, target: target(), signal: AbortSignal.timeout(10_000), onLost: () => assert.fail('lost'),
+        connectTarget: unreachable.connectTarget, connectTimeoutMs: 60_000 });
+    const call = mcpCall(await fake.listenPort!).then(() => assert.fail('the call cannot succeed'), () => 'refused');
+    await until(() => unreachable.sockets.length === 1);
+    assert.equal(unreachable.sockets[0].destroyed, false);
+    await forward.close();
+    assert.ok(unreachable.sockets[0].destroyed, 'close() destroys the socket that was still connecting');
+    assert.equal(await call, 'refused');
+});
+
 // --- runtime lifecycle -----------------------------------------------------
 
 function forwardSpec(network = agentRunNetwork('bridge'), url = FORWARD_URL) {
@@ -337,7 +406,7 @@ test('a run starts the forward before the agent and tears it down after success 
         await run.release!();
         await runtime.close();
     }
-    assert.ok(logs.some(line => line.includes('ProPR MCP SSH reverse forward established') && line.includes('ssh-reverse-forward')));
+    assert.ok(logs.some(line => line.includes('ProPR MCP transport: ssh-reverse-forward') && line.includes('"mcpTransport":"ssh-reverse-forward"')));
     for (const line of logs) assert.ok(!line.includes(GRANT_TOKEN), 'the grant token never reaches the logs');
 });
 

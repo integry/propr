@@ -70,19 +70,26 @@ Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an
 
 ### ProPR MCP from Sprites
 
-Automation runs (and every other run with a ProPR MCP grant) reach ProPR MCP from the Sprite in one of two ways. The worker picks one before it requests the run's grant:
+Automation runs (and every other run with a ProPR MCP grant) reach ProPR MCP from the Sprite in one of two ways. The worker picks one before it requests the run's grant. `PROPR_SPRITES_MCP_TRANSPORT` sets the preference:
+
+- `auto` (the default) follows the order below: a public or explicit URL when one exists, otherwise the forward.
+- `forward` always uses the SSH reverse forward, even when `PROPR_SPRITES_MCP_URL`, a public `PROPR_AGENT_MCP_URL` or `API_PUBLIC_URL` is set. ProPR MCP then never has to be reachable from the internet: the Sprite reaches it only through the worker's outbound connection. A run is refused rather than falling back to a URL when the forward is turned off (`PROPR_SPRITES_MCP_FORWARD=0`) or `PROPR_INTERNAL_API_URL` is unusable. Any other value refuses Sprites runs that need ProPR MCP, so a typo never silently picks a public URL.
+
+With `auto`:
 
 1. **A public or explicit URL, used directly.** That is `PROPR_SPRITES_MCP_URL` when set (for example a public ProPR origin or a gateway in front of the API). Otherwise it is a public HTTPS `PROPR_AGENT_MCP_URL` (without `PROPR_AGENT_DOCKER_NETWORK`) or `API_PUBLIC_URL` + `/api/mcp`. This covers ProPR hosted on Fly and Plus installations with the hosted UI tunnel. A public HTTPS URL is preferred when you have one: it needs no sshd in the Sprite and no worker-held connection.
 2. **Otherwise, a per-run SSH reverse forward (`ssh-reverse-forward`).** This is for self-hosted instances behind NAT with no public URL. The worker already connects out to the Sprite, and the forward carries MCP back over that path, so nothing is exposed publicly:
    - For each run, the worker generates an ephemeral ed25519 client key and an sshd host key, in memory only. Neither is logged or kept after the run.
    - Before the agent starts, the worker starts an sshd in the Sprite. It is bound to `127.0.0.1:39022` only and authorizes just that key for the `propr-mcp` user (`restrict,port-forwarding,permitlisten="127.0.0.1:39080"`). Password, keyboard-interactive and host-based auth are off, and so are sessions, shells, TTYs, agent, X11, tunnel and local forwarding.
-   - The worker reaches that sshd only through the Sprites API proxy (`proxyPort`), checks the host key it generated, and asks for one remote listener on `127.0.0.1:39080`. Each connection to that listener is relayed to the internal API host and port in `PROPR_INTERNAL_API_URL` (default `http://api:4000`), and only there.
+   - The worker reaches that sshd only through the Sprites API proxy (`proxyPort`), checks the host key it generated, and asks for one remote listener on `127.0.0.1:39080`. Each connection to that listener is relayed to the internal API host and port in `PROPR_INTERNAL_API_URL` (default `http://api:4000`), and only there. A connection to the API that does not complete within 10 seconds is refused, and closing the forward also closes connections still being set up.
    - The agent's ProPR MCP config names `http://127.0.0.1:39080/api/mcp`, and it still has to present its per-run grant token. Responses are relayed as plain byte streams, so streamed and SSE responses work. The address is loopback, so a restricted Sprite's network policy gets no MCP host entry.
    - The forward is torn down with the run: after success, failure, cancellation or timeout, and when a lost connection cannot be reattached. The worker stops the sshd, and the Sprite reset to its clean checkpoint removes the keys. If the forward drops mid-run, the worker reconnects with bounded retries (five attempts with backoff). If they all fail, the run fails with a `MCP_TRANSPORT_LOST` error instead of leaving tool calls hanging.
    - The task log records the transport (`ProPR MCP transport: ssh-reverse-forward`).
 
    Provisioning installs `openssh-server` when the Sprite base image lacks it. It keeps the packaged system sshd from starting or running at boot and creates the shell-less `propr-mcp` user. Set `PROPR_SPRITES_MCP_FORWARD=0` to turn the forward off.
 3. **Otherwise the run is refused** before a grant is issued (`MCP_NETWORK_UNAVAILABLE`), with what to configure. This happens when the forward is off and no public URL is set, or when `PROPR_INTERNAL_API_URL` is not a plain `http(s)://host:port[/path]` URL.
+
+`get_agent_run_admission` and `propr admission` show the transport the preference selects.
 
 Fly Machines runs reach MCP over Fly's private network instead and never use the forward.
 

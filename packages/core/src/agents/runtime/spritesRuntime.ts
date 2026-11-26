@@ -181,7 +181,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                     const message = 'ProPR MCP transport: ssh-reverse-forward (per-run SSH reverse forward through the Sprites proxy)';
                     diagnostics.push(message);
                     announce(message);
-                    logger.info({ taskId: options.taskId, run: spec.name, sprite: sprite.name, mcpTransport: 'ssh-reverse-forward' }, 'ProPR MCP SSH reverse forward established');
+                    logger.info({ taskId: options.taskId, run: spec.name, sprite: sprite.name, mcpTransport: 'ssh-reverse-forward' }, message);
                 }
                 const executionSignal = AbortSignal.any([signal, transportLost.signal, AbortSignal.timeout(options.timeout ?? 300_000)]);
                 const executed = await execute(sprite, launch, {
