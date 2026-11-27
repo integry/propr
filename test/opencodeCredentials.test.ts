@@ -14,12 +14,15 @@ CREATE TABLE credential (
     method_id TEXT, active INTEGER, time_created INTEGER, time_updated INTEGER
 )`;
 
-// Importing the helper (observeTempModes) must not leave scripts/__pycache__ behind.
+// Schema markers the script classifies host databases by: 1.19.6 creates
+// data_migration; 2.4.2 drops it and adds 2.x-only tables such as session_v2.
+const opencode1Tables = 'CREATE TABLE data_migration (name TEXT PRIMARY KEY); CREATE TABLE session (id TEXT PRIMARY KEY)';
+const opencode2Tables = 'CREATE TABLE migration (id TEXT PRIMARY KEY); CREATE TABLE session_v2 (id TEXT PRIMARY KEY); CREATE TABLE machine (id TEXT PRIMARY KEY)';
+
+// -B: importing the helper (observeTempModes) must not leave scripts/__pycache__
+// behind. -I ignores PYTHON* environment variables, so PYTHONDONTWRITEBYTECODE would not.
 function runPython(args: string[]): string {
-    return execFileSync('python3', ['-I', ...args], {
-        encoding: 'utf8',
-        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }
-    });
+    return execFileSync('python3', ['-I', '-B', ...args], { encoding: 'utf8' });
 }
 
 function python(code: string, ...args: string[]): string {
@@ -76,7 +79,8 @@ describe('opencode-credentials.py', () => {
             }), { mode: 0o600 });
             // A pre-credential-table 1.x database: sessions only, no credential table.
             if (shape === 'database without credential table') runSql(sourceDb, 'CREATE TABLE session (id TEXT PRIMARY KEY)');
-            if (shape === 'empty credential table') runSql(sourceDb, `CREATE TABLE session (id TEXT PRIMARY KEY); ${createCredentialTable}`);
+            // What 1.19.6 creates: its 1.x schema plus an empty credential table it never reads.
+            if (shape === 'empty credential table') runSql(sourceDb, `${opencode1Tables}; ${createCredentialTable}`);
             run({ sourceDb, runtimeDir, authJson });
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
@@ -222,7 +226,7 @@ finally:
         });
     }
 
-    // An OpenCode 2 host: its populated credential table is the host store.
+    // An OpenCode 2 host: its credential table is the host store.
     function withDatabaseHost(run: (sourceDb: string, runtimeDb: string, authJson: string) => void): void {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-credentials-'));
         try {
@@ -231,7 +235,7 @@ finally:
             const authJson = path.join(dir, 'auth.json');
             // A stale legacy auth.json the host imported long ago.
             fs.writeFileSync(authJson, JSON.stringify({ openai: { type: 'oauth', refresh: 'legacy', access: 'legacy', expires: 1 } }));
-            runSql(sourceDb, `${createCredentialTable};
+            runSql(sourceDb, `${opencode2Tables}; ${createCredentialTable};
                 INSERT INTO credential VALUES ('cred-openai', 'openai', 'OpenAI', 'token-1', NULL, 'oauth', 1, 1, 1);
                 INSERT INTO credential VALUES ('cred-router', 'openrouter', 'OpenRouter', 'router-key', NULL, 'api', 1, 1, 1);`);
             // `opencode auth list --standalone` imported the stale auth.json.
@@ -295,6 +299,41 @@ finally:
             runCredentials('sync', sourceDb, runtimeDb);
 
             assert.deepStrictEqual(querySql(sourceDb, 'SELECT id, value FROM credential ORDER BY id'), [['cred-router', 'router-key']]);
+        });
+    });
+
+    test('drops credentials imported from a stale auth.json when the OpenCode 2 host logged out its last credential', () => {
+        withDatabaseHost((sourceDb, runtimeDb, authJson) => {
+            // `opencode auth logout` (2.4.2) empties the table but leaves auth.json.
+            runSql(sourceDb, 'DELETE FROM credential');
+            fs.writeFileSync(authJson, JSON.stringify({
+                openai: { type: 'oauth', refresh: 'removed', access: 'removed', expires: 1 },
+                openrouter: { type: 'api', key: 'removed-key' }
+            }), { mode: 0o600 });
+            const authBefore = fs.readFileSync(authJson, 'utf8');
+
+            runCredentials('seed', sourceDb, runtimeDb);
+            assert.deepStrictEqual(querySql(runtimeDb, 'SELECT * FROM credential'), []);
+            assert.deepStrictEqual(querySql(runtimeDb, "SELECT 1 FROM sqlite_master WHERE name='propr_original_auth_json'"), []);
+
+            // A login the task makes in the disposable store must not reach auth.json either.
+            runSql(runtimeDb, `INSERT INTO credential VALUES ('task', 'openai', 'Task', 'task-token', NULL, 'oauth', 1, 2, 2)`);
+            runCredentials('sync', sourceDb, runtimeDb);
+            assert.strictEqual(fs.readFileSync(authJson, 'utf8'), authBefore);
+            assert.deepStrictEqual(querySql(sourceDb, 'SELECT * FROM credential'), []);
+        });
+    });
+
+    test('keeps the auth.json path for a 1.x-schema database with an empty credential table', () => {
+        withAuthJsonHost('empty credential table', (dirs) => {
+            const runtimeDb = containerRun(dirs, 1, (db) => {
+                // The credentials imported from auth.json survive seed.
+                assert.deepStrictEqual(querySql(db, 'SELECT integration_id FROM credential ORDER BY integration_id'), [['openai'], ['openrouter']]);
+                refreshOpenAi(db, 'refresh-2');
+            });
+            assert.deepStrictEqual(querySql(runtimeDb, "SELECT 1 FROM sqlite_master WHERE name='propr_original_auth_json'"), [[1]]);
+            assert.strictEqual(JSON.parse(fs.readFileSync(dirs.authJson, 'utf8')).openai.refresh, 'refresh-2');
+            assert.deepStrictEqual(hostCredentialRows(dirs.sourceDb), []);
         });
     });
 });

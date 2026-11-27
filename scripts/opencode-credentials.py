@@ -11,10 +11,25 @@ COLUMNS = "id, integration_id, label, value, connector_id, method_id, active, ti
 OAUTH_REFRESH_FIELDS = ("refresh", "access", "expires")
 
 
-def has_credential_table(source):
-    return source is not None and bool(
-        source.execute("SELECT 1 FROM sqlite_master WHERE name='credential'").fetchone()
-    )
+# Tables that only OpenCode 2 creates; a 1.x database (e.g. from 1.19.6) has
+# `data_migration` and none of these (2.4.2 also adds kv, job, automation,
+# blob, instruction_* and worktree). Update this list if OpenCode 2 renames
+# them. Checked by schema, not row count, because a 2.x host whose last
+# credential was logged out has an empty table but a stale auth.json.
+OPENCODE2_MARKER_TABLES = ("session_v2", "machine")
+
+
+def has_table(db, name):
+    return db is not None and bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
+
+
+def is_opencode2_store(source):
+    """Whether the host database is an OpenCode 2 credential store.
+
+    Its credential table is then authoritative, even when empty. Otherwise (no
+    database, no credential table, or a 1.x schema) auth.json is the host store.
+    """
+    return has_table(source, "credential") and any(has_table(source, name) for name in OPENCODE2_MARKER_TABLES)
 
 
 def read_auth_json(path):
@@ -25,18 +40,20 @@ def read_auth_json(path):
 
 
 def seed(source, runtime, runtime_auth):
-    rows = source.execute(f"SELECT {COLUMNS} FROM credential").fetchall() if has_credential_table(source) else []
+    opencode2 = is_opencode2_store(source)
     with runtime:
-        if rows:
+        if opencode2:
             # An OpenCode 2 host: its credential table is the host store and is
-            # authoritative even if a stale legacy auth.json remains.
+            # authoritative even if empty. OpenCode 2 logout never touches the
+            # legacy auth.json, so drop anything the runtime imported from it.
+            rows = source.execute(f"SELECT {COLUMNS} FROM credential").fetchall()
             runtime.execute("DELETE FROM credential")
             runtime.executemany(f"INSERT INTO credential ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?)", rows)
-        # Otherwise the host is still on OpenCode 1.x (no or an empty credential
-        # table): 1.x ignores that table, so auth.json is the only host store.
-        # OpenCode already imported it into the runtime database; keep those rows.
+        # Otherwise the host is still on OpenCode 1.x: 1.x ignores the database
+        # credential table, so auth.json is the only host store. OpenCode
+        # already imported it into the runtime database; keep those rows.
         runtime.execute("CREATE TABLE propr_original_credential AS SELECT id, value FROM credential")
-        if not rows:
+        if not opencode2:
             # Remember what was imported so sync writes refreshes back to
             # auth.json and can detect host logins made during the run.
             runtime.execute("CREATE TABLE propr_original_auth_json (content TEXT)")
@@ -92,7 +109,7 @@ def sync(source, runtime, host_auth):
         # rows the next seed would prefer them over later host logins.
         sync_auth_json(runtime, host_auth)
         return
-    if not has_credential_table(source):
+    if not is_opencode2_store(source):
         return
     changes = runtime.execute("""
         SELECT current.value, current.time_updated, current.id, original.value
