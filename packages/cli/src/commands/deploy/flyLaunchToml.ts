@@ -1,14 +1,23 @@
 /**
- * The committed root `fly.toml` a Fly dashboard launch ("Launch an App → From
+ * The committed `fly.toml` files a Fly dashboard launch ("Launch an App → From
  * GitHub", #3827) reads. Rendered from the same builders as `propr deploy fly`
  * (flyMachineConfig.ts), so the env, health check, volume, VM size and
- * stop settings cannot drift; a test pins the committed file to this output.
- * Regenerate it with `npx tsx packages/cli/scripts/render-fly-launch-toml.ts`.
+ * stop settings cannot drift; a test pins the committed files to this output.
+ * Regenerate them with `npx tsx packages/cli/scripts/render-fly-launch-toml.ts`.
+ *
+ * Two configs that differ only in [build]:
+ *
+ * - `fly.toml` (root, the default): pulls the released `propr/app:<version>`
+ *   image, pinned to the root package.json version (release:verify and a test
+ *   fail when they differ). No build, so a launch takes about a minute.
+ * - `deploy/fly/source/fly.toml`: builds docker/Dockerfile.app.prod from the
+ *   fork, for modified forks and PR branches (the dashboard's Config path
+ *   field). flyctl resolves `[build] dockerfile` against the config file's
+ *   directory and uses the working directory (the repository root) as the
+ *   build context, so the Dockerfile path climbs back to the root.
  *
  * Differences from the CLI layout, all forced by the dashboard flow:
  *
- * - Fly builds the image from docker/Dockerfile.app.prod in the fork instead
- *   of pulling a released image.
  * - ONE container. A dashboard deploy cannot list the Fly secrets each
  *   container of a multi-container Machine receives, so Redis runs inside the
  *   app container (scripts/fly-launch-entrypoint.sh) with the CLI's flags.
@@ -40,6 +49,39 @@ import {
 
 export const FLY_LAUNCH_DOCKERFILE = "docker/Dockerfile.app.prod";
 export const FLY_LAUNCH_ENTRYPOINT = "scripts/fly-launch-entrypoint.sh";
+export const FLY_LAUNCH_APP_IMAGE_REPOSITORY = "propr/app";
+/** Repository-relative path of the build-from-source config. */
+export const FLY_LAUNCH_SOURCE_CONFIG = "deploy/fly/source/fly.toml";
+
+export type FlyLaunchBuild =
+  | { kind: "prebuilt"; version: string }
+  | { kind: "source" };
+
+/** The committed configs, by repository-relative path. */
+export function flyLaunchConfigs(version: string): { path: string; build: FlyLaunchBuild }[] {
+  return [
+    { path: "fly.toml", build: { kind: "prebuilt", version } },
+    { path: FLY_LAUNCH_SOURCE_CONFIG, build: { kind: "source" } },
+  ];
+}
+
+/** `[build] dockerfile` is relative to the config's directory in flyctl; the context stays the repo root. */
+export function flyLaunchDockerfileFrom(configPath: string): string {
+  const depth = configPath.split("/").length - 1;
+  return `${"../".repeat(depth)}${FLY_LAUNCH_DOCKERFILE}`;
+}
+
+/**
+ * The [processes] command. Images released before the dashboard launch have
+ * no launch entry; instead of a missing-file crash loop, the Machine logs how
+ * to build from source and exits 0, which the on-failure policy leaves stopped.
+ */
+export const FLY_LAUNCH_MISSING_ENTRY_MESSAGE =
+  `fly-launch: this propr/app image has no ${FLY_LAUNCH_ENTRYPOINT}, it predates the Fly dashboard launch. ` +
+  `Set the Config path to ${FLY_LAUNCH_SOURCE_CONFIG} to build from source, or deploy a newer release.`;
+export const FLY_LAUNCH_PROCESS_SCRIPT =
+  `if [ -f ${FLY_LAUNCH_ENTRYPOINT} ]; then exec sh ${FLY_LAUNCH_ENTRYPOINT}; fi; ` +
+  `echo ${FLY_LAUNCH_MISSING_ENTRY_MESSAGE} >&2; exit 0`;
 
 /**
  * buildAppEnv keys a dashboard launch leaves out of fly.toml: derived from the
@@ -72,13 +114,33 @@ export function flyLaunchEnv(): Record<string, string> {
 
 const toml = (value: unknown): string => JSON.stringify(value);
 
-export function renderFlyLaunchToml(): string {
+function buildLines(configPath: string, build: FlyLaunchBuild): string[] {
+  if (build.kind === "prebuilt") {
+    return [
+      "[build]",
+      "  # The released image, built from docker/Dockerfile.app.prod by the release",
+      `  # workflow. To deploy your own changes, set the Config path to ${FLY_LAUNCH_SOURCE_CONFIG}.`,
+      `  image = ${toml(`${FLY_LAUNCH_APP_IMAGE_REPOSITORY}:${build.version}`)}`,
+    ];
+  }
+  return [
+    "[build]",
+    "  # Builds this checkout. flyctl resolves the path from this file's directory;",
+    "  # the build context is the repository root.",
+    `  dockerfile = ${toml(flyLaunchDockerfileFrom(configPath))}`,
+  ];
+}
+
+export function renderFlyLaunchToml(configPath: string, build: FlyLaunchBuild): string {
   const plan = flyLaunchPlan();
   const service = buildHttpService({ ...plan, idleShutdownAfter: FLY_DEFAULTS.idleShutdownAfter });
   const [check] = service.checks as JsonObject[];
   const env = flyLaunchEnv();
   const lines = [
     "# Fly dashboard launch: Launch an App -> From GitHub (see docs/docs/tutorials/setup-fly.md).",
+    build.kind === "prebuilt"
+      ? "# Default: pulls the released image. Builds from source: " + FLY_LAUNCH_SOURCE_CONFIG + "."
+      : "# Builds from source (modified forks, PR branches): set the dashboard's Config path to this file.",
     "# Generated by packages/cli/src/commands/deploy/flyLaunchToml.ts from the same builders as",
     "# `propr deploy fly`; regenerate with `npx tsx packages/cli/scripts/render-fly-launch-toml.ts`.",
     "# No secrets and no account-specific values: the dashboard picks the app name,",
@@ -88,12 +150,12 @@ export function renderFlyLaunchToml(): string {
     "kill_signal = \"SIGTERM\"",
     "kill_timeout = \"60s\"",
     "",
-    "[build]",
-    `  dockerfile = ${toml(FLY_LAUNCH_DOCKERFILE)}`,
+    ...buildLines(configPath, build),
     "",
     "[processes]",
     "  # ProPR and Redis in one container (secrets reach it without a per-container list).",
-    `  app = ${toml(`sh ${FLY_LAUNCH_ENTRYPOINT}`)}`,
+    "  # An image without the launch entry logs how to build from source and stays stopped.",
+    `  app = ${toml(`sh -c '${FLY_LAUNCH_PROCESS_SCRIPT}'`)}`,
     "",
     "[env]",
     ...Object.keys(env).sort().map((key) => `  ${key} = ${toml(env[key])}`),

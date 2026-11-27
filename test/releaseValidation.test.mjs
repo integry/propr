@@ -53,6 +53,7 @@ const validInput = () => ({
       ["app", "ui", "docs", "agent"].map((name) => [name, `propr/${name}:1.2.3`]),
     ),
   },
+  flyLaunchToml: '[build]\n  # comment\n  image = "propr/app:1.2.3"\n\n[processes]\n',
   changelog: "# Changelog\n\n## [1.2.3] - 2026-08-02\n",
   releaseNotes: validReleaseNotes(),
 });
@@ -70,13 +71,31 @@ describe("release validation", () => {
     input.packages[2].internalDependencies["@propr/shared"] = "^1.2.2";
     input.launcherManifest.version = "1.2.2";
     input.launcherManifest.images.agent = "propr/agent:latest";
+    input.flyLaunchToml = '[build]\n  image = "propr/app:1.2.2"\n';
     input.changelog = "# Changelog\n\n## [Unreleased]\n";
 
     const errors = validateRelease(input);
-    assert.equal(errors.length, 7);
+    assert.equal(errors.length, 8);
+    assert.ok(errors.some((error) => error.startsWith("fly.toml [build] image")));
     assert.ok(errors.some((error) => error.includes("@propr/api version")));
     assert.ok(errors.some((error) => error.includes("Release tag")));
     assert.ok(errors.some((error) => error.includes("CHANGELOG.md")));
+  });
+
+  it("requires the Fly dashboard launch fly.toml to pull the release's app image", () => {
+    const expected = "fly.toml [build] image must be propr/app:1.2.3; found ";
+    const hint = " (run npx tsx packages/cli/scripts/render-fly-launch-toml.ts)";
+    for (const [flyLaunchToml, found] of [
+      ['[build]\n  image = "propr/app:1.2.2"\n', "propr/app:1.2.2"],
+      ['[build]\n  image = "propr/app:latest"\n', "propr/app:latest"],
+      ['[build]\n  image = "someone/app:1.2.3"\n', "someone/app:1.2.3"],
+      ['[build]\n  dockerfile = "docker/Dockerfile.app.prod"\n', "none"],
+      [undefined, "none"],
+    ]) {
+      const input = validInput();
+      input.flyLaunchToml = flyLaunchToml;
+      assert.deepEqual(validateRelease(input), [`${expected}${found}${hint}`]);
+    }
   });
 
   it("allows ordinary branch validation without a dated changelog section", () => {

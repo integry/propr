@@ -39,10 +39,10 @@ Exhausting the $5 automatically switches the organization to Pay As You Go and b
 
 ## Deploy from the Fly dashboard
 
-You can launch ProPR from the [Fly dashboard](https://fly.io/dashboard) with **Launch an App → From GitHub**, without installing `flyctl` or the ProPR CLI. Fly builds the control plane from your fork, and ProPR's first-visit setup wizard does the rest in the browser.
+You can launch ProPR from the [Fly dashboard](https://fly.io/dashboard) with **Launch an App → From GitHub**, without installing `flyctl` or the ProPR CLI. By default Fly pulls the released `propr/app` image, so there is no build, and ProPR's first-visit setup wizard does the rest in the browser.
 
 1. **Fork** `integry/propr` into your GitHub account or organization.
-2. In the Fly dashboard, choose **Launch an App → From GitHub**, pick the fork and the `main` branch, and choose the organization, app name and region. The fork's root `fly.toml` supplies the build (`docker/Dockerfile.app.prod`), the `propr_data` 1 GB volume, a shared-CPU 1x Machine with 1 GB, the `/health` check and auto-start. Do not add secrets; the instance generates them.
+2. In the Fly dashboard, choose **Launch an App → From GitHub**, pick the fork and the `main` branch (or a release tag), and choose the organization, app name and region. Leave **Config path** at the default. The fork's root `fly.toml` supplies the image (`propr/app:<version>`, pinned to that commit's release), the `propr_data` 1 GB volume, a shared-CPU 1x Machine with 1 GB, the `/health` check and auto-start. Nothing is built: the deploy takes about a minute. Do not add secrets; the instance generates them.
 3. When the deploy finishes, open the app's **Live Logs** (or run `fly logs`) and find the line `ProPR setup code: XXXX-XXXX-XXXX`.
 4. Open `https://<app>.fly.dev/setup` and enter the code. The first browser to enter it claims the instance; anyone else, even with the code, is shut out. A restart before the claim prints a new code.
 5. **Create the GitHub App.** The wizard sends GitHub an App manifest with this instance's webhook (`/webhook`), sign-in callback and setup URLs filled in. Leave the organization empty for your personal account. GitHub returns the App's credentials to the instance, which stores them on the volume.
@@ -53,6 +53,12 @@ You can launch ProPR from the [Fly dashboard](https://fly.io/dashboard) with **L
    - **Fly Machines:** enter a separate agent app, a deploy token for that app only (the agent app → **Tokens** → **Create deploy token**, or `fly tokens create deploy --app <agent-app>`; never an organization or personal token) and the agent image. To build the image without a terminal, add a `FLY_API_TOKEN` Actions secret to the fork and run its **Build Fly agent image** workflow; the job summary shows the `registry.fly.io/<agent-app>@sha256:…` reference. The Free Plan default of 2 concurrent agent Machines leaves room for the control plane.
    - **Not yet:** the control plane starts without a runtime, and agent runs fail with a clear error until you add `SPRITES_TOKEN` or the `PROPR_FLY_*` settings as Fly secrets.
 9. **Finish.** Idle shutdown stays off unless you tick it. The wizard closes for good and ProPR starts in the same Machine. Sign in, add a model provider in **Settings → Agents**, and label an issue `AI`.
+
+> **Available from the release after v0.9.3.** The image pinned on `main` until then, `propr/app:0.9.3`, predates the dashboard launch. A Machine started from it does not crash-loop: it logs `fly-launch: this propr/app image has no scripts/fly-launch-entrypoint.sh, …` with the advice to set the Config path to `deploy/fly/source/fly.toml`, and stays stopped. Until the next release, use [Deploy your own changes](#deploy-your-own-changes) below.
+
+### Deploy your own changes
+
+To run a modified fork, a branch or a pull request, build the image from source instead. In **Launch an App → From GitHub** (or the app's GitHub deployment settings), pick the branch and set **Config path** to `deploy/fly/source/fly.toml`. That file is identical to the root `fly.toml` except that its `[build]` builds `docker/Dockerfile.app.prod` from the checkout: the Dockerfile path is written relative to the config's own directory, as `flyctl` resolves it, and the build context is the repository root. Expect a long first build on Fly's builder (more than 15 minutes); later builds reuse its cache when the builder still has it. Everything after the build, the setup code and the wizard, is the same.
 
 ![Setup code entry, the first step of the wizard](/img/screenshots/fly-launch/wizard-claim.png)
 
@@ -83,14 +89,14 @@ In a dashboard launch, ProPR and Redis share one container, so ProPR exiting sto
 
 ### Updates
 
-Fly redeploys the app from the fork. Keep the fork current with GitHub's **Sync fork** button. If the app is connected with deploy-on-push (the dashboard's GitHub deployment settings), each sync deploys the new version; otherwise use **Deploy** in the dashboard. Database migrations run on boot, as on every other deploy. The wizard does not reappear and the volume keeps every secret and setting.
+Fly redeploys the app from the fork. Keep the fork current with GitHub's **Sync fork** button. If the app is connected with deploy-on-push (the dashboard's GitHub deployment settings), each sync deploys the new version; otherwise use **Deploy** in the dashboard. With the root `fly.toml`, a release changes only its pinned `propr/app:<version>` tag, so the deploy pulls the new image; with `deploy/fly/source/fly.toml` it rebuilds. The release's metadata pull request bumps the pinned tag on `main` before the release tag publishes that image, so if a deploy right after a release cannot pull the image, deploy again once the release's **Docker Images** run has finished. Database migrations run on boot, as on every other deploy. The wizard does not reappear and the volume keeps every secret and setting.
 
 ### Dashboard launch compared with `propr deploy fly`
 
 | | Dashboard launch | `propr deploy fly` |
 | --- | --- | --- |
 | Needs | A browser, a GitHub fork | `flyctl`, the ProPR CLI, an environment file |
-| Image | Built by Fly from the fork's `docker/Dockerfile.app.prod` | Released `propr/app` image, or `--image` |
+| Image | Released `propr/app:<version>` pinned in the root `fly.toml`; or built by Fly from the fork with `deploy/fly/source/fly.toml` | Released `propr/app` image, or `--image` |
 | Machine layout | One container: ProPR plus Redis (Valkey) with the same persistence flags | Separate app and Redis containers in one Machine (plus optional tunnel or Docker) |
 | Generated secrets | On first boot, stored on the volume | By the CLI, stored as Fly secrets |
 | GitHub App | Created in the wizard with the manifest flow | Your own App from the env file, or ProPR Connect |
@@ -98,7 +104,7 @@ Fly redeploys the app from the fork. Keep the fork current with GitHub's **Sync 
 | Idle shutdown | Off by default; wizard opt-in, no stop token needed | Off by default; `--idle-shutdown` plus an app-scoped stop token |
 | Updates | Sync the fork; Fly redeploys | Rerun `propr deploy fly` |
 
-Both use the same env, health check, volume, VM size and stop settings: the committed `fly.toml` is generated from the CLI's builders (`npx tsx packages/cli/scripts/render-fly-launch-toml.ts`), and a test keeps the two from drifting.
+Both use the same env, health check, volume, VM size and stop settings: the committed `fly.toml` and `deploy/fly/source/fly.toml` are generated from the CLI's builders (`npx tsx packages/cli/scripts/render-fly-launch-toml.ts`), and a test keeps them from drifting from the CLI and from each other (they differ only in `[build]`).
 
 ## Deploy the Machine
 

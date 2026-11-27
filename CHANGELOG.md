@@ -11,8 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Deploy from the Fly dashboard** (#3827)
   - A committed root `fly.toml`, generated from the `propr deploy fly`
-    builders, lets **Launch an App → From GitHub** build a fork and run the
-    control plane with ProPR and Redis (Valkey) in one container.
+    builders, lets **Launch an App → From GitHub** run the control plane with
+    ProPR and Redis (Valkey) in one container. It pulls the released
+    `propr/app:<version>` image (no build); `release:verify` keeps the pin at
+    the package version. `deploy/fly/source/fly.toml`, picked with the
+    dashboard's Config path, builds a modified fork from source instead. The
+    prebuilt path works from the next release: an older image logs how to
+    use the source config and stays stopped.
   - Secrets the CLI generates are generated on first boot and kept on the
     volume (mode 0600); Fly secrets still win. `propr deploy fly` instances
     are unchanged.
