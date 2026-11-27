@@ -140,6 +140,8 @@ COPY scripts/opencode-entrypoint.sh ./scripts/opencode-entrypoint.sh
 COPY scripts/opencode-run.sh ./scripts/opencode-run.sh
 COPY scripts/vibe-entrypoint.sh ./scripts/vibe-entrypoint.sh
 COPY scripts/vibe-prompt-file-runner.py ./scripts/vibe-prompt-file-runner.py
+COPY scripts/pi-entrypoint.sh ./scripts/pi-entrypoint.sh
+COPY scripts/pi-credentials.py ./scripts/pi-credentials.py
 COPY scripts/gh-wrapper.sh ./scripts/gh-wrapper.sh
 COPY scripts/extension-stdio-bridge.mjs ./scripts/extension-stdio-bridge.mjs
 COPY NOTICE ./NOTICE

@@ -60,7 +60,7 @@ run_agent() {
 
 run_agent --entrypoint sh "$AGENT_IMAGE" -c '
   set -eu
-  for executable in claude codex agy opencode vibe agent-tank git gh rg python3 tini; do
+  for executable in claude codex agy opencode vibe pi agent-tank git gh rg python3 tini; do
     command -v "$executable" >/dev/null
   done
 '
@@ -86,13 +86,14 @@ check_version codex dev.propr.agent.codex.version codex
 check_version antigravity dev.propr.agent.antigravity.version agy
 check_version opencode dev.propr.agent.opencode.version opencode
 check_version vibe dev.propr.agent.vibe.version vibe
+check_version pi dev.propr.agent.pi.version 'PI_CODING_AGENT_DIR=/tmp/propr-pi-version PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 pi'
 check_version agent-tank dev.propr.agent-tank.version agent-tank
 echo '✓ bundled CLI versions match the image labels'
 
 run_agent -e PROPR_AGENT_TYPE=agent-tank "$AGENT_IMAGE" agent-tank --version >/dev/null
 echo '✓ agent-tank runs through the entrypoint without a provider entrypoint'
 
-for entrypoint in claude codex antigravity opencode vibe; do
+for entrypoint in claude codex antigravity opencode vibe pi; do
   run_agent --entrypoint "/home/node/${entrypoint}-entrypoint.sh" "$AGENT_IMAGE" gh --version >/dev/null
 done
 echo '✓ agent entrypoints can execute GitHub CLI through the wrapper'
@@ -105,6 +106,7 @@ run_agent --entrypoint sh "$AGENT_IMAGE" -c '
     /home/node/.gemini/oauth_creds.json /home/node/.gemini/google_accounts.json \
     /home/node/.local/share/opencode/auth.json \
     /home/node/.vibe/.env \
+    /home/node/.pi/agent/auth.json \
     /home/node/.config/gh/hosts.yml /root/.config/gh/hosts.yml \
     /home/node/.docker/config.json /root/.docker/config.json; do
     if [ -e "$path" ]; then

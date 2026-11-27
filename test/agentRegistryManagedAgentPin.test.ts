@@ -73,6 +73,7 @@ function publishedPinImage(overrides: Record<string, string> = {}) {
             'dev.propr.agent.antigravity.version': arg('ANTIGRAVITY_CLI_VERSION'),
             'dev.propr.agent.opencode.version': arg('OPENCODE_CLI_VERSION'),
             'dev.propr.agent.vibe.version': arg('VIBE_CLI_VERSION'),
+            'dev.propr.agent.pi.version': arg('PI_CLI_VERSION'),
             ...overrides,
         },
     };
