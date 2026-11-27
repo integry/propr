@@ -555,6 +555,34 @@ exit "\${PROPR_TEST_EXIT:-0}"
         });
     });
 
+    test('login mode runs Pi on the mounted credential dir without a disposable copy or write-back', () => {
+        withEntrypoint((env, dirs) => {
+            const result = spawnSync('bash', [entrypoint, 'pi', 'auth', 'login', 'anthropic', '--no-browser'], {
+                env: { ...env, PROPR_PI_LOGIN: '1' }, encoding: 'utf8', input: '',
+            });
+            assert.equal(result.status, 0, result.stderr);
+            const report = reportOf(dirs.report);
+            assert.equal(report.args, 'auth login anthropic --no-browser');
+            assert.equal(report.agent_dir, dirs.source, 'Pi writes the login into the mounted dir');
+            assert.equal(report.session_dir, '', 'no disposable session dir in login mode');
+            assert.equal(fs.existsSync(dirs.runtime), false, 'no disposable home is created');
+            assert.match(result.stderr, /Executing command: pi auth login/);
+            // The fake Pi's own write lands directly in the host file.
+            const host = JSON.parse(fs.readFileSync(path.join(dirs.source, 'auth.json'), 'utf8')) as Auth;
+            assert.equal(host.anthropic.access, 'access-2');
+        });
+    });
+
+    test('login mode refuses a missing credential dir', () => {
+        withEntrypoint((env, dirs) => {
+            const result = spawnSync('bash', [entrypoint, 'pi', 'auth', 'login', 'anthropic'], {
+                env: { ...env, PROPR_PI_LOGIN: '1', PROPR_PI_SOURCE_DIR: path.join(dirs.runtime, '..', 'missing') }, encoding: 'utf8',
+            });
+            assert.equal(result.status, 64);
+            assert.match(result.stderr, /not mounted/);
+        });
+    });
+
     test('drops to node through su-exec for every Pi call when started as root', () => {
         const script = fs.readFileSync(entrypoint, 'utf8');
         assert.match(script, /\n        su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);

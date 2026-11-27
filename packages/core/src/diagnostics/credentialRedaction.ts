@@ -11,6 +11,8 @@ export function nativeCredentialValues(root: string, provider: string, pinned?: 
     const names: Record<string, string[]> = {
         codex: ['auth.json'], claude: ['.credentials.json'],
         opencode: ['auth.json', 'account.json'], antigravity: ['oauth_creds.json', 'antigravity-cli/antigravity-oauth-token'], vibe: ['credentials.json', '.env'],
+        // Pi: API-key entries (`key`) and OAuth entries (`access`, `refresh`).
+        pi: ['auth.json'],
     };
     let dir: PinnedDirectory;
     try { dir = pinned ?? PinnedDirectory.open(root); }

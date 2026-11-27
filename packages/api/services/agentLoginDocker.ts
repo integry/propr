@@ -1,13 +1,18 @@
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
   AGENT_DEFAULTS,
+  buildAgentLoginCommand,
+  getAgentLoginDescriptor,
   getManagedAgentConfigPath,
   getManagedAgentConfigRelativePath,
   isAgentLoginSupported,
+  getPiLoginProviders,
   isManagedAgentConfigPath,
   type AgentLoginDescriptor,
+  type AgentLoginOptions,
 } from '@propr/shared';
 import {
   AgentConfigPathUnavailableError,
@@ -22,6 +27,44 @@ export class AgentLoginInputError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AgentLoginInputError';
+  }
+}
+
+/**
+ * Provider-scoped logins (Pi) default to the provider of the agent's default
+ * model; other agents take no options.
+ */
+function resolveLoginOptions(
+  agent: AgentConfig,
+  descriptor: AgentLoginDescriptor,
+  options: AgentLoginOptions,
+): AgentLoginOptions {
+  if (!descriptor.providerLogin) return options;
+  const provider = options.provider?.trim()
+    || getPiLoginProviders(agent.supportedModels ?? [], agent.defaultModel)[0];
+  if (!provider) {
+    throw new AgentLoginInputError(`Choose a provider to log in to; ${agent.type} has no provider models configured`);
+  }
+  return { provider, ...(options.apiKey && { apiKey: true }) };
+}
+
+/** The agent's login descriptor with the command built for the resolved login options. */
+export function resolveAgentLoginDescriptor(
+  agent: AgentConfig,
+  options: AgentLoginOptions,
+): { descriptor: AgentLoginDescriptor; loginOptions: AgentLoginOptions } {
+  const baseDescriptor = getAgentLoginDescriptor(agent.type);
+  if (!baseDescriptor) {
+    throw new AgentLoginInputError(`${agent.type} does not support interactive login`);
+  }
+  const loginOptions = resolveLoginOptions(agent, baseDescriptor, options);
+  try {
+    return {
+      descriptor: { ...baseDescriptor, command: buildAgentLoginCommand(baseDescriptor, loginOptions) },
+      loginOptions,
+    };
+  } catch (error) {
+    throw new AgentLoginInputError((error as Error).message);
   }
 }
 
@@ -172,4 +215,31 @@ export function buildAgentLoginCreateArgs(
     image,
     ...descriptor.command,
   ];
+}
+
+export interface DockerCommandResult {
+  stdout: string;
+  stderr: string;
+}
+
+export function defaultRunDocker(args: string[]): Promise<DockerCommandResult> {
+  return new Promise((resolve, reject) => {
+    const timeout = args[0] === 'pull' ? 5 * 60_000 : 30_000;
+    execFile('docker', args, { timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error((stderr || stdout || error.message).trim()));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+export function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
+  const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+  const command = ['docker', ...args].map(shellQuote).join(' ');
+  // Docker refuses to attach a container TTY when its own stdin is a pipe.
+  // script(1) supplies the controlling PTY while keeping Node's stdin/stdout
+  // pipeable for the browser session.
+  return spawn('script', ['-qefc', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
 }

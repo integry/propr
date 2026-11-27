@@ -9,6 +9,17 @@ interface ProviderLogoProps {
 export const ProviderLogo: React.FC<ProviderLogoProps> = ({ provider, className = "w-4 h-4" }) => {
   const normalized = provider?.toLowerCase() || '';
 
+  // Pi agent type or alias (`pi`, `pi-work`). Pi model ids
+  // (`pi-anthropic/...`) fall through to their model provider's logo.
+  if (normalized === 'pi' || (normalized.startsWith('pi-') && !normalized.includes('/'))) {
+    // Pi Icon (π glyph)
+    return (
+      <svg className={className} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-label="Pi">
+        <path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h15a1.5 1.5 0 0 1 0 3H16v9.25c0 .69.56 1.25 1.25 1.25H19a1.5 1.5 0 0 1 0 3h-1.75A4.25 4.25 0 0 1 13 16.25V7h-3v5.6c0 3.3-1.2 6-3.42 7.9a1.5 1.5 0 1 1-1.95-2.28C6.24 16.84 7 14.98 7 12.6V7H4.5A1.5 1.5 0 0 1 3 5.5Z" />
+      </svg>
+    );
+  }
+
   if (normalized.includes('claude') || normalized.includes('anthropic')) {
     // Claude Icon
     return (

@@ -20,9 +20,9 @@ export function scheduleManagedDiagnostics(): () => void {
             // Standing limitations are recorded when they begin or change, not on
             // every pass, so repeated inventories add no duplicate gap noise.
             spool.report({ provider: 'claude', agent: 'unknown', source: 'shared-tmp-claude-logs' }, 'ownership-unverified', 0, { standing: true });
-            // Pi keeps its sessions in a per-run disposable dir, so its host dir
-            // holds no native state to inventory.
-            const agents = (await loadAgents()).filter((a): a is typeof a & { type: Exclude<typeof a.type, 'pi'> } => a.enabled && a.type !== 'pi');
+            // ProPR Pi runs keep their sessions in a disposable in-container dir;
+            // the host Pi dir is still inventoried for host-run sessions.
+            const agents = (await loadAgents()).filter(a => a.enabled);
             const inventory = { provider: 'application', agent: 'application', source: 'agent-inventory' };
             spool.report(inventory, 'protected-native-state', 0);
             if (agents.length > 128) spool.report(inventory, 'scan-limit', 0, { standing: true });

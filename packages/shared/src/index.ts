@@ -347,15 +347,26 @@ export {
 } from './taskIdentifiers.js';
 
 export {
+  PI_PROVIDERS,
+  getPiProviderApiKeyEnv,
+  getPiProviderInfo,
+  type PiProviderInfo,
+} from './piProviders.js';
+
+export {
   AGENT_LOGIN_DESCRIPTORS,
   LOGINABLE_AGENT_TYPES,
   MANAGED_AGENT_CREDENTIALS_PREFIX,
+  buildAgentLoginCommand,
   getAgentLoginDescriptor,
+  getPiLoginProviders,
+  isValidAgentLoginProvider,
   getManagedAgentConfigPath,
   getManagedAgentConfigRelativePath,
   isAgentLoginSupported,
   isManagedAgentConfigPath,
   type AgentLoginDescriptor,
+  type AgentLoginOptions,
   type LoginableAgentType,
 } from './agentLogin.js';
 

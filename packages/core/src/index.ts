@@ -513,11 +513,13 @@ export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEven
 export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
 export { PiAgent, parsePiConversationLog, parsePiOutput, isSuccessfulPiResult } from './agents/impl/PiAgent.js';
 export { buildPiCliArgs, buildPiDockerArgs } from './agents/impl/utils/piDockerArgsBuilder.js';
+export { buildPiAuthCheckDockerArgs, parsePiAuthCheckOutput } from './agents/impl/utils/piAuthCheck.js';
 export { buildPiExecutionResult } from './agents/impl/utils/piExecutionResult.js';
 export { toPiCliModel, toProprPiModelId, isPiModelId } from './agents/impl/piModelIds.js';
 export type {
     Agent,
     AgentConfig,
+    AgentCredentialCheckResult,
     AgentTaskOptions,
     AgentExtensionRequest,
     AgentToolPolicy,

@@ -50,6 +50,8 @@ export interface OrchestratorConfig {
   readonly hostVibeDir?: string;
   readonly vibePromptCacheDir: string;
   readonly hostVibePromptCacheDir?: string;
+  /** Host Pi agent dir (HOST_PI_DIR, usually ~/.pi/agent), mounted writable for OAuth refresh write-back. */
+  readonly hostPiDir?: string;
   readonly hostGhPrivateKey?: string;
   readonly uiTunnelEnabled: boolean;
   readonly uiTunnelToken?: string;
@@ -71,6 +73,7 @@ export interface OrchestratorConfig {
   readonly ghOauthCallbackUrl: string;
   readonly mistralApiKey?: string;
   readonly vibeConfigPath?: string;
+  readonly piConfigPath?: string;
   readonly manifest: { version: string; images: Record<string, string> } & Record<string, unknown>;
   readonly images: Record<string, string>;
   readonly manifestPath: string;
@@ -113,7 +116,7 @@ export interface TunnelStatus {
   reachable: boolean | null;
 }
 
-/** Result of validating host paths / vibe settings. */
+/** Result of validating host paths / vibe / pi settings. */
 export interface ValidationResult {
   ok: boolean;
   errors: string[];

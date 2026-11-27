@@ -11,10 +11,11 @@ const targets: Record<string, DiagnosticProvider> = {
     '/home/node/.gemini': 'antigravity', '/home/node/.gemini-source': 'antigravity',
     '/home/node/.local/share/opencode-source': 'opencode',
     '/home/node/.local/share/opencode': 'opencode', '/home/node/.vibe': 'vibe',
+    '/home/node/.pi/agent': 'pi',
 };
 const suffixes: Record<DiagnosticProvider, string> = {
     codex: '.codex', claude: '.claude', antigravity: '.gemini',
-    opencode: '.local/share/opencode', vibe: '.vibe',
+    opencode: '.local/share/opencode', vibe: '.vibe', pi: '.pi/agent',
 };
 
 /** Docker arguments alone do not prove ownership. No inferred personal HOME. */
@@ -32,6 +33,7 @@ function rootAgent(root: string, provider: DiagnosticProvider): string | undefin
         antigravity: [process.env.ANTIGRAVITY_CONFIG_PATH, process.env.HOST_ANTIGRAVITY_DIR],
         opencode: [process.env.HOST_OPENCODE_DATA_DIR],
         vibe: [process.env.VIBE_CONFIG_PATH, process.env.HOST_VIBE_DIR],
+        pi: [process.env.PI_CONFIG_PATH, process.env.HOST_PI_DIR],
     };
     return configured[provider].includes(root) ? `mount:${digest(root)}` : undefined;
 }

@@ -4,7 +4,7 @@ sidebar_position: 6
 
 # Agent Runtime Reference
 
-This is the canonical runtime reference for ProPR coding agents. It covers the shared Docker execution model used by Claude Code, Codex, Antigravity, OpenCode, and Mistral Vibe. For the higher-level integration contract, routing model, and worker responsibilities, see [Coding Agent Integration](./coding-agent-integration.md).
+This is the canonical runtime reference for ProPR coding agents. It covers the shared Docker execution model used by Claude Code, Codex, Antigravity, OpenCode, Mistral Vibe, and Pi. For the higher-level integration contract, routing model, and worker responsibilities, see [Coding Agent Integration](./coding-agent-integration.md).
 
 ## Runtime Model
 
@@ -14,7 +14,7 @@ Every coding agent runs in a Docker container so ProPR can control runtime depen
 - Agent credentials mounted from a ProPR-managed per-agent directory or a configured existing host directory
 - GitHub credentials passed through `GH_TOKEN` and `GITHUB_TOKEN`
 - Agent, model, timeout, and task metadata passed as environment variables or CLI flags
-- `--security-opt no-new-privileges`, `--cap-add CHOWN` (Vibe omits it), and Docker's default `bridge` network; the repository setup hook runs without sudo privileges before the agent entrypoint
+- `--security-opt no-new-privileges`, `--cap-add CHOWN` (Vibe and Pi omit it), and Docker's default `bridge` network; the repository setup hook runs without sudo privileges before the agent entrypoint
 - Memory, CPU, and process limits from `AGENT_CONTAINER_MEMORY_LIMIT` (default `6g`), `AGENT_CONTAINER_CPU_LIMIT` (default: available CPUs, capped at 4), and `AGENT_CONTAINER_PIDS_LIMIT` (default `512`)
 - For every agent except Vibe, the host's `/tmp/git-processor` directory (all clones and worktrees) mounted at the same path so git works in the linked worktree
 - Structured stdout, stderr, exit code, duration, session ID, and token usage capture when the CLI exposes those fields
@@ -30,6 +30,7 @@ This table maps each agent type to the unified image, its type-specific entrypoi
 | Antigravity | `propr/agent` | `Dockerfile.agent` | `scripts/antigravity-entrypoint.sh` | `HOST_ANTIGRAVITY_DIR` (`~/.gemini`) | `/home/node/.gemini` |
 | OpenCode | `propr/agent` | `Dockerfile.agent` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) plus `HOST_OPENCODE_DATA_DIR` | `/home/node/.config/opencode` |
 | Mistral Vibe | `propr/agent` | `Dockerfile.agent` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) | `/home/node/.vibe` |
+| Pi | `propr/agent` | `Dockerfile.agent` | `scripts/pi-entrypoint.sh` | `HOST_PI_DIR` (`~/.pi/agent`) | `/home/node/.pi/agent` (source only; runs use a disposable copy) |
 
 ## Container Configuration
 
@@ -52,6 +53,7 @@ Timeouts prevent runaway jobs and make failures visible in task state. Defaults 
 | Antigravity | `ANTIGRAVITY_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
 | OpenCode | `OPENCODE_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
 | Mistral Vibe | `VIBE_TIMEOUT_MS` | `86400000` (24 hours) | `VIBE_MAX_TURNS` | `1000` |
+| Pi | `PI_TIMEOUT_MS` | `86400000` (24 hours) | Not used | N/A |
 
 These task-execution defaults are shared across all coding agents and match the shipped `.env.example`. Planner keyword extraction and semantic relevance scoring default to 60 minutes per call and can be adjusted with `CONTEXT_ANALYSIS_TIMEOUT_MS`.
 
@@ -254,6 +256,41 @@ Implementation prompts are written to a temporary prompt file and passed to Vibe
 
 ### Pi
 
-The unified image also bundles the Pi coding agent CLI (`@earendil-works/pi-coding-agent`, pinned by `PI_CLI_VERSION`) with `scripts/pi-entrypoint.sh`, selected with `PROPR_AGENT_TYPE=pi`. The mounted host Pi agent directory (`PROPR_PI_SOURCE_DIR`, by default `/home/node/.pi/agent`) is only a source: each run gets a fresh disposable agent directory at `/tmp/propr-pi-home/agent` (`PI_CODING_AGENT_DIR`), with sessions under it. The entrypoint imports only `auth.json`, `settings.json`, `models.json`, `AGENTS.md`, `SYSTEM.md` and `APPEND_SYSTEM.md`; host `sessions/`, `extensions/` and `mcp.json` are never copied, and ProPR writes its own `mcp.json` from `PROPR_PI_MCP_CONFIG` when it needs MCP servers. Pi's update check, install telemetry and startup catalog fetches are turned off (`PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, `PI_OFFLINE=1`), and the restricted-network allowlist omits `pi.dev`.
+Pi uses `Dockerfile.agent` and the `propr/agent` image. The `pi-cli` build stage installs `@earendil-works/pi-coding-agent` at `PI_CLI_VERSION` (1.6.1 by default) and checks that `pi --help` lists every flag ProPR passes. `scripts/agent-entrypoint.sh` hands a container started with `PROPR_AGENT_TYPE=pi` (or a `pi` command) to `scripts/pi-entrypoint.sh`.
 
-Every Pi call the entrypoint makes (the version probe, the run itself, and credential seeding and sync) runs as `node`. After the run, `scripts/pi-credentials.py` writes OAuth token refreshes back to the host `auth.json`, one provider entry at a time and only while the host entry still equals what was imported, so a host login or logout during the run wins. The sync also runs when the container is stopped mid-run: the entrypoint forwards `SIGTERM`, `SIGINT` and `SIGHUP` to Pi, waits for it to exit, and then syncs before exiting with Pi's status. API-key entries are never rewritten, nothing is written when no OAuth entry changed, and the write is atomic, under Pi's own `auth.json.lock`, through an owner-only temporary file that keeps the original file mode. Provider API keys such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` and `GEMINI_API_KEY` reach Pi through the agent's environment variables, as for the other agents.
+Common settings:
+
+```bash
+HOST_PI_DIR=/home/your-user/.pi/agent
+PI_CONFIG_PATH=/home/your-user/.pi/agent
+PI_TIMEOUT_MS=86400000
+PI_ANALYSIS_TIMEOUT_MS=1800000
+```
+
+Pi models are stored as `pi-<provider>/<model>` (for example `pi-anthropic/claude-sonnet-5-5`) and run as `pi -p --mode json --model <provider>/<model> --no-approve`, with the prompt on stdin. Provider API keys such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` and `GEMINI_API_KEY` reach Pi through the agent's environment variables. They are passed through the Docker client's environment, so they never appear in the container's argument list.
+
+#### Credential Mount And Disposable Agent Directory
+
+The host Pi agent directory (an existing `~/.pi/agent`, `HOST_PI_DIR`/`PI_CONFIG_PATH`, or a managed `~/.propr/agent-credentials/<agent-id>/.pi/agent`) is mounted read-write at `/home/node/.pi/agent` (`PROPR_PI_SOURCE_DIR`). It is mounted only if it exists, because Docker would otherwise create it on the host owned by root. With API keys alone, Pi runs without it.
+
+The mounted directory is only a source. Each run gets a fresh, owner-only disposable agent directory at `/tmp/propr-pi-home/agent` (`PI_CODING_AGENT_DIR`), with its sessions under `sessions/`. The entrypoint imports only `auth.json`, `settings.json`, `models.json`, `AGENTS.md`, `SYSTEM.md` and `APPEND_SYSTEM.md`. Host `sessions/`, `extensions/` and `mcp.json` are never copied, and ProPR writes its own `mcp.json` from `PROPR_PI_MCP_CONFIG` when it needs MCP servers. Sessions, extensions and package installs from a run therefore never reach the host. The entrypoint refuses a runtime home that overlaps the host directory in either direction. Pi's update check, install telemetry and startup catalog fetches are turned off (`PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, `PI_OFFLINE=1`), and the restricted-network allowlist omits `pi.dev`. `--no-approve` keeps repository-provided `.pi/` extensions, settings and prompts from loading; `AGENTS.md` and `CLAUDE.md` context files still load.
+
+Every Pi call the entrypoint makes (the version probe, the run itself, and credential seeding and sync) runs as `node`.
+
+#### Refresh Write-Back Rules
+
+After the run, `scripts/pi-credentials.py` writes OAuth token refreshes from the disposable `auth.json` back to the host `auth.json`:
+
+- Only OAuth entries (`"type": "oauth"`) that Pi changed during the run are written. API-key entries are never rewritten, and nothing is written when no OAuth entry changed.
+- Each provider entry is a compare-and-swap: it is written only while the host entry still equals what was imported, so a host login, logout or refresh during the run wins.
+- A login made inside a run is never written back, because it is not a refresh of an imported entry. Use a managed login or `pi auth login` on the host instead.
+- The write is atomic, under Pi's own `auth.json.lock` (the proper-lockfile lock Pi takes, stale after 30 seconds), through an owner-only temporary file that keeps the original file mode.
+- The sync also runs when the container is stopped mid-run: the entrypoint forwards `SIGTERM`, `SIGINT` and `SIGHUP` to Pi, waits for it to exit, and then syncs before exiting with Pi's status.
+
+#### Managed Login
+
+A managed login (Settings → Agents, or `propr agent login`) runs `pi auth login <provider> --no-browser` in a login container, or `pi auth login <provider> --api-key` to save an API key. `--no-browser` uses the provider's headless flow: a device code, a code to paste back, or the final redirect URL pasted into the terminal. The container sets `PROPR_PI_LOGIN=1`, which makes the entrypoint point `PI_CODING_AGENT_DIR` straight at the mounted credential directory instead of a disposable copy, so Pi writes `<agent-dir>/auth.json` directly. ProPR-managed directories (`PROPR_MANAGED_CREDENTIALS=1`) are chowned to `node` first. An existing host directory is never chowned and must already be writable by UID 1000. The provider defaults to the provider of the agent's default model.
+
+#### Health Check
+
+The agent health check runs `pi auth check --provider <provider> --json --no-refresh` in the agent image with no network and a read-only mount of the credential directory, with the agent's provider API keys in its environment. The provider is taken from the health-check model. Exit codes 0, 1 and 2 mean `ready`, `not_ready` and `invalid`. `not_ready` and `invalid` are reported as sign-in required with Pi's reason (for example `credentials_not_configured`). `--no-refresh` means the check never refreshes or rewrites OAuth tokens.

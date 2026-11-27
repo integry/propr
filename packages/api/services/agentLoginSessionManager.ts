@@ -1,20 +1,24 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import {
-  getAgentLoginDescriptor,
   isManagedAgentConfigPath,
+  type AgentLoginOptions,
   type AgentType,
 } from '@propr/shared';
 import type { AgentConfig } from '@propr/core';
 import {
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
+  defaultRunDocker,
+  defaultSpawnDocker,
+  type DockerCommandResult,
   resolveAgentLoginConfigPath,
+  resolveAgentLoginDescriptor,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
 
-export { AgentLoginInputError } from './agentLoginDocker.js';
+export { AgentLoginInputError, type DockerCommandResult } from './agentLoginDocker.js';
 
 const DEFAULT_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_SESSION_RETENTION_MS = 5 * 60 * 1000;
@@ -44,6 +48,10 @@ export interface AgentLoginSessionSnapshot {
   id: string;
   agentId: string;
   agentType: AgentType;
+  /** Provider a provider-scoped login (Pi) signs in to. */
+  provider?: string;
+  /** Whether the login saves an API key instead of an account sign-in. */
+  apiKey?: boolean;
   status: AgentLoginSessionStatus;
   output: string;
   createdAt: string;
@@ -63,11 +71,6 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot {
   cleanupStarted?: boolean;
   escapeState: TerminalEscapeState;
   outputEndedWithCarriageReturn?: boolean;
-}
-
-export interface DockerCommandResult {
-  stdout: string;
-  stderr: string;
 }
 
 export interface AgentLoginSessionManagerDeps {
@@ -92,28 +95,6 @@ export class AgentLoginSessionNotFoundError extends Error {
     super('Agent login session not found');
     this.name = 'AgentLoginSessionNotFoundError';
   }
-}
-
-function defaultRunDocker(args: string[]): Promise<DockerCommandResult> {
-  return new Promise((resolve, reject) => {
-    const timeout = args[0] === 'pull' ? 5 * 60_000 : 30_000;
-    execFile('docker', args, { timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error((stderr || stdout || error.message).trim()));
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
-  });
-}
-
-function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
-  const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
-  const command = ['docker', ...args].map(shellQuote).join(' ');
-  // Docker refuses to attach a container TTY when its own stdin is a pipe.
-  // script(1) supplies the controlling PTY while keeping Node's stdin/stdout
-  // pipeable for the browser session.
-  return spawn('script', ['-qefc', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
@@ -234,11 +215,8 @@ export class AgentLoginSessionManager {
     return containerIds.length;
   }
 
-  async start(agent: AgentConfig, owner: string): Promise<AgentLoginSessionSnapshot> {
-    const descriptor = getAgentLoginDescriptor(agent.type);
-    if (!descriptor) {
-      throw new AgentLoginInputError(`${agent.type} does not support interactive login`);
-    }
+  async start(agent: AgentConfig, owner: string, options: AgentLoginOptions = {}): Promise<AgentLoginSessionSnapshot> {
+    const { descriptor, loginOptions } = resolveAgentLoginDescriptor(agent, options);
     const credentialPath = resolveAgentLoginConfigPath(agent);
     if (this.activeCredentialPaths.has(credentialPath)) throw new AgentLoginConflictError();
 
@@ -249,6 +227,8 @@ export class AgentLoginSessionManager {
       id,
       agentId: agent.id,
       agentType: agent.type,
+      ...(loginOptions.provider && { provider: loginOptions.provider }),
+      ...(descriptor.providerLogin && { apiKey: loginOptions.apiKey === true }),
       owner,
       credentialPath,
       containerName,
@@ -441,9 +421,12 @@ export class AgentLoginSessionManager {
   }
 
   private snapshot(session: AgentLoginSession): AgentLoginSessionSnapshot {
-    const { id, agentId, agentType, status, output, createdAt, updatedAt, expiresAt, exitCode, error } = session;
+    const { id, agentId, agentType, provider, apiKey, status, output, createdAt, updatedAt, expiresAt, exitCode, error } = session;
     return {
-      id, agentId, agentType, status, output,
+      id, agentId, agentType,
+      ...(provider === undefined ? {} : { provider }),
+      ...(apiKey === undefined ? {} : { apiKey }),
+      status, output,
       createdAt, updatedAt, expiresAt,
       ...(exitCode === undefined ? {} : { exitCode }),
       ...(error === undefined ? {} : { error }),

@@ -22,7 +22,7 @@ export type CredentialRootResolution =
     | { root?: undefined; reason: CredentialRootRefusal };
 type Environment = Record<string, string | undefined>;
 
-const providers = new Set<string>(['codex', 'claude', 'antigravity', 'opencode', 'vibe']);
+const providers = new Set<string>(['codex', 'claude', 'antigravity', 'opencode', 'vibe', 'pi']);
 
 /**
  * The credential directory a provider container actually mounts, resolved by
@@ -30,7 +30,7 @@ const providers = new Set<string>(['codex', 'claude', 'antigravity', 'opencode',
  * managed accounts below PROPR_MANAGED_CREDENTIALS_DIR (or ~/.propr/agent-credentials),
  * Codex's default through CODEX_CONFIG_PATH/HOST_CODEX_DIR, Claude's default
  * through CLAUDE_CONFIG_PATH/HOST_CLAUDE_DIR, Vibe through
- * VIBE_CONFIG_PATH, OpenCode's data directory (HOST_OPENCODE_DATA_DIR or the
+ * VIBE_CONFIG_PATH, Pi's default through PI_CONFIG_PATH/HOST_PI_DIR, OpenCode's data directory (HOST_OPENCODE_DATA_DIR or the
  * sibling of its config directory) and other `~` paths against HOME. Launcher-only
  * HOST_* variables are therefore never required when the launch path itself is
  * resolvable; a root the launcher would refuse is refused here too.

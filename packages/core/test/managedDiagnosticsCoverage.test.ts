@@ -10,10 +10,10 @@ import { classifyTextLine, redactRecord, CONTINUATION_LINE_LIMIT } from '../src/
 import { openCodeEnvVarRejection } from '../src/agents/impl/openCodeEnvForwarding.js';
 
 const repository = path.resolve(import.meta.dirname, '../../..');
-const providers = ['codex', 'claude', 'antigravity', 'opencode', 'vibe'] as const;
+const providers = ['codex', 'claude', 'antigravity', 'opencode', 'vibe', 'pi'] as const;
 const nativeHome = (root: string) => ({
     codex: path.join(root, '.codex'), claude: path.join(root, '.claude'), antigravity: path.join(root, '.gemini'),
-    opencode: path.join(root, '.local/share/opencode'), vibe: path.join(root, '.vibe'),
+    opencode: path.join(root, '.local/share/opencode'), vibe: path.join(root, '.vibe'), pi: path.join(root, '.pi/agent'),
 });
 /** Runs `script` with managed diagnostics enabled and returns its JSON stdout. */
 function run(root: string, script: string, env: Record<string, string | undefined> = {}) {
@@ -34,7 +34,7 @@ function run(root: string, script: string, env: Record<string, string | undefine
         cwd: repository, encoding: 'utf8', timeout: 20000,
         env: { ...process.env, PROPR_DEMO_MODE: 'true', PROPR_MANAGED_LOGS: '1', PROPR_INSTANCE_ID: 'tenant-a',
             PROPR_DIAGNOSTIC_ROOT: path.join(root, 'spool'), HOME: root, CODEX_CONFIG_PATH: '', HOST_CODEX_DIR: '', CLAUDE_CONFIG_PATH: '',
-            HOST_CLAUDE_DIR: '', ANTIGRAVITY_CONFIG_PATH: '', HOST_ANTIGRAVITY_DIR: '', VIBE_CONFIG_PATH: '', HOST_VIBE_DIR: '',
+            HOST_CLAUDE_DIR: '', ANTIGRAVITY_CONFIG_PATH: '', HOST_ANTIGRAVITY_DIR: '', VIBE_CONFIG_PATH: '', HOST_VIBE_DIR: '', PI_CONFIG_PATH: '', HOST_PI_DIR: '',
             OPENCODE_CONFIG_PATH: '', HOST_OPENCODE_XDG_DIR: '', HOST_OPENCODE_DATA_DIR: '', PROPR_MANAGED_CREDENTIALS_DIR: '',
             // Native fixtures: provider defaults expand against HOME, whatever host runs the suite.
             PROPR_CONTAINERIZED: '0', ...env },
@@ -60,14 +60,15 @@ test('native installs resolve every provider default root without launcher-only 
 test('Compose and hosted installs resolve configured and managed roots consistently', () => {
     const host = '/home/desktop-user';
     const compose = { HOME: '/root', PROPR_CONTAINERIZED: '1', CODEX_CONFIG_PATH: `${host}/.codex`, ANTIGRAVITY_CONFIG_PATH: `${host}/.gemini`,
-        VIBE_CONFIG_PATH: `${host}/.vibe`, HOST_OPENCODE_DATA_DIR: `${host}/.local/share/opencode`, PROPR_MANAGED_CREDENTIALS_DIR: `${host}/.propr/agent-credentials` };
+        VIBE_CONFIG_PATH: `${host}/.vibe`, PI_CONFIG_PATH: `${host}/.pi/agent`, HOST_OPENCODE_DATA_DIR: `${host}/.local/share/opencode`, PROPR_MANAGED_CREDENTIALS_DIR: `${host}/.propr/agent-credentials` };
     assert.equal(resolveProviderCredentialRoot({ provider: 'codex' }, { env: compose }).root, `${host}/.codex`);
     assert.equal(resolveProviderCredentialRoot({ provider: 'claude', configPath: `${host}/.claude` }, { env: compose }).root, `${host}/.claude`);
     assert.equal(resolveProviderCredentialRoot({ provider: 'antigravity', configPath: '/saved/root' }, { env: compose }).root, `${host}/.gemini`);
     assert.equal(resolveProviderCredentialRoot({ provider: 'vibe', configPath: '~/.vibe' }, { env: compose }).root, `${host}/.vibe`);
     assert.equal(resolveProviderCredentialRoot({ provider: 'opencode' }, { env: compose }).root, `${host}/.local/share/opencode`);
+    assert.equal(resolveProviderCredentialRoot({ provider: 'pi', configPath: '~/.pi/agent' }, { env: compose }).root, `${host}/.pi/agent`);
     for (const [provider, suffix, root] of [['codex', '.codex', '.codex'], ['claude', '.claude', '.claude'], ['antigravity', '.gemini', '.gemini'],
-        ['opencode', '.config/opencode', '.local/share/opencode']] as const) {
+        ['opencode', '.config/opencode', '.local/share/opencode'], ['pi', '.pi/agent', '.pi/agent']] as const) {
         const configPath = `~/.propr/agent-credentials/agent-a/${suffix}`;
         // Hosted/Compose: the managed directory; native: HOME/.propr, as the launcher resolves it.
         assert.equal(resolveProviderCredentialRoot({ provider, configPath }, { env: compose }).root, `${host}/.propr/agent-credentials/agent-a/${root}`, provider);
@@ -136,7 +137,7 @@ test('native fixtures capture with a verified credential context or refuse with 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'diagnostic-native-roots-'));
     try {
         const homes = nativeHome(root);
-        const stores = { codex: 'auth.json', claude: '.credentials.json', antigravity: 'oauth_creds.json', opencode: 'auth.json', vibe: 'credentials.json' };
+        const stores = { codex: 'auth.json', claude: '.credentials.json', antigravity: 'oauth_creds.json', opencode: 'auth.json', vibe: 'credentials.json', pi: 'auth.json' };
         for (const provider of providers) {
             fs.mkdirSync(homes[provider], { recursive: true });
             fs.writeFileSync(path.join(homes[provider], stores[provider]), JSON.stringify({ access_token: `opaque-${provider}-store-canary` }));

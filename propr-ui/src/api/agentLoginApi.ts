@@ -1,4 +1,4 @@
-import type { AgentType } from '@propr/shared';
+import type { AgentLoginOptions, AgentType } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 
 export type AgentLoginSessionStatus =
@@ -13,6 +13,10 @@ export interface AgentLoginSession {
   id: string;
   agentId: string;
   agentType: AgentType;
+  /** Provider a Pi login signs in to. */
+  provider?: string;
+  /** Whether a Pi login saves an API key instead of an account sign-in. */
+  apiKey?: boolean;
   status: AgentLoginSessionStatus;
   output: string;
   createdAt: string;
@@ -38,9 +42,20 @@ async function handleAgentLoginResponse(response: Response): Promise<void> {
   await handleApiResponse(response);
 }
 
-export async function startAgentLogin(agentId: string): Promise<AgentLoginSession> {
+export async function startAgentLogin(
+  agentId: string,
+  options?: AgentLoginOptions,
+): Promise<AgentLoginSession> {
+  const hasOptions = Boolean(options?.provider || options?.apiKey);
   const response = await apiFetch(sessionUrl(agentId), {
     method: 'POST',
+    ...(hasOptions && {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...(options?.provider && { provider: options.provider }),
+        ...(options?.apiKey && { apiKey: true }),
+      }),
+    }),
     credentials: 'include',
   });
   await handleAgentLoginResponse(response);
