@@ -1,12 +1,8 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import {
-  buildAgentLoginCommand,
-  getAgentLoginDescriptor,
-  getPiLoginProviders,
   isManagedAgentConfigPath,
-  type AgentLoginDescriptor,
   type AgentLoginOptions,
   type AgentType,
 } from '@propr/shared';
@@ -14,11 +10,15 @@ import type { AgentConfig } from '@propr/core';
 import {
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
+  defaultRunDocker,
+  defaultSpawnDocker,
+  type DockerCommandResult,
   resolveAgentLoginConfigPath,
+  resolveAgentLoginDescriptor,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
 
-export { AgentLoginInputError } from './agentLoginDocker.js';
+export { AgentLoginInputError, type DockerCommandResult } from './agentLoginDocker.js';
 
 const DEFAULT_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_SESSION_RETENTION_MS = 5 * 60 * 1000;
@@ -73,11 +73,6 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot {
   outputEndedWithCarriageReturn?: boolean;
 }
 
-export interface DockerCommandResult {
-  stdout: string;
-  stderr: string;
-}
-
 export interface AgentLoginSessionManagerDeps {
   runDocker?: (args: string[]) => Promise<DockerCommandResult>;
   spawnDocker?: (args: string[]) => ChildProcessWithoutNullStreams;
@@ -100,46 +95,6 @@ export class AgentLoginSessionNotFoundError extends Error {
     super('Agent login session not found');
     this.name = 'AgentLoginSessionNotFoundError';
   }
-}
-
-function defaultRunDocker(args: string[]): Promise<DockerCommandResult> {
-  return new Promise((resolve, reject) => {
-    const timeout = args[0] === 'pull' ? 5 * 60_000 : 30_000;
-    execFile('docker', args, { timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error((stderr || stdout || error.message).trim()));
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
-  });
-}
-
-function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
-  const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
-  const command = ['docker', ...args].map(shellQuote).join(' ');
-  // Docker refuses to attach a container TTY when its own stdin is a pipe.
-  // script(1) supplies the controlling PTY while keeping Node's stdin/stdout
-  // pipeable for the browser session.
-  return spawn('script', ['-qefc', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
-}
-
-/**
- * Provider-scoped logins (Pi) default to the provider of the agent's default
- * model; other agents take no options.
- */
-function resolveLoginOptions(
-  agent: AgentConfig,
-  descriptor: AgentLoginDescriptor,
-  options: AgentLoginOptions,
-): AgentLoginOptions {
-  if (!descriptor.providerLogin) return options;
-  const provider = options.provider?.trim()
-    || getPiLoginProviders(agent.supportedModels ?? [], agent.defaultModel)[0];
-  if (!provider) {
-    throw new AgentLoginInputError(`Choose a provider to log in to; ${agent.type} has no provider models configured`);
-  }
-  return { provider, ...(options.apiKey && { apiKey: true }) };
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
@@ -261,17 +216,7 @@ export class AgentLoginSessionManager {
   }
 
   async start(agent: AgentConfig, owner: string, options: AgentLoginOptions = {}): Promise<AgentLoginSessionSnapshot> {
-    const baseDescriptor = getAgentLoginDescriptor(agent.type);
-    if (!baseDescriptor) {
-      throw new AgentLoginInputError(`${agent.type} does not support interactive login`);
-    }
-    const loginOptions = resolveLoginOptions(agent, baseDescriptor, options);
-    let descriptor: AgentLoginDescriptor;
-    try {
-      descriptor = { ...baseDescriptor, command: buildAgentLoginCommand(baseDescriptor, loginOptions) };
-    } catch (error) {
-      throw new AgentLoginInputError((error as Error).message);
-    }
+    const { descriptor, loginOptions } = resolveAgentLoginDescriptor(agent, options);
     const credentialPath = resolveAgentLoginConfigPath(agent);
     if (this.activeCredentialPaths.has(credentialPath)) throw new AgentLoginConflictError();
 
@@ -283,7 +228,7 @@ export class AgentLoginSessionManager {
       agentId: agent.id,
       agentType: agent.type,
       ...(loginOptions.provider && { provider: loginOptions.provider }),
-      ...(baseDescriptor.providerLogin && { apiKey: loginOptions.apiKey === true }),
+      ...(descriptor.providerLogin && { apiKey: loginOptions.apiKey === true }),
       owner,
       credentialPath,
       containerName,
