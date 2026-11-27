@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Extensions and ProPR MCP for Vibe 3** (#3842)
+  - Vibe runs now receive extension library MCP servers and skill bundles, and
+    agent definitions and automations can give Vibe agents the `propr` MCP
+    server. MCP servers reach Vibe through `VIBE_MCP_SERVERS`: stdio servers run
+    through the stdio bridge with their secrets only in that entry's `env`, and
+    HTTP servers read their bearer token from `api_key_env`. Skills are
+    registered with Vibe's own `skill` tool through `VIBE_SKILL_PATHS`.
+  - Extension runs use only the run's MCP servers: the entrypoint removes
+    `mcp_servers` from the runtime copy of `config.toml`, turns Mistral cloud
+    connectors off and, when the run has skills, limits active skills to them.
+  - MCP tool calls (`mcp_<server>.<tool>`) show as tool calls and results in the
+    live view and the task log.
+
 - **One runtime capability map for extensions and ProPR MCP** (#3841)
   - `AGENT_RUNTIME_CAPABILITIES` in `@propr/shared` now decides, per agent
     type, whether a runtime receives extension library items and the ProPR MCP

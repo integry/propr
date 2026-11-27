@@ -29,8 +29,8 @@ export interface AgentRuntimeCapabilityEntry extends AgentRuntimeCapabilities {
 const NONE: AgentRuntimeCapabilities = { extensions: false, proprMcp: false, skills: 'prompt' };
 
 /**
- * The runtime capability map. Claude, Codex and Antigravity are supported;
- * each other runtime is turned on by its own change. OpenCode 1.x cannot be supported, so
+ * The runtime capability map. Claude, Codex, Antigravity and Vibe are
+ * supported; each other runtime is turned on by its own change. OpenCode 1.x cannot be supported, so
  * its entry already carries the 2.x predicate.
  */
 export const AGENT_RUNTIME_CAPABILITIES: Readonly<Record<AgentType, Readonly<AgentRuntimeCapabilityEntry>>> = {
@@ -39,7 +39,8 @@ export const AGENT_RUNTIME_CAPABILITIES: Readonly<Record<AgentType, Readonly<Age
   // Skill bundles are also copied into `<runtime HOME>/.gemini/skills/<name>`.
   antigravity: { extensions: true, proprMcp: true, skills: 'native' },
   opencode: { ...NONE, cliVersion: { minMajor: 2 } },
-  vibe: { ...NONE },
+  // Vibe registers staged bundles through its own `skill` tool (VIBE_SKILL_PATHS).
+  vibe: { extensions: true, proprMcp: true, skills: 'native' },
 };
 
 const RUNTIME_LABELS: Record<AgentType, string> = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity', opencode: 'OpenCode', vibe: 'Vibe' };

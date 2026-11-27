@@ -128,7 +128,7 @@ test('item limits, runtime, capability, public secrets and tenant substitution f
   assert.equal((await store.resolveLaunch({ ...context, repositories: ['TEAM/REPO'] })).set.servers.length, 1);
   assert.equal((await store.resolveLaunch({ ...context, agentAlias: 'codex-other' })).set.servers.length, 0);
   assert.equal((await store.resolveLaunch({ ...context, repositories: ['other/repo'] })).set.servers.length, 0);
-  await assert.rejects(store.resolveLaunch({ ...context, runtime: 'opencode' }), /Claude, Codex or Antigravity/);
+  await assert.rejects(store.resolveLaunch({ ...context, runtime: 'opencode' }), /Claude, Codex, Antigravity or Vibe/);
   await save(store, input([server({ capability: 'write' })]), { docs: secret });
   assert.equal((await store.resolveLaunch({ ...context, allowWrite: false })).set.servers.length, 0);
   assert.equal((await store.resolveLaunch({ ...context, allowWrite: true })).set.servers.length, 1);

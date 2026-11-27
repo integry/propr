@@ -1,7 +1,7 @@
 ---
 sidebar_label: "Instance agent extensions"
 title: "Configure agent skills and MCP extensions"
-description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, applied automatically to Claude, Codex and Antigravity issue tasks, pull request follow-ups and automation runs."
+description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, applied automatically to Claude, Codex, Antigravity and Vibe issue tasks, pull request follow-ups and automation runs."
 ---
 # Instance agent extensions
 
@@ -18,7 +18,7 @@ administrator in Access first.
 **Skills & MCP servers** opens with two flat lists, **MCP servers** and
 **Skills**. The Settings inspector beside them summarises how items apply: each
 item applies automatically in the repositories it is limited to, unticking it
-switches it off, and only Claude, Codex and Antigravity runs use extensions. Items with
+switches it off, and only Claude, Codex, Antigravity and Vibe runs use extensions. Items with
 **Apply automatically** turned off reach only the automations that add them, write
 servers need the run's [write authorization](#mcp-policy), and the
 [opt-out labels](#opt-out-labels) remove items from one issue or pull request.
@@ -149,7 +149,7 @@ and automation validation. The machine-readable contracts expose the same lists
 | Codex | Yes | Yes | Prompt pointer |
 | Antigravity | Yes | Yes | Native (`~/.gemini/skills`) and prompt pointer |
 | OpenCode | No (1.x is never supported; 2.x can be) | No | — |
-| Vibe | No | No | — |
+| Vibe (3.x) | Yes | Yes | Native `skill` tool, plus the prompt pointer |
 
 An entry can carry a CLI-version predicate: a runtime whose resolved CLI version
 fails it has no capabilities, whatever the entry says. On a runtime without
@@ -160,8 +160,8 @@ extension support:
   `runtime`;
 - New Task shows *Extensions aren't available for &lt;agent&gt;* in place of
   the extensions panel, when library items would otherwise apply;
-- explicitly added items are refused (`400 Extensions require Claude, Codex or
-  Antigravity task execution`).
+- explicitly added items are refused (`400 Extensions require Claude, Codex,
+  Antigravity or Vibe task execution`).
 
 Each supported runtime renders the run's MCP servers through its own launch
 builder, which share one contract: `mcpServers` (the Core gateway URL
@@ -172,6 +172,35 @@ builder, which share one contract: `mcpServers` (the Core gateway URL
 skills). Skill bundles are staged read-only at
 `/opt/propr/extensions/<id>/SKILL.md` and named in the prompt; a runtime may also
 register them natively.
+
+### Vibe
+
+Vibe 3 has no MCP command-line switches, so its builder renders everything
+through Vibe's environment layer. The values reach the container as `-e NAME`
+from the docker process environment, never in arguments or files:
+
+- `VIBE_MCP_SERVERS` is a JSON list with one entry per server. A stdio server
+  is `{"name", "transport": "stdio", "command": "/usr/local/bin/node", "args":
+  ["/opt/propr/extension-stdio-bridge.mjs", "<config>"], "env": {...}}`. Vibe
+  does not pass its own environment to stdio servers, so the entry's `env`
+  carries the bridge's `PROPR_EXTENSION_STDIO_*` secret names and values; they
+  are not exported to the agent as separate variables, and diagnostics redact
+  them. A gateway or ProPR MCP server is a `streamable-http` entry with
+  `auth: {"type": "static", "api_key_env": "<token variable>"}`.
+- `VIBE_SKILL_PATHS='["/opt/propr/extensions"]'` registers the staged bundles
+  with Vibe's `skill` tool.
+- Extension runs set `PROPR_EXTENSION_EXCLUSIVE_MCP=1`. Vibe merges
+  `mcp_servers` from `config.toml` with the environment by name, so the
+  entrypoint removes `mcp_servers` from the runtime copy of `config.toml` (the
+  mounted `~/.vibe` is never changed) and sets `VIBE_ENABLE_CONNECTORS=false`
+  so Mistral cloud connectors add no tools. When the run has skills,
+  `VIBE_ENABLED_SKILLS` lists only their names and the config's own
+  `enabled_skills` is removed from the copy. The run fails if the config cannot
+  be rewritten.
+
+MCP tools show up as `mcp_<server>.<tool>` tool calls in the live view and the
+task log. Vibe has no native web switch, so the web restriction stays a prompt
+notice.
 
 ### Opt-out labels
 
@@ -332,7 +361,7 @@ An administrator connects the server once from Settings, in their own browser.
 Core stores the tokens encrypted, refreshes them, and the MCP gateway adds a
 current access token to each upstream call, exactly as it adds a Bearer token.
 Agent containers never see a token and never take part in a login flow, for
-Claude and Codex alike. ProPR always identifies itself as ProPR: it never presents
+Claude, Codex, Antigravity and Vibe alike. ProPR always identifies itself as ProPR: it never presents
 another product's client id, client metadata, redirect URI or user agent.
 
 ### Adding and connecting a server
@@ -546,7 +575,7 @@ scripts, so such a package would not work.
 - The run mounts the install read-only at `/opt/propr/packages/<n>` and starts
   it with the image's Node through the same stdio bridge
   (`/opt/propr/extension-stdio-bridge.mjs`) as an operator catalog stdio entry,
-  for Claude, Codex and Antigravity alike. The bridge enforces the selected tools, bounds the
+  for Claude, Codex, Antigravity and Vibe alike. The bridge enforces the selected tools, bounds the
   JSON protocol, drops the server's stderr and redacts the configured secrets.
 - The server process has the run's own network policy and nothing more. It is
   never reachable through Core's HTTPS gateway.
@@ -608,7 +637,7 @@ the agent image.
 
 An operator supplies a bounded JSON array through `PROPR_EXTENSION_CATALOG_FILE` on Core and workers. Install it outside task/repository mounts, owned by the operator with no group/other write permissions. The file contains configuration and secret **references**, never secret values. No API accepts catalog installation or command configuration. Restart/update the operator service configuration through its existing secret-management mechanism; never put credentials in library/UI input.
 
-A stdio entry contains `id`, `kind: "stdio"`, an absolute `executable` under `/usr/local/bin`, `/usr/bin` or `/opt/propr` already installed in the qualified task image, a fixed `args` array, `secretEnv` mapping child environment field names to operator-managed service environment references, and allowed `tools` and required `capability`. There is no shell interpolation, customer argument substitution, host path/socket access or additional bind mount. Claude, Codex and Antigravity all launch the installed `/opt/propr/extension-stdio-bridge.mjs` adapter in the existing isolated task container. It enforces the selected tools and bounded JSON protocol, drops child stderr and redacts configured secrets and encodings. Secret values travel through inherited environment names only, stay out of launch args/config JSON, and the launcher does not write them to the repository or provider home. Stdio catalog credentials are disclosed to the task container, including the agent CLI, shell tools and repository setup hooks. Those processes can read, persist or transmit them; output redaction does not prevent that access. Use only credentials appropriate for that trust boundary. Deployments must rebuild the qualified task image to include the adapter; no runtime package installation is attempted.
+A stdio entry contains `id`, `kind: "stdio"`, an absolute `executable` under `/usr/local/bin`, `/usr/bin` or `/opt/propr` already installed in the qualified task image, a fixed `args` array, `secretEnv` mapping child environment field names to operator-managed service environment references, and allowed `tools` and required `capability`. There is no shell interpolation, customer argument substitution, host path/socket access or additional bind mount. Claude, Codex, Antigravity and Vibe launch the installed `/opt/propr/extension-stdio-bridge.mjs` adapter in the existing isolated task container. It enforces the selected tools and bounded JSON protocol, drops child stderr and redacts configured secrets and encodings. Secret values travel through inherited environment names only (for Vibe, inside the stdio entry's `env` in the `VIBE_MCP_SERVERS` variable), stay out of launch args and config files (Antigravity config JSON included), and the launcher does not write them to the repository or provider home. Stdio catalog credentials are disclosed to the task container, including the agent CLI, shell tools and repository setup hooks. Those processes can read, persist or transmit them; output redaction does not prevent that access. Use only credentials appropriate for that trust boundary. Deployments must rebuild the qualified task image to include the adapter; no runtime package installation is attempted.
 
 An HTTPS catalog entry instead contains `kind: "https"`, one credential-free fixed `url`, explicit pinned IP `addresses`, optional operator `bearerSecretRef`, and allowed `tools` and required `capability`. TLS identity and every resolved address must match; redirects remain refused. Restricted runs additionally need the hostname in their effective allowlist and private IP literals in the instance-owned address allowlist. Merely installing an internal catalog entry grants no network exception to a run.
 
