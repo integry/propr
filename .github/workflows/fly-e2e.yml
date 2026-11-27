@@ -12,6 +12,12 @@ on:
         description: Also verify Extension Library items (a skill bundle and a pinned npm MCP server) on the remote runtime
         type: boolean
         default: false
+      fly_machines_max:
+        description: >-
+          Also check PROPR_FLY_MACHINES_MAX (needs agent_runtime=fly-machines): deploy with PROPR_FLY_MACHINES_MAX=1
+          and WORKER_CONCURRENCY=2, label two issues, and require the second run to queue, then succeed without an HTTP 422.
+        type: boolean
+        default: false
       mcp:
         description: >-
           Also check ProPR MCP from Sprites: deploy with PROPR_SPRITES_MCP_TRANSPORT=forward
@@ -62,11 +68,13 @@ jobs:
     needs: fixture
     if: needs.fixture.outputs.enabled == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ (inputs.mcp || vars.FLY_E2E_NIGHTLY_MCP == 'true') && 130 || 100 }}
+    timeout-minutes: ${{ (inputs.mcp || vars.FLY_E2E_NIGHTLY_MCP == 'true' || inputs.fly_machines_max) && 140 || 100 }}
     env:
       APP: propr-e2e-${{ github.run_id }}-${{ github.run_attempt }}
       # ProPR MCP mode: on when dispatched with mcp, and nightly only when FLY_E2E_NIGHTLY_MCP=true.
       MCP: ${{ (github.event_name == 'workflow_dispatch' && inputs.mcp) || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_MCP == 'true') }}
+      # PROPR_FLY_MACHINES_MAX mode: manual runs only, on the Fly Machines runtime.
+      CAPACITY: ${{ github.event_name == 'workflow_dispatch' && inputs.fly_machines_max }}
       ORG: ${{ vars.FLY_E2E_ORG }}
       REPO: ${{ vars.FLY_E2E_REPO }}
       REGION: iad
@@ -105,6 +113,8 @@ jobs:
           [[ $AGENT_RUNTIME == sprites || $AGENT_RUNTIME == fly-machines ]]
           # ProPR MCP mode checks the Sprites SSH reverse forward, so it needs the Sprites runtime.
           [[ $MCP != true || $AGENT_RUNTIME == sprites ]] || { echo "::error::MCP mode requires agent_runtime=sprites"; exit 1; }
+          [[ $CAPACITY != true || $AGENT_RUNTIME == fly-machines ]] ||
+            { echo "::error::fly_machines_max mode requires agent_runtime=fly-machines"; exit 1; }
           # The package must be missing from the agent image, or the smoke proves nothing.
           ! grep -Eq "(^|[^a-z0-9.+-])${RUNTIME_PACKAGE}([^a-z0-9.+-]|$)" Dockerfile.agent scripts/sprites-agent-setup.sh
           [[ "$REPO" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ && "${REPO,,}" != "${GITHUB_REPOSITORY,,}" ]]
@@ -193,11 +203,16 @@ jobs:
             echo "GH_OAUTH_CLIENT_ID=$OAUTH_CLIENT_ID"
             echo "GH_OAUTH_CLIENT_SECRET=$OAUTH_CLIENT_SECRET"
             echo "GITHUB_REPOS_TO_MONITOR=$REPO"
-            echo "WORKER_CONCURRENCY=1"
+            # Capacity mode: two runs at once against a one-Machine cap, so the second must queue.
+            if [[ $CAPACITY == true ]]; then echo "WORKER_CONCURRENCY=2"; else echo "WORKER_CONCURRENCY=1"; fi
             [[ $AGENT_RUNTIME != sprites ]] || echo "PROPR_SPRITES_MAX=1"
             echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
           } >> "$ENV_FILE"
           [[ $AGENT_RUNTIME != fly-machines ]] || cat "$OUT/agent-runtime.env" >> "$ENV_FILE"
+          if [[ $CAPACITY == true ]]; then
+            sed -i -E '/^PROPR_FLY_MACHINES_MAX=/d' "$ENV_FILE"
+            echo "PROPR_FLY_MACHINES_MAX=1" >> "$ENV_FILE"
+          fi
           # propr deploy fly generates SYSTEM_TASK_SECRET; one from the fixture env would hide a deploy that does not.
           sed -i '/^SYSTEM_TASK_SECRET=/d' "$ENV_FILE"
           if [[ $MCP == true ]]; then
@@ -415,17 +430,39 @@ jobs:
           issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" -F 'labels[]=llm-claude' \
             -f body="$body" --jq .number)
           echo "ISSUE=$issue" >> "$GITHUB_ENV"
-          # GET /app does not expose the Active checkbox. Verify the actual delivery.
+          if [[ $CAPACITY == true ]]; then
+            # The queued run: with PROPR_FLY_MACHINES_MAX=1 it may create its Machine only after the first one is destroyed.
+            issue2=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP queued" -F 'labels[]=llm-claude' \
+              -f body="Create $APP-queued.txt containing exactly one line: $APP-queued. Open a PR resolving this issue." --jq .number)
+            echo "ISSUE2=$issue2" >> "$GITHUB_ENV"
+          fi
+          # GET /app does not expose the Active checkbox. Verify the actual delivery of every opened issue.
+          # The list omits payloads and is newest first, so look up each successful issues/opened delivery
+          # and match it on the issue number (cap mode opens two issues back to back).
+          missing=("$issue"); [[ $CAPACITY != true ]] || missing+=("$issue2")
+          declare -A delivered_issue=()
           for _ in {1..12}; do
-            delivery=$(app_api '/hook/deliveries?per_page=20' | jq -r \
-              '[.[] | select(.event == "issues" and .action == "opened" and .status_code == 200)][0].id // empty')
-            if [[ -n $delivery ]] && app_api "/hook/deliveries/$delivery" |
-              jq -e --arg title "Fly smoke $APP" '.request.payload.issue.title == $title' > /dev/null; then
-              exit 0
-            fi
+            ids=$(app_api '/hook/deliveries?per_page=20' |
+              jq -r '.[] | select(.event == "issues" and .action == "opened" and .status_code == 200) | .id') || ids=
+            for id in $ids; do
+              [[ -z ${delivered_issue[$id]+set} ]] || continue
+              number=$(app_api "/hook/deliveries/$id" | jq -r --arg repo "$REPO" \
+                '.request.payload | select(.repository.full_name == $repo) | .issue.number // empty') || continue
+              delivered_issue[$id]=$number
+            done
+            still_missing=()
+            for wanted in "${missing[@]}"; do
+              found=false
+              for number in "${delivered_issue[@]}"; do [[ $number != "$wanted" ]] || { found=true; break; }; done
+              [[ $found == true ]] || still_missing+=("$wanted")
+            done
+            missing=("${still_missing[@]}")
+            (( ${#missing[@]} > 0 )) || exit 0
             sleep 5
           done
-          echo "::error::No successful App webhook delivery for $REPO#$issue. Check Webhook → Active in the fixture App settings and its recent deliveries."
+          for wanted in "${missing[@]}"; do
+            echo "::error::No successful App webhook delivery for $REPO#$wanted. Check Webhook → Active in the fixture App settings and its recent deliveries."
+          done
           exit 1
 
       - name: Observe idle stop and labeled-issue wake
@@ -447,12 +484,14 @@ jobs:
           wait_state stopped
           # Anything the runtime installs after this point ran for the post-wake run.
           echo "STOPPED_AT_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
-          if [[ $MCP == true ]]; then
+          if [[ $MCP == true || $CAPACITY == true ]]; then
             # Keep the worker log from the wake on: `flyctl logs --no-tail` only returns the latest lines.
             nohup flyctl logs --app "$APP" --json > "$OUT/app-logs.jsonl" 2> "$OUT/app-logs.err" &
           fi
           gh issue edit "$ISSUE" --repo "$REPO" --add-label AI
           wait_state started
+          # Labeled after the first, so with PROPR_FLY_MACHINES_MAX=1 this run queues behind it.
+          [[ $CAPACITY != true ]] || { sleep 10; gh issue edit "$ISSUE2" --repo "$REPO" --add-label AI; }
 
       - name: Start an automation run that uses ProPR MCP
         if: env.MCP == 'true'
@@ -593,6 +632,54 @@ jobs:
           echo "Missing successful compute_runtime: $AGENT_RUNTIME execution for $REPO#$ISSUE, PR #$pr"
           exit 1
 
+      - name: Verify PROPR_FLY_MACHINES_MAX queued the second run until a Machine was free
+        if: env.CAPACITY == 'true'
+        timeout-minutes: 40
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          pr=
+          for _ in {1..150}; do
+            pr=$(gh pr list --repo "$REPO" --json number,closingIssuesReferences,isCrossRepository |
+              jq -r --argjson issue "$ISSUE2" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | .number')
+            [[ -z $pr ]] || break
+            sleep 15
+          done
+          [[ $pr =~ ^[0-9]+$ ]] || { echo "::error::No unique linked PR for the queued run $REPO#$ISSUE2"; exit 1; }
+          logs=$({ cat "$OUT/app-logs.jsonl"; flyctl logs --app "$APP" --no-tail --json; } |
+            jq -sc '[.[] | .message? | strings | fromjson? | objects] | unique')
+          queued=$(jq -ce '[.[] | select(.msg == "Fly Machines at PROPR_FLY_MACHINES_MAX; run queued" and .max == 1)] | first | objects' <<< "$logs") ||
+            { echo "::error::No run waited for a PROPR_FLY_MACHINES_MAX slot"; exit 1; }
+          if jq -e '[.[] | tostring | select(test("machine limit"; "i"))] | length > 0' <<< "$logs" > /dev/null; then
+            echo "::error::A run hit Fly's organization machine limit (HTTP 422) despite PROPR_FLY_MACHINES_MAX=1"
+            exit 1
+          fi
+          # Both issues must have a successful Fly Machines execution.
+          check=$(base64 -w0 <<JS
+          const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
+          const runs = db.prepare(\`SELECT t.issue_number, e.compute_wall_time_ms FROM llm_executions e JOIN tasks t USING (task_id)
+            WHERE t.repository = ? COLLATE NOCASE AND t.issue_number IN (?, ?) AND e.success = 1 AND e.compute_runtime = 'fly-machines'\`)
+            .all('$REPO', $ISSUE, $ISSUE2);
+          if (new Set(runs.map(r => r.issue_number)).size !== 2) process.exit(1);
+          console.log(JSON.stringify(runs));
+          JS
+          )
+          for _ in {1..12}; do
+            if flyctl ssh console --app "$APP" --container app -C "node -e \"eval(Buffer.from('$check','base64').toString())\""; then
+              {
+                echo "### PROPR_FLY_MACHINES_MAX=1"
+                echo "- Queued run: \`$(jq -r .run <<< "$queued")\` (active=$(jq -r .active <<< "$queued"), queued=$(jq -r .queued <<< "$queued"))"
+                echo "- Both issues ($REPO#$ISSUE, $REPO#$ISSUE2, PR #$pr) succeeded on Fly Machines with no machine-limit error"
+              } | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Missing successful fly-machines executions for both $REPO#$ISSUE and $REPO#$ISSUE2"
+          exit 1
+
       - name: Verify the ProPR MCP automation over the SSH reverse forward
         if: env.MCP == 'true'
         timeout-minutes: 30
@@ -725,21 +812,24 @@ jobs:
             return 1
           }
           encode='split("/") | map(@uri) | join("/")'
-          prs=$(gh pr list --repo "$REPO" --json number,headRefName,closingIssuesReferences,isCrossRepository |
-            jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | [.number, (.headRefName | '"$encode"')] | @tsv')
-          if [[ -n $prs ]]; then
-            while IFS=$'\t' read -r pr ref; do
-              gh pr close "$pr" --repo "$REPO"
-              delete_branch "$ref"
-            done <<< "$prs"
-          fi
-          # A run that failed before opening a PR still leaves its "<issue>/..." branch behind.
-          branches=$(gh api --paginate "repos/$REPO/git/matching-refs/heads/$ISSUE/" |
-            jq -r '.[].ref | ltrimstr("refs/heads/") | '"$encode")
-          if [[ -n $branches ]]; then
-            while read -r ref; do
-              echo "Deleting leftover fixture branch $ref"
-              delete_branch "$ref"
-            done <<< "$branches"
-          fi
-          gh issue close "$ISSUE" --repo "$REPO"
+          # ISSUE2 is the queued run of the PROPR_FLY_MACHINES_MAX mode.
+          for issue in "$ISSUE" ${ISSUE2:+"$ISSUE2"}; do
+            prs=$(gh pr list --repo "$REPO" --json number,headRefName,closingIssuesReferences,isCrossRepository |
+              jq -r --argjson issue "$issue" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | [.number, (.headRefName | '"$encode"')] | @tsv')
+            if [[ -n $prs ]]; then
+              while IFS=$'\t' read -r pr ref; do
+                gh pr close "$pr" --repo "$REPO"
+                delete_branch "$ref"
+              done <<< "$prs"
+            fi
+            # A run that failed before opening a PR still leaves its "<issue>/..." branch behind.
+            branches=$(gh api --paginate "repos/$REPO/git/matching-refs/heads/$issue/" |
+              jq -r '.[].ref | ltrimstr("refs/heads/") | '"$encode")
+            if [[ -n $branches ]]; then
+              while read -r ref; do
+                echo "Deleting leftover fixture branch $ref"
+                delete_branch "$ref"
+              done <<< "$branches"
+            fi
+            gh issue close "$issue" --repo "$REPO"
+          done
