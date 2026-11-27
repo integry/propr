@@ -163,7 +163,8 @@ jobs:
             {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
           ]' | flyctl tokens attenuate)
           [[ -n $agent_token ]]
-          echo "::add-mask::$agent_token"
+          source .github/fly-e2e/mask-fly-token.sh
+          mask_fly_token "$agent_token"
           {
             echo "PROPR_FLY_APP=$AGENT_APP"
             echo "PROPR_FLY_IMAGE=$image"
@@ -182,6 +183,7 @@ jobs:
           OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET }}
           OWNER_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
+          set -o pipefail
           umask 077
           echo "::add-mask::$OAUTH_CLIENT_SECRET"
           printf '%s\n' "$APP_ENV" > "$ENV_FILE"
@@ -208,6 +210,10 @@ jobs:
             [[ $AGENT_RUNTIME != sprites ]] || echo "PROPR_SPRITES_MAX=1"
             echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
           } >> "$ENV_FILE"
+          # PROPR_FLY_API_TOKEN is "FlyV1 fm2_…", unquoted and with a space. That's safe here: the CLI
+          # parses this file with dotenv (the rest of the line after the first "=" is the value, inner
+          # spaces kept) and passes it to `flyctl secrets import` as NAME=VALUE lines, which also take
+          # the rest of the line. Nothing evaluates it as shell; never `source` either env file.
           [[ $AGENT_RUNTIME != fly-machines ]] || cat "$OUT/agent-runtime.env" >> "$ENV_FILE"
           if [[ $CAPACITY == true ]]; then
             sed -i -E '/^PROPR_FLY_MACHINES_MAX=/d' "$ENV_FILE"
@@ -239,12 +245,15 @@ jobs:
             {type: "Apps", body: {apps: {($id): "rwC"}}},
             {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
           ]' | flyctl tokens attenuate)
-          echo "::add-mask::$stop_token"
+          [[ -n $stop_token ]]
+          source .github/fly-e2e/mask-fly-token.sh
+          mask_fly_token "$stop_token"
           flyctl auth docker
           docker push "$IMAGE"
           propr deploy fly --app "$APP" --org "$ORG" --region "$REGION" --image "$IMAGE" \
             --backend flyctl --agent-runtime "$AGENT_RUNTIME" --idle-shutdown "$IDLE_AFTER" \
-            --machine-stop-token "$stop_token" --env-file "$ENV_FILE" --no-relay --out "$OUT/propr-fly"
+            --machine-stop-token "$stop_token" --env-file "$ENV_FILE" --no-relay --out "$OUT/propr-fly" 2>&1 |
+            redact_fly_tokens
           status=$(curl --fail --retry 8 --retry-all-errors -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/health")
           [[ $status == 200 ]]
 
@@ -695,17 +704,31 @@ jobs:
         run: |
           set -euo pipefail
           : "${DERIVED_IMAGE:?The first run did not report a derived image}"
-          set -a; source "$OUT/agent-runtime.env"; set +a
+          source .github/fly-e2e/mask-fly-token.sh
           # A fresh process, like another worker or a restart: only the registry tag is shared.
           # Same list -> the first run's digest with no build Machine; a changed list -> one build and a new digest.
-          RUNTIME_PACKAGES="[\"$RUNTIME_PACKAGE\"]" CHANGED_PACKAGES="[\"$RUNTIME_PACKAGE\",\"cowsay\"]" \
-            node --import tsx --input-type=module <<'JS'
+          # The script reads agent-runtime.env itself as KEY=value data (the token has a space, so the
+          # shell must never evaluate it), and its output goes through redact_fly_tokens.
+          AGENT_RUNTIME_ENV="$OUT/agent-runtime.env" \
+            RUNTIME_PACKAGES="[\"$RUNTIME_PACKAGE\"]" CHANGED_PACKAGES="[\"$RUNTIME_PACKAGE\",\"cowsay\"]" \
+            node --import tsx --input-type=module 2>&1 <<'JS' | redact_fly_tokens
+          import { readFileSync } from 'node:fs';
           import { setTimeout as delay } from 'node:timers/promises';
           import { MachinesClient } from './packages/core/src/agents/runtime/fly/api.ts';
           import { flyConfig } from './packages/core/src/agents/runtime/fly/config.ts';
           import { FlyPackageImages } from './packages/core/src/agents/runtime/fly/derivedImage.ts';
           const fail = message => { console.log('::error::' + message); process.exit(1); };
-          const config = flyConfig(process.env);
+          // Only these keys, each exactly KEY=value; anything else is refused without echoing it.
+          const allowed = new Set(['PROPR_FLY_APP', 'PROPR_FLY_IMAGE', 'PROPR_FLY_REGION', 'PROPR_FLY_API_TOKEN']);
+          const runtimeEnv = {};
+          for (const [index, line] of readFileSync(process.env.AGENT_RUNTIME_ENV, 'utf8').split('\n').entries()) {
+            if (!line) continue;
+            const match = /^([A-Z][A-Z0-9_]*)=(.+)$/.exec(line);
+            if (!match || !allowed.has(match[1]) || match[1] in runtimeEnv) fail(`agent-runtime.env line ${index + 1} is not an expected KEY=value`);
+            runtimeEnv[match[1]] = match[2];
+          }
+          if (allowed.size !== Object.keys(runtimeEnv).length) fail('agent-runtime.env is missing a key');
+          const config = flyConfig({ ...process.env, ...runtimeEnv });
           const api = new MachinesClient(config, [config.token]);
           const builds = [];
           const create = api.create.bind(api);
