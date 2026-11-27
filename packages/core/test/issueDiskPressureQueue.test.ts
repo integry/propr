@@ -135,7 +135,9 @@ test('an issue job whose wait for disk space ran out fails for good on that refu
   assert.ok(failure);
   assert.equal(typeof failure.finishedOn, 'number', 'no BullMQ retry follows');
   assert.equal(failure.attemptsMade, 1);
-  assert.match(failure.message, /^Worktree disk pressure: admission reserve unavailable after waiting 120 minutes \(7 refusals\); data retained$/);
+  // The final refusal carries its measurement: path, free space, reserve, other claims and this job's size.
+  assert.match(failure.message, /^Worktree disk pressure: admission reserve unavailable after waiting 120 minutes \(7 refusals\); data retained \(filesystem \S+: free [\d.]+ \w?i?B < required [\d.]+ \w?i?B = reserve [\d.]+ \w?i?B \+ 0 other claims \+ this job [\d.]+ \w?i?B\)$/);
+  assert.ok(failure.message.includes(`(filesystem ${path.join(root, 'worktrees')}:`), 'the measured filesystem path is reported');
   await until(() => jobState(jobId(42)), value => value.state === 'absent', 'removal on failure');
   assert.equal(failures.filter(entry => entry.id === jobId(42)).length, 1);
 });

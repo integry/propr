@@ -23,6 +23,8 @@ const REDIS_PORT = Number.parseInt(process.env.REDIS_PORT ?? '6379', 10);
 const RUN_ID = `${process.pid}-${Date.now()}`;
 const OWNER = `itest-intake-${RUN_ID}`;
 const ADMISSION = 'Worktree disk pressure: admission reserve unavailable; data retained';
+// The refusal carries its measurement: path, free space, reserve, other claims and this job's size.
+const MEASUREMENT = String.raw` \(filesystem \S+: free [\d.]+ \w?i?B < required [\d.]+ \w?i?B = reserve [\d.]+ \w?i?B \+ 0 other claims \+ this job [\d.]+ \w?i?B\)`;
 
 // Configure the worker's queue, database and storage before core reads them at import.
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-intake-'));
@@ -130,7 +132,8 @@ test('an intake job refused by worktree admission stays queued through its retri
   assert.equal(failures.length, 3);
   assert.equal(typeof failures[2].finishedOn, 'number');
   assert.deepEqual(processed, [], 'admission fails before the processor is entered');
-  assert.equal(failed.error, `Implementation did not start after 3 attempts: ${ADMISSION}. Once the cause is fixed, Retry agent starts this same issue again without creating another.`);
+  assert.match(failed.error!, new RegExp(`^Implementation did not start after 3 attempts: ${ADMISSION}${MEASUREMENT}\\. Once the cause is fixed, Retry agent starts this same issue again without creating another\\.$`));
+  assert.ok(failed.error!.includes(root), 'the measured filesystem path is reported');
   assert.equal(failed.issue_number, 34);
   assert.equal(failed.task_id, null);
   assert.equal(await (await getIssueQueue()).getJob(submissionIntakeJobId(OWNER, 'web', 34)), undefined);
@@ -151,6 +154,7 @@ test('a legacy submission left queued by an exhausted intake is settled from the
   await (await getIssueQueue()).remove(submissionIntakeJobId(OWNER, 'api', 35));
   const settled = await reconcileSubmissionIntake(db, await read(id), evidence);
   assert.equal(settled.state, 'failed');
-  assert.match(settled.error!, /^Implementation did not start after 3 attempts: Worktree disk pressure: admission reserve unavailable; data retained\./);
+  // The failure log keeps the whole measurement, not a prefix cut inside it.
+  assert.match(settled.error!, new RegExp(`^Implementation did not start after 3 attempts: ${ADMISSION}${MEASUREMENT}\\. Once the cause`));
   assert.deepEqual(processed, []);
 });

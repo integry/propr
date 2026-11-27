@@ -105,7 +105,9 @@ export async function updateFailedMetrics(
             repo: repoFullName,
             status: 'failed',
             correlationId: data?.correlationId,
-            error: err.message.substring(0, 100),
+            // Long enough to keep a disk-pressure refusal's measurement, which a
+            // queued submission's failure may later be settled from.
+            error: err.message.substring(0, 400),
         };
         await metricsRedis.zadd('metrics:ai:log:v1', job.timestamp, JSON.stringify(aiMetrics));
     }
