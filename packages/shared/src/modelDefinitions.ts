@@ -224,7 +224,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: VIBE_MODELS.map(m => m.id),
     defaultAlias: 'vibe',
     npmPackage: 'mistral-vibe',
-    defaultCliVersion: '2.25.8'
+    defaultCliVersion: '3.1.5'
   }
 };
 

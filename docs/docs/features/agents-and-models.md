@@ -237,7 +237,7 @@ For an existing host account, install the CLI, run `opencode auth login`, and us
 | GLM 5.3 | `llm-vibe-glm53` | 1M |
 | GLM 5.2 | `llm-vibe-glm52` | 1M |
 
-Vibe uses CLI 2.25.8. GLM runs through Mistral with the same `MISTRAL_API_KEY` or Vibe credentials; no separate Z.ai account is needed. Select `zai-glm-5-3` (or `zai-glm-5-2`) in **AI Agents**, per-task model controls, or the CLI. Mistral Medium remains the default. Existing agents gain these choices on load; custom/local models, credentials, explicit CLI pins, and supported defaults are preserved. Retired hosted Devstral defaults move to Mistral Medium. Use the default CLI version for the verified GLM integration.
+Vibe uses CLI 3.1.5. GLM runs through Mistral with the same `MISTRAL_API_KEY` or Vibe credentials; no separate Z.ai account is needed. Select `zai-glm-5-3` (or `zai-glm-5-2`) in **AI Agents**, per-task model controls, or the CLI. Mistral Medium remains the default. Existing agents gain these choices on load; custom/local models, credentials, explicit CLI pins, and supported defaults are preserved. Retired hosted Devstral defaults move to Mistral Medium. Use the default CLI version for the verified GLM integration.
 
 ## Choosing Models per Phase
 

@@ -158,7 +158,7 @@ RUN case "$OPENCODE_CLI_VERSION" in 1.*) package=opencode-ai ;; *) package=@open
 
 
 FROM agent-base AS vibe-cli
-ARG VIBE_CLI_VERSION=2.25.8
+ARG VIBE_CLI_VERSION=3.1.5
 # mistral-vibe only publishes cp312 wheels; Debian bookworm's system python3 is 3.11,
 # so have uv fetch a managed interpreter into UV_PYTHON_INSTALL_DIR (/opt/uv/python).
 ARG VIBE_PYTHON_VERSION=3.12
@@ -242,7 +242,6 @@ COPY --from=opencode-cli /opt/opencode /opt/opencode
 COPY --from=agent-tank-cli /usr/local/lib/node_modules/agent-tank /usr/local/lib/node_modules/agent-tank
 COPY --from=vibe-cli /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=vibe-cli /usr/local/bin/uvx /usr/local/bin/uvx
-COPY --from=vibe-cli /usr/local/bin/vibe /usr/local/bin/vibe
 COPY --from=vibe-cli /usr/local/bin/vibe-acp /usr/local/bin/vibe-acp
 COPY --from=vibe-cli /opt/uv /opt/uv
 COPY --from=antigravity-cli --chown=node:node /home/node/.local /home/node/.local
@@ -276,6 +275,7 @@ RUN set -eu; \
     link_npm_bin @anthropic-ai/claude-code claude \
     && link_npm_bin @openai/codex codex \
     && ln -sf /opt/opencode/bin/opencode /usr/local/bin/opencode \
+    && ln -s /opt/uv/tools/mistral-vibe/bin/vibe /usr/local/bin/vibe \
     && link_npm_bin agent-tank agent-tank \
     && ln -sf /home/node/.local/bin/agy /usr/local/bin/agy \
     && chmod +x \
@@ -317,7 +317,7 @@ ARG CLAUDE_CLI_VERSION=2.1.330
 ARG CODEX_CLI_VERSION=0.171.0
 ARG ANTIGRAVITY_CLI_VERSION=1.5.15
 ARG OPENCODE_CLI_VERSION=2.4.2
-ARG VIBE_CLI_VERSION=2.25.8
+ARG VIBE_CLI_VERSION=3.1.5
 ARG AGENT_TANK_CLI_VERSION=0.10.0
 
 LABEL dev.propr.agent-bundle="true" \

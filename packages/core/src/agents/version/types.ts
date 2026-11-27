@@ -41,7 +41,7 @@ export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     codex: '0.171.0',
     antigravity: '1.5.15',
     opencode: '2.4.2',
-    vibe: '2.25.8'
+    vibe: '3.1.5'
 };
 
 /** The single repository used for every managed agent execution. */
