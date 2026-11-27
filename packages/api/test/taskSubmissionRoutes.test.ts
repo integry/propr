@@ -353,14 +353,14 @@ test('automation options are rejected when malformed, out of range, or bounded w
 test('submission routing rejects extension selections on unsupported runtimes before routing side effects', async () => {
   const { routing } = await import('../routes/taskSubmissionRoutes.js');
   const extensionProfile = { instanceId: 'instance', profileId: 'profile', revision: 1 };
-  for (const type of ['vibe', 'opencode', 'antigravity', 'claude', 'codex']) {
+  for (const type of ['vibe', 'opencode', 'antigravity', 'claude', 'codex', 'pi']) {
     const registry = { ensureInitialized: async () => undefined, getAgentByAlias: () => ({ config: { alias: 'selected', type, enabled: true, defaultModel: 'model', supportedModels: ['model'] } }) } as never;
     let labelCalls = 0;
     const labels = async () => { labelCalls++; return 'llm-selected'; };
-    if (['claude', 'codex'].includes(type)) {
+    if (['claude', 'codex', 'pi'].includes(type)) {
       assert.equal((await routing({ agentAlias: 'selected', extensionProfile }, registry, labels, async () => ({ agentAlias: 'selected', model: 'model' }))).agentAlias, 'selected');
     } else {
-      await assert.rejects(routing({ agentAlias: 'selected', extensionProfile }, registry, labels, async () => ({ agentAlias: 'selected', model: 'model' })), error => (error as Error & { status?: number }).status === 400 && /Claude or Codex/.test((error as Error).message));
+      await assert.rejects(routing({ agentAlias: 'selected', extensionProfile }, registry, labels, async () => ({ agentAlias: 'selected', model: 'model' })), error => (error as Error & { status?: number }).status === 400 && /Claude, Codex or Pi/.test((error as Error).message));
       assert.equal(labelCalls, 0);
     }
     assert.equal((await routing({ agentAlias: 'selected' }, registry, labels)).agentAlias, 'selected');

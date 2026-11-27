@@ -51,6 +51,9 @@ interface PiEvent {
     aborted?: boolean;
     toolCallId?: string;
     toolName?: string;
+    /** Set on the calls a `codemode` script makes, naming the script's call. */
+    parentToolCallId?: string;
+    args?: unknown;
     result?: { content?: PiContentBlock[] | string; isError?: boolean };
     isError?: boolean;
     success?: boolean;
@@ -105,6 +108,18 @@ export interface ParsedPiOutput {
 }
 
 const FAILED_STOP_REASONS = new Set(['error', 'aborted']);
+/** Pi names MCP tools `mcp__<server>__<tool>`. */
+const PI_MCP_TOOL_NAME = /^mcp__([A-Za-z0-9_]+?)__(.+)$/;
+
+/**
+ * The tool name shown in persisted events and the live view: an MCP tool reads
+ * `<server>/<tool>`; built-in tools and `codemode` keep their own names.
+ */
+export function readablePiToolName(name: string | undefined): string | undefined {
+    if (!name) return name;
+    const match = PI_MCP_TOOL_NAME.exec(name);
+    return match ? `${match[1]}/${match[2]}` : name;
+}
 
 function isRecord(value: unknown): value is JsonRecord {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -166,7 +181,7 @@ function assistantContent(content: PiMessage['content']): PiConversationContentI
         if (block.type === 'text' && typeof block.text === 'string' && block.text) items.push({ type: 'text', text: block.text });
         else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) items.push({ type: 'thinking', thinking: block.thinking });
         else if (block.type === 'toolCall') {
-            items.push({ type: 'tool_use', id: typeof block.id === 'string' ? block.id : undefined, name: typeof block.name === 'string' ? block.name : undefined, input: block.arguments ?? {} });
+            items.push({ type: 'tool_use', id: typeof block.id === 'string' ? block.id : undefined, name: readablePiToolName(typeof block.name === 'string' ? block.name : undefined), input: block.arguments ?? {} });
         }
     }
     return items;
@@ -195,6 +210,7 @@ class PiOutputAccumulator {
     private cost = 0;
     private costComplete = true;
     private readonly toolResults = new Set<string>();
+    private readonly nestedCalls = new Set<string>();
     private lastTimestamp = new Date(0).toISOString();
     private retryError?: string;
 
@@ -206,6 +222,9 @@ class PiOutputAccumulator {
                 return;
             case 'message_end':
                 if (isRecord(event.message)) this.addMessage(event.message);
+                return;
+            case 'tool_execution_start':
+                if (typeof event.toolCallId === 'string' && typeof event.parentToolCallId === 'string') this.addNestedToolCall(event);
                 return;
             case 'tool_execution_end':
                 if (typeof event.toolCallId === 'string') {
@@ -263,6 +282,22 @@ class PiOutputAccumulator {
                 content: assistantContent(message.content),
                 ...(usage && { usage }),
             },
+        });
+    }
+
+    /**
+     * A tool call made from a `codemode` script (an MCP tool, typically) never
+     * appears as an assistant `toolCall` block: its execution events are the
+     * only record, so it gets its own tool_use entry before its result.
+     */
+    private addNestedToolCall(event: PiEvent): void {
+        const id = event.toolCallId as string;
+        if (this.nestedCalls.has(id)) return;
+        this.nestedCalls.add(id);
+        this.result.conversationLog.push({
+            type: 'assistant',
+            timestamp: this.lastTimestamp,
+            message: { role: 'assistant', content: [{ type: 'tool_use', id, name: readablePiToolName(event.toolName), input: event.args ?? {} }] },
         });
     }
 

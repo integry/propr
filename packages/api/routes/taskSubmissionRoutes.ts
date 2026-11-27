@@ -18,7 +18,7 @@ import { isDemoMode } from '../demoMode.js';
 import { getLlmLabel, enqueueIssueImplementationJob } from './planIssueHelpers.js';
 import { goalAttachmentUpload } from './plannerRoutes.js';
 import { goalUploadIdentity, removeTemporaryGoalUploads } from '../services/goalAttachmentService.js';
-import { EXTENSION_OPT_OUT_LABELS, agentSupportsSavedModel, githubInlineEligibility, MAX_RUN_COST_CAP_USD, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
+import { EXTENSION_OPT_OUT_LABELS, EXTENSION_RUNTIME_NAMES, agentSupportsSavedModel, isExtensionRuntime, githubInlineEligibility, MAX_RUN_COST_CAP_USD, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
 import { uploadGitHubAttachment } from '../../../src/github/visualPreviewAttachments.js';
 
 export const taskSubmissionUpload: RequestHandler = (req, res, next) => {
@@ -68,8 +68,8 @@ export async function routing(body: { agentAlias?: string; model?: string; exten
   if (!agent?.config.enabled || !model || !agentSupportsSavedModel(agent.config, model)) {
     throw Object.assign(new Error('Selected agent or model is no longer available. Choose a supported selection in Options.'), { status: 400 });
   }
-  if (body.extensionProfile && !['claude', 'codex'].includes(agent.config.type)) {
-    throw Object.assign(new Error('Extension profiles require Claude or Codex task execution'), { status: 400 });
+  if (body.extensionProfile && !isExtensionRuntime(agent.config.type)) {
+    throw Object.assign(new Error(`Extension profiles require ${EXTENSION_RUNTIME_NAMES} task execution`), { status: 400 });
   }
   const label = await labelLookup(model, agent.config.alias);
   if (!label) throw Object.assign(new Error('Selected agent/model cannot be routed through GitHub issues'), { status: 400 });
@@ -361,7 +361,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
     // These local rejections precede the GitHub POST. Mark them definite,
     // so the submission retains permission to retry rather than reconcile.
     const resolved = await resolveRouting(payload);
-    if (!['claude', 'codex'].includes(resolved.runtime ?? '')) throw new ExtensionError(400, 'Extensions require Claude or Codex task execution');
+    if (!isExtensionRuntime(resolved.runtime)) throw new ExtensionError(400, `Extensions require ${EXTENSION_RUNTIME_NAMES} task execution`);
   };
   const resume = async (id: string) => {
     const octokit = await getOctokit();

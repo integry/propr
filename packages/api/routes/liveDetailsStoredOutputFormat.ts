@@ -21,7 +21,7 @@ interface StoredExecutionOutputLine {
   source?: string;
 }
 
-export type StoredOutputFormat = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'unknown';
+export type StoredOutputFormat = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'pi' | 'unknown';
 
 const CODEX_STORED_OUTPUT_TYPES = new Set([
   'message',
@@ -36,6 +36,11 @@ const CODEX_STORED_OUTPUT_TYPES = new Set([
   'item.completed'
 ]);
 const CLAUDE_STORED_OUTPUT_TYPES = new Set(['assistant', 'user']);
+/** Pi `--mode json` session events (see Pi's docs/json.md); none is another runtime's type. */
+const PI_STORED_OUTPUT_TYPES = new Set([
+  'agent_start', 'agent_end', 'agent_settled', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end',
+  'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'auto_retry_start', 'auto_retry_end',
+]);
 const ANTIGRAVITY_TRANSCRIPT_SOURCES = new Set(['MODEL', 'USER_EXPLICIT', 'SYSTEM']);
 
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
@@ -110,6 +115,7 @@ function parseStoredOutputLine(line: string): StoredExecutionOutputLine | null {
 }
 
 function getImmediateStoredOutputFormat(parsed: StoredExecutionOutputLine): StoredOutputFormat | null {
+  if (isPiStoredOutputLine(parsed)) return 'pi';
   if (isClaudeStoredOutputLine(parsed)) return 'claude';
   return isStrongOpenCodeStoredOutputLine(parsed) && !isCodexStoredOutputLine(parsed) ? 'opencode' : null;
 }
@@ -190,6 +196,13 @@ function isCodexAppServerNotification(method: string | undefined): boolean {
     'thread/',
     'turn/',
   ].some(prefix => method === prefix || method.startsWith(prefix)));
+}
+
+/** Pi's session header (`{"type":"session","version":3,"id":...}`) or one of its session events. */
+function isPiStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {
+  const line = parsed as StoredExecutionOutputLine & { version?: unknown; id?: unknown };
+  if (parsed.type === 'session') return typeof line.version === 'number' && typeof line.id === 'string';
+  return typeof parsed.type === 'string' && PI_STORED_OUTPUT_TYPES.has(parsed.type);
 }
 
 function isClaudeStoredOutputLine(parsed: StoredExecutionOutputLine): boolean {

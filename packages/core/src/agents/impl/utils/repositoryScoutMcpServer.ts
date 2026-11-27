@@ -408,3 +408,43 @@ export function buildCodexRepositoryScoutArgs(): string[] {
         '--config', `mcp_servers.${REPOSITORY_SCOUT_SERVER_NAME}.required=true`,
     ];
 }
+
+/**
+ * Pi's `<PI_CODING_AGENT_DIR>/mcp.json` for the disposable scout agent dir.
+ * `direct` exposure declares the three tools to the model like built-ins, so
+ * the run needs neither `codemode` nor `tool_search`; automatic codemode stays
+ * off so no script runner appears.
+ */
+export function buildPiRepositoryScoutConfig(): string {
+    return JSON.stringify({
+        mcpServers: {
+            [REPOSITORY_SCOUT_SERVER_NAME]: {
+                command: 'node',
+                args: ['-e', REPOSITORY_SCOUT_MCP_SERVER_SOURCE],
+                env: { PROPR_SCOUT_REPOSITORY_ROOT: REPOSITORY_SCOUT_CONTAINER_ROOT },
+                exposure: 'direct',
+                description: 'Read, glob and search files in the read-only repository under review.',
+            },
+        },
+        autoEnableCodemode: false,
+    });
+}
+
+/**
+ * Pi CLI switches for an MCP-only scout session (verified against Pi 1.6.1):
+ * no built-in tools (`read`, `bash`, `edit`, `write`, ...), an allowlist of the
+ * scout's own MCP tools, and no extensions, skills or prompt templates.
+ * `--no-extensions` also unloads Pi's built-in extensions, MCP support
+ * included, so `builtin:mcp` is loaded back explicitly; `codemode` and
+ * `tool_search` stay unloaded. `--no-approve` keeps a project `.pi/` out.
+ */
+export function buildPiRepositoryScoutArgs(): string[] {
+    return [
+        '--no-builtin-tools',
+        '--tools', REPOSITORY_SCOUT_MCP_TOOLS.join(','),
+        '--no-extensions', '--extension', 'builtin:mcp',
+        '--no-skills',
+        '--no-prompt-templates',
+        '--no-approve',
+    ];
+}

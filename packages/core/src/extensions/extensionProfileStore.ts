@@ -4,7 +4,7 @@ import { OperatorCatalog, operatorCatalogDigest } from './operatorCatalog.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import {
-  EXTENSION_LIMITS, EXTENSION_LIBRARY_VERSION, extensionItemSkipReason, extensionLibraryInputSchema, publicExtensionProfile, resolveExtensionSet,
+  EXTENSION_LIMITS, EXTENSION_LIBRARY_VERSION, EXTENSION_RUNTIME_NAMES, extensionItemSkipReason, isExtensionRuntime, extensionLibraryInputSchema, publicExtensionProfile, resolveExtensionSet,
   type AutomationExtensions, type ExtensionLibraryInput, type ExtensionLibraryItems, type ExtensionLibraryRevision, type ExtensionLibraryServer,
   type ExtensionLibrarySkill, type ExtensionResolutionContext, type ExtensionSkillBundle, type LegacyExtensionProfileRevision,
   type ResolvedExtensionSet,
@@ -322,7 +322,7 @@ export class ExtensionLibraryStore {
    * and catalog digests of the resolved servers are checked.
    */
   async resolveLaunch(context: ExtensionLaunchContext, validateResources = true): Promise<PreparedExtensionLaunch> {
-    if (!['claude', 'codex'].includes(context.runtime)) throw new ExtensionError(400, 'Extensions require Claude or Codex task execution');
+    if (!isExtensionRuntime(context.runtime)) throw new ExtensionError(400, `Extensions require ${EXTENSION_RUNTIME_NAMES} task execution`);
     const { snapshot } = await this.head();
     const set = resolveExtensionSet(await withOAuthStates(this.database, await this.withCurrentCatalogSecrets(snapshot)), resolutionContext(context));
     if (validateResources) {
@@ -342,7 +342,7 @@ export class ExtensionLibraryStore {
    */
   async taskPreview(context: { repository: string; agentAlias: string; runtime: string }): Promise<{ qualified: boolean; revision: number; servers: { name: string; capability: 'read' | 'write' }[]; skills: { name: string }[] }> {
     const { snapshot } = await this.head();
-    if (!['claude', 'codex'].includes(context.runtime)) return { qualified: false, revision: snapshot.revision, servers: [], skills: [] };
+    if (!isExtensionRuntime(context.runtime)) return { qualified: false, revision: snapshot.revision, servers: [], skills: [] };
     const set = resolveExtensionSet(await withOAuthStates(this.database, await this.withCurrentCatalogSecrets(snapshot)), { repository: context.repository, agentAlias: context.agentAlias, runtime: context.runtime });
     return { qualified: true, revision: snapshot.revision, servers: set.servers.map(s => ({ name: s.name, capability: s.capability })), skills: set.skills.map(s => ({ name: s.bundle.name })) };
   }
