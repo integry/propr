@@ -1,3 +1,5 @@
+import { flyMachinesMax } from './capacity.js';
+
 /**
  * The ProPR MCP endpoint agent Machines reach over the org's private network (6PN, IPv6).
  * `propr deploy fly` runs the worker and the API in the same container of one Machine (the
@@ -33,7 +35,7 @@ export function flyConfig(env: NodeJS.ProcessEnv) {
     const memory = positiveInteger(env, 'PROPR_FLY_MACHINE_MEMORY_MB', 2048, [256, Number.MAX_SAFE_INTEGER]);
     const credentialRetention = positiveInteger(env, 'PROPR_FLY_CREDENTIAL_RETENTION_SECONDS', 900);
     const bootSeconds = positiveInteger(env, 'PROPR_FLY_BOOT_TIMEOUT', 300, [1, Math.floor((2 ** 31 - 1) / 1000)]);
-    return { token, app, image, bootTimeout: bootSeconds * 1000, credentialRetention, region: env.PROPR_FLY_REGION || undefined,
+    return { token, app, image, bootTimeout: bootSeconds * 1000, credentialRetention, maxMachines: flyMachinesMax(env), region: env.PROPR_FLY_REGION || undefined,
         guest: { cpu_kind: size[1] === 'performance' ? 'performance' : 'shared', cpus: Number(size[2]), memory_mb: memory } };
 }
 export type FlyConfig = ReturnType<typeof flyConfig>;
