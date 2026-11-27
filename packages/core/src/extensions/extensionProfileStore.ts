@@ -20,7 +20,8 @@ import {
 import { parseAcknowledgements, pinPackageServers, secretAcknowledgements } from './extensionPackageLibrary.js';
 
 export interface ExtensionGrantNetwork { mode: 'open' | 'restricted'; allow: string[]; instanceAllow: string[] }
-export class ExtensionError extends Error { constructor(readonly status: number, message: string) { super(message); } }
+/** `reason`, when set, is short and secret-free (why an upstream could not be reached) and is returned with the error. */
+export class ExtensionError extends Error { constructor(readonly status: number, message: string, readonly reason?: string) { super(message); } }
 export const extensionTokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
 /** Authenticated binding of sealed library credentials: they open only for that instance and the revision that sealed them. */
 export const libraryIdentity = (instanceId: string, revision: number) => `library/${instanceId}/${revision}`;

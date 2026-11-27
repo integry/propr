@@ -99,7 +99,7 @@ export async function discoverOAuth(transport: OAuthTransport, serverUrl: string
       headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': MCP_PROTOCOL_VERSION },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'ProPR', version: '1' } } }),
     });
-  } catch (error) { if (error instanceof OAuthNetworkError) throw new OAuthNetworkError('The MCP server could not be reached'); throw error; }
+  } catch (error) { if (error instanceof OAuthNetworkError) throw new OAuthNetworkError('The MCP server could not be reached', error.reason); throw error; }
   if (probe.status >= 200 && probe.status < 300) return null;
   const challenge = probe.status === 401 ? parseBearerChallenge(probe.headers['www-authenticate']) : {};
   let resourceDocument: Record<string, unknown> | null = null; let discoveredFrom: OAuthDiscovery['discoveredFrom'] = 'challenge';

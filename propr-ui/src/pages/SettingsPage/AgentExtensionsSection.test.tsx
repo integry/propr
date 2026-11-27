@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExtensionLibraryRevision } from '@propr/shared';
 import AgentExtensionsSection from './AgentExtensionsSection';
-import { extensionLibraryHistory, getExtensionLibrary, importArchiveSkill, saveExtensionLibrary, setExtensionItemEnabled } from '../../api/extensionProfilesApi';
+import { extensionLibraryHistory, getExtensionLibrary, importArchiveSkill, saveExtensionLibrary, setExtensionItemEnabled, validateExtensionLibrary } from '../../api/extensionProfilesApi';
 
 vi.mock('../../api/extensionProfilesApi', () => ({
   getExtensionLibrary: vi.fn(), saveExtensionLibrary: vi.fn(), setExtensionItemEnabled: vi.fn(), extensionLibraryHistory: vi.fn(),
@@ -186,6 +186,19 @@ describe('AgentExtensionsSection', () => {
     const view = await section();
     fireEvent.click(within(view).getByRole('button', { name: 'Revision history' }));
     expect(await within(view).findByRole('list', { name: 'Revision history' })).toHaveTextContent(`${formatDate(0)} · 1`);
+  });
+
+  it('reports each URL server as stateful or stateless with its authentication after Test connections', async () => {
+    vi.mocked(validateExtensionLibrary).mockResolvedValue({ results: [
+      { name: 'docs', reachable: true, status: 'reachable', session: 'stateful', authentication: 'bearer' },
+      { name: 'wiki', reachable: true, status: 'reachable', session: 'stateless', authentication: 'none' },
+      { name: 'private', reachable: false, status: 'unavailable', session: null, authentication: 'oauth' },
+      { name: 'local', reachable: null, status: 'not_validated' },
+    ] });
+    const view = await section();
+    fireEvent.click(within(view).getByRole('button', { name: 'Test connections' }));
+    expect(await within(view).findByText(/docs: reachable/)).toHaveTextContent(
+      'docs: reachable (stateful session, Bearer token) · wiki: reachable (stateless session, no authentication) · private: not reachable (OAuth) · local: not tested');
   });
 
   it('drops a pending token when the endpoint changes, through the field or the saved-endpoint picker, or authentication is removed', async () => {

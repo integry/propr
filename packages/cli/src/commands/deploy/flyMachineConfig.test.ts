@@ -93,6 +93,7 @@ test("app env: SQLite on the volume, Redis on loopback, served UI, Sprites agent
   assert.equal(env.PROPR_IDLE_SHUTDOWN, undefined);
   assert.equal(env.DOCKER_HOST, undefined);
   assert.equal(env.PROPR_INTERNAL_API_URL, "http://127.0.0.1:4000", "the worker reaches the API in the same container");
+  assert.equal(env.DASHBOARD_API_HOST, "::", "dual-stack: Fly Machines agents reach the API over IPv6 6PN");
   assert.equal(env.MCP_ENABLED, undefined);
 });
 

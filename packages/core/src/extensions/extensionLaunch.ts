@@ -24,6 +24,7 @@ import { applyRuntimeSupport, extensionRuntimeDropNotice, mergeRuntimeDrops, ext
 export { currentExtensionLaunch, extensionLaunchForRun as extensionLaunchForDockerRun } from './extensionLaunchContext.js';
 export { extensionGatewayBaseUrl } from './extensionGateway.js';
 import { extensionGatewayBaseUrl } from './extensionGateway.js';
+import { closeExtensionGrantSessions } from './mcpUpstreamSessions.js';
 
 /** The launch context of a run's extension request, before any resolution. */
 function launchContextFor(config: Pick<AgentConfig, 'alias' | 'type'>, options: AgentTaskOptions, maxServers: number = EXTENSION_LIMITS.servers): ExtensionLaunchContext {
@@ -227,7 +228,7 @@ export async function executeWithExtensions(config: AgentConfig, options: AgentT
     const packageInstall = remotePackages.length ? { registry: npmRegistryUrl(store.environment).url, servers: remotePackages } : undefined;
     // One line per run for operators: what the run carries on which runtime. The package
     // server digest is the replayed installs' identity, the one Sprites and Fly log at install.
-    logger.info(extensionApplicationLog({ taskId: options.taskId, runtime: support.kind, revision: snapshot.revision, set, requires, packageFields: packageInstall ? packageServersLogFields(packageInstall.servers) : {} }), 'Extension Library items applied to this run');
+    logger.info(extensionApplicationLog({ taskId: options.taskId, runtime: support.kind, revision: snapshot.revision, set, requires, packageFields: packageInstall ? packageServersLogFields(packageInstall.servers) : {}, gatewayUrl: baseUrl }), 'Extension Library items applied to this run');
     return await withNotice(launchContext.run({ taskId: options.taskId, secrets: [...operatorSecrets, ...launchOptions.toolPolicy.mcpServers.map(s => s.bearerToken)], mounts,
       requires, skillFiles, ...(baseUrl ? { gatewayUrl: baseUrl } : {}), ...(packageInstall ? { packageInstall } : {}), beforeLaunch: async (window = {}, validateResources = true) => {
       // Runs after network setup and capacity admission, at the physical launch
@@ -259,6 +260,10 @@ export async function executeWithExtensions(config: AgentConfig, options: AgentT
     // Log fixed messages: database and filesystem errors can contain private data.
     try { await store.database('extension_run_grants').where({ token_hash: extensionTokenHash(token) }).update({ active: false }); }
     catch { logger.error({ taskId: options.taskId }, 'Could not deactivate extension run grant; deletion will still be attempted'); }
+    // End the run's upstream MCP sessions now when the gateway shares this process (otherwise none are registered
+    // here); the gateway's sweep stays the fallback. Bounded: a slow upstream DELETE does not hold the run's cleanup.
+    try { await closeExtensionGrantSessions(extensionTokenHash(token), 'grant_ended'); }
+    catch { logger.warn({ taskId: options.taskId }, 'Could not close extension upstream MCP sessions; the sweep will retry'); }
     try { await store.retainGatewayTelemetry(token); }
     catch { logger.warn({ taskId: options.taskId }, 'Could not retain extension gateway telemetry'); }
     try { await store.database('extension_run_grants').where({ token_hash: extensionTokenHash(token) }).delete(); }

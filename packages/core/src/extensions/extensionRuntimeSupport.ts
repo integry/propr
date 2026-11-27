@@ -130,10 +130,12 @@ export function extensionSetDigest(set: Pick<ResolvedExtensionSet, 'servers' | '
   return createHash('sha256').update(JSON.stringify({ servers, skills })).digest('hex').slice(0, 16);
 }
 
-/** Fields of the per-run log line: the extension digest and how many items of each class the run carries. */
+/** Fields of the per-run log line: the extension digest and how many items of each class the run carries.
+ * `gatewayUrl` (credential-free, never a secret) is the gateway base the run's URL servers are reached at. */
 export function extensionApplicationLog(run: { taskId: string; runtime: string; revision: number; set: Pick<ResolvedExtensionSet, 'servers' | 'skills'>;
-  requires: Record<AgentRuntimeExtensionClass, readonly string[]>; packageFields: Record<string, unknown> }) {
+  requires: Record<AgentRuntimeExtensionClass, readonly string[]>; packageFields: Record<string, unknown>; gatewayUrl?: string }) {
   const { requires } = run;
   return { taskId: run.taskId, runtime: run.runtime, revision: run.revision, extensionDigest: extensionSetDigest(run.set), skills: requires.skills.length,
-    urlServers: requires.remoteMcp.length, catalogStdioServers: requires.catalogMcp.length, ...run.packageFields, packageServers: requires.packageMcp.length };
+    urlServers: requires.remoteMcp.length, catalogStdioServers: requires.catalogMcp.length, ...run.packageFields, packageServers: requires.packageMcp.length,
+    ...(run.gatewayUrl ? { gatewayUrl: run.gatewayUrl } : {}) };
 }

@@ -1,11 +1,21 @@
 import { flyMachinesMax } from './capacity.js';
 
+/**
+ * The ProPR MCP endpoint agent Machines reach over the org's private network (6PN, IPv6).
+ * `propr deploy fly` runs the worker and the API in the same container of one Machine (the
+ * `app` process group), so the worker's own Machine is the API's: its `<machine id>.vm.<app>.internal`
+ * name resolves from Machines in the org's other apps. Without a Machine id, the worker's
+ * process group (`FLY_PROCESS_GROUP`, default `app`) names it. A split API sets PROPR_FLY_MCP_URL.
+ */
 export function flyMcpEndpoint(env: NodeJS.ProcessEnv) {
     const explicit = env.PROPR_FLY_MCP_URL?.trim();
     if (explicit) return explicit;
     if (env.PROPR_AGENT_MCP_URL?.trim() && !env.PROPR_AGENT_DOCKER_NETWORK?.trim()) return;
-    if (env.FLY_APP_NAME && env.FLY_PRIVATE_IP)
-        return `http://api.process.${env.FLY_APP_NAME}.internal:${env.DASHBOARD_API_PORT || '4000'}/api/mcp`;
+    const app = env.FLY_APP_NAME?.trim();
+    if (!app || !env.FLY_PRIVATE_IP) return;
+    const machine = env.FLY_MACHINE_ID?.trim();
+    const host = machine ? `${machine}.vm.${app}.internal` : `${env.FLY_PROCESS_GROUP?.trim() || 'app'}.process.${app}.internal`;
+    return `http://${host}:${env.DASHBOARD_API_PORT || '4000'}/api/mcp`;
 }
 
 function positiveInteger(env: NodeJS.ProcessEnv, name: string, fallback: number, [min, max] = [1, Number.MAX_SAFE_INTEGER]) {

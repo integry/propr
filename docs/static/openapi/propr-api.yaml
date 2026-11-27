@@ -3778,7 +3778,7 @@ paths:
             type: string
       requestBody:
         required: true
-        description: JSON-RPC initialize, ping, initialized notification, tools/list or explicitly authorized tools/call.
+        description: JSON-RPC initialize, ping, initialized notification, tools/list or explicitly authorized tools/call. The gateway holds any upstream MCP session; no session id reaches the caller.
         content:
           application/json:
             schema:
@@ -4979,7 +4979,7 @@ paths:
               $ref: "#/components/schemas/JsonObject"
       responses:
         "200":
-          description: Tool names only.
+          description: Tool names and the session mode the upstream chose (stateful, stateless or null). A stateful upstream session is ended after listing.
           content:
             application/json:
               schema:
@@ -5012,7 +5012,7 @@ paths:
               $ref: "#/components/schemas/JsonObject"
       responses:
         "200":
-          description: Server names and reachable booleans only.
+          description: "Per server: name, reachable boolean, status, the session mode the upstream chose (stateful or stateless; null when not reached) and the configured authentication. An unavailable server also has a short reason (an HTTP status, a timeout, `OAuth not connected`, `token refresh failed`), never upstream content or credentials."
           content:
             application/json:
               schema:

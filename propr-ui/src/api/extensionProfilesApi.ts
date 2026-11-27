@@ -28,7 +28,16 @@ export interface ExtensionLibraryResponse {
   /** OAuth redirect URI of this instance and the connection state of OAuth servers; never tokens. */
   oauth?: ExtensionOAuthInstanceInfo;
 }
-export type ExtensionValidationResult = { name: string; reachable: boolean | null; status?: 'reachable' | 'unavailable' | 'not_validated' };
+/** How the gateway talks to a URL server: in a session the upstream assigned, or without one. */
+export type ExtensionSessionMode = 'stateful' | 'stateless';
+export type ExtensionValidationResult = {
+  name: string; reachable: boolean | null; status?: 'reachable' | 'unavailable' | 'not_validated';
+  /** URL servers: the session mode the upstream chose; null when it was not reached. */
+  session?: ExtensionSessionMode | null;
+  authentication?: 'none' | 'bearer' | 'oauth';
+  /** Unavailable URL servers: why, short and secret-free (an HTTP status, a timeout, a failed token refresh). */
+  reason?: string;
+};
 export const getExtensionLibrary = () => request<ExtensionLibraryResponse>('');
 /**
  * Save the library. `acknowledgements` names the local package servers whose
@@ -54,7 +63,7 @@ export async function importArchiveSkill(file: File): Promise<{ bundle: Extensio
 /** "Check" a local package: a registry lookup of the exact version. Nothing is installed or run. */
 export const resolveExtensionPackage = (pkg: { ecosystem: 'npm'; package: string; version: string; bin?: string }) =>
   request<{ package: ExtensionPackageResolution }>('/packages/resolve', { ecosystem: pkg.ecosystem, package: pkg.package, version: pkg.version, ...(pkg.bin ? { bin: pkg.bin } : {}) });
-export const discoverExtensionTools = (url: string) => request<{ tools: string[] }>('/tools/discover', { url });
+export const discoverExtensionTools = (url: string) => request<{ tools: string[]; session?: ExtensionSessionMode | null }>('/tools/discover', { url });
 export type GithubSkillRef = { name: string; ref: string; kind: 'branch' | 'tag' };
 export const listGithubSkillRefs = (repository: string) => request<{ refs: GithubSkillRef[] }>('/skills/github-source', { repository });
 export const resolveGithubSkillRef = (repository: string, ref: string) => request<{ commit: string }>('/skills/github-source', { repository, ref });

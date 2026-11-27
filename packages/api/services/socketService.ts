@@ -47,6 +47,7 @@ import {
 import { ActivityBroadcaster, ACTIVITY_ROOM as BROADCAST_ACTIVITY_ROOM } from './activityBroadcast.js';
 import { QueueBroadcaster } from './queueBroadcaster.js';
 import { TaskWatcherManager } from './taskWatcher.js';
+import { closeExtensionUpstreamSessions } from '../../core/src/extensions/mcpUpstreamSessions.js';
 import {
   configureSocketAuthentication,
   type SocketAuthenticationOptions,
@@ -583,6 +584,8 @@ export class SocketService {
       this.queueBroadcaster = null;
     });
     await attempt(() => this.taskWatcherManager.closeAll());
+    // DELETE the gateway's upstream MCP sessions, bounded so an unresponsive upstream cannot hold shutdown.
+    await attempt(() => closeExtensionUpstreamSessions('shutdown'));
     // Wait for startup subscription before deciding whether unsubscribe is needed.
     await attempt(() => this.subscriptionReady);
     await attempt(async () => {
