@@ -157,7 +157,7 @@ export class AntigravityAgent implements Agent {
                 timeoutMs: this.timeoutMs,
             });
             if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
-            else response.error = resolveAntigravityLoginFailure(`${response.logs}\n${response.error ?? ''}`, this.getHostConfigPath()) ?? response.error;
+            else response.error = resolveAntigravityLoginFailure(`${response.logs}\n${response.error ?? ''}`, this.getHostConfigPath(), this.config.envVars) ?? response.error;
             logger.info({ taskId, conversationId: response.conversationId, success: response.success, error: response.error, agentAlias: this.config.alias }, 'Antigravity native goal attempt finished');
             return response;
         } catch (error) {
@@ -202,7 +202,7 @@ export class AntigravityAgent implements Agent {
             providerModel: response.reportedModel ?? response.modelUsed, modifiedFiles: [],
             commitMessage: null, summary: response.summary ?? undefined, prompt, sessionId: response.sessionId, conversationId: response.conversationId, conversationLog: response.conversationLog,
             tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined,
-            error: success ? undefined : (printTimeout ? executionError : undefined) || antigravityRunLoginFailure(result, this.getHostConfigPath()) || result.stderr || executionError || 'Antigravity execution failed',
+            error: success ? undefined : (printTimeout ? executionError : undefined) || antigravityRunLoginFailure(result, this.getHostConfigPath(), this.config.envVars) || result.stderr || executionError || 'Antigravity execution failed',
             terminationReason
         };
 
@@ -420,7 +420,7 @@ export class AntigravityAgent implements Agent {
                 return { response: analysisText, modelUsed: resolvedModel, executionTimeMs, success: true,
                     tokenUsage: antigravityTokenUsage, sessionId };
             }
-            return { response: '', modelUsed: resolvedModel, executionTimeMs, success: false, error: formatAnalysisFailure(resolvedProtocolError, result.stderr, antigravityRunLoginFailure(result, this.getHostConfigPath())) };
+            return { response: '', modelUsed: resolvedModel, executionTimeMs, success: false, error: formatAnalysisFailure(resolvedProtocolError, result.stderr, antigravityRunLoginFailure(result, this.getHostConfigPath(), this.config.envVars)) };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
@@ -443,7 +443,7 @@ export class AntigravityAgent implements Agent {
         }
     }
 
-    credentialProblem(): string | undefined { return inspectAntigravityCredentials(this.getHostConfigPath()).reason; }
+    credentialProblem(): string | undefined { return inspectAntigravityCredentials(this.getHostConfigPath(), this.config.envVars).reason; }
 
     private buildAntigravityShellCommand(repositoryInspection = false): string {
         // With no prompt flag, agy detects non-TTY stdin and enters print mode.

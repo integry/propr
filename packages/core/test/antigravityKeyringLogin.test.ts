@@ -52,12 +52,12 @@ function hostHome({ token = false, keyringMarker = false } = {}): string {
 }
 
 const model = 'antigravity-gemini-3.8-flash';
-const agent = (configPath: string) => new AntigravityAgent({ id: 'keyring', alias: 'antigravity', type: 'antigravity', enabled: true,
-    configPath, dockerImage: 'propr/agent:latest', supportedModels: [model], defaultModel: model });
+const agent = (configPath: string, envVars?: Record<string, string>) => new AntigravityAgent({ id: 'keyring', alias: 'antigravity', type: 'antigravity', enabled: true,
+    configPath, dockerImage: 'propr/agent:latest', supportedModels: [model], defaultModel: model, ...(envVars ? { envVars } : {}) });
 
 type ProcessExecutionResult = (opts: Record<string, unknown>) => Promise<{ success: boolean; error?: string; logs: string }>;
-function processResult(configPath: string, result: { stdout: string; stderr: string; exitCode: number | null }) {
-    const instance = agent(configPath) as unknown as { processExecutionResult: ProcessExecutionResult };
+function processResult(configPath: string, result: { stdout: string; stderr: string; exitCode: number | null }, envVars?: Record<string, string>) {
+    const instance = agent(configPath, envVars) as unknown as { processExecutionResult: ProcessExecutionResult };
     return instance.processExecutionResult.call(instance, {
         result, executionTime: 1, issueRef: { number: 7, repoOwner: 'o', repoName: 'r' }, effectiveModel: model,
         prompt: 'do the work', worktreePath: '/tmp/none', worktreeGitContent: null,
@@ -102,6 +102,25 @@ test('a visible host keyring marker is named explicitly; its contents are never 
     assert.equal(state.keyringMarkerDetected, true);
     assert.match(state.reason!, /^Found ~\/\.config\/antigravity\/credential-user-scope but no ~\/\.gemini\/antigravity-cli\/antigravity-oauth-token: agy saved this login in the OS keyring/);
     assert.match(state.reason!, /AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy/);
+});
+
+test('an API-key agent without the file token is left to the provider probe', async () => {
+    for (const envVars of [{ GEMINI_API_KEY: 'key' }, { GOOGLE_API_KEY: 'key' }, { AGY_ADC_AUTH: '1' }, { GOOGLE_APPLICATION_CREDENTIALS: '/keys/sa.json' }]) {
+        const gemini = hostHome({ keyringMarker: true });
+        assert.equal(inspectAntigravityCredentials(gemini, envVars).status, 'unknown');
+        assert.equal(inspectAntigravityCredentials(gemini, envVars).reason, undefined);
+        assert.equal(agent(gemini, envVars).credentialProblem(), undefined);
+        assert.equal(await agent(gemini, envVars).healthCheck(), true);
+    }
+    // A blank or unrelated variable is not an alternative sign-in.
+    assert.equal(agent(hostHome(), { GEMINI_API_KEY: '  ', OTHER: 'x' }).credentialProblem(), ANTIGRAVITY_KEYRING_LOGIN_GUIDANCE);
+});
+
+test('an API-key agent keeps the CLI error instead of the file-token login guidance', async () => {
+    const result = await processResult(hostHome({ keyringMarker: true }), { stdout: '', stderr: NO_AUTH_STDERR, exitCode: 1 }, { GEMINI_API_KEY: 'key' });
+    assert.equal(result.success, false);
+    assert.doesNotMatch(result.error!, /AGY_CLI_FORCE_FILE_TOKEN_STORAGE/);
+    assert.equal(resolveAntigravityLoginFailure(NO_AUTH_STDERR, hostHome(), { GEMINI_API_KEY: 'key' }), undefined);
 });
 
 test('a credential dir the worker cannot see is not reported as missing', () => {
