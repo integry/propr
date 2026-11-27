@@ -18,6 +18,8 @@ export interface ExtensionOAuthUrls { redirectUri: string | null; clientMetadata
 export type ExtensionOAuthNotifier = (event: { instanceId: string; serverName: string; connectedBy: string; connectedAt: number }) => Promise<void>;
 export interface ExtensionOAuthOptions { transport?: OAuthTransport; now?: () => number; notify?: ExtensionOAuthNotifier; refreshAttempts?: number; retryDelayMs?: number }
 
+/** Why an OAuth request could not connect (address families tried, a timeout), when it is known; no response content. */
+const oauthFailureReason = (error: unknown) => error instanceof OAuthNetworkError ? error.reason : undefined;
 const STATE_TTL_MS = 10 * 60 * 1000;
 /** Refresh this long before the access token expires. */
 const REFRESH_MARGIN_MS = 60 * 1000;
@@ -89,7 +91,7 @@ export class ExtensionOAuthStore {
     await this.library.authorize(actor);
     let discovery;
     try { discovery = await discoverOAuth(this.transport, input.url, input.scopes); }
-    catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'OAuth discovery failed'); }
+    catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'OAuth discovery failed', oauthFailureReason(error)); }
     await this.library.authorize(actor);
     if (!discovery) return { authorizationRequired: false, registration: null, message: 'The server answered without requiring authorization. Use authentication None.', redirectUri: urls.redirectUri };
     const registration = chooseRegistration(discovery.metadata, { clientId: input.clientId, clientMetadataUrl: urls.clientMetadataUrl });
@@ -146,7 +148,7 @@ export class ExtensionOAuthStore {
     try {
       let discovery;
       try { discovery = await discoverOAuth(this.transport, server.url, server.scopes); }
-      catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'OAuth discovery failed'); }
+      catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'OAuth discovery failed', oauthFailureReason(error)); }
       if (!discovery) throw new ExtensionError(409, 'The server answered without requiring authorization');
       const registration = chooseRegistration(discovery.metadata, { clientId: server.clientId, clientMetadataUrl: urls.clientMetadataUrl });
       let client: OAuthClient;
@@ -190,7 +192,7 @@ export class ExtensionOAuthStore {
       } catch { /* register again */ }
     }
     try { return await registerDynamicClient(this.transport, metadata, redirectUri); }
-    catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'Client registration failed'); }
+    catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? error.message : 'Client registration failed', oauthFailureReason(error)); }
   }
 
   /**
@@ -230,7 +232,7 @@ export class ExtensionOAuthStore {
     if ((await this.database(OAUTH_CONNECTIONS).where({ instance_id: row.instance_id, server_name: row.server_name }).first('state'))?.state === 'disconnecting') throw new ExtensionError(409, DISCONNECTING);
     let tokens: OAuthTokens;
     try { tokens = await exchangeAuthorizationCode(this.transport, details.metadata, client, { code: query.code, verifier: sealed.verifier, redirectUri: details.redirectUri, resource: details.resource }, this.now()); }
-    catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? 'The authorization server refused the sign-in' : 'Sign-in failed'); }
+    catch (error) { throw new ExtensionError(502, error instanceof OAuthProtocolError || error instanceof OAuthNetworkError ? 'The authorization server refused the sign-in' : 'Sign-in failed', oauthFailureReason(error)); }
     if (!tokens.scopes.length) tokens = { ...tokens, scopes: details.scopes };
     const now = this.now();
     const identity = { instance_id: row.instance_id, server_name: row.server_name, endpoint: row.endpoint, client_id: client.clientId };

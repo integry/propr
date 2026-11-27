@@ -14,6 +14,7 @@ import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUn
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
+import { redirectDials } from './helpers/extensionDialRedirect.js';
 
 const secret = 'UPSTREAM_SESSION_BEARER_SENTINEL_DO_NOT_DISCLOSE';
 const context: ExtensionLaunchContext = { agentAlias: 'claude-main', runtime: 'claude', repositories: ['team/repo'], allowWrite: true };
@@ -320,6 +321,8 @@ test('the real transport keeps a stateful session on one pinned connection, read
   await new Promise<void>(r => upstream.listen(0, '127.0.0.1', r));
   const { port } = upstream.address() as import('node:net').AddressInfo;
   const original = https.request;
+  // The vetted address is dialled by the Happy Eyeballs agent; only the test maps it to the local fixture.
+  redirectDials(t, '127.0.0.1');
   t.mock.method(https, 'request', (url: URL, options: import('node:https').RequestOptions, callback: Parameters<typeof https.request>[2]) => {
     assert.equal(url.href, 'https://8.8.8.8/mcp');
     return original(`https://127.0.0.1:${port}/mcp`, { ...options, lookup: undefined, ca: cert, servername: 'mcp.synthetic.example' }, callback);
@@ -532,6 +535,8 @@ test('the real transport frees the pinned connection after an event-stream respo
   await new Promise<void>(r => upstream.listen(0, '127.0.0.1', r));
   const { port } = upstream.address() as import('node:net').AddressInfo;
   const original = https.request;
+  // The vetted address is dialled by the Happy Eyeballs agent; only the test maps it to the local fixture.
+  redirectDials(t, '127.0.0.1');
   t.mock.method(https, 'request', (_url: URL, options: import('node:https').RequestOptions, callback: Parameters<typeof https.request>[2]) =>
     original(`https://127.0.0.1:${port}/mcp`, { ...options, lookup: undefined, ca: cert, servername: 'mcp.synthetic.example' }, callback));
   extensionTestResources(t).defer(() => t.mock.restoreAll());
@@ -619,6 +624,8 @@ async function tlsUpstream(t: TestContext, handler: (req: import('node:http').In
   await new Promise<void>(r => upstream.listen(0, '127.0.0.1', r));
   const { port } = upstream.address() as import('node:net').AddressInfo;
   const original = https.request;
+  // The vetted address is dialled by the Happy Eyeballs agent; only the test maps it to the local fixture.
+  redirectDials(t, '127.0.0.1');
   t.mock.method(https, 'request', (_url: URL, options: import('node:https').RequestOptions, callback: Parameters<typeof https.request>[2]) =>
     original(`https://127.0.0.1:${port}/mcp`, { ...options, lookup: undefined, ca: cert, servername: 'mcp.synthetic.example' }, callback));
   extensionTestResources(t).defer(() => t.mock.restoreAll());

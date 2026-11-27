@@ -9,6 +9,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { ExtensionLibraryStore } from '../../core/src/extensions/extensionProfileStore.js';
 import { ExtensionOAuthStore, setExtensionOAuth } from '../../core/src/extensions/extensionOAuthStore.js';
+import { OAuthNetworkError } from '../../core/src/extensions/extensionOAuthHttp.js';
 import { up } from '../../core/src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../../core/src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../../core/src/db/migrations/20261113000000_extension_library.js';
@@ -28,7 +29,9 @@ test('OAuth sign-in routes: durable administrators only, session-bound callback,
   const environment: NodeJS.ProcessEnv = { SYSTEM_TASK_SECRET: 'synthetic-oauth-api-custody', API_PUBLIC_URL: 'https://propr.example.com' };
   const store = new ExtensionLibraryStore(database, environment);
   const synthetic = syntheticOAuthProvider({ advertise: { metadataDocument: true }, issParameter: true });
-  setExtensionOAuth(store, new ExtensionOAuthStore(store, { transport: synthetic.transport, notify: async () => {} }));
+  // Set to a connect reason, the provider is unreachable as on a stalled network path.
+  let unreachable: string | undefined;
+  setExtensionOAuth(store, new ExtensionOAuthStore(store, { transport: async request => { if (unreachable) throw new OAuthNetworkError('OAuth request failed', unreachable); return synthetic.transport(request); }, notify: async () => {} }));
   await store.saveLibrary('1', { version: 1, skills: [], servers: [{ kind: 'https', name: 'docs', url: OAUTH_MCP_URL, enabled: true, tools: ['lookup'], capability: 'read', authentication: 'oauth', repositories: [], agents: [], autoApply: true }] }, {}, 0);
 
   const routes = createExtensionLibraryRoutes(store);
@@ -75,6 +78,12 @@ test('OAuth sign-in routes: durable administrators only, session-bound callback,
   const check = JSON.parse(await read(await post('/oauth/check', { url: OAUTH_MCP_URL })));
   assert.equal(check.check.registration, 'metadata_document');
   assert.equal(check.check.redirectUri, list.oauth.redirectUri);
+  // An unreachable server: the 502 says why the connection failed (families and addresses tried), nothing more.
+  unreachable = 'connect timeout (IPv6 2606:4700:4700::1111, then IPv4 8.8.8.8)';
+  const failed = await post('/oauth/check', { url: OAUTH_MCP_URL });
+  assert.equal(failed.status, 502);
+  assert.deepEqual(JSON.parse(await read(failed)), { error: 'The MCP server could not be reached', reason: unreachable });
+  unreachable = undefined;
 
   // A sign-in started in session A cannot be completed from session B or by another administrator.
   const startedA = JSON.parse(await read(await post('/oauth/start', { name: 'docs' })));

@@ -531,18 +531,23 @@ jobs:
 
           # OAuth sign-in through the Settings API, no browser: Check, Connect, the provider's consent
           # (the fixture approves at once) and ProPR's callback, in one cookie session as a browser would.
-          jq -n --arg url "$OAUTH_FIXTURE_ORIGIN/mcp" '{url: $url}' | post /api/instance/extensions/v1/oauth/check > "$OUT/oauth-check.json"
+          # A failed call prints ProPR's error body: its `reason` names the address families tried and how each failed.
+          oauth_failed() { echo "::error::OAuth $1 failed: $(jq -c '{error, reason}' "$2" 2>/dev/null || echo 'no response body')"; exit 1; }
+          jq -n --arg url "$OAUTH_FIXTURE_ORIGIN/mcp" '{url: $url}' | post /api/instance/extensions/v1/oauth/check > "$OUT/oauth-check.json" ||
+            oauth_failed Check "$OUT/oauth-check.json"
           jq -e --arg issuer "$OAUTH_FIXTURE_ORIGIN" '.check.authorizationRequired and .check.registration == "dynamic" and .check.issuer == $issuer' "$OUT/oauth-check.json" > /dev/null ||
             { echo "::error::OAuth discovery of the fixture failed: $(jq -c .check "$OUT/oauth-check.json")"; exit 1; }
           jar="$OUT/oauth-cookies"
-          authorization=$(echo '{"name":"url-oauth"}' | post /api/instance/extensions/v1/oauth/start -c "$jar" -b "$jar" | jq -er '.authorizationUrl | strings')
+          echo '{"name":"url-oauth"}' | post /api/instance/extensions/v1/oauth/start -c "$jar" -b "$jar" > "$OUT/oauth-start.json" ||
+            oauth_failed Connect "$OUT/oauth-start.json"
+          authorization=$(jq -er '.authorizationUrl | strings' "$OUT/oauth-start.json")
           [[ $authorization == "$OAUTH_FIXTURE_ORIGIN/authorize?"* ]]
           callback=$(curl --silent --show-error -o /dev/null -w '%{redirect_url}' "$authorization")
           [[ $callback == "$base/api/instance/extensions/v1/oauth/callback?"* ]] ||
             { echo "::error::The fixture's consent did not redirect to ProPR's callback"; exit 1; }
           api "${callback#"$base"}" -c "$jar" -b "$jar" > "$OUT/oauth-callback.html"
           grep -q 'is connected' "$OUT/oauth-callback.html" || { echo "::error::The OAuth callback did not connect url-oauth"; exit 1; }
-          rm -f "$jar"
+          rm -f "$jar" "$OUT/oauth-start.json"
           get /api/instance/extensions/v1 | jq -e '.oauth.connections["url-oauth"].state == "connected"' > /dev/null
 
           # The fixture answers right before Test connections, so an unreachable url-oauth is not a cold host.

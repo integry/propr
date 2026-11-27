@@ -235,12 +235,12 @@ The gateway, not the agent, owns each URL server's upstream MCP session:
   capability, egress policy, byte accounting and credential redaction apply to
   every request, including the handshake.
 - **Pinned connection.** Each stateful session keeps one keep-alive connection
-  to the address vetted when it opened, because some servers lose a session when
+  to the address that answered when it opened, because some servers lose a session when
   a request arrives on a new connection. Concurrent calls in that session take
   turns on it; the 10-second request timeout starts only when a call gets the
   connection, and a call that waits more than 30 seconds fails unsent with
   "MCP session busy". A stateless server's concurrent calls run in parallel over
-  a pool of connections to the same vetted address. DNS and policy are still
+  a pool of connections to that same address. DNS and policy are still
   checked on every request.
 - **Lost sessions.** When the upstream answers `404` to a request with the
   session id, Core re-initializes once and replays the call for `read` servers.
@@ -260,8 +260,15 @@ sends their `DELETE`s (waiting at most 5 seconds); after any restart the next
 call opens a new session.
 
 Endpoints must use port 443 and have no credentials, query parameters or fragments.
-Core resolves and checks all DNS answers on every connection, then dials only a
-vetted address while verifying the original TLS identity. Redirects, private,
+Core resolves and checks all DNS answers on every connection, then dials only
+vetted addresses while verifying the original TLS identity. When a name has
+both IPv6 and IPv4 answers, Core tries them in turn, alternating families and
+starting the next address after 250 ms without a connection (Happy Eyeballs);
+each address gets 3 seconds, within the 10-second request limit, and the first
+connection wins. A server with a broken IPv6 path is therefore reached over
+IPv4. If no address connects, Test connections and OAuth **Check** say which
+were tried and how each failed, for example `connect timeout (IPv6 2a09:…,
+then IPv4 169.155.…)`. Redirects, private,
 loopback, link-local, metadata and reserved destinations are refused. The fake-IP
 DNS range `198.18.0.0/15` remains reachable, matching the existing egress proxy;
 TLS still verifies the original endpoint hostname. Operator-installed catalog entries can qualify local stdio and fixed internal HTTPS exceptions, and [local package servers](#local-package-servers) run a pinned npm package through the same stdio bridge, as described below. Customer commands, host paths, Docker sockets and bind
@@ -397,7 +404,8 @@ the code. A refused exchange, such as a PKCE verifier mismatch, stores nothing.
 Every discovery, registration, token and revocation request goes through the
 extension endpoint policy: HTTPS on port 443 without credentials, query or
 fragment, every DNS answer public (private, loopback, link-local and metadata
-addresses are refused), the checked address pinned for the connection, no
+addresses are refused), only the checked addresses dialled (with the same
+IPv6/IPv4 fallback as MCP requests), no
 redirects, responses bounded to 256 KiB and ten seconds.
 
 ### Token custody and refresh

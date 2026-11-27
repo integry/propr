@@ -2,10 +2,10 @@ import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { extensionTestResources } from './helpers/extensionTestResources.js';
 import type { ExtensionLibraryServerInput } from '@propr/shared';
-import { ExtensionLibraryStore, type ExtensionLaunchContext } from '../src/extensions/extensionProfileStore.js';
+import { ExtensionError, ExtensionLibraryStore, type ExtensionLaunchContext } from '../src/extensions/extensionProfileStore.js';
 import { ExtensionOAuthStore, setExtensionOAuth, type ExtensionOAuthOptions } from '../src/extensions/extensionOAuthStore.js';
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
-import { createOAuthHttpsTransport, oauthRequest, type OAuthHttpRequest, type OAuthHttpResponse, type OAuthTransport } from '../src/extensions/extensionOAuthHttp.js';
+import { OAuthNetworkError, createOAuthHttpsTransport, oauthRequest, type OAuthHttpRequest, type OAuthHttpResponse, type OAuthTransport } from '../src/extensions/extensionOAuthHttp.js';
 import { discoverOAuth, parseBearerChallenge, requestTokens } from '../src/extensions/extensionOAuth.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
@@ -47,6 +47,16 @@ async function fixture(t: TestContext, provider: SyntheticOAuthOptions = { adver
   const connectionRows = () => database('extension_oauth_connections').select();
   return { database, store, oauth, synthetic, notifications, save, consent, connect, launch, call, connectionRows, tick: (ms: number) => { clock += ms; }, now: () => clock };
 }
+
+test('a Check whose server cannot be reached returns 502 with the connect reason', async t => {
+  const reason = 'connect timeout (IPv6 2606:4700:4700::1111, then IPv4 8.8.8.8)';
+  const f = await fixture(t, { advertise: { dynamic: true } }, { transport: async () => { throw new OAuthNetworkError('OAuth request failed', reason); } });
+  const error = await f.oauth.check('1', { url: OAUTH_MCP_URL }, OAUTH_URLS).then(() => undefined, (failed: unknown) => failed);
+  assert.ok(error instanceof ExtensionError);
+  assert.equal(error.status, 502);
+  assert.equal(error.message, 'The MCP server could not be reached');
+  assert.equal(error.reason, reason);
+});
 
 test('discovery follows the 401 challenge and falls back to the well-known location, and Check stores nothing', async t => {
   for (const discovery of ['challenge', 'well_known'] as const) {

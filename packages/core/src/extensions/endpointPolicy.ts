@@ -6,6 +6,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { isIP, BlockList, type LookupFunction } from 'node:net';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { isNonPublicAddress } from '../network/egressProxy.js';
+import { ExtensionConnectError, ExtensionDialAgent, takeConnectStart, type ExtensionDialAddress } from './happyEyeballs.js';
 
 const responseWireBytes = new WeakMap<object, number>();
 /** Internal accounting metadata; never serialized with an MCP response. */
@@ -39,21 +40,22 @@ export function extensionEndpoint(value: string): URL {
   return url;
 }
 /**
- * A socket `lookup` that answers every query with the one vetted address, so
- * the connection can only be made to it. Node asks with `all: true` (and then
+ * A socket `lookup` that answers every query with the vetted address (or
+ * addresses), so the connection can only be made to them. Node asks with `all: true` (and then
  * expects a list) whenever it may race address families, which is the default
  * for named hosts since Node 20; answering that with a single address fails
  * every request with ERR_INVALID_IP_ADDRESS.
  */
-export function pinnedLookup(address: string, family: number): LookupFunction {
+export function pinnedLookup(address: string | readonly ExtensionDialAddress[], family = 4): LookupFunction {
+  const all = typeof address === 'string' ? [{ address, family }] : address.map(entry => ({ address: entry.address, family: entry.family }));
   return (_host, options, callback) => {
-    if (options?.all) callback(null, [{ address, family }]);
-    else callback(null, address, family);
+    if (options?.all) callback(null, all);
+    else callback(null, all[0].address, all[0].family);
   };
 }
 export type ExtensionLookup = (host: string) => Promise<Array<{ address: string; family: number }>>;
 export interface ExtensionEndpointPolicy { network?: ExtensionGrantNetwork; internalAddresses?: string[]; onDecision?: (host: string, allowed: boolean) => Promise<void> }
-export async function resolveExtensionEndpoint(value: string, lookup: ExtensionLookup = host => dns.lookup(host, { all: true, verbatim: true }), policy: ExtensionEndpointPolicy = {}): Promise<{ url: URL; address: string; family: number }> {
+export async function resolveExtensionEndpoint(value: string, lookup: ExtensionLookup = host => dns.lookup(host, { all: true, verbatim: true }), policy: ExtensionEndpointPolicy = {}): Promise<{ url: URL; address: string; family: number; addresses: ExtensionDialAddress[] }> {
   const url = policy.internalAddresses ? new URL(value) : extensionEndpoint(value); const host = url.hostname.replace(/^\[|\]$/g, '');
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || (url.port && url.port !== '443')) throw new Error('Invalid MCP endpoint');
   if (policy.network?.mode === 'restricted' && !compileEgressAllowlist(policy.network.allow).allows(host, 443)) {
@@ -77,10 +79,18 @@ export async function resolveExtensionEndpoint(value: string, lookup: ExtensionL
   });
   await policy.onDecision?.(host, permitted);
   if (!permitted) throw new Error('MCP endpoint must resolve exclusively to public addresses or authorized pinned catalog addresses');
-  return { url, ...addresses[0] };
+  // Every answer passed the check above, so any of them may be dialled; `address` is the resolver's first.
+  const vetted = addresses.map(a => ({ address: a.address, family: a.family }));
+  return { url, ...vetted[0], addresses: vetted };
 }
-/** An upstream session's keep-alive connection, pinned to the address vetted when the session opened. */
-export interface ExtensionPinnedConnection { address: string; family: number; agent: https.Agent }
+/**
+ * An upstream session's keep-alive connection, pinned to the addresses vetted when the session opened. The first
+ * connection tries them Happy Eyeballs style; `connected` is then the one that answered, and every later connection
+ * of the session dials only it.
+ */
+export interface ExtensionPinnedConnection { addresses: readonly ExtensionDialAddress[]; connected?: ExtensionDialAddress; agent: https.Agent }
+/** The addresses a connection dials: the one that connected, once one has. */
+export const pinnedDialAddresses = (connection: ExtensionPinnedConnection): readonly ExtensionDialAddress[] => connection.connected ? [connection.connected] : connection.addresses;
 /** How long an idle pinned socket stays open; the upstream may close it sooner. */
 const PINNED_SOCKET_IDLE_MS = 60_000;
 /** How long a settled response may keep the pinned socket before it is ended, so the session's next request can proceed. */
@@ -97,9 +107,12 @@ const PINNED_POOL_FREE_SOCKETS = 4;
  * `session`: one socket, since servers with sticky sessions lose the session on a new connection; concurrent calls in
  * the session queue for it. `pool`: a stateless upstream, whose concurrent calls proceed in parallel.
  */
-export function extensionPinnedConnection(address: string, family: number, sharing: 'session' | 'pool' = 'session'): ExtensionPinnedConnection {
+export function extensionPinnedConnection(addresses: readonly ExtensionDialAddress[], sharing: 'session' | 'pool' = 'session'): ExtensionPinnedConnection {
   const sockets = sharing === 'session' ? { maxSockets: 1, maxFreeSockets: 1 } : { maxFreeSockets: PINNED_POOL_FREE_SOCKETS };
-  return { address, family, agent: new https.Agent({ keepAlive: true, ...sockets, timeout: PINNED_SOCKET_IDLE_MS, lookup: pinnedLookup(address, family) }) };
+  const connection: ExtensionPinnedConnection = { addresses: [...addresses], agent: undefined as unknown as https.Agent };
+  connection.agent = new ExtensionDialAgent(() => pinnedDialAddresses(connection), EXTENSION_LIMITS.timeoutMs, address => { connection.connected ??= address; },
+    { keepAlive: true, ...sockets, timeout: PINNED_SOCKET_IDLE_MS });
+  return connection;
 }
 /**
  * Gateway-side session state for one upstream request. Nothing here reaches
@@ -173,6 +186,7 @@ const ENDPOINT_REASONS: Record<string, string> = {
 /** A short, secret-free reason for a failed request: never an upstream body, header, host or token. */
 export function extensionRequestFailureReason(error: unknown): string {
   if (error instanceof ExtensionUpstreamRequestError) return error.reason;
+  if (error instanceof ExtensionConnectError) return error.reason;
   if (error instanceof ExtensionUpstreamUnauthorizedError) return 'credential refused (HTTP 401)';
   if (error instanceof ExtensionUpstreamSessionNotFoundError) return 'session not found (HTTP 404)';
   if (error instanceof ExtensionUpstreamSessionBusyError) return 'session busy';
@@ -190,13 +204,15 @@ export function extensionRequestFailureReason(error: unknown): string {
  * `exchange.onServerRequest`, never returned. */
 // eslint-disable-next-line max-params -- one transport boundary for JSON, event streams, sessions and DELETE
 export async function requestExtensionMcp(endpoint: string, body: unknown, token?: string, policy: ExtensionEndpointPolicy = {}, exchange: ExtensionMcpExchange = {}): Promise<unknown> {
-  const { url, address, family } = await resolveExtensionEndpoint(endpoint, undefined, policy);
+  const { url, addresses } = await resolveExtensionEndpoint(endpoint, undefined, policy);
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  // A session keeps dialing the address vetted when it opened; the policy check above still runs on every request.
-  if (exchange.pin && !exchange.connection) exchange.connection = extensionPinnedConnection(address, family);
-  const dial = exchange.connection ?? { address, family };
-  // Construct the transport destination solely from the vetted address. The
-  // original endpoint supplies only the path, HTTP Host and TLS identity.
+  // A session keeps dialing the addresses vetted when it opened (once one connects, only that one); the policy check
+  // above still runs on every request.
+  if (exchange.pin && !exchange.connection) exchange.connection = extensionPinnedConnection(addresses);
+  const targets = exchange.connection ? pinnedDialAddresses(exchange.connection) : addresses;
+  // Construct the transport destination solely from vetted addresses: the agent dials them, Happy Eyeballs style.
+  // The original endpoint supplies only the path, HTTP Host and TLS identity.
+  const dial = targets[0];
   const destination = new URL(`https://${dial.family === 6 ? `[${dial.address}]` : dial.address}`);
   destination.pathname = url.pathname;
   const remove = exchange.method === 'DELETE';
@@ -210,9 +226,9 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
     const unavailable = (reason: string) => fail(new ExtensionUpstreamRequestError(reason));
     let timer: NodeJS.Timeout | undefined;
     const request = https.request(destination, {
-      method: remove ? 'DELETE' : 'POST', agent: exchange.connection?.agent ?? false,
+      method: remove ? 'DELETE' : 'POST', agent: exchange.connection?.agent ?? new ExtensionDialAgent(() => addresses, EXTENSION_LIMITS.timeoutMs),
       servername: isIP(host) ? undefined : host,
-      lookup: pinnedLookup(dial.address, dial.family),
+      lookup: pinnedLookup(targets),
       headers: {
         Host: url.host, ...(remove ? {} : { 'Content-Type': 'application/json' }), Accept: 'application/json, text/event-stream',
         'MCP-Protocol-Version': exchange.protocolVersion ?? '2025-03-26', ...exchange.headers,
@@ -294,12 +310,15 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
     // The request timeout runs from the moment a connection is assigned; before that the request is queued on its
     // pinned agent behind earlier calls (a fresh connection is assigned at once) and has its own bounded wait.
     const queued = setTimeout(() => { request.destroy(); fail(new ExtensionUpstreamSessionBusyError()); }, PINNED_QUEUE_WAIT_MS);
-    request.once('socket', () => {
+    // A connection opened for this request already spent part of the budget connecting; the rest is the request's.
+    request.once('socket', socket => {
       clearTimeout(queued);
-      if (!settled) timer = setTimeout(() => { unavailable(`timeout after ${EXTENSION_LIMITS.timeoutMs / 1000} s`); request.destroy(); }, EXTENSION_LIMITS.timeoutMs);
+      const connecting = takeConnectStart(socket);
+      const budget = connecting === undefined ? EXTENSION_LIMITS.timeoutMs : Math.max(EXTENSION_LIMITS.timeoutMs - (Date.now() - connecting), 0);
+      if (!settled) timer = setTimeout(() => { unavailable(`timeout after ${EXTENSION_LIMITS.timeoutMs / 1000} s`); request.destroy(); }, budget);
     });
     request.on('close', () => { clearTimeout(queued); clearTimeout(timer); unavailable('connection closed'); });
-    request.on('error', (error: NodeJS.ErrnoException) => unavailable(typeof error.code === 'string' && /^[A-Z0-9_]{2,40}$/.test(error.code) ? `connection failed (${error.code})` : 'connection failed'));
+    request.on('error', (error: NodeJS.ErrnoException) => error instanceof ExtensionConnectError ? unavailable(error.reason) : unavailable(typeof error.code === 'string' && /^[A-Z0-9_]{2,40}$/.test(error.code) ? `connection failed (${error.code})` : 'connection failed'));
     request.end(payload);
   });
 }

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import logger from '../utils/logger.js';
-import { ExtensionUpstreamUnauthorizedError, extensionPinnedConnection, extensionRequestFailureReason, requestExtensionMcp, type ExtensionMcpExchange, type ExtensionMcpSend, type ExtensionPinnedConnection } from './endpointPolicy.js';
+import { ExtensionUpstreamUnauthorizedError, extensionPinnedConnection, extensionRequestFailureReason, pinnedDialAddresses, requestExtensionMcp, type ExtensionMcpExchange, type ExtensionMcpSend, type ExtensionPinnedConnection } from './endpointPolicy.js';
 
 /**
  * Upstream MCP sessions of URL servers, owned by the gateway.
@@ -89,13 +89,13 @@ export class ExtensionUpstreamHandshakeIncompleteError extends Error {
 }
 
 /**
- * A stateless upstream keeps the address vetted at the handshake but not its one-socket connection: its concurrent
+ * A stateless upstream keeps the address that connected at the handshake but not its one-socket connection: its concurrent
  * calls get a pool to the same address and proceed in parallel.
  */
 function pooled(connection: ExtensionPinnedConnection | undefined): ExtensionPinnedConnection | undefined {
   if (!connection) return undefined;
   connection.agent.destroy();
-  return extensionPinnedConnection(connection.address, connection.family, 'pool');
+  return extensionPinnedConnection(pinnedDialAddresses(connection), 'pool');
 }
 
 /**

@@ -24,7 +24,7 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
       await store.authorize(req.user.id);
       if (req.method !== 'GET' && (req.get('X-ProPR-Extensions') !== '1' || !req.is('application/json'))) throw new ExtensionError(403, 'Extensions require the preflight-protected JSON contract');
       res.set('Cache-Control', 'no-store').json(await run(req, req.user.id));
-    } catch (error) { res.status(error instanceof ExtensionError ? error.status : 400).json({ error: error instanceof ExtensionError ? error.message : 'Extension operation unavailable or invalid' }); }
+    } catch (error) { res.status(error instanceof ExtensionError ? error.status : 400).json(error instanceof ExtensionError ? { error: error.message, ...(error.reason ? { reason: error.reason } : {}) } : { error: 'Extension operation unavailable or invalid' }); }
   };
   const exact = (req: Request, keys: string[]) => {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(k => !keys.includes(k))) throw new ExtensionError(400, 'Invalid extension request');

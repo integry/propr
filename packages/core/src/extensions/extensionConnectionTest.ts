@@ -11,11 +11,12 @@ export type ExtensionConnectionTestResult =
 
 /**
  * Why an OAuth server's access token could not be had. The messages here are fixed strings that name no token, URL
- * or provider response.
+ * or provider response; a connect failure adds the transport's reason (address families tried, a timeout).
  */
 function credentialFailureReason(error: unknown): string {
   if (error instanceof ExtensionError && error.message === 'OAuth connection unavailable') return 'OAuth not connected';
   if (error instanceof OAuthProtocolError && error.authorization) return 'token refresh refused: sign in again';
+  if (error instanceof OAuthNetworkError && error.reason) return `token refresh failed (${error.reason})`;
   if (error instanceof OAuthNetworkError || error instanceof OAuthProtocolError) return 'token refresh failed';
   return 'OAuth access token unavailable';
 }

@@ -9,10 +9,11 @@ import { Readable } from 'node:stream';
 import type { AddressInfo } from 'node:net';
 import { createApiRequestRateLimiter } from '../requestRateLimits.js';
 import { ExtensionLibraryStore } from '../../core/src/extensions/extensionProfileStore.js';
+import { ExtensionDialAgent } from '../../core/src/extensions/happyEyeballs.js';
 import { up } from '../../core/src/db/migrations/20261013210000_extension_profiles.js';
 
 type ProbeResponse = Readable & { statusCode: number; headers: Record<string, string> };
-type ProbeOptions = { headers: Record<string, string | undefined>; agent: boolean; servername?: string };
+type ProbeOptions = { headers: Record<string, string | undefined>; agent: unknown; servername?: string };
 
 const repositoryChecks: string[] = [];
 const gitRequests: Array<{ route: string; params: Record<string, string | number> }> = [];
@@ -120,7 +121,8 @@ test('MCP transport dials vetted addresses while retaining endpoint Host, TLS id
     assert.equal(url.pathname, '/mcp%2Ftools');
     assert.equal(options.headers.Host, expectedHost);
     assert.equal(options.servername, expectedHost);
-    assert.equal(options.agent, false);
+    // A one-request agent that dials only the vetted addresses (Happy Eyeballs across them), never a pooled global one.
+    assert.ok(options.agent instanceof ExtensionDialAgent);
     const request = Object.assign(new EventEmitter(), { end: () => {
       const response = Object.assign(Readable.from([Buffer.from('{}')]), { statusCode: 200, headers: { 'content-type': 'application/json' } });
       callback(response); response.on('end', () => request.emit('close'));

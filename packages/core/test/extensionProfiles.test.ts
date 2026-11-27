@@ -16,6 +16,7 @@ import { extensionEndpoint, resolveExtensionEndpoint, extensionPublicAddress } f
 import { validateSkillFiles, readSkillArchive } from '../src/extensions/skillBundles.js';
 import { unsealExtensionSecrets } from '../src/extensions/privateSecrets.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
+import { redirectDials } from './helpers/extensionDialRedirect.js';
 
 const secret = 'UNMISTAKABLE_EXTENSION_SENTINEL_DO_NOT_DISCLOSE';
 const server = (extra: Partial<ExtensionLibraryServerInput> = {}): ExtensionLibraryServerInput => ({ kind: 'https', name: 'docs', url: 'https://8.8.8.8/mcp', enabled: true, tools: ['lookup'], capability: 'read', authentication: 'bearer', repositories: [], agents: [], autoApply: true, ...extra } as ExtensionLibraryServerInput);
@@ -358,6 +359,8 @@ test('synthetic HTTPS MCP enforces TLS, pins the vetted address, refuses redirec
   const original = https.request;
   // Only the test transport maps the already-vetted public destination to the
   // synthetic TLS fixture. Production uses the checked lookup unchanged.
+  // The vetted address is dialled by the Happy Eyeballs agent; only the test maps it to the local fixture.
+  redirectDials(t, '127.0.0.1');
   t.mock.method(https, 'request', (url: URL, options: import('node:https').RequestOptions, callback: Parameters<typeof https.request>[2]) => {
     assert.equal(url.href, 'https://8.8.8.8/mcp');
     (options.lookup as Function)('8.8.8.8', {}, (error: unknown, address: string) => { assert.equal(error, null); assert.equal(address, '8.8.8.8'); });
