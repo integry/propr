@@ -1,7 +1,7 @@
 import type { AgentRuntimePackageLoader } from '../agentRuntimePackageIndex.js';
 import { startupStep } from '../startupStep.js';
-import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, type MachineLaunch, type MachinesApi } from './api.js';
-import { acquireFlyMachineSlot } from './capacity.js';
+import type { MachineLaunch, MachinesApi } from './api.js';
+import type { FlyMachineSlot } from './capacity.js';
 import type { FlyConfig } from './config.js';
 import { createAgentMachine, selectFlyPackageImage, type FlyPackageImages, type FlyPackageSelection, type SelectOptions } from './derivedImage.js';
 
@@ -13,6 +13,8 @@ interface DispatchInput {
     prepared: { launch: MachineLaunch; installPackages(packages: readonly string[]): void };
     signal: AbortSignal;
     run: string;
+    /** The run's capacity slot, taken last (see `dispatchFlyRun`). */
+    slot: FlyMachineSlot;
 }
 
 /** What a Fly run has before it creates its agent Machine. */
@@ -22,15 +24,9 @@ export interface FlyDispatch {
     selectOptions: SelectOptions;
     /** The image selection and the time spent waiting for it; a retried create may update both. */
     image: { selection: FlyPackageSelection; imageWaitMs: number };
-    /** Frees the run's `PROPR_FLY_MACHINES_MAX` slot, whichever one it holds now (idempotent; a no-op without the cap). */
-    release: () => void;
-    /**
-     * Takes the slot again after a refused create gave it up to prepare a replacement image; the wait adds to
-     * `queueMs`. A no-op while a slot is held.
-     */
-    reacquire: () => Promise<void>;
-    /** Time spent waiting for the slot, including any wait to take it again. */
-    queueMs: number;
+    /** The run's `PROPR_FLY_MACHINES_MAX` slot; its `queueMs` includes any wait to take it again after a refused create. */
+    slot: FlyMachineSlot;
+    signal: AbortSignal;
 }
 
 /**
@@ -39,7 +35,7 @@ export interface FlyDispatch {
  * the start-time install), then wait for a capacity slot. The slot comes last, after any build Machine
  * this run needed is confirmed gone, so a run never holds a build Machine and its agent Machine at once.
  */
-export async function dispatchFlyRun({ images, loadPackages, api, config, prepared, signal, run }: DispatchInput): Promise<FlyDispatch> {
+export async function dispatchFlyRun({ images, loadPackages, api, config, prepared, signal, run, slot }: DispatchInput): Promise<FlyDispatch> {
     const startedAt = Date.now();
     // Read for every run, so a Settings change applies to the next Machine. An unreadable
     // or invalid list fails the run rather than starting it without its packages.
@@ -52,22 +48,8 @@ export async function dispatchFlyRun({ images, loadPackages, api, config, prepar
     const selection = await selectFlyPackageImage(images, prepared, selectOptions);
     const image = { selection, imageWaitMs: Date.now() - startedAt };
     // Over PROPR_FLY_MACHINES_MAX the run queues here; the slot is held until its agent Machine is destroyed or confirmed gone.
-    // The slot holder: release() frees whichever slot is held now, so cleanup stays idempotent across a refused
-    // create that gave the slot up to rebuild its image and took a new one afterwards.
-    let held: (() => void) | undefined;
-    const take = async () => {
-        const queuedAt = Date.now();
-        const release = await acquireFlyMachineSlot(config.app, config.maxMachines, signal, run);
-        dispatch.queueMs += Date.now() - queuedAt;
-        held = release;
-    };
-    const dispatch: FlyDispatch = {
-        configured, selectOptions, image, queueMs: 0,
-        release: () => { const release = held; held = undefined; release?.(); },
-        reacquire: async () => { if (!held) await take(); },
-    };
-    await take();
-    return dispatch;
+    await slot.acquire(signal);
+    return { configured, selectOptions, image, slot, signal };
 }
 
 interface AgentCreate {
@@ -78,23 +60,20 @@ interface AgentCreate {
     mayRetry(): boolean;
     onAttempt(): void;
     onBootStart(timestamp: number): void;
-    /** A create whose response was lost and not adopted: a Machine may exist without an ID. */
-    onUnconfirmed(): void;
 }
 
-/** Creates the agent Machine from the selected image (see `createAgentMachine`), reporting an unconfirmed create. */
-export async function createFlyAgentMachine({ api, images, prepared, dispatch, mayRetry, onAttempt, onBootStart, onUnconfirmed }: AgentCreate) {
-    try {
-        return await createAgentMachine({ api, images, prepared, options: dispatch.selectOptions, state: dispatch.image,
-            slot: { release: dispatch.release, reacquire: dispatch.reacquire }, mayRetry, onAttempt, onBootStart });
-    } catch (error) {
-        if (error instanceof MachineCreateUnconfirmedError || error instanceof MachineNotFoundAfterCreateError) onUnconfirmed();
-        throw error;
-    }
+/**
+ * Creates the agent Machine from the selected image (see `createAgentMachine`). A refused create gives the slot up
+ * while it prepares a replacement image and takes it again before the next create; a lost create that was not
+ * adopted (unconfirmed, or not found yet) keeps it until the Machine is confirmed gone or absent.
+ */
+export function createFlyAgentMachine({ api, images, prepared, dispatch: { slot, signal, selectOptions, image }, mayRetry, onAttempt, onBootStart }: AgentCreate) {
+    return slot.create(() => createAgentMachine({ api, images, prepared, options: selectOptions, state: image,
+        slot: { release: () => slot.releaseUnused(), reacquire: () => slot.acquire(signal) }, mayRetry, onAttempt, onBootStart }));
 }
 
 /** The Fly-specific compute usage fields: the capacity queue (with a cap) and the derived-image wait (with packages). */
 export function flyDispatchUsage(dispatch: FlyDispatch, config: FlyConfig) {
-    return { ...(config.maxMachines !== undefined && { queueMs: dispatch.queueMs }),
+    return { ...(config.maxMachines !== undefined && { queueMs: dispatch.slot.queueMs }),
         ...(dispatch.configured.length > 0 && { imageWaitMs: dispatch.image.imageWaitMs }) };
 }

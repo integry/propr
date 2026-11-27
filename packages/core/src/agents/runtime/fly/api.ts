@@ -38,14 +38,10 @@ export interface MachinesApi {
     exec(id: string, args: string[], signal?: AbortSignal): Promise<{ stdout: string; exit_code: number }>;
     signal(id: string, signal: NodeJS.Signals): Promise<void>;
     destroy(id: string): Promise<void>;
-    /** True only when Fly confirms the Machine no longer exists (absent or `destroyed`); false while it may still exist. */
+    /** True once Fly reports the Machine destroyed or unknown; a failed lookup throws and is not evidence of absence. */
     gone(id: string): Promise<boolean>;
-    /**
-     * The ID of the Machine created with this unique launch name, or undefined when Fly lists none.
-     * Throws when the lookup itself fails: that is not evidence of absence. Optional for test doubles;
-     * without it a lost build Machine create cannot be confirmed either way.
-     */
-    find?(name: string): Promise<string | undefined>;
+    /** The ID of the Machine created with this unique launch name, or undefined when Fly lists none. Throws when the lookup fails. */
+    find(name: string): Promise<string | undefined>;
     /**
      * Every Machine of the app whose name starts with `prefix`, with its state and creation time.
      * Optional for test doubles; without it Machines an earlier worker process left are not found.

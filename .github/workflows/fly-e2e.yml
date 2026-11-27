@@ -689,7 +689,8 @@ jobs:
           exit 1
 
       - name: Verify derived Fly Machine image reuse, rebuild and teardown
-        if: env.AGENT_RUNTIME == 'fly-machines'
+        # The default Fly Machines run only; the PROPR_FLY_MACHINES_MAX mode checks queueing instead.
+        if: env.AGENT_RUNTIME == 'fly-machines' && env.CAPACITY != 'true'
         timeout-minutes: 45
         run: |
           set -euo pipefail

@@ -13,7 +13,7 @@ import { extensionLaunchRefusal } from './extensionCapabilities.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.js';
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { MachinesClient, type MachinesApi } from './fly/api.js';
-import { destroyFreeingSlot, releaseUndeletedFlyMachineSlot } from './fly/capacity.js';
+import { FlyMachineSlot } from './fly/capacity.js';
 import { flyConfig } from './fly/config.js';
 import { FlyPackageImages } from './fly/derivedImage.js';
 import { createFlyAgentMachine, dispatchFlyRun, flyDispatchUsage } from './fly/dispatch.js';
@@ -81,9 +81,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         let workspaceSafeToDestroy = false;
         let credentialsPending = !!prepared.credentialPath;
         let keepLocalBundle = false;
-        let releaseSlot = () => {};
-        // A create whose response was lost and not adopted: a Machine may exist without an ID here.
-        let createUnconfirmed = false;
+        const slot = new FlyMachineSlot(api, config, prepared.launch.name, spec.name);
         const machineLocation = () => `Fly app ${config.app}, Machine ${id}, ${RUN}/workspace`;
         const credentialRecovery = () => `Recover credentials from Fly app ${config.app}, Machine ${id}, ${prepared.credentialPath}`;
         let destroyed: Promise<void> | undefined;
@@ -108,9 +106,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 // The capacity slot is freed by the deletion that succeeds, including a background
                 // retry after the run settled, so a Machine still awaiting deletion keeps counting. Fly
                 // confirming the Machine gone after a failed deletion also frees it and ends the retries.
-                return destroyed ??= retryCleanup(machine, 'destroy', () => destroyFreeingSlot(api, machine, releaseSlot, { app: config.app, run: spec.name }));
+                return destroyed ??= retryCleanup(machine, 'destroy', () => slot.destroy(machine));
         };
-        const releaseUndeletedSlot = () => releaseUndeletedFlyMachineSlot(releaseSlot, api, { config, machine: id, createUnconfirmed, launchName: prepared.launch.name, run: spec.name });
         let mayHaveStarted = false;
         const requestStop = (signal: NodeJS.Signals = 'SIGTERM', grace = 10_000) => {
             if (exited || stopping || settled) return false;
@@ -134,9 +131,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             // Compute time for every Fly run is measured from here: waiting for a derived image (or a
             // shared build that then failed) and for a capacity slot are part of the run, each its own field.
             const dispatchedAt = Date.now();
-            const dispatch = await dispatchFlyRun({ images: this.images, loadPackages: this.loadPackages, api, config, prepared, signal, run: spec.name })
+            const dispatch = await dispatchFlyRun({ images: this.images, loadPackages: this.loadPackages, api, config, prepared, signal, run: spec.name, slot })
                 .catch(beforeCreation);
-            releaseSlot = dispatch.release;
             let agentStartedAt: number | undefined;
             let installs = new FlyStartInstalls(spec.name, dispatch.image.selection.install, prepared.packageServers);
             external.throwIfAborted();
@@ -250,7 +246,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 id = await createFlyAgentMachine({ api, images: this.images, prepared, dispatch,
                     // Each create attempt starts its own boot window; its provider timestamps can only move it earlier.
                     mayRetry: () => !stopping && !external.aborted, onAttempt: () => { bootStart = Date.now(); },
-                    onBootStart: timestamp => { bootStart = Math.min(bootStart, timestamp); }, onUnconfirmed: () => { createUnconfirmed = true; } });
+                    onBootStart: timestamp => { bootStart = Math.min(bootStart, timestamp); } });
                 // A retry after a refused derived image may have selected the start-time install instead.
                 installs = new FlyStartInstalls(spec.name, dispatch.image.selection.install, prepared.packageServers);
                 void api.logs(id, display, logs.signal).catch(() => {});
@@ -349,7 +345,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             // A confirmed deletion frees the slot (see destroy). Only a run that never created a Machine
             // frees it now; a Machine kept for recovery, or one a lost create may have launched, keeps
             // its slot until Fly confirms it is gone.
-            try { await destroy(); } finally { if (!destroyed) releaseUndeletedSlot(); }
+            try { await destroy(); } finally { if (!destroyed) slot.releaseUndeleted(id); }
         }).catch(async error => {
             // Transport cleanup calls release even when wait rejected before complete.
             keepLocalBundle = workspace.hasBundle;

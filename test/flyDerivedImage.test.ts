@@ -11,7 +11,8 @@ import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachi
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { createAgentImagePackageIndex, indexCheckedAgentRuntimePackages, setAgentImagePackageIndexLoader } from '../packages/core/src/agents/runtime/agentRuntimePackageIndex.ts';
 import { agentRuntimePackageInstallCommand } from '../packages/core/src/agents/runtime/agentRuntimePackageProfile.ts';
-import { MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { MachinesClient, MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { flyConfig } from '../packages/core/src/agents/runtime/fly/config.ts';
 import { flyPackageImageTag, FlyPackageImages, resetFlyPackageImages } from '../packages/core/src/agents/runtime/fly/derivedImage.ts';
 import { MEDIA, parseFlyImage, sha256, type ImageManifest, type RegistryApi } from '../packages/core/src/agents/runtime/fly/registry.ts';
 import { RUN, WRAPPER, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
@@ -117,6 +118,7 @@ class Machines implements MachinesApi {
         if (op === 'size') return { stdout: String(data?.length), exit_code: data ? 0 : 44 };
         return { stdout: data!.subarray(+offset, +offset + +length).toString('base64'), exit_code: 0 };
     }
+    async find(): Promise<string | undefined> { return undefined; }
     async signal() {}
     async destroy(id: string) { this.live.delete(id); this.events.push('destroy ' + (this.isBuild(id) ? 'build' : 'launch')); }
     async gone(id: string) { return !this.live.has(id); }
@@ -330,8 +332,9 @@ test('a run cancelled during a shared build leaves the build to finish and delet
     await second.release!();
 });
 
-test('a build Machine create with an unknown outcome fails the run and creates no agent Machine', async () => {
+test('a build Machine create with an unknown outcome (its lookup fails too) fails the run and creates no agent Machine', async () => {
     const api = new Machines();
+    api.find = async () => { throw new Error('lookup failed'); };
     const create = api.create.bind(api);
     api.create = async launch => {
         if (launch.config.processes[0].cmd[0] === 'build') { await create(launch); throw new Error('socket hang up'); }
@@ -711,7 +714,6 @@ test('a lost build Machine create is looked up by name until it appears, and del
 
 /** Build Machine creates lose their response; `find` answers the lookups by name. */
 class LostBuilder extends Machines {
-    find?: (name: string) => Promise<string | undefined>;
     lose = true;
     override async create(launch: MachineLaunch) {
         if (isBuild(launch) && this.lose) { this.launches.push(launch); this.events.push('create build (lost)'); throw new Error('socket hang up'); }
@@ -1103,6 +1105,42 @@ test('an unconfirmed build Machine delete keeps its slot until a background retr
     assert.equal((await plain.wait()).exitCode, 0);
     assert.deepEqual(api.events.slice(0, 3), ['create build', 'destroy build', 'create launch']);
     assert.equal(api.peak, 1);
+    await plain.release!();
+});
+
+/** Every deletion of the build Machine fails; whether it still exists is answered by the real Machines client's GET. */
+class DeletedOutsideBuilder extends UndeletableBuilder {
+    client = new MachinesClient(flyConfig(env('capped-outside')));
+    override async gone(id: string) { return isBuild(this.launches[Number(id.slice(1))]) ? this.client.gone(id) : super.gone(id); }
+}
+
+test('a build Machine deleted outside ProPR while its deletion keeps failing frees its slot once Fly answers 404', { timeout: 10_000 }, async t => {
+    const api = new DeletedOutsideBuilder();
+    let deletedOutside = false;
+    const lookups: number[] = [];
+    const realFetch = globalThis.fetch;
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+        if (!String(url).startsWith('https://api.machines.dev/')) return realFetch(url, init);
+        assert.equal(init.method, 'GET');
+        assert.match(url, /\/apps\/capped-outside\/machines\/m0$/);
+        lookups.push(deletedOutside ? 404 : 200);
+        return deletedOutside ? new Response('{"error":"machine not found"}', { status: 404 })
+            : Response.json({ id: 'm0', name: 'propr-build-outside', state: 'stopped' });
+    });
+    const timings = { ...FAST, reconcileMs: 20 };
+    const failed = runtime(api, new Registry(), 'capped-outside', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' }, timings).start(spec('failed'));
+    await assert.rejects(failed.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    await failed.release?.().catch(() => {});
+    const plain = runtime(api, new Registry(), 'capped-outside', () => [], { PROPR_FLY_MACHINES_MAX: '1' }, timings).start(spec('plain'));
+    await delay(100);
+    assert.deepEqual(api.events, ['create build'], 'a build Machine Fly still lists keeps its slot');
+    deletedOutside = true; // deleted outside ProPR: every DELETE still fails, but the lookup now answers 404
+    assert.equal((await plain.wait()).exitCode, 0);
+    assert.deepEqual(api.events, ['create build', 'create launch', 'destroy launch'], 'no deletion of m0 ever succeeded');
+    assert.ok(lookups.includes(404));
+    const after = lookups.length;
+    await delay(100);
+    assert.equal(lookups.length, after, 'no more retries once Fly confirmed the build Machine gone');
     await plain.release!();
 });
 

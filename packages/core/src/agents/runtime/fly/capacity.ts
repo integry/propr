@@ -1,5 +1,5 @@
 import logger from '../../../utils/logger.js';
-import type { MachinesApi } from './api.js';
+import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, type MachinesApi } from './api.js';
 import type { FlyConfig } from './config.js';
 
 /**
@@ -95,24 +95,24 @@ export function releaseSlotWhenGone(release: () => void, confirmGone: () => Prom
 }
 
 /**
- * Deletes a run's Machine, then frees its slot. A failed deletion keeps the slot unless Fly confirms the Machine is
- * gone (deleted elsewhere, reclaimed, or a deletion whose response was lost), which also ends the caller's retries.
+ * Deletes a Machine, agent or build. A 404 counts as deleted (see `MachinesClient.destroy`), and so does a failed
+ * deletion once Fly confirms the Machine gone (deleted elsewhere, reclaimed, or a deletion whose response was
+ * lost), which also ends the caller's retries. Otherwise the deletion's error is thrown and the slot stays held.
  */
-export async function destroyFreeingSlot(api: MachinesApi, machine: string, release: () => void, context: Record<string, unknown>) {
+export async function deleteFlyMachine(api: MachinesApi, machine: string, context: Record<string, unknown>) {
     try { await api.destroy(machine); }
     catch (error) {
         const gone = await api.gone(machine).catch(() => false);
         if (!gone) throw error;
         logger.info({ ...context, machine, err: error }, 'Fly Machine deletion failed but the Machine is gone; capacity slot freed');
     }
-    release();
 }
 
 interface UndeletedMachine {
     config: Pick<FlyConfig, 'app' | 'maxMachines' | 'credentialRetention'>;
     /** The run's Machine ID, when create returned one. */
     machine?: string;
-    /** Create failed with its lookup also failing, so a Machine may exist without an ID. */
+    /** Create failed without a confirmed outcome (its lookup failed, or found nothing yet), so a Machine may exist without an ID. */
     createUnconfirmed: boolean;
     launchName: string;
     run: string;
@@ -128,18 +128,68 @@ export function releaseUndeletedFlyMachineSlot(release: () => void, api: Machine
     const context = { app: config.app, run, machine };
     if (config.maxMachines === undefined) release();
     else if (machine) releaseSlotWhenGone(release, () => api.gone(machine), config.credentialRetention * 1000, context);
-    else if (createUnconfirmed && api.find) {
-        const find = api.find.bind(api);
-        // The create's own lookups already found nothing, and Fly may still be creating the Machine: an empty
-        // lookup frees the slot only once the window has passed. A Machine found is deleted first.
+    else if (createUnconfirmed) {
+        // The create's own lookups may already have found nothing, and Fly may still be creating the Machine: an
+        // empty lookup frees the slot only once the window has passed. A Machine found is deleted first.
         const deadline = Date.now() + retainedMachineChecks.lostCreateWindowMs;
         releaseSlotWhenGone(release, async () => {
-            const found = await find(launchName);
-            if (found) { await api.destroy(found); return true; }
+            const found = await api.find(launchName);
+            if (found) { await deleteFlyMachine(api, found, context); return true; }
             return Date.now() >= deadline;
         }, 0, context);
     }
-    // Without a lookup a lost create can never be confirmed either way; keep the slot.
-    else if (createUnconfirmed) logger.warn(context, 'Fly Machine create was not confirmed and cannot be looked up; keeping its capacity slot');
     else release();
+}
+
+/**
+ * One run's hold on a `PROPR_FLY_MACHINES_MAX` slot: taken before its Machine is created and freed only by a
+ * confirmed deletion, or by `releaseUndeleted` once the run settles without deleting its Machine. Agent runs and
+ * derived-image build Machines both hold one.
+ */
+export class FlyMachineSlot {
+    private release?: () => void;
+    /** A create whose response was lost and not adopted (its lookup failed, or found nothing yet): a Machine may exist without an ID. */
+    private createUnconfirmed = false;
+    /** Time spent waiting for the slot, including any wait to take it again after `releaseUnused`. */
+    queueMs = 0;
+
+    constructor(private readonly api: MachinesApi, private readonly config: UndeletedMachine['config'], private readonly launchName: string, private readonly run: string) {}
+
+    /** Queues in arrival order while the app is at its cap; rejects if `signal` aborts first. A no-op while the slot is held. */
+    async acquire(signal: AbortSignal) {
+        if (this.release) return;
+        const queuedAt = Date.now();
+        this.release = await acquireFlyMachineSlot(this.config.app, this.config.maxMachines, signal, this.run);
+        this.queueMs += Date.now() - queuedAt;
+    }
+
+    /**
+     * Frees the slot while no Machine of this hold exists: Fly refused the create, or the Machine is confirmed gone.
+     * `acquire` takes it again. Idempotent.
+     */
+    releaseUnused() {
+        const release = this.release;
+        this.release = undefined;
+        release?.();
+    }
+
+    /** Runs the create, recording whether a failure leaves the Machine's existence unknown. */
+    create<T>(create: () => Promise<T>) {
+        return create().catch((error: unknown) => {
+            this.createUnconfirmed = error instanceof MachineCreateUnconfirmedError || error instanceof MachineNotFoundAfterCreateError;
+            throw error;
+        });
+    }
+
+    /** Deletes the Machine, then frees the slot; see `deleteFlyMachine` for when a failed deletion counts. */
+    async destroy(machine: string) {
+        await deleteFlyMachine(this.api, machine, { app: this.config.app, run: this.run });
+        this.releaseUnused();
+    }
+
+    releaseUndeleted(machine: string | undefined) {
+        const release = this.release;
+        this.release = undefined;
+        if (release) releaseUndeletedFlyMachineSlot(release, this.api, { config: this.config, machine, createUnconfirmed: this.createUnconfirmed, launchName: this.launchName, run: this.run });
+    }
 }
