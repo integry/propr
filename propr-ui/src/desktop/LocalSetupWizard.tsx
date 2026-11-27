@@ -200,6 +200,11 @@ const Recovery: React.FC<{ snapshot: DesktopSetupSnapshot; busy: boolean; error:
   </main>;
 };
 
+const AgentsStage: React.FC<{ draft: Draft; set<K extends keyof Draft>(key: K, value: Draft[K]): void }> = ({ draft, set }) => <>
+  <h1>Select coding agents</h1><div className="desktop-agent-options">{agents.map(agent => <label key={agent}><input type="checkbox" checked={draft.selectedAgents.includes(agent)} onChange={() => set('selectedAgents', draft.selectedAgents.includes(agent) ? draft.selectedAgents.filter(value => value !== agent) : [...draft.selectedAgents, agent])} /><span>{agent}</span></label>)}</div>
+  {draft.selectedAgents.includes('antigravity') && <div className="desktop-setup-note" data-testid="antigravity-keyring-note"><strong>Antigravity</strong><br />{ANTIGRAVITY_EXISTING_LOGIN_HINT.replace(/`/g, '')}</div>}
+  {draft.githubMode !== 'demo' && <label className="desktop-setup-field"><span>Allowed GitHub users (comma-separated, optional)</span><div><input value={draft.whitelist} onChange={event => set('whitelist', event.target.value)} /></div></label>}</>;
+
 const Form: React.FC<{ stage: Stage; draft: Draft; busy: boolean; error: string | null; back(): void; next(): void;
   platform: DesktopSetupSnapshot['capability']['platform']; allowGithubKeep: boolean; setDraft: React.Dispatch<React.SetStateAction<Draft>>; chooseKey(): void; acquireSecret(): void }> = props => {
   const { stage, draft, setDraft } = props;
@@ -226,9 +231,7 @@ const Form: React.FC<{ stage: Stage; draft: Draft; busy: boolean; error: string 
         {(draft.githubMode === 'app' ? ['keep', 'polling', 'direct_webhook'] : ['keep', 'routing_websocket', 'polling', 'direct_webhook']).map(mode =>
           <label key={mode}><input type="radio" checked={draft.intakeMode === mode} onChange={() => set('intakeMode', mode as IntakeMode)} /><span><strong>{intakeModeLabel(mode as IntakeMode)}</strong></span></label>)}</div>}
       {draft.intakeMode === 'direct_webhook' && <div className="desktop-setup-wide"><button type="button" className="desktop-secondary-button" onClick={props.acquireSecret}><KeyRound /> Enter webhook secret securely</button><small>{draft.webhookSecret?.label ?? ' No secret entered'}</small></div>}</>}
-    {stage === 'agents' && <><h1>Select coding agents</h1><div className="desktop-agent-options">{agents.map(agent => <label key={agent}><input type="checkbox" checked={draft.selectedAgents.includes(agent)} onChange={() => set('selectedAgents', draft.selectedAgents.includes(agent) ? draft.selectedAgents.filter(value => value !== agent) : [...draft.selectedAgents, agent])} /><span>{agent}</span></label>)}</div>
-      {draft.selectedAgents.includes('antigravity') && <div className="desktop-setup-note" data-testid="antigravity-keyring-note"><strong>Antigravity</strong><br />{ANTIGRAVITY_EXISTING_LOGIN_HINT.replace(/`/g, '')}</div>}
-      {draft.githubMode !== 'demo' && <label className="desktop-setup-field"><span>Allowed GitHub users (comma-separated, optional)</span><div><input value={draft.whitelist} onChange={event => set('whitelist', event.target.value)} /></div></label>}</>}
+    {stage === 'agents' && <AgentsStage draft={draft} set={set} />}
     {stage === 'summary' && <SetupSummary draft={draft} />}
     {props.error && <div className="desktop-inline-error" role="alert">{props.error}</div>}
     <div className="desktop-setup-footer"><button type="button" className="desktop-primary-button" disabled={props.busy} onClick={props.next}>{stage === 'summary' ? 'Install ProPR' : 'Continue'} <ChevronRight /></button></div>
