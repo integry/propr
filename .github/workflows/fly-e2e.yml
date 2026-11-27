@@ -436,17 +436,33 @@ jobs:
               -f body="Create $APP-queued.txt containing exactly one line: $APP-queued. Open a PR resolving this issue." --jq .number)
             echo "ISSUE2=$issue2" >> "$GITHUB_ENV"
           fi
-          # GET /app does not expose the Active checkbox. Verify the actual delivery.
+          # GET /app does not expose the Active checkbox. Verify the actual delivery of every opened issue.
+          # The list omits payloads and is newest first, so look up each successful issues/opened delivery
+          # and match it on the issue number (cap mode opens two issues back to back).
+          missing=("$issue"); [[ $CAPACITY != true ]] || missing+=("$issue2")
+          declare -A delivered_issue=()
           for _ in {1..12}; do
-            delivery=$(app_api '/hook/deliveries?per_page=20' | jq -r \
-              '[.[] | select(.event == "issues" and .action == "opened" and .status_code == 200)][0].id // empty')
-            if [[ -n $delivery ]] && app_api "/hook/deliveries/$delivery" |
-              jq -e --arg title "Fly smoke $APP" '.request.payload.issue.title == $title' > /dev/null; then
-              exit 0
-            fi
+            ids=$(app_api '/hook/deliveries?per_page=20' |
+              jq -r '.[] | select(.event == "issues" and .action == "opened" and .status_code == 200) | .id') || ids=
+            for id in $ids; do
+              [[ -z ${delivered_issue[$id]+set} ]] || continue
+              number=$(app_api "/hook/deliveries/$id" | jq -r --arg repo "$REPO" \
+                '.request.payload | select(.repository.full_name == $repo) | .issue.number // empty') || continue
+              delivered_issue[$id]=$number
+            done
+            still_missing=()
+            for wanted in "${missing[@]}"; do
+              found=false
+              for number in "${delivered_issue[@]}"; do [[ $number != "$wanted" ]] || { found=true; break; }; done
+              [[ $found == true ]] || still_missing+=("$wanted")
+            done
+            missing=("${still_missing[@]}")
+            (( ${#missing[@]} > 0 )) || exit 0
             sleep 5
           done
-          echo "::error::No successful App webhook delivery for $REPO#$issue. Check Webhook → Active in the fixture App settings and its recent deliveries."
+          for wanted in "${missing[@]}"; do
+            echo "::error::No successful App webhook delivery for $REPO#$wanted. Check Webhook → Active in the fixture App settings and its recent deliveries."
+          done
           exit 1
 
       - name: Observe idle stop and labeled-issue wake
