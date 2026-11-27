@@ -19,7 +19,9 @@ import { applyLaunchEnv, GITHUB_APP_KEY_FILE, readLaunchConfig, setupRequired, t
 import { createLaunchStore, type LaunchStore } from '../src/flyLaunch/launchStore.ts';
 import { createSetupAccess, SETUP_ACCESS_FILE, SETUP_CLAIM_COOKIE } from '../src/flyLaunch/setupAccess.ts';
 import { createSetupWizard, runSetupWizard, SETUP_WIZARD_CLOSE_GRACE_MS, type SetupWizardOptions } from '../src/flyLaunch/setupWizard.ts';
-import type { RuntimeValidators } from '../src/flyLaunch/runtimeValidation.ts';
+import { DEFAULT_AGENT_IMAGE, spritesNamePrefix, SPRITES_TOKENS_URL, type RuntimeValidators } from '../src/flyLaunch/runtimeValidation.ts';
+import { WIZARD_SCRIPT } from '../src/flyLaunch/setupLayout.ts';
+import { PROPR_VERSION } from '@propr/shared';
 
 const PUBLIC_URL = 'https://propr-test.fly.dev';
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -137,6 +139,7 @@ interface WizardOverrides {
     relay?: RelayFake;
     /** Reuse a volume (a restart); the claim on it carries over. */
     store?: LaunchStore;
+    countMachines?: () => Promise<number | undefined>;
 }
 
 async function startWizard(overrides: WizardOverrides = {}): Promise<Harness> {
@@ -153,6 +156,7 @@ async function startWizard(overrides: WizardOverrides = {}): Promise<Harness> {
     const logs: string[] = [];
     const options: SetupWizardOptions = {
         store, access, publicUrl: PUBLIC_URL, controlPlaneApp: 'propr-test', labelHost: 'machine-1', fetcher: fakeGithub(calls, relay), log: message => logs.push(message),
+        dataDir: mkdtempSync(join(tmpdir(), 'fly-launch-data-')), countMachines: overrides.countMachines ?? (async () => undefined),
         validators: {
             sprites: async token => { if (token !== 'good-sprites') throw new Error('401'); },
             flyApp: async (app, token) => (app === 'propr-agents' && token === 'FlyV1 agent' ? 200 : 403),
@@ -247,7 +251,7 @@ test('the full wizard: manifest flow, install, administrator, runtime, finish; t
     // 1. The manifest form posts to GitHub with this instance's URLs and a state.
     const start = await h.request('/setup/github/start', { method: 'POST', cookie, form: { org: '', name: 'ProPR test' } });
     const startPage = await start.text();
-    assert.match(start.headers.get('content-security-policy')!, /script-src 'nonce-/);
+    assert.match(start.headers.get('content-security-policy')!, /script-src 'self' 'nonce-/);
     assert.match(startPage, /action="https:\/\/github.com\/settings\/apps\/new\?state=/);
     const manifest = JSON.parse(/name="manifest" value="([^"]+)"/.exec(startPage)![1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
     assert.equal(manifest.name, 'ProPR test');
@@ -511,8 +515,8 @@ test('the GitHub step offers the ProPR App first (recommended) and your own App 
     assert.match(page, /<details class="path"><summary>Advanced/, 'the own-App form starts collapsed');
     assert.match(page, /action="\/setup\/connect\/enroll"/);
     assert.match(page, /action="\/setup\/github\/start"/, 'the manifest form is still there');
-    assert.match(page, /aria-current="step">2\. GitHub</);
-    assert.match(page, /3\. Sign-in app/);
+    assert.match(page, /<li class="current" aria-current="step"><span class="dot" aria-hidden="true">2<\/span><span class="label"><span class="sr">2\. <\/span>GitHub</);
+    assert.match(page, /<li class="upcoming">.*?3\. <\/span>Sign-in app/);
     assert.equal(h.calls.length, 0, 'nothing is sent anywhere until a path is chosen');
 });
 
@@ -746,4 +750,109 @@ test('the two paths never mix: storing one clears the other, including the App k
     assert.equal(back.env.PROPR_GH_RELAY_URL, undefined);
     assert.equal(back.env.GH_AUTH_MODE, 'app');
     assert.equal(back.env.GITHUB_EVENT_INTAKE_MODE, 'direct_webhook');
+});
+
+/** Every link that leaves the wizard opens in a new tab; every submit button names its busy label. */
+function assertPageConventions(page: string, name: string): void {
+    for (const [tag, href] of page.matchAll(/<a\b[^>]*href="(https?:[^"]+)"[^>]*>/g)) {
+        assert.match(tag, /target="_blank" rel="noopener noreferrer"/, `${name}: ${href} opens in a new tab`);
+    }
+    for (const [button] of page.matchAll(/<button type="submit"[^>]*>/g)) assert.match(button, /data-busy="[^"]+…"/, `${name}: ${button} has a busy label`);
+    assert.match(page, /<script src="\/setup\/assets\/wizard.js" defer><\/script>/, `${name}: loads the busy-state script`);
+}
+
+test('branding: ProPR logo and favicon served by the wizard itself, "on Fly.io" linking the app, progress steps', async () => {
+    const h = await startWizard();
+    const claimPage = await (await h.request('/setup')).text();
+    assert.match(claimPage, /<img src="\/setup\/assets\/logo.png" alt="ProPR"/);
+    assert.match(claimPage, /<link rel="icon" type="image\/png" href="\/setup\/assets\/favicon.png">/);
+    assert.match(claimPage, /class="on-fly">on <a href="https:\/\/fly.io\/apps\/propr-test" target="_blank"[^>]*>Fly.io<.*<span class="host">propr-test.fly.dev<\/span>/);
+    assert.match(claimPage, /<li class="current" aria-current="step">.*1\. <\/span>Setup code<span class="sr"> \(current\)/);
+    assertPageConventions(claimPage, 'claim');
+
+    // Assets need no claim: they hold nothing about the instance.
+    const favicon = await h.request('/setup/assets/favicon.png');
+    assert.equal(favicon.headers.get('content-type'), 'image/png');
+    assert.deepEqual(Buffer.from(await favicon.arrayBuffer()), readFileSync(join(import.meta.dirname, '../propr-ui/public/logo.png')), 'the Web UI favicon, byte for byte');
+    const logo = Buffer.from(await (await h.request('/setup/assets/logo.png')).arrayBuffer());
+    assert.equal(logo.subarray(1, 4).toString(), 'PNG');
+    assert.deepEqual([logo.readUInt32BE(16), logo.readUInt32BE(20)], [208, 64], 'the logo, at twice its 32px display height');
+    const script = await h.request('/setup/assets/wizard.js');
+    assert.match(script.headers.get('content-type')!, /^text\/javascript/);
+    assert.equal(await script.text(), WIZARD_SCRIPT);
+    assert.doesNotThrow(() => new Function(WIZARD_SCRIPT), 'the script parses');
+
+    const cookie = await claim(h);
+    const github = await h.request('/setup', { cookie });
+    assert.match(github.headers.get('content-security-policy')!, /img-src 'self'; script-src 'self'; /);
+    const githubPage = await github.text();
+    assertPageConventions(githubPage, 'github');
+    assert.match(githubPage, /<li class="done"><span class="dot" aria-hidden="true">✓<\/span><span class="label"><span class="sr">1\. <\/span>Setup code<span class="sr"> \(done\)/);
+});
+
+test('agent runtime: Sprites token page and scope with the exact prefix; Fly Machines prefilled; one form at a time', async () => {
+    const h = await startWizard({ countMachines: async () => 1 });
+    const cookie = await throughAdministrator(h);
+    const page = await (await h.request('/setup', { cookie })).text();
+    assertPageConventions(page, 'runtime');
+    const prefix = spritesNamePrefix('propr-test', h.options.dataDir!);
+    assert.ok(page.includes(`href="${SPRITES_TOKENS_URL}" target="_blank"`), 'links the Sprites tokens page in a new tab');
+    assert.match(page, /switch org there/);
+    assert.ok(page.includes(`<li>Name prefix: <code>${prefix}</code></li><li>Max Sprites: 1 on the Free Plan.</li><li>Expiry: optional.</li>`));
+    assert.match(page, /name="runtime" value="sprites" checked/, 'Sprites is the default');
+    // Fly Machines: everything prefilled, the build-your-own image behind Advanced.
+    assert.match(page, /id="flyApp"[^>]*value="propr-test-agents"/);
+    assert.equal(DEFAULT_AGENT_IMAGE, `propr/agent:${PROPR_VERSION}`);
+    assert.ok(page.includes(`id="flyImage" name="flyImage" type="text" autocomplete="off" spellcheck="false" placeholder="${DEFAULT_AGENT_IMAGE}" value="${DEFAULT_AGENT_IMAGE}"`));
+    assert.match(page, /id="flyMachinesMax"[^>]*value="2"/, '3 minus this app\'s one Machine');
+    assert.ok(page.includes('<pre>fly apps create <span data-agent-app>propr-test-agents</span> &amp;&amp; fly tokens create deploy --app <span data-agent-app>propr-test-agents</span> --expiry 8760h</pre>'));
+    assert.match(page, /href="https:\/\/fly.io\/dashboard\/personal" target="_blank"/);
+    assert.match(page, /<details class="advanced"><summary>Advanced: build your own agent image<\/summary>[^]*Dockerfile.agent/);
+    assert.match(page, /\.option:not\(:has\(input\[name=runtime\]:checked\)\) \.panel\{display:none\}/, 'unchosen options are collapsed');
+    // Hints are one sentence; longer explanations sit behind "Why?".
+    for (const [, hint] of page.matchAll(/<p class="hint">(.*?)<\/p>/g)) {
+        assert.ok(hint.replace(/<[^>]+>/g, '').split(/[.!?](?:\s|$)/).filter(part => part.trim()).length <= 1, `one sentence: ${hint}`);
+    }
+    assert.ok((page.match(/<details class="why">/g) ?? []).length >= 2);
+});
+
+test('agent runtime: the defaults save as shown, and the next step shows what the check found', async () => {
+    const seen: Array<string | undefined> = [];
+    const h = await startWizard({
+        countMachines: async () => 2,
+        validators: {
+            sprites: async (token, prefix) => { seen.push(prefix); if (token !== 'good-sprites') throw new Error('401'); return { organization: 'personal', running: 1, runningLimit: 3 }; },
+            flyMachineCount: async () => 0,
+        },
+    });
+    const cookie = await throughAdministrator(h);
+    assert.match(await (await h.request('/setup', { cookie })).text(), /id="flyMachinesMax"[^>]*value="1"/, '3 minus this app\'s two Machines');
+    // Fly Machines with the prefilled image (left as shown) and the computed default.
+    const fly = await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'fly-machines', flyApp: 'propr-agents', flyToken: 'FlyV1 agent', flyImage: DEFAULT_AGENT_IMAGE, flyMachinesMax: '1' } });
+    assert.equal(fly.status, 303);
+    let finish = await (await h.request('/setup', { cookie })).text();
+    assert.match(finish, /<p class="notice" role="status"><strong>✓ Checked:<\/strong> Token works · agent app propr-agents · 0 Machines in it now · up to 1 agent Machine at once<\/p>/);
+    assert.equal(readLaunchConfig(h.store).env.PROPR_FLY_IMAGE, DEFAULT_AGENT_IMAGE);
+    assertPageConventions(finish, 'finish');
+    // Sprites: listed under this instance's prefix; the summary replaces the earlier one.
+    assert.equal((await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'sprites', spritesToken: 'good-sprites' } })).status, 303);
+    assert.deepEqual(seen, [spritesNamePrefix('propr-test', h.options.dataDir!)]);
+    finish = await (await h.request('/setup', { cookie })).text();
+    assert.match(finish, /✓ Checked:<\/strong> Token works · organization personal · 2 of 3 Sprites free<\/p>/);
+    assert.ok(!finish.includes('good-sprites'));
+    // "Not yet" checks nothing, so it claims nothing.
+    assert.equal((await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'none' } })).status, 303);
+    assert.doesNotMatch(await (await h.request('/setup', { cookie })).text(), /class="notice"/);
+    assert.equal(readLaunchConfig(h.store).runtimeCheck, undefined);
+});
+
+test('a failed check re-renders the step with an inline error and a fresh button', async () => {
+    const h = await startWizard();
+    const cookie = await throughAdministrator(h);
+    const failed = await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'sprites', spritesToken: 'bad' } });
+    assert.equal(failed.status, 400);
+    const page = await failed.text();
+    assert.match(page, /<p class="error" role="alert">That Sprites token could not list Sprites/);
+    assert.match(page, /<button type="submit" data-busy="Checking…">Check and save<\/button>/);
+    assert.doesNotMatch(page, /class="notice"/);
 });

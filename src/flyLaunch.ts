@@ -53,6 +53,9 @@ export async function prepareFlyLaunch(env: NodeJS.ProcessEnv = process.env): Pr
         config = await runSetupWizard({
             store, access, publicUrl,
             controlPlaneApp: env.FLY_APP_NAME?.trim(),
+            // As the control plane will see them: a Fly secret wins over the derived PROPR_INSTANCE_ID.
+            ...(env.PROPR_INSTANCE_ID?.trim() ? { instanceId: env.PROPR_INSTANCE_ID.trim() } : {}),
+            ...(env.DATA_DIR?.trim() ? { dataDir: env.DATA_DIR.trim() } : {}),
             // A Fly secret PROPR_GH_RELAY_URL wins on boot, so the relay token must come from that relay.
             ...(env.PROPR_GH_RELAY_URL?.trim() ? { relayUrl: env.PROPR_GH_RELAY_URL.trim() } : {}),
             host: env.DASHBOARD_API_HOST?.trim() || '::',

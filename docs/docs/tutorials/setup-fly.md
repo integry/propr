@@ -54,9 +54,19 @@ You can launch ProPR from the [Fly dashboard](https://fly.io/dashboard) with **L
    - **Advanced: Create your own GitHub App.** Use this when you want no ProPR-hosted service in the path. The wizard sends GitHub an App manifest with this instance's webhook (`/webhook`), sign-in callback and setup URLs filled in. Leave the organization empty for your personal account. GitHub returns the App's credentials to the instance, which stores them on the volume. Then **install the App** on the repositories ProPR should work on; the installed repositories become the monitored repository list.
 6. **Register the sign-in app** (ProPR App path only). ProPR Connect signs browsers in only through a hosted tunnel callback (`https://t-<id>.propr.dev`) or a loopback address, never through `https://<app>.fly.dev`. So the instance signs browsers in with GitHub OAuth, the same sign-in `propr deploy fly` uses without the tunnel flags. [Register a GitHub OAuth App](https://github.com/settings/applications/new) with homepage `https://<app>.fly.dev` and callback URL `https://<app>.fly.dev/api/auth/github/callback`, then paste its client ID and a new client secret. The OAuth App only identifies who signs in; it gets no repository access. With your own GitHub App, its own OAuth client does this, and there is no extra step.
 7. **Sign in with GitHub.** That account becomes the first administrator (`PROPR_ADMIN_USERS`). The ProPR App path signs in through the OAuth App's one callback URL; the wizard forwards it while setup runs.
-8. **Choose the agent runtime.** Each choice is checked before it is saved:
-   - **Sprites:** paste a Sprites token. ProPR starts with one Sprite at a time.
-   - **Fly Machines:** enter a separate agent app, a deploy token for that app only (the agent app → **Tokens** → **Create deploy token**, or `fly tokens create deploy --app <agent-app>`; never an organization or personal token) and the agent image. To build the image without a terminal, add a `FLY_API_TOKEN` Actions secret to the fork and run its **Build Fly agent image** workflow; the job summary shows the `registry.fly.io/<agent-app>@sha256:…` reference. The Free Plan default of 2 concurrent agent Machines leaves room for the control plane.
+8. **Choose the agent runtime.** Only the chosen option's fields are shown. Each choice is checked before it is saved, and the next step shows what the check found, for example `Token works · organization personal · 3 of 3 Sprites free`:
+   - **Sprites (the default):** select **Create Token** on Fly's [Sprites tokens page](https://fly.io/dashboard/personal/sprites/tokens). The link opens the personal organization; for another one, switch organization there. Scope the token as the wizard suggests:
+     1. **Name prefix:** the prefix shown in the wizard, `propr-<16 hex>-`. ProPR names every Sprite of this instance with it. It is derived from the instance ID (the app name, unless a `PROPR_INSTANCE_ID` secret sets one), or read from the marker ProPR keeps on the volume once it has run.
+     2. **Max Sprites:** 1 on the Free Plan. ProPR uses one Sprite at a time.
+     3. **Expiry:** optional.
+
+     The check lists Sprites under that prefix, so a token scoped to it passes.
+   - **Fly Machines:** everything is prefilled:
+     - The **agent app** is `<app>-agents`. The wizard shows one command that creates the app and its deploy token, `fly apps create <agent-app> && fly tokens create deploy --app <agent-app> --expiry 8760h`. In the dashboard, create a new app, then use its **Tokens** page → **Create deploy token**. Never paste an organization or personal token.
+     - The **agent image** is the published `propr/agent:<version>` for this instance's version, pulled from Docker Hub, so nothing is built.
+     - **Agent Machines at once** is 3 minus this app's Machines, so usually 2. The wizard counts them on the private network, or assumes the one a dashboard launch creates. Lower it if other apps in the organization have Machines too.
+
+     Under **Advanced**, you can build your own image from `Dockerfile.agent` instead. Add a `FLY_API_TOKEN` Actions secret to the fork and run its **Build Fly agent image** workflow; the job summary shows the `registry.fly.io/<agent-app>@sha256:…` reference. An image in the agent app's own registry also lets ProPR [preinstall runtime packages](../architecture/agent-runtime.md#derived-fly-images) once. With the Docker Hub image, they install at each Machine start.
    - **Not yet:** the control plane starts without a runtime, and agent runs fail with a clear error until you add `SPRITES_TOKEN` or the `PROPR_FLY_*` settings as Fly secrets.
 9. **Finish.** Idle shutdown stays off unless you tick it; on the ProPR App path, ticking it also registers the instance's `/wake` URL with Connect (see [Idle shutdown and wake](#idle-shutdown-and-wake)). The wizard closes for good and ProPR starts in the same Machine. Sign in, add a model provider in **Settings → Agents**, and label an issue `AI`.
 
@@ -66,7 +76,7 @@ You can launch ProPR from the [Fly dashboard](https://fly.io/dashboard) with **L
 
 To run a modified fork, a branch or a pull request, build the image from source instead. In **Launch an App → From GitHub** (or the app's GitHub deployment settings), pick the branch and set **Config path** to `deploy/fly/source/fly.toml`. That file is identical to the root `fly.toml` except that its `[build]` builds `docker/Dockerfile.app.prod` from the checkout: the Dockerfile path is written relative to the config's own directory, as `flyctl` resolves it, and the build context is the repository root. Expect a long first build on Fly's builder (more than 15 minutes); later builds reuse its cache when the builder still has it. Everything after the build, the setup code and the wizard, is the same.
 
-The wizard screens, in order:
+The wizard uses ProPR's own look, with a small **on Fly.io** badge naming the instance's `<app>.fly.dev` host. The badge links to the app's Fly dashboard page. Like the ProPR Web UI, the wizard has a single light theme. The step bar shows done, current and upcoming steps. Every link that leaves the wizard opens in a new tab, and progress is kept on the volume. Each submit button is disabled at once and shows a spinner with what it is doing (**Checking…**, **Connecting…**, **Saving…**, **Starting…**), so a slow check cannot be sent twice. A failed check shows the same step again with the error. The wizard screens, in order:
 
 ![Setup code entry, the first step of the wizard](/img/screenshots/fly-launch/wizard-claim.png)
 
@@ -76,9 +86,11 @@ The wizard screens, in order:
 
 ![ProPR App path: registering the GitHub OAuth App browsers sign in with](/img/screenshots/fly-launch/wizard-signin-app.png)
 
-![Choosing Sprites or Fly Machines, with a separate agent app and a scoped token](/img/screenshots/fly-launch/wizard-runtime.png)
+![The agent runtime step: Sprites by default, with the token page and the scope to use](/img/screenshots/fly-launch/wizard-runtime.png)
 
-![The last step on the ProPR App path: optional idle shutdown with the Connect wake URL](/img/screenshots/fly-launch/wizard-finish.png)
+![Fly Machines chosen: the agent app, its one-line create command, the published agent image and the computed Machines default](/img/screenshots/fly-launch/wizard-runtime-fly-machines.png)
+
+![The last step: what the runtime check found, and optional idle shutdown](/img/screenshots/fly-launch/wizard-finish.png)
 
 ### What the instance keeps on the volume
 

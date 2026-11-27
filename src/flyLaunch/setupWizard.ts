@@ -26,6 +26,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { GITHUB_APP_KEY_FILE, readLaunchConfig, writeLaunchConfig, type LaunchConfig, type LaunchRuntime } from './launchConfig.js';
 import type { LaunchStore } from './launchStore.js';
@@ -38,17 +39,18 @@ import {
     DEFAULT_PROPR_GH_RELAY_URL, enrollConnect, OAUTH_CALLBACK_PATH, parseSignInClient, parseUserToken, registerWakeTarget,
     relayTokenLabel, storeConnectEnrollment, storeSignInClient,
 } from './connectSetup.js';
-import { RUNTIME_ENV_KEYS, validateRuntimeChoice, type RuntimeValidators } from './runtimeValidation.js';
+import { countAppMachines, RUNTIME_ENV_KEYS, spritesNamePrefix, validateRuntimeChoice, type RuntimeValidators } from './runtimeValidation.js';
+import type { InstanceInfo } from './setupLayout.js';
+import { readCookie, readForm, sendSetupAsset } from './setupHttp.js';
 import { currentSetupStep, githubPath } from './setupSteps.js';
 import {
     adminPage, claimedElsewherePage, claimPage, finishPage, githubPage, installPage, manifestRedirectPage, runtimePage, setupCompletedPage,
-    signInAppPage, startingPage, type GithubPageOptions, type SetupStep,
+    signInAppPage, startingPage, type GithubPageOptions, type RuntimeFormValues, type SetupStep,
 } from './setupPages.js';
 
 export { currentSetupStep, githubPath };
 
 const STATE_TTL_MS = 60 * 60_000;
-const MAX_BODY_BYTES = 16 * 1024;
 export const FLY_LAUNCH_IDLE_SHUTDOWN_AFTER = '15m';
 /**
  * Nothing (no code, no state) is sent to GitHub, but same-origin form POSTs
@@ -66,6 +68,12 @@ export interface SetupWizardOptions {
     relayUrl?: string;
     /** The host in the relay token label `fly:<app>@<host>`; os.hostname() by default. */
     labelHost?: string;
+    /** PROPR_INSTANCE_ID as the control plane will see it (names this instance's Sprites); the app name by default. */
+    instanceId?: string;
+    /** DATA_DIR, where the Sprites deployment marker is kept; ./data by default. */
+    dataDir?: string;
+    /** This app's Machines, for the "Agent Machines at once" default; countAppMachines by default. */
+    countMachines?: () => Promise<number | undefined>;
     fetcher?: typeof fetch;
     validators?: RuntimeValidators;
     log?: (message: string) => void;
@@ -83,25 +91,6 @@ type StateKind = 'manifest' | 'install' | 'admin';
 /** A setup write that arrived after Finish saved `completedAt`; answered with 409. */
 export class SetupCompletedError extends Error {
     constructor() { super('setup already completed'); }
-}
-
-function readCookie(request: IncomingMessage, name: string): string | undefined {
-    for (const part of (request.headers.cookie ?? '').split(';')) {
-        const [key, ...rest] = part.trim().split('=');
-        if (key === name) return rest.join('=');
-    }
-    return undefined;
-}
-
-async function readForm(request: IncomingMessage): Promise<URLSearchParams> {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for await (const chunk of request) {
-        size += (chunk as Buffer).length;
-        if (size > MAX_BODY_BYTES) throw new GithubSetupError('The form is too large.');
-        chunks.push(chunk as Buffer);
-    }
-    return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
 }
 
 const RUNTIME_LABELS: Record<LaunchRuntime, string> = { sprites: 'Sprites', 'fly-machines': 'Fly Machines', none: 'none yet (control plane only)' };
@@ -149,7 +138,7 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
             'Referrer-Policy': REFERRER_POLICY,
             'X-Content-Type-Options': 'nosniff',
             'X-Frame-Options': 'DENY',
-            'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self' https://github.com; frame-ancestors 'none'; base-uri 'none'${nonce ? `; script-src 'nonce-${nonce}'` : ''}`,
+            'Content-Security-Policy': `default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; script-src 'self'${nonce ? ` 'nonce-${nonce}'` : ''}; form-action 'self' https://github.com; frame-ancestors 'none'; base-uri 'none'`,
         });
         response.end(html);
     };
@@ -158,20 +147,31 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         response.end();
     };
 
+    const appName = options.controlPlaneApp || new URL(publicUrl).hostname.split('.')[0];
+    const instance: InstanceInfo = { host: new URL(publicUrl).host, ...(options.controlPlaneApp ? { app: options.controlPlaneApp } : {}) };
+    const spritesPrefix = (): string => spritesNamePrefix(options.instanceId || appName, options.dataDir || join(process.cwd(), 'data'));
+    // Counted once: the answer does not change while the wizard runs.
+    let machines: Promise<number | undefined> | undefined;
+    const controlPlaneMachines = (): Promise<number | undefined> =>
+        (machines ??= (options.countMachines ?? (() => (options.controlPlaneApp ? countAppMachines(options.controlPlaneApp) : Promise.resolve(undefined))))());
+    const showRuntime = async (config: LaunchConfig, error?: string, values: RuntimeFormValues = {}): Promise<string> => runtimePage(instance, {
+        admin: config.admin?.login ?? config.env.PROPR_ADMIN_USERS ?? '', controlPlaneApp: options.controlPlaneApp ?? '',
+        spritesPrefix: spritesPrefix(), controlPlaneMachines: await controlPlaneMachines(),
+    }, error, { ...values, path: githubPath(config) });
     const relayUrl = options.relayUrl ?? DEFAULT_PROPR_GH_RELAY_URL;
     const adminCallback = (config: LaunchConfig): string =>
         adminRedirectUri(publicUrl, githubPath(config) === 'connect' ? OAUTH_CALLBACK_PATH : SETUP_PATHS.admin);
 
     /** `form`: which GitHub form an error came from, so the page shows it there. */
-    const stepPage = (config: LaunchConfig, error?: string, form?: 'connect' | 'own-app'): string => {
+    const stepPage = async (config: LaunchConfig, error?: string, form?: 'connect' | 'own-app'): Promise<string> => {
         const path = githubPath(config);
         switch (currentSetupStep(config, keyExists())) {
-            case 'github': return githubPage(publicUrl, form === 'own-app' ? { ownAppError: error } : { connectError: error });
-            case 'install': return installPage(config.github!.slug, error);
-            case 'signin-app': return signInAppPage(publicUrl, config.connect?.accountLogin ?? '', error);
-            case 'admin': return adminPage((config.env.GITHUB_REPOS_TO_MONITOR ?? '').split(',').filter(Boolean), error, path);
-            case 'runtime': return runtimePage(config.admin?.login ?? config.env.PROPR_ADMIN_USERS!, options.controlPlaneApp ?? '', error, { path });
-            case 'finish': return finishPage(RUNTIME_LABELS[config.runtime!], error, path);
+            case 'github': return githubPage(instance, publicUrl, form === 'own-app' ? { ownAppError: error } : { connectError: error });
+            case 'install': return installPage(instance, config.github!.slug, error);
+            case 'signin-app': return signInAppPage(instance, publicUrl, config.connect?.accountLogin ?? '', error);
+            case 'admin': return adminPage(instance, (config.env.GITHUB_REPOS_TO_MONITOR ?? '').split(',').filter(Boolean), error, path);
+            case 'runtime': return showRuntime(config, error);
+            case 'finish': return finishPage(instance, RUNTIME_LABELS[config.runtime!], error, { path, checked: config.runtimeCheck });
         }
     };
 
@@ -189,7 +189,7 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         const manifest = launchGithubAppManifest(publicUrl, form.get('name') ?? undefined);
         const action = githubAppRegistrationUrl(form.get('org') ?? undefined, issueState('manifest'));
         const nonce = randomBytes(16).toString('base64');
-        send(response, 200, manifestRedirectPage(action, manifest, nonce), nonce);
+        send(response, 200, manifestRedirectPage(instance, action, manifest, nonce), nonce);
     };
 
     const manifestCreated: Route = async ({ response, url }) => {
@@ -234,7 +234,7 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         const result = await enrollConnect({ userToken, installationId: form.get('installation') ?? undefined, label, relayUrl, fetcher: options.fetcher });
         if (result.kind === 'pick') {
             const page: GithubPageOptions = { installations: result.installations };
-            return send(response, 200, githubPage(publicUrl, page));
+            return send(response, 200, githubPage(instance, publicUrl, page));
         }
         const { enrollment } = result;
         try {
@@ -253,7 +253,7 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
 
     const showSignInApp: Route = ({ response, config, step }) => {
         if (step !== 'signin-app' && !(config.connect && step === 'admin')) return redirect(response, '/setup');
-        send(response, 200, signInAppPage(publicUrl, config.connect?.accountLogin ?? ''));
+        send(response, 200, signInAppPage(instance, publicUrl, config.connect?.accountLogin ?? ''));
     };
 
     const saveSignInApp: Route = async ({ request, response, config, step }) => {
@@ -263,7 +263,7 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         try {
             client = parseSignInClient(form.get('clientId'), form.get('clientSecret'));
         } catch (error) {
-            return send(response, 400, signInAppPage(publicUrl, config.connect.accountLogin, (error as Error).message));
+            return send(response, 400, signInAppPage(instance, publicUrl, config.connect.accountLogin, (error as Error).message));
         }
         await commitConfig(latest => {
             const latestStep = currentSetupStep(latest, keyExists());
@@ -300,17 +300,20 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         const result = await validateRuntimeChoice({
             runtime, spritesToken: field('spritesToken'), flyApp: field('flyApp'), flyToken: field('flyToken'),
             flyImage: field('flyImage'), flyMachinesMax: field('flyMachinesMax'),
-        }, { controlPlaneApp: options.controlPlaneApp }, options.validators);
+        }, { controlPlaneApp: options.controlPlaneApp, spritesPrefix: spritesPrefix() }, options.validators);
         if (!result.ok) {
             const kept = { runtime, flyApp: field('flyApp'), flyImage: field('flyImage'), flyMachinesMax: field('flyMachinesMax') };
-            return send(response, 400, runtimePage(config.admin?.login ?? '', options.controlPlaneApp ?? '', result.error, { ...kept, path: githubPath(config) }));
+            return send(response, 400, await showRuntime(config, result.error, kept));
         }
         await commitConfig(latest => {
             const latestStep = currentSetupStep(latest, keyExists());
             if (latestStep !== 'runtime' && latestStep !== 'finish') throw new GithubSetupError('An earlier setup step changed while the runtime was checked. Continue from here.');
             const env = { ...latest.env };
             for (const key of RUNTIME_ENV_KEYS) delete env[key];
-            return { ...latest, runtime, env: { ...env, ...result.env } };
+            const next: LaunchConfig = { ...latest, runtime, env: { ...env, ...result.env } };
+            if (result.summary) next.runtimeCheck = result.summary;
+            else delete next.runtimeCheck;
+            return next;
         });
         log(`fly-launch: agent runtime ${runtime} checked and saved`);
         redirect(response, '/setup');
@@ -352,11 +355,11 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         response.once('finish', () => finish(final));
         // The wizard server closes after this answer; the browser must not reuse the connection.
         response.shouldKeepAlive = false;
-        send(response, 200, startingPage());
+        send(response, 200, startingPage(instance));
     };
 
     const routes: Record<string, Route> = {
-        'GET /setup': ({ response, config }) => send(response, 200, stepPage(config)),
+        'GET /setup': async ({ response, config }) => send(response, 200, await stepPage(config)),
         'POST /setup/github/start': startManifest,
         [`GET ${SETUP_PATHS.created}`]: manifestCreated,
         'GET /setup/github/install': startInstall,
@@ -379,11 +382,11 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         } catch (error) {
             if (error instanceof SetupCompletedError) {
                 log('fly-launch: a setup step finished after setup was completed; its result was not saved');
-                return send(response, 409, setupCompletedPage());
+                return send(response, 409, setupCompletedPage(instance));
             }
             const message = error instanceof GithubSetupError ? error.message : 'Something went wrong. Try again.';
             if (!(error instanceof GithubSetupError)) log(`fly-launch: setup step failed: ${(error as Error)?.message ?? 'unknown error'}`);
-            send(response, 400, stepPage(readLaunchConfig(store), message, url.pathname.startsWith('/setup/connect/') ? 'connect' : 'own-app'));
+            send(response, 400, await stepPage(readLaunchConfig(store), message, url.pathname.startsWith('/setup/connect/') ? 'connect' : 'own-app'));
         }
     }
 
@@ -396,20 +399,21 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
             const cookie = `${SETUP_CLAIM_COOKIE}=${result.token}; Path=/setup; HttpOnly; SameSite=Lax; Max-Age=86400${secureCookie ? '; Secure' : ''}`;
             return redirect(response, '/setup', cookie);
         }
-        if (result.reason === 'already_claimed') return send(response, 403, claimedElsewherePage());
+        if (result.reason === 'already_claimed') return send(response, 403, claimedElsewherePage(instance));
         const limited = result.reason === 'rate_limited';
-        send(response, limited ? 429 : 400, claimPage(limited ? 'Too many wrong codes. Wait a minute and try again.' : 'That code is not valid. Copy the latest code from the logs.'));
+        send(response, limited ? 429 : 400, claimPage(instance, limited ? 'Too many wrong codes. Wait a minute and try again.' : 'That code is not valid. Copy the latest code from the logs.'));
     }
 
     /** /health and everything outside /setup while the wizard runs. */
     function outsideSetup(request: IncomingMessage, response: ServerResponse, url: URL): boolean {
+        if (sendSetupAsset(request, response, url)) return true;
         if (url.pathname === '/health') {
             response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
             response.end(JSON.stringify({ status: 'ok', setup: done ? 'complete' : 'pending' }));
             return true;
         }
         if (done) {
-            send(response, 503, startingPage());
+            send(response, 503, startingPage(instance));
             return true;
         }
         if (url.pathname.startsWith('/setup')) return false;
@@ -434,12 +438,12 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         if (outsideSetup(request, response, url)) return;
         const requestOrigin = request.headers.origin;
         if (request.method === 'POST' && requestOrigin && requestOrigin !== origin) {
-            return send(response, 403, claimPage('This form must be sent from the instance itself.'));
+            return send(response, 403, claimPage(instance, 'This form must be sent from the instance itself.'));
         }
         if (access.isClaimant(readCookie(request, SETUP_CLAIM_COOKIE))) return claimantRoute(request, response, url);
-        if (access.claimed()) return send(response, 403, claimedElsewherePage());
+        if (access.claimed()) return send(response, 403, claimedElsewherePage(instance));
         if (request.method === 'POST' && url.pathname === '/setup/claim') return claimRoute(request, response);
-        send(response, 200, claimPage());
+        send(response, 200, claimPage(instance));
     }
 
     return { handle, completed };

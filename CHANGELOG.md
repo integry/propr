@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     which wakes the Machine and replays cached deliveries. A
     **Build Fly agent image** workflow builds the Fly Machines agent image
     without a terminal.
+  - The agent runtime step shows one short form at a time. Sprites links
+    Fly's Sprites tokens page and suggests a token scoped to this instance's
+    Sprite name prefix (`propr-<marker>-`), at most 1 Sprite. Fly Machines is
+    prefilled: the agent app with a one-line create command, the published
+    `propr/agent:<version>` image (building your own is under Advanced) and
+    3 minus this app's Machines. After a check, the next step shows what it
+    found, for example `Token works · 3 of 3 Sprites free`.
+  - The wizard has ProPR's look (logo, favicon, colors, buttons and cards),
+    a small "on Fly.io" badge linking the app's dashboard page, and a step
+    progress bar. Submit buttons show a spinner and a progress label and
+    ignore a second click. External links open in a new tab.
 
 - **Opt-in idle shutdown for the control plane** (#3770)
   - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`

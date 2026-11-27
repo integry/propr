@@ -56,6 +56,8 @@ export interface LaunchConfig {
     connect?: LaunchConnect;
     admin?: { login: string; id: number };
     runtime?: LaunchRuntime;
+    /** What the runtime check found ("Token works · …"), shown on the finish step; never a token. */
+    runtimeCheck?: string;
     completedAt?: string;
 }
 
