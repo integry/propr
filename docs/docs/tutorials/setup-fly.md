@@ -37,6 +37,69 @@ On the **personal Free plan**, adding a card gives $5 monthly usage, up to three
 
 Exhausting the $5 automatically switches the organization to Pay As You Go and bills the **whole month from the first cent**. A manual upgrade has the same billing effect. Check Billing for other workloads sharing that allowance. [Fly Free plan](https://docs.fly.io/about/free-plan)
 
+## Deploy from the Fly dashboard
+
+You can launch ProPR from the [Fly dashboard](https://fly.io/dashboard) with **Launch an App → From GitHub**, without installing `flyctl` or the ProPR CLI. Fly builds the control plane from your fork, and ProPR's first-visit setup wizard does the rest in the browser.
+
+1. **Fork** `integry/propr` into your GitHub account or organization.
+2. In the Fly dashboard, choose **Launch an App → From GitHub**, pick the fork and the `main` branch, and choose the organization, app name and region. The fork's root `fly.toml` supplies the build (`docker/Dockerfile.app.prod`), the `propr_data` 1 GB volume, a shared-CPU 1x Machine with 1 GB, the `/health` check and auto-start. Do not add secrets; the instance generates them.
+3. When the deploy finishes, open the app's **Live Logs** (or run `fly logs`) and find the line `ProPR setup code: XXXX-XXXX-XXXX`.
+4. Open `https://<app>.fly.dev/setup` and enter the code. The first browser to enter it claims the instance; anyone else, even with the code, is shut out. A restart before the claim prints a new code.
+5. **Create the GitHub App.** The wizard sends GitHub an App manifest with this instance's webhook (`/webhook`), sign-in callback and setup URLs filled in. Leave the organization empty for your personal account. GitHub returns the App's credentials to the instance, which stores them on the volume.
+6. **Install the App** on the repositories ProPR should work on. The installed repositories become the monitored repository list.
+7. **Sign in with GitHub.** That account becomes the first administrator (`PROPR_ADMIN_USERS`).
+8. **Choose the agent runtime.** Each choice is checked before it is saved:
+   - **Sprites:** paste a Sprites token. ProPR starts with one Sprite at a time.
+   - **Fly Machines:** enter a separate agent app, a deploy token for that app only (the agent app → **Tokens** → **Create deploy token**, or `fly tokens create deploy --app <agent-app>`; never an organization or personal token) and the agent image. To build the image without a terminal, add a `FLY_API_TOKEN` Actions secret to the fork and run its **Build Fly agent image** workflow; the job summary shows the `registry.fly.io/<agent-app>@sha256:…` reference. The Free Plan default of 2 concurrent agent Machines leaves room for the control plane.
+   - **Not yet:** the control plane starts without a runtime, and agent runs fail with a clear error until you add `SPRITES_TOKEN` or the `PROPR_FLY_*` settings as Fly secrets.
+9. **Finish.** Idle shutdown stays off unless you tick it. The wizard closes for good and ProPR starts in the same Machine. Sign in, add a model provider in **Settings → Agents**, and label an issue `AI`.
+
+![Setup code entry, the first step of the wizard](/img/screenshots/fly-launch/wizard-claim.png)
+
+![Creating the GitHub App from a manifest with the instance's URLs](/img/screenshots/fly-launch/wizard-github-app.png)
+
+![Choosing Sprites or Fly Machines, with a separate agent app and a scoped token](/img/screenshots/fly-launch/wizard-runtime.png)
+
+![The last step: optional idle shutdown](/img/screenshots/fly-launch/wizard-finish.png)
+
+### What the instance keeps on the volume
+
+Everything lives in `/usr/src/app/data/fly-launch/` (mode 0700; each file 0600). It survives restarts, deploys and idle stops.
+
+| File | Contents |
+| --- | --- |
+| `secrets.json` | `SESSION_SECRET`, `SYSTEM_TASK_SECRET` and `MCP_ENCRYPTION_KEY`, generated once on first boot (the secrets `propr deploy fly` generates). Values are never logged. |
+| `config.json` | What the wizard saved: GitHub App ID, installation, webhook secret, OAuth client, administrator, runtime tokens, idle shutdown. |
+| `github-app.pem` | The GitHub App private key from the manifest flow. |
+| `setup.json` | The setup code hash and claim, until setup is done. |
+
+A **Fly secret always wins** over a stored value, so you can override anything from the app's **Secrets** page in the dashboard, for example a rotated `SPRITES_TOKEN`. An instance whose environment already has GitHub credentials (`GH_APP_ID`, a Connect relay token, or demo mode) never shows the wizard. Instances deployed with `propr deploy fly` are unaffected: they run the control plane directly and keep using their Fly secrets.
+
+If you lose the browser session that claimed setup, run `fly ssh console -C "rm /usr/src/app/data/fly-launch/setup.json"`, restart the Machine and use the new code. Steps already completed stay done.
+
+### Idle shutdown and wake
+
+In a dashboard launch, ProPR and Redis share one container, so ProPR exiting stops the Machine: idle shutdown needs no Machine stop token. `fly.toml` restarts the Machine only on failure, keeps Fly's traffic-based autostop off and keeps `auto_start_machines` on, so a request (the UI, an MCP client or a GitHub webhook) starts a stopped Machine again. Idle shutdown is off unless you choose it in the last wizard step. If you left it off, the idle shutdown control in Settings works as on any instance. If you turned it on in the wizard, that choice acts like environment configuration and wins over the Settings control; set the Fly secret `PROPR_IDLE_SHUTDOWN=off` to turn it off.
+
+### Updates
+
+Fly redeploys the app from the fork. Keep the fork current with GitHub's **Sync fork** button. If the app is connected with deploy-on-push (the dashboard's GitHub deployment settings), each sync deploys the new version; otherwise use **Deploy** in the dashboard. Database migrations run on boot, as on every other deploy. The wizard does not reappear and the volume keeps every secret and setting.
+
+### Dashboard launch compared with `propr deploy fly`
+
+| | Dashboard launch | `propr deploy fly` |
+| --- | --- | --- |
+| Needs | A browser, a GitHub fork | `flyctl`, the ProPR CLI, an environment file |
+| Image | Built by Fly from the fork's `docker/Dockerfile.app.prod` | Released `propr/app` image, or `--image` |
+| Machine layout | One container: ProPR plus Redis (Valkey) with the same persistence flags | Separate app and Redis containers in one Machine (plus optional tunnel or Docker) |
+| Generated secrets | On first boot, stored on the volume | By the CLI, stored as Fly secrets |
+| GitHub App | Created in the wizard with the manifest flow | Your own App from the env file, or ProPR Connect |
+| Agent runtime | Sprites or Fly Machines, chosen and checked in the wizard | `--agent-runtime` and the env file; also legacy Docker |
+| Idle shutdown | Off by default; wizard opt-in, no stop token needed | Off by default; `--idle-shutdown` plus an app-scoped stop token |
+| Updates | Sync the fork; Fly redeploys | Rerun `propr deploy fly` |
+
+Both use the same env, health check, volume, VM size and stop settings: the committed `fly.toml` is generated from the CLI's builders (`npx tsx packages/cli/scripts/render-fly-launch-toml.ts`), and a test keeps the two from drifting.
+
 ## Deploy the Machine
 
 Install the ProPR CLI and sign in with `fly auth login`. Choose an available app name and a private environment file (mode 0600) with one literal `NAME=value` per line.

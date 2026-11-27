@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Deploy from the Fly dashboard** (#3827)
+  - A committed root `fly.toml`, generated from the `propr deploy fly`
+    builders, lets **Launch an App → From GitHub** build a fork and run the
+    control plane with ProPR and Redis (Valkey) in one container.
+  - Secrets the CLI generates are generated on first boot and kept on the
+    volume (mode 0600); Fly secrets still win. `propr deploy fly` instances
+    are unchanged.
+  - A first-visit setup wizard, bound to a one-time code in the Machine's
+    logs, creates the GitHub App with the manifest flow, installs it, signs
+    the first administrator in, and checks a Sprites or Fly Machines runtime.
+  - Idle shutdown (off by default) needs no stop token in this layout. A
+    **Build Fly agent image** workflow builds the Fly Machines agent image
+    without a terminal.
+
 - **Opt-in idle shutdown for the control plane** (#3770)
   - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`
     (for example `15m`), or Settings → Maintenance → Idle shutdown, stops the

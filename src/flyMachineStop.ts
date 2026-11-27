@@ -8,8 +8,12 @@
  * Machine's private `_api.internal:4280` endpoint, to stop this Machine, with
  * the app-scoped deploy token `propr deploy fly` stores as a Fly secret.
  *
+ * A Fly dashboard launch sets PROPR_FLY_EXIT_STOPS_MACHINE=1 instead: one
+ * container, so the exit alone stops the Machine.
+ *
  * Kept free of service imports so it can be tested without Redis or SQLite.
  */
+import { FLY_EXIT_STOPS_MACHINE_ENV } from '@propr/shared';
 import type { HostStop } from './allInOneConfig.js';
 
 /** Fly secret with the app-scoped token the Machine stops itself with. */
@@ -41,6 +45,10 @@ export function resolveFlyMachineStop(
 ): FlyMachineStop {
     const machineId = env.FLY_MACHINE_ID?.trim();
     if (!machineId) return { kind: 'not_fly' };
+    // A Fly dashboard launch (#3827) runs ProPR and Redis in ONE container
+    // (scripts/fly-launch-entrypoint.sh): the exit stops the Machine, and its
+    // on-failure restart policy leaves it stopped after an exit 0.
+    if (env[FLY_EXIT_STOPS_MACHINE_ENV]?.trim() === '1') return { kind: 'not_fly' };
     const app = env.FLY_APP_NAME?.trim();
     const token = env[FLY_MACHINE_STOP_TOKEN_ENV]?.trim();
     if (!app || !token) {

@@ -1,0 +1,74 @@
+name: Build Fly agent image
+
+# For instances launched from the Fly dashboard (#3827) that run agents on Fly
+# Machines: builds Dockerfile.agent from this checkout and pushes it to a
+# separate agent app, so no local flyctl or Docker is needed. Run it from a
+# fork's Actions tab after adding a FLY_API_TOKEN Actions secret (an
+# organization token from the Fly dashboard: Tokens → Create token). The
+# job summary prints the image digest to paste into the setup wizard.
+on:
+  workflow_dispatch:
+    inputs:
+      agent_app:
+        description: Agent app name (created when missing; never the control-plane app)
+        required: true
+      org:
+        description: Fly organization slug
+        required: true
+        default: personal
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fly-agent-image-${{ inputs.agent_app }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      AGENT_APP: ${{ inputs.agent_app }}
+      ORG: ${{ inputs.org }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: superfly/flyctl-actions/setup-flyctl@98172f70657cb3e15db199af139be99bd3e61200
+      - name: Create the agent app when missing
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n ${FLY_API_TOKEN:-} ]] || { echo "::error::Add a FLY_API_TOKEN Actions secret (Fly dashboard: Tokens → Create token)"; exit 1; }
+          [[ $AGENT_APP =~ ^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$ ]] || { echo "::error::Invalid agent app name"; exit 1; }
+          [[ $ORG =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::Invalid organization slug"; exit 1; }
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' -H "Authorization: $FLY_API_TOKEN" \
+            "https://api.machines.dev/v1/apps/$AGENT_APP")
+          if [[ $status == 404 ]]; then
+            flyctl apps create "$AGENT_APP" --org "$ORG"
+          elif [[ $status != 200 ]]; then
+            echo "::error::The token cannot read the app $AGENT_APP (HTTP $status)"; exit 1
+          fi
+      - name: Build and push Dockerfile.agent
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          DOCKERHUB_NS=propr GIT_SHA="$GITHUB_SHA" ./scripts/build-images.sh --sha-only --only agent --platform linux/amd64
+          ref="registry.fly.io/$AGENT_APP:agent-$GITHUB_SHA"
+          docker tag "propr/agent:$GITHUB_SHA" "$ref"
+          flyctl auth docker
+          docker push "$ref"
+          image=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" |
+            grep -m1 -E "^registry\.fly\.io/$AGENT_APP@sha256:[0-9a-f]{64}$")
+          {
+            echo "### Fly agent image"
+            echo
+            echo "Paste this into the setup wizard's **Agent image** field (or set it as the \`PROPR_FLY_IMAGE\` Fly secret):"
+            echo
+            echo "\`$image\`"
+            echo
+            echo "Then create a deploy token for \`$AGENT_APP\` in the Fly dashboard (the app → Tokens) for the wizard's token field."
+          } >> "$GITHUB_STEP_SUMMARY"

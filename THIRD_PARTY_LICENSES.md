@@ -25,7 +25,8 @@ https://tracker.debian.org/
 
 The `propr/app` and `propr/launcher` images still use Alpine Linux base images
 and install Alpine system packages including git, curl, jq, sudo, docker-cli,
-tini, python3, make, and g++. See Alpine package metadata for per-package
+tini, valkey (BSD-3-Clause; used by the Fly dashboard launch), python3, make,
+and g++. See Alpine package metadata for per-package
 licensing details:
 https://pkgs.alpinelinux.org/packages
 

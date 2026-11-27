@@ -120,7 +120,12 @@ ARG TARGETARCH
 #   docker-cli — spawning agent containers via mounted docker socket
 #   curl/jq  — deploy-pr.sh script
 #   util-linux-misc — script(1), the PTY bridge for browser agent logins
-RUN apk add --no-cache git sudo docker-cli curl jq tini util-linux-misc \
+#   valkey/valkey-cli — only used by a Fly dashboard launch, which runs its
+#              Redis-compatible queue store in this container (fly.toml,
+#              scripts/fly-launch-entrypoint.sh); every other deployment runs
+#              its own Redis container. Valkey (BSD-3-Clause), because Alpine's
+#              redis package is AGPL/SSPL from Redis 8 on.
+RUN apk add --no-cache git sudo docker-cli curl jq tini util-linux-misc valkey valkey-cli \
     && gh_arch="${TARGETARCH:-amd64}" \
     && case "$gh_arch" in amd64|arm64) ;; *) echo "Unsupported GitHub CLI architecture: $gh_arch" >&2; exit 1 ;; esac \
     && gh_archive="gh_${GH_VERSION}_linux_${gh_arch}.tar.gz" \
@@ -179,6 +184,8 @@ COPY scripts/vibe-prompt-file-runner.py ./scripts/vibe-prompt-file-runner.py
 COPY scripts/gh-wrapper.sh ./scripts/gh-wrapper.sh
 COPY scripts/sprites-agent-setup.sh scripts/sprites-launcher.py scripts/sprites-mcp-forward.sh ./scripts/
 COPY scripts/extension-stdio-bridge.mjs ./scripts/extension-stdio-bridge.mjs
+# Fly dashboard launch entry (fly.toml [processes] app); unused elsewhere.
+COPY scripts/fly-launch-entrypoint.sh ./scripts/fly-launch-entrypoint.sh
 COPY NOTICE ./NOTICE
 COPY THIRD_PARTY_LICENSES.md ./THIRD_PARTY_LICENSES.md
 

@@ -3,34 +3,28 @@
  *
  * Generated secrets are set only when the app does not already have them and
  * the stack .env (or the environment) does not supply them, so a redeploy
- * never rotates them (see runFlyDeploy):
- *
- * - SESSION_SECRET signs browser sessions.
- * - SYSTEM_TASK_SECRET signs system tasks (reverts) and the worker's requests
- *   for run-scoped ProPR MCP grants. Without it every automation, acting step
- *   and agent run that needs ProPR MCP is refused on the worker.
- * - MCP_ENCRYPTION_KEY seals the MCP server's records, only when the deploy
- *   turns MCP on (below).
+ * never rotates them (see runFlyDeploy). The list (SESSION_SECRET,
+ * SYSTEM_TASK_SECRET and, with MCP on, MCP_ENCRYPTION_KEY) is
+ * FLY_GENERATED_SECRETS in @propr/shared: a Fly dashboard launch generates the
+ * same ones on first boot instead (src/flyLaunch/bootSecrets.ts).
  */
 
 import { randomBytes } from "node:crypto";
+import { FLY_GENERATED_SECRETS, FLY_USER_MANAGED_MCP_KEYS, flyMcpInstanceId } from "@propr/shared";
 import type { FlyBrowserAuth } from "./flyBrowserAuth.js";
 import type { FlyDeployPlan } from "./flyMachineConfig.js";
 
 export const FLY_MCP_ENCRYPTION_KEY_SECRET = "MCP_ENCRYPTION_KEY";
 
-/** MCP settings that mean the stack .env manages ProPR MCP itself; the deploy then sets none of its defaults. */
-const USER_MANAGED_MCP_KEYS = ["MCP_ENABLED", "MCP_PUBLIC_ORIGIN", "MCP_INSTANCE_ID"];
 
 export function generateFlySecrets(
   plan: Pick<FlyDeployPlan, "mcp">,
   random: (size: number) => Buffer = randomBytes,
 ): Record<string, string> {
-  const secrets: Record<string, string> = {
-    SESSION_SECRET: random(32).toString("hex"),
-    SYSTEM_TASK_SECRET: random(32).toString("hex"),
-  };
-  if (plan.mcp) secrets[FLY_MCP_ENCRYPTION_KEY_SECRET] = random(32).toString("base64");
+  const secrets: Record<string, string> = {};
+  for (const spec of FLY_GENERATED_SECRETS) {
+    if (!spec.mcpOnly || plan.mcp) secrets[spec.name] = random(spec.bytes).toString(spec.encoding);
+  }
   return secrets;
 }
 
@@ -44,10 +38,7 @@ export function generateFlySecrets(
  * turns it off) leaves MCP to that configuration.
  */
 export function flyDeployEnablesMcp(secrets: Readonly<Record<string, string>>, browserAuth: FlyBrowserAuth): boolean {
-  return browserAuth === "github" && !USER_MANAGED_MCP_KEYS.some((key) => key in secrets);
+  return browserAuth === "github" && !FLY_USER_MANAGED_MCP_KEYS.some((key) => key in secrets);
 }
 
-/** MCP_INSTANCE_ID must be 8–128 characters; Fly app names can be as short as 2. Stable across redeploys. */
-export function flyMcpInstanceId(app: string): string {
-  return `propr-fly-${app}`;
-}
+export { flyMcpInstanceId };
