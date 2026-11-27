@@ -6,11 +6,13 @@
  *
  *   1. The user installs the shared App (github.com/apps/propr-dev).
  *   2. A GitHub user token proves who they are to the relay. `propr deploy
- *      fly` takes it from `propr login`; a browser wizard cannot, and the
- *      shared App does not enable GitHub's device flow, so the user pastes a
- *      token. It is used for this one request (installation discovery and
- *      enrollment, plus a revoke if a later step fails) and never stored,
- *      logged or rendered back.
+ *      fly` takes it from `propr login`; the wizard gets it from GitHub's
+ *      device flow against the shared App (deviceFlow.ts), or, while the App
+ *      does not enable device flow, from a token the user pastes. It is used
+ *      for this one enrollment (installation discovery and enrollment, plus a
+ *      revoke if a later step fails) and never stored, logged or rendered
+ *      back; a device sign-in's token is held in memory only while the user
+ *      picks between installations.
  *   3. The relay enrolls a relay token for the installation, labelled
  *      `fly:<app>@<host>` as the CLI labels it (POST /v1/relay-tokens).
  *   4. The new relay token mints one installation token to list the
@@ -25,6 +27,11 @@
  * `https://<app>.fly.dev`. The instance signs browsers in with a GitHub OAuth
  * App the user registers (storeSignInClient), as `propr deploy fly` requires
  * GH_OAUTH_CLIENT_ID and _SECRET without the tunnel flags.
+ *
+ * TODO(#3867): #3867 adds a `device` browser sign-in mode for relay-enrolled
+ * instances on any host. Whichever of #3852 and #3867 merges second removes
+ * the sign-in app step (storeSignInClient, signInAppPage, the 'signin-app'
+ * step in setupSteps.ts) and signs the first administrator in with it.
  *
  * Errors never carry tokens, codes or response bodies.
  */

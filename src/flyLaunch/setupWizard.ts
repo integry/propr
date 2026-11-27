@@ -12,7 +12,10 @@
  * Steps, in order; each is resumable because its result is on the volume:
  *   claim → GitHub, one of
  *     - the ProPR App (default, connectSetup.ts): install the shared App,
- *       enroll a relay token → register the sign-in OAuth App;
+ *       sign in with GitHub's device flow (connectRoutes.ts; a pasted
+ *       token while the App does not enable it) to enroll a relay token →
+ *       register the sign-in OAuth App (TODO(#3867): dropped for #3867's
+ *       `device` browser sign-in mode, by whichever of the two merges second);
  *     - your own App (advanced): manifest flow → install;
  *   → administrator sign-in → agent runtime → finish (idle shutdown opt-in;
  *   on the ProPR App path it registers the /wake URL with Connect).
@@ -36,16 +39,16 @@ import {
     launchGithubAppManifest, signInAdministrator, storeManifestCredentials, verifyInstallation, SETUP_PATHS,
 } from './githubSetup.js';
 import {
-    DEFAULT_PROPR_GH_RELAY_URL, enrollConnect, OAUTH_CALLBACK_PATH, parseSignInClient, parseUserToken, registerWakeTarget,
-    relayTokenLabel, storeConnectEnrollment, storeSignInClient,
+    DEFAULT_PROPR_GH_RELAY_URL, OAUTH_CALLBACK_PATH, parseSignInClient, registerWakeTarget, storeSignInClient,
 } from './connectSetup.js';
+import { createConnectRoutes } from './connectRoutes.js';
 import { countAppMachines, RUNTIME_ENV_KEYS, spritesNamePrefix, validateRuntimeChoice, type RuntimeValidators } from './runtimeValidation.js';
 import type { InstanceInfo } from './setupLayout.js';
 import { readCookie, readForm, sendSetupAsset } from './setupHttp.js';
 import { currentSetupStep, githubPath } from './setupSteps.js';
 import {
     adminPage, claimedElsewherePage, claimPage, finishPage, githubPage, installPage, manifestRedirectPage, runtimePage, setupCompletedPage,
-    signInAppPage, startingPage, type GithubPageOptions, type RuntimeFormValues, type SetupStep,
+    signInAppPage, startingPage, type RuntimeFormValues, type SetupStep,
 } from './setupPages.js';
 
 export { currentSetupStep, githubPath };
@@ -66,6 +69,13 @@ export interface SetupWizardOptions {
     controlPlaneApp?: string;
     /** The ProPR Connect relay (PROPR_GH_RELAY_URL); the hosted one by default. */
     relayUrl?: string;
+    /**
+     * The GitHub App client ID for the device sign-in that enrolls the relay
+     * token (PROPR_GH_DEVICE_CLIENT_ID). The shared ProPR App's by default,
+     * but only with the hosted relay: another relay's App is unknown, so it
+     * gets the pasted token unless this is set.
+     */
+    deviceClientId?: string;
     /** The host in the relay token label `fly:<app>@<host>`; os.hostname() by default. */
     labelHost?: string;
     /** PROPR_INSTANCE_ID as the control plane will see it (names this instance's Sprites); the app name by default. */
@@ -75,6 +85,8 @@ export interface SetupWizardOptions {
     /** This app's Machines, for the "Agent Machines at once" default; countAppMachines by default. */
     countMachines?: () => Promise<number | undefined>;
     fetcher?: typeof fetch;
+    /** The clock of the device sign-in's polling interval and expiry (tests). */
+    now?: () => number;
     validators?: RuntimeValidators;
     log?: (message: string) => void;
 }
@@ -161,12 +173,16 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
     const relayUrl = options.relayUrl ?? DEFAULT_PROPR_GH_RELAY_URL;
     const adminCallback = (config: LaunchConfig): string =>
         adminRedirectUri(publicUrl, githubPath(config) === 'connect' ? OAUTH_CALLBACK_PATH : SETUP_PATHS.admin);
+    const { deviceSignIn, ...connectRoutes } = createConnectRoutes({
+        store, instance, publicUrl, appName, relayUrl, keyExists, commitConfig, send, redirect, log,
+        labelHost: options.labelHost, deviceClientId: options.deviceClientId, fetcher: options.fetcher, now: options.now,
+    });
 
     /** `form`: which GitHub form an error came from, so the page shows it there. */
     const stepPage = async (config: LaunchConfig, error?: string, form?: 'connect' | 'own-app'): Promise<string> => {
         const path = githubPath(config);
         switch (currentSetupStep(config, keyExists())) {
-            case 'github': return githubPage(instance, publicUrl, form === 'own-app' ? { ownAppError: error } : { connectError: error });
+            case 'github': return githubPage(instance, publicUrl, { ...(form === 'own-app' ? { ownAppError: error } : { connectError: error }), device: deviceSignIn() });
             case 'install': return installPage(instance, config.github!.slug, error);
             case 'signin-app': return signInAppPage(instance, publicUrl, config.connect?.accountLogin ?? '', error);
             case 'admin': return adminPage(instance, (config.env.GITHUB_REPOS_TO_MONITOR ?? '').split(',').filter(Boolean), error, path);
@@ -223,31 +239,6 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
             return { ...latest, env };
         });
         log(`fly-launch: GitHub App installed (installation ${installationId}, ${repositories.length} repositories)`);
-        redirect(response, '/setup');
-    };
-
-    const enrollInstance: Route = async ({ request, response, step }) => {
-        if (step !== 'github') return redirect(response, '/setup');
-        const form = await readForm(request);
-        const userToken = parseUserToken(form.get('githubToken'));
-        const label = relayTokenLabel(options.controlPlaneApp || new URL(publicUrl).hostname.split('.')[0], options.labelHost);
-        const result = await enrollConnect({ userToken, installationId: form.get('installation') ?? undefined, label, relayUrl, fetcher: options.fetcher });
-        if (result.kind === 'pick') {
-            const page: GithubPageOptions = { installations: result.installations };
-            return send(response, 200, githubPage(instance, publicUrl, page));
-        }
-        const { enrollment } = result;
-        try {
-            await commitConfig(latest => {
-                if (currentSetupStep(latest, keyExists()) !== 'github') throw new GithubSetupError('Another setup step finished while this instance was being connected. Continue from here.');
-                return storeConnectEnrollment(store, latest, enrollment);
-            });
-        } catch (error) {
-            // The relay token was issued for a result that is not kept; it must not stay valid.
-            await result.revoke();
-            throw error;
-        }
-        log(`fly-launch: connected to the ProPR App (installation ${enrollment.installationId}, ${enrollment.repositories.length} repositories); relay token ${enrollment.tokenPrefix || enrollment.tokenId} labelled ${enrollment.label} stored on the volume`);
         redirect(response, '/setup');
     };
 
@@ -364,7 +355,10 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         [`GET ${SETUP_PATHS.created}`]: manifestCreated,
         'GET /setup/github/install': startInstall,
         [`GET ${SETUP_PATHS.installed}`]: installed,
-        'POST /setup/connect/enroll': enrollInstance,
+        'POST /setup/connect/enroll': connectRoutes.enrollInstance,
+        'POST /setup/connect/device': connectRoutes.startDeviceSignIn,
+        'GET /setup/connect/device': connectRoutes.deviceSignInProgress,
+        'POST /setup/connect/device/cancel': connectRoutes.cancelDeviceSignIn,
         'GET /setup/connect/signin-app': showSignInApp,
         'POST /setup/connect/signin-app': saveSignInApp,
         'GET /setup/github/signin': startSignIn,

@@ -14,6 +14,7 @@ export function githubPath(config: LaunchConfig): GithubPath {
 export function currentSetupStep(config: LaunchConfig, keyExists: boolean): Exclude<SetupStep, 'claim'> {
     if (config.connect) {
         if (!config.env.PROPR_GH_RELAY_TOKEN || !config.env.GH_INSTALLATION_ID) return 'github';
+        // TODO(#3867): no sign-in app step once #3867's `device` sign-in mode is in.
         if (!config.env.GH_OAUTH_CLIENT_ID || !config.env.GH_OAUTH_CLIENT_SECRET) return 'signin-app';
     } else {
         if (!config.github || !config.env.GH_APP_ID || !keyExists) return 'github';

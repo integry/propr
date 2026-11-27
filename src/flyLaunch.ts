@@ -58,6 +58,8 @@ export async function prepareFlyLaunch(env: NodeJS.ProcessEnv = process.env): Pr
             ...(env.DATA_DIR?.trim() ? { dataDir: env.DATA_DIR.trim() } : {}),
             // A Fly secret PROPR_GH_RELAY_URL wins on boot, so the relay token must come from that relay.
             ...(env.PROPR_GH_RELAY_URL?.trim() ? { relayUrl: env.PROPR_GH_RELAY_URL.trim() } : {}),
+            // The App behind that relay, for the device sign-in that enrolls the relay token.
+            ...(env.PROPR_GH_DEVICE_CLIENT_ID?.trim() ? { deviceClientId: env.PROPR_GH_DEVICE_CLIENT_ID.trim() } : {}),
             host: env.DASHBOARD_API_HOST?.trim() || '::',
             port: Number(env.DASHBOARD_API_PORT || 4000),
         });

@@ -117,6 +117,9 @@ label.choice{display:flex;gap:8px;align-items:baseline;font-weight:500;margin:12
 .panel{margin:4px 0 0 26px}@supports selector(:has(*)){.option:not(:has(input[name=runtime]:checked)) .panel{display:none}}
 ol.scope{margin:8px 0 0;padding-left:20px;font-size:13px;color:var(--muted)}ol.scope li{margin:0 0 2px}
 .cmd{display:flex;gap:8px;align-items:flex-start;margin:8px 0 0}.cmd pre{flex:1;margin:0;padding:8px 10px;background:#111827;color:#F9FAFB;border-radius:6px;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
+.cmd pre.usercode{font-size:24px;line-height:1.3;letter-spacing:.12em;text-align:center;padding:12px}
+.waiting{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:14px;margin:16px 0 0}.waiting .spinner{color:var(--primary);flex:none}
+button.link{margin:12px 0 0;padding:0;background:none;color:var(--primary);font-size:14px;text-decoration:underline}button.link:hover{background:none;color:var(--primary-hover)}
 .warn{border-left:3px solid var(--primary);padding:2px 0 2px 10px;margin:12px 0 0}`;
 
 /**
@@ -164,6 +167,8 @@ export interface PageOptions {
     nonce?: string;
     script?: string;
     refreshSeconds?: number;
+    /** Where the refresh goes; the wizard's start by default. */
+    refreshUrl?: string;
 }
 
 function progress(current: SetupStep | undefined, path: GithubPath | undefined): string {
@@ -185,7 +190,7 @@ function brandHeader(instance: InstanceInfo): string {
 
 export function renderPage(instance: InstanceInfo, options: PageOptions): string {
     return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex">${options.refreshSeconds ? `<meta http-equiv="refresh" content="${options.refreshSeconds};url=/">` : ''}
+<meta name="robots" content="noindex">${options.refreshSeconds ? `<meta http-equiv="refresh" content="${options.refreshSeconds};url=${escapeHtml(options.refreshUrl ?? '/')}">` : ''}
 <title>${escapeHtml(options.title)} · ProPR setup</title><link rel="icon" type="image/png" href="${ASSET_PATHS.favicon}"><style>${STYLE}</style>
 <script src="${ASSET_PATHS.script}" defer></script></head>
 <body><main>${brandHeader(instance)}<h1>Set up ProPR</h1><p class="sub">First-visit setup for this Fly instance.</p>${progress(options.step, options.path)}

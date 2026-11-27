@@ -51,12 +51,15 @@ ${why(`ProPR then reads issues and opens pull requests as that App, with no ProP
 <button type="submit" data-busy="Opening GitHub…">Continue to GitHub</button></form>`;
 }
 
-function installationPicker(installations: RelayInstallation[]): string {
+function installationPicker(installations: RelayInstallation[], heldToken: boolean): string {
     if (!installations.length) return '';
     return `<fieldset class="runtimes"><legend>Installation</legend>${installations.map((entry, i) =>
         `<label class="choice"><input type="radio" name="installation" value="${escapeHtml(entry.installationId)}"${i === 0 ? ' checked' : ''}> ${escapeHtml(entry.accountLogin || `installation ${entry.installationId}`)}${entry.accountType ? ` <span class="hint">(${escapeHtml(entry.accountType)})</span>` : ''}</label>`).join('')}
-<p class="hint">The ProPR App is installed on more than one account you can use. Pick one, then paste the token again: it was not kept.</p></fieldset>`;
+<p class="hint">The ProPR App is installed on more than one account you can use. ${heldToken ? 'Pick one to finish connecting.' : 'Pick one, then paste the token again: it was not kept.'}</p></fieldset>`;
 }
+
+/** How the ProPR App path gets the one-time GitHub user token for enrollment. */
+export type DeviceSignIn = 'available' | 'disabled' | 'off';
 
 export interface GithubPageOptions {
     /** An error from the ProPR App form. */
@@ -65,27 +68,77 @@ export interface GithubPageOptions {
     ownAppError?: string;
     /** Installations to pick from, after a token that can use more than one. */
     installations?: RelayInstallation[];
+    /** The installations came from a device sign-in whose token the wizard holds for the pick. */
+    heldToken?: boolean;
+    /**
+     * `available`: sign in with GitHub's device flow (the default), with the
+     * pasted token as a fallback; `disabled`: GitHub said the shared App does
+     * not enable device flow; `off`: no client ID for the configured relay.
+     */
+    device?: DeviceSignIn;
+}
+
+const DEVICE_DISABLED_NOTE = '<p class="hint" role="status">Device sign-in isn\'t enabled for the ProPR App yet, so paste a token instead.</p>';
+
+function pastedTokenForm(installations: RelayInstallation[]): string {
+    return `<form method="post" action="/setup/connect/enroll">${installationPicker(installations, false)}
+<label for="githubToken">GitHub token</label><input id="githubToken" name="githubToken" type="password" autocomplete="off" spellcheck="false" required placeholder="github_pat_…">
+<p class="hint">Used once to enroll this instance, then discarded; never stored or logged.</p>
+${why('ProPR Connect only reads who you are, to check that you can use the App\'s installation and to issue this instance\'s relay token. You can delete the token on GitHub right after.')}
+<button type="submit" data-busy="Connecting…">Connect this instance</button></form>`;
+}
+
+const TOKEN_STEP = `<li><strong>Create a GitHub token</strong> with no permissions and the shortest expiry: ${externalLink(GITHUB_TOKEN_SETTINGS_URL, 'new fine-grained token')}.</li>`;
+
+/** The ProPR App section: install, then a device sign-in (or a pasted token) that enrolls this instance. */
+function connectSection(options: GithubPageOptions): string {
+    const { connectError, installations = [], heldToken = false, device = 'off' } = options;
+    const install = `<li><strong>Install the ProPR App</strong> on the repositories ProPR should work on.<br>${externalLink(PROPR_APP_INSTALL_URL, 'Install the ProPR App on GitHub', 'secondary')}</li>`;
+    let flow: string;
+    if (heldToken && installations.length) {
+        flow = `</ol><form method="post" action="/setup/connect/enroll">${installationPicker(installations, true)}
+<button type="submit" data-busy="Connecting…">Connect this instance</button></form>`;
+    } else if (device === 'available' && !installations.length) {
+        flow = `<li><strong>Sign in with GitHub</strong> to connect this instance: GitHub shows a one-time code to confirm.</li></ol>
+<form method="post" action="/setup/connect/device"><button type="submit" data-busy="Asking GitHub…">Sign in with GitHub</button></form>
+${why('ProPR Connect only reads who you are, to check that you can use the App\'s installation and to issue this instance\'s relay token. The GitHub sign-in is used for this once and never stored or logged.')}
+<details class="advanced"><summary>Paste a GitHub token instead</summary><div><ol class="todo">${TOKEN_STEP}</ol>${pastedTokenForm([])}</div></details>`;
+    } else {
+        flow = `${TOKEN_STEP}</ol>${device === 'disabled' ? DEVICE_DISABLED_NOTE : ''}${pastedTokenForm(installations)}`;
+    }
+    return `<section class="path" aria-labelledby="connect-title"><h3 id="connect-title">Use the ProPR App <span class="badge">Recommended</span></h3>
+<p class="hint">GitHub events reach this instance through ProPR Connect, as with <code>propr deploy fly</code>.</p>
+${why('The shared ProPR App delivers events over Connect, so this instance needs no public webhook and no GitHub App of your own.')}
+${connectError ? `<p class="error" role="alert">${escapeHtml(connectError)}</p>` : ''}<ol class="todo">
+${install}
+${flow}</section>`;
 }
 
 /** The GitHub step: the ProPR App (recommended, default) or your own App (advanced). */
 export function githubPage(instance: InstanceInfo, publicUrl: string, options: GithubPageOptions = {}): string {
-    const { connectError, ownAppError, installations = [] } = options;
+    const { ownAppError } = options;
     return renderPage(instance, {
         title: 'Connect GitHub',
         step: 'github',
-        body: `<section class="path" aria-labelledby="connect-title"><h3 id="connect-title">Use the ProPR App <span class="badge">Recommended</span></h3>
-<p class="hint">GitHub events reach this instance through ProPR Connect, as with <code>propr deploy fly</code>.</p>
-${why('The shared ProPR App delivers events over Connect, so this instance needs no public webhook and no GitHub App of your own.')}
-${connectError ? `<p class="error" role="alert">${escapeHtml(connectError)}</p>` : ''}<ol class="todo">
-<li><strong>Install the ProPR App</strong> on the repositories ProPR should work on.<br>${externalLink(PROPR_APP_INSTALL_URL, 'Install the ProPR App on GitHub', 'secondary')}</li>
-<li><strong>Create a GitHub token</strong> with no permissions and the shortest expiry: ${externalLink(GITHUB_TOKEN_SETTINGS_URL, 'new fine-grained token')}.</li></ol>
-<form method="post" action="/setup/connect/enroll">${installationPicker(installations)}
-<label for="githubToken">GitHub token</label><input id="githubToken" name="githubToken" type="password" autocomplete="off" spellcheck="false" required placeholder="github_pat_…">
-<p class="hint">Used once to enroll this instance, then discarded; never stored or logged.</p>
-${why('ProPR Connect only reads who you are, to check that you can use the App\'s installation and to issue this instance\'s relay token. You can delete the token on GitHub right after.')}
-<button type="submit" data-busy="Connecting…">Connect this instance</button></form></section>
+        body: `${connectSection(options)}
 <details class="path"${ownAppError ? ' open' : ''}><summary>Advanced: Create your own GitHub App</summary>
 ${ownAppError ? `<p class="error" role="alert">${escapeHtml(ownAppError)}</p>` : ''}${manifestForm(publicUrl)}</details>`,
+    });
+}
+
+/** The device sign-in in progress: the user code, GitHub's page, and a refresh that checks on each interval. */
+export function deviceCodePage(instance: InstanceInfo, waiting: { userCode: string; verificationUri: string; interval: number }): string {
+    return renderPage(instance, {
+        title: 'Confirm on GitHub',
+        step: 'github',
+        refreshSeconds: waiting.interval,
+        refreshUrl: '/setup/connect/device',
+        body: `<p>Open GitHub, enter this code and authorize the ProPR App:</p>
+<div class="cmd"><pre class="usercode" aria-label="One-time code">${escapeHtml(waiting.userCode)}</pre></div>
+${externalLink(waiting.verificationUri, `Open ${escapeHtml(waiting.verificationUri.replace(/^https:\/\//, ''))}`, 'button')}
+<p class="waiting" role="status"><span class="spinner" aria-hidden="true"></span>Waiting for GitHub… this page checks again every few seconds and continues on its own.</p>
+${why('The code proves to ProPR Connect that you can use the ProPR App\'s installation, so it can issue this instance\'s relay token. ProPR uses the GitHub sign-in for that once, then discards it; it is never stored or logged. The code works only in this browser and expires in about 15 minutes.')}
+<form method="post" action="/setup/connect/device/cancel"><button type="submit" class="link">Cancel and go back</button></form>`,
     });
 }
 
@@ -114,7 +167,10 @@ export function installPage(instance: InstanceInfo, slug: string, error?: string
     });
 }
 
-/** The ProPR App path: register the GitHub OAuth App browsers sign in with. */
+/**
+ * The ProPR App path: register the GitHub OAuth App browsers sign in with.
+ * TODO(#3867): removed once #3867's `device` sign-in mode is in (whichever merges second).
+ */
 export function signInAppPage(instance: InstanceInfo, publicUrl: string, accountLogin: string, error?: string): string {
     const callback = `${publicUrl}${OAUTH_CALLBACK_PATH}`;
     return renderPage(instance, {

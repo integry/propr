@@ -25,8 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     logs, connects GitHub, signs the first administrator in, and checks a
     Sprites or Fly Machines runtime.
   - GitHub is a choice. The default is the shared ProPR App through ProPR
-    Connect, as `propr deploy fly` sets it up: install the App, paste a
-    GitHub token once (never stored), and the wizard enrolls a relay token
+    Connect, as `propr deploy fly` sets it up: install the App, sign in
+    with GitHub's device flow (a one-time code; or paste a GitHub token
+    while the App doesn't enable device flow), never stored, and the wizard
+    enrolls a relay token
     labelled `fly:<app>@<host>`. It then stores relay auth with
     `routing_websocket` intake, so no public webhook or own App is needed.
     Browser sign-in uses a GitHub OAuth App you register. The advanced

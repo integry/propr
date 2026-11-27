@@ -63,6 +63,7 @@ function relayFake(overrides: Partial<RelayFake> = {}): RelayFake {
 }
 
 async function relayRoute(relay: RelayFake, key: string, init: RequestInit | undefined, json: (body: unknown, status?: number) => Response): Promise<Response | undefined> {
+    if (!key.includes('webhook.propr.dev/')) return undefined;
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
     const auth = new Headers(init?.headers).get('authorization') ?? '';
     const failed = (route: keyof RelayFake['fail']) => relay.fail[route] && json({ error: { code: 'fake' } }, relay.fail[route]);
@@ -94,7 +95,42 @@ async function relayRoute(relay: RelayFake, key: string, init: RequestInit | und
     }
 }
 
-function fakeGithub(calls: string[], relay: RelayFake = relayFake()): typeof fetch {
+const DEVICE_CODE = 'device-code-secret-0123456789';
+const USER_CODE = 'WDJB-MJHT';
+const DEVICE_USER_TOKEN = `ghu_${'d'.repeat(36)}`;
+
+/** GitHub's device flow for the shared ProPR App. */
+interface DeviceFake {
+    disabled?: boolean;
+    /** What each token poll answers, in order; `pending` once they run out. */
+    polls: Array<'pending' | 'slow_down' | 'token' | 'expired_token' | 'access_denied'>;
+    started: string[];
+    tokenPolls: number;
+}
+
+function deviceFake(overrides: Partial<DeviceFake> = {}): DeviceFake {
+    return { polls: [], started: [], tokenPolls: 0, ...overrides };
+}
+
+function deviceRoute(device: DeviceFake, key: string, init: RequestInit | undefined, json: (body: unknown, status?: number) => Response): Response | undefined {
+    const form = new URLSearchParams(typeof init?.body === 'string' ? init.body : '');
+    if (key === 'POST github.com/login/device/code') {
+        device.started.push(form.get('client_id') ?? '');
+        if (device.disabled) return json({ error: 'device_flow_disabled', error_description: 'Device Flow must be explicitly enabled for this App' }, 400);
+        return json({ device_code: DEVICE_CODE, user_code: USER_CODE, verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 });
+    }
+    if (key === 'POST github.com/login/oauth/access_token' && form.get('grant_type') === 'urn:ietf:params:oauth:grant-type:device_code') {
+        assert.equal(form.get('device_code'), DEVICE_CODE);
+        device.tokenPolls++;
+        const next = device.polls.shift() ?? 'pending';
+        if (next === 'token') return json({ access_token: DEVICE_USER_TOKEN, token_type: 'bearer', scope: '' });
+        if (next === 'slow_down') return json({ error: 'slow_down', interval: 10 });
+        return json({ error: next === 'pending' ? 'authorization_pending' : next });
+    }
+    return undefined;
+}
+
+function fakeGithub(calls: string[], relay: RelayFake = relayFake(), device: DeviceFake = deviceFake()): typeof fetch {
     return (async (input: string | URL | Request, init?: RequestInit) => {
         const url = new URL(String(input));
         const key = `${init?.method ?? 'GET'} ${url.host}${url.pathname}`;
@@ -102,6 +138,8 @@ function fakeGithub(calls: string[], relay: RelayFake = relayFake()): typeof fet
         const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
         const relayed = await relayRoute(relay, key, init, json);
         if (relayed) return relayed;
+        const deviced = deviceRoute(device, key, init, json);
+        if (deviced) return deviced;
         switch (key) {
             case 'POST api.github.com/app-manifests/manifest-code/conversions': return json(credentials(), 201);
             case 'GET api.github.com/app/installations/7': return json({ id: 7, app_id: 42 });
@@ -118,6 +156,9 @@ function fakeGithub(calls: string[], relay: RelayFake = relayFake()): typeof fet
 interface Harness {
     store: LaunchStore;
     relay: RelayFake;
+    device: DeviceFake;
+    /** Moves the device sign-in's clock forward. */
+    advance(ms: number): void;
     options: SetupWizardOptions;
     /** Resolves with the final config: on Finish, or (`run`) once runSetupWizard has closed its server. */
     completed: Promise<LaunchConfig>;
@@ -137,6 +178,9 @@ interface WizardOverrides {
     run?: boolean;
     closeGraceMs?: number;
     relay?: RelayFake;
+    device?: DeviceFake;
+    relayUrl?: string;
+    deviceClientId?: string;
     /** Reuse a volume (a restart); the claim on it carries over. */
     store?: LaunchStore;
     countMachines?: () => Promise<number | undefined>;
@@ -152,10 +196,15 @@ async function startWizard(overrides: WizardOverrides = {}): Promise<Harness> {
     const access = createSetupAccess(store);
     const code = access.issueCode()!;
     const relay = overrides.relay ?? relayFake();
+    const device = overrides.device ?? deviceFake();
+    let clock = Date.now();
     const calls: string[] = [];
     const logs: string[] = [];
     const options: SetupWizardOptions = {
-        store, access, publicUrl: PUBLIC_URL, controlPlaneApp: 'propr-test', labelHost: 'machine-1', fetcher: fakeGithub(calls, relay), log: message => logs.push(message),
+        store, access, publicUrl: PUBLIC_URL, controlPlaneApp: 'propr-test', labelHost: 'machine-1', fetcher: fakeGithub(calls, relay, device), log: message => logs.push(message),
+        now: () => clock,
+        ...(overrides.relayUrl ? { relayUrl: overrides.relayUrl } : {}),
+        ...(overrides.deviceClientId ? { deviceClientId: overrides.deviceClientId } : {}),
         dataDir: mkdtempSync(join(tmpdir(), 'fly-launch-data-')), countMachines: overrides.countMachines ?? (async () => undefined),
         validators: {
             sprites: async token => { if (token !== 'good-sprites') throw new Error('401'); },
@@ -181,7 +230,8 @@ async function startWizard(overrides: WizardOverrides = {}): Promise<Harness> {
     }
     const base = `http://127.0.0.1:${port}`;
     return {
-        store, relay, options, completed, port, calls, logs, code,
+        store, relay, device, options, completed, port, calls, logs, code,
+        advance(ms) { clock += ms; },
         request(path, options = {}) {
             const headers: Record<string, string> = {};
             if (options.cookie) headers.Cookie = options.cookie;
@@ -855,4 +905,169 @@ test('a failed check re-renders the step with an inline error and a fresh button
     assert.match(page, /<p class="error" role="alert">That Sprites token could not list Sprites/);
     assert.match(page, /<button type="submit" data-busy="Checking…">Check and save<\/button>/);
     assert.doesNotMatch(page, /class="notice"/);
+});
+
+/** Start a device sign-in from the GitHub step; returns the code page's path. */
+async function startDevice(h: Harness, cookie: string): Promise<Response> {
+    return h.request('/setup/connect/device', { method: 'POST', cookie, form: {} });
+}
+
+test('device sign-in: the default ProPR App path shows a GitHub code, polls on GitHub\'s interval and enrolls; nothing of it is kept or logged', async () => {
+    const device = deviceFake({ polls: ['pending', 'slow_down', 'token'] });
+    const h = await startWizard({ device });
+    const cookie = await claim(h);
+    const step = await (await h.request('/setup', { cookie })).text();
+    assert.match(step, /action="\/setup\/connect\/device"/, 'signing in with GitHub is the default');
+    assert.match(step, /<details class="advanced"><summary>Paste a GitHub token instead/, 'the pasted token is the collapsed fallback');
+    assert.equal(h.calls.length, 0, 'nothing is sent to GitHub before the click');
+
+    const started = await startDevice(h, cookie);
+    assert.equal(started.status, 303);
+    assert.equal(started.headers.get('location'), '/setup/connect/device');
+    assert.deepEqual(device.started, ['Iv23liTCmmSNYyD0NtZA'], 'the shared ProPR App\'s public client ID');
+
+    const waiting = await (await h.request('/setup/connect/device', { cookie })).text();
+    assert.ok(waiting.includes(USER_CODE), 'the claimant sees the user code');
+    assert.ok(waiting.includes('href="https://github.com/login/device"'));
+    assert.match(waiting, /<meta http-equiv="refresh" content="5;url=\/setup\/connect\/device">/, 'no-JS polling through a refresh');
+    assert.ok(!waiting.includes(DEVICE_CODE), 'the device code is never rendered');
+    assert.equal(device.tokenPolls, 0, 'GitHub is not asked before its interval');
+
+    h.advance(5_000);
+    assert.equal((await h.request('/setup/connect/device', { cookie })).status, 200);
+    assert.equal(device.tokenPolls, 1, 'authorization_pending');
+    h.advance(5_000);
+    const slowed = await (await h.request('/setup/connect/device', { cookie })).text();
+    assert.equal(device.tokenPolls, 2);
+    assert.match(slowed, /content="10;url=/, 'slow_down raises the interval');
+    h.advance(5_000);
+    await h.request('/setup/connect/device', { cookie });
+    assert.equal(device.tokenPolls, 2, 'the slower interval is honoured');
+    h.advance(5_000);
+    const done = await h.request('/setup/connect/device', { cookie });
+    assert.equal(done.status, 303);
+    assert.equal(done.headers.get('location'), '/setup');
+    assert.equal(device.tokenPolls, 3);
+
+    assert.deepEqual(h.relay.enrolled, [{ installation_id: 77, label: 'fly:propr-test@machine-1' }]);
+    assert.deepEqual(h.relay.auth.slice(0, 2), [`me Bearer ${DEVICE_USER_TOKEN}`, `enroll Bearer ${DEVICE_USER_TOKEN}`]);
+    assert.equal(readLaunchConfig(h.store).env.PROPR_GH_RELAY_TOKEN, RELAY_TOKEN);
+    // TODO(#3867): the sign-in app step goes once #3867's device sign-in mode is in.
+    assert.match(await (await h.request('/setup', { cookie })).text(), /Register the sign-in app/);
+    assert.equal((await h.request('/setup/connect/device', { cookie })).headers.get('location'), '/setup', 'the code page is gone');
+
+    const volume = volumeText(h.store);
+    const logged = h.logs.join('\n');
+    for (const secret of [DEVICE_USER_TOKEN, DEVICE_CODE, USER_CODE]) {
+        assert.ok(!volume.includes(secret), `the volume must not contain ${secret}`);
+        assert.ok(!logged.includes(secret), `logs must not contain ${secret}`);
+    }
+    assert.match(logged, /GitHub device sign-in/);
+});
+
+test('device flow not enabled on the ProPR App: the step falls back to a pasted token, says why, and stops offering the button', async () => {
+    const device = deviceFake({ disabled: true });
+    const h = await startWizard({ device });
+    const cookie = await claim(h);
+    const fallback = await startDevice(h, cookie);
+    assert.equal(fallback.status, 200);
+    const page = await fallback.text();
+    assert.match(page, /Device sign-in isn't enabled for the ProPR App yet, so paste a token instead/);
+    assert.match(page, /name="githubToken"/);
+    assert.ok(!page.includes('action="/setup/connect/device"'), 'no button that would fail again');
+    assert.ok(!/<p class="error"/.test(page), 'a fallback, not an error');
+
+    const again = await (await h.request('/setup', { cookie })).text();
+    assert.ok(!again.includes('action="/setup/connect/device"'));
+    assert.equal(device.started.length, 1, 'GitHub is not asked again on every page');
+    assert.equal((await enroll(h, cookie)).status, 303, 'the pasted token still enrolls');
+    assert.deepEqual(h.relay.enrolled, [{ installation_id: 77, label: 'fly:propr-test@machine-1' }]);
+});
+
+test('device sign-in refused, expired or cancelled: back to the GitHub step with what to do, nothing stored', async () => {
+    for (const [answer, message] of [['access_denied', /cancelled on GitHub/], ['expired_token', /code expired/]] as const) {
+        const h = await startWizard({ device: deviceFake({ polls: [answer] }) });
+        const cookie = await claim(h);
+        await startDevice(h, cookie);
+        h.advance(5_000);
+        const failed = await h.request('/setup/connect/device', { cookie });
+        assert.equal(failed.status, 400, answer);
+        const page = await failed.text();
+        assert.match(page, message, answer);
+        assert.match(page, /action="\/setup\/connect\/device"/, `${answer}: start again offered`);
+        assert.equal((await h.request('/setup/connect/device', { cookie })).headers.get('location'), '/setup', `${answer}: the code is dropped`);
+        assert.equal(readLaunchConfig(h.store).connect, undefined);
+    }
+
+    // The code's own expiry, without asking GitHub.
+    const expiring = await startWizard();
+    const cookie = await claim(expiring);
+    await startDevice(expiring, cookie);
+    expiring.advance(901_000);
+    assert.match(await (await expiring.request('/setup/connect/device', { cookie })).text(), /code expired/);
+    assert.equal(expiring.device.tokenPolls, 0);
+
+    const cancelled = await startWizard();
+    const cancelCookie = await claim(cancelled);
+    await startDevice(cancelled, cancelCookie);
+    const cancel = await cancelled.request('/setup/connect/device/cancel', { method: 'POST', cookie: cancelCookie, form: {} });
+    assert.equal(cancel.headers.get('location'), '/setup');
+    assert.equal((await cancelled.request('/setup/connect/device', { cookie: cancelCookie })).headers.get('location'), '/setup');
+});
+
+test('device sign-in with more than one installation: pick without pasting anything; the held sign-in works once', async () => {
+    const relay = relayFake({
+        installations: [
+            { installation_id: 77, account_login: 'octo', account_type: 'User' },
+            { installation_id: 78, account_login: 'octo-org', account_type: 'Organization' },
+        ],
+    });
+    const h = await startWizard({ relay, device: deviceFake({ polls: ['token'] }) });
+    const cookie = await claim(h);
+    await startDevice(h, cookie);
+    h.advance(5_000);
+    const pick = await h.request('/setup/connect/device', { cookie });
+    assert.equal(pick.status, 200);
+    const page = await pick.text();
+    assert.match(page, /Pick one to finish connecting/);
+    assert.ok(!page.includes('name="githubToken"'), 'no token to paste');
+    assert.ok(!page.includes(DEVICE_USER_TOKEN));
+
+    const picked = await h.request('/setup/connect/enroll', { method: 'POST', cookie, form: { installation: '78' } });
+    assert.equal(picked.status, 303);
+    assert.deepEqual(relay.enrolled, [{ installation_id: 78, label: 'fly:propr-test@machine-1' }]);
+    assert.ok(!volumeText(h.store).includes(DEVICE_USER_TOKEN));
+});
+
+test('a held device sign-in is used once: a second pick asks to sign in again', async () => {
+    const relay = relayFake({
+        installations: [
+            { installation_id: 77, account_login: 'octo', account_type: 'User' },
+            { installation_id: 78, account_login: 'octo-org', account_type: 'Organization' },
+        ],
+        fail: { enroll: 503 },
+    });
+    const h = await startWizard({ relay, device: deviceFake({ polls: ['token'] }) });
+    const cookie = await claim(h);
+    await startDevice(h, cookie);
+    h.advance(5_000);
+    await h.request('/setup/connect/device', { cookie });
+    assert.equal((await h.request('/setup/connect/enroll', { method: 'POST', cookie, form: { installation: '78' } })).status, 400);
+    const again = await h.request('/setup/connect/enroll', { method: 'POST', cookie, form: { installation: '78' } });
+    assert.equal(again.status, 400);
+    assert.match(await again.text(), /sign-in for this choice has expired/);
+});
+
+test('a relay of its own without PROPR_GH_DEVICE_CLIENT_ID gets the pasted token only; with one, its App is used', async () => {
+    const custom = await startWizard({ relayUrl: 'https://relay.example/v1' });
+    const page = await (await custom.request('/setup', { cookie: await claim(custom) })).text();
+    assert.ok(!page.includes('action="/setup/connect/device"'));
+    assert.match(page, /name="githubToken"/);
+    assert.ok(!page.includes("isn't enabled"), 'not reported as disabled: it was never offered');
+
+    const own = await startWizard({ relayUrl: 'https://relay.example/v1', deviceClientId: 'Iv23liOwnRelayApp00' });
+    const cookie = await claim(own);
+    assert.match(await (await own.request('/setup', { cookie })).text(), /action="\/setup\/connect\/device"/);
+    await startDevice(own, cookie);
+    assert.deepEqual(own.device.started, ['Iv23liOwnRelayApp00']);
 });
