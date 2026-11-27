@@ -260,8 +260,12 @@ connections, 256 requests and 16 MiB of response traffic per run, with a ten-sec
 connection/response deadline. A run reserves a full response budget during each
 request and refunds unused bytes after successful responses. Handshake responses
 on a URL server (including a new handshake after a lost session) share that one
-reservation with the call's own response and are charged with it. Failed and oversized
-responses consume the full reservation. Grants expire after twelve hours.
+reservation with the call's own response and are charged with it, as are responses
+to the gateway's answers to server-to-client requests. Bytes are charged as they are
+read, so a failed handshake that falls back to another protocol revision is still
+counted. An event stream that keeps sending after the call's response is ended, and
+the bytes read are charged to the run. Failed and oversized responses consume the full
+reservation. Grants expire after twelve hours.
 The existing task network policy is preserved; restricted runs additionally
 capture the effective allowlist and instance-only private-address permissions in the immutable grant. Every gateway request and its DNS re-resolution must pass that captured policy. Catalog identity never overrides a restricted run’s hostname or private-address rules. Core retains per-run request/response accounting, connection reservations and resolution/denial telemetry as a `network.extensions` task event after deactivating the grant and before deleting its row. Telemetry and cleanup failures are logged without replacing the run outcome. The Core API gateway derives its container-reachable address from the existing
 `PROPR_AGENT_MCP_URL` (or `PROPR_INTERNAL_API_URL`) setting and must itself

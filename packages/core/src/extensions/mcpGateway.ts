@@ -35,6 +35,19 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   // including whitespace that disappears during JSON parsing.
   let responseBytes: number = EXTENSION_LIMITS.responseBytes;
   let recordedDecision = false;
+  /**
+   * Response bytes this call read from the upstream, counted as the transport reads them: failed and abandoned
+   * exchanges, drained bodies and server-to-client answers included. Once the call has settled its reservation,
+   * a late chunk (an answer still in flight) is charged to the grant directly and ends that response.
+   */
+  let inbound = 0;
+  let accounting = true;
+  let lateCharge: ((bytes: number) => Promise<void>) | undefined;
+  const meter = (bytes: number): boolean => {
+    if (!accounting) { void lateCharge?.(bytes); return false; }
+    inbound += bytes;
+    return inbound <= EXTENSION_LIMITS.responseBytes;
+  };
   let decision: { host: string; allowed: boolean } | undefined;
   /** OAuth access tokens used by this call, redacted from its output. */
   const oauthTokens: string[] = [];
@@ -99,9 +112,10 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     alive: () => extensionGrantAlive(store, grant),
   });
   session.calls++;
-  // Every upstream response of this call (handshakes, recovery handshakes, the call itself) shares the call's one
-  // response reservation: each exchange may read only what the earlier ones left, and the call is charged the sum.
-  let inbound = 0;
+  lateCharge = async bytes => { await store.database('extension_run_grants').where({ token_hash: grant }).increment('bytes', bytes).catch(() => undefined); };
+  // Every upstream response of this call (handshakes, recovery handshakes, server-to-client answers, the call itself)
+  // shares the call's one response reservation through `meter`: each exchange may read only what the others left,
+  // and the call is charged the sum, failed exchanges included.
   const remaining = () => Math.max(0, EXTENSION_LIMITS.responseBytes - inbound);
   // Server-to-client requests (sampling, elicitation, roots) are answered upstream with an error and never relayed.
   // The answer uses its own connection: the pinned one is busy with the stream that waits for it.
@@ -109,23 +123,22 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     let answered = 0;
     exchange.onServerRequest = id => {
       if (answered++ >= 8) return;
-      const answer: ExtensionMcpExchange = { ...(exchange.sessionId ? { sessionId: exchange.sessionId } : {}), ...(exchange.protocolVersion ? { protocolVersion: exchange.protocolVersion } : {}), ...(exchange.headers ? { headers: exchange.headers } : {}) };
+      const answer: ExtensionMcpExchange = { maxBytes: remaining(), onResponseBytes: meter, ...(exchange.sessionId ? { sessionId: exchange.sessionId } : {}), ...(exchange.protocolVersion ? { protocolVersion: exchange.protocolVersion } : {}), ...(exchange.headers ? { headers: exchange.headers } : {}) };
       void send(endpoint, { jsonrpc: '2.0', id, error: { code: -32601, message: 'Server-to-client requests are not supported' } }, used, transportPolicy, answer).catch(() => undefined);
     };
     return exchange;
   };
   const post = (used: string | undefined) => async (message: unknown, exchange: ExtensionMcpExchange) => {
     // The same exchange object: the transport reports the assigned session and pinned connection on it.
-    exchange.maxBytes = remaining();
-    const reply = await send(endpoint, message, used, policy, answering(used, exchange));
-    inbound += extensionResponseWireBytes(reply) ?? 0;
-    return reply;
+    exchange.maxBytes = remaining(); exchange.onResponseBytes = meter;
+    return send(endpoint, message, used, policy, answering(used, exchange));
   };
   const call = async (state: UpstreamSessionState | undefined, used: string | undefined) => {
     const request = sessionRequest(state, forwarded);
-    const reply = await send(endpoint, request.body, used, policy, answering(used, { ...request.exchange, maxBytes: remaining() }));
+    let metered = false;
+    const reply = await send(endpoint, request.body, used, policy, answering(used, { ...request.exchange, maxBytes: remaining(), onResponseBytes: bytes => { metered = true; return meter(bytes); } }));
     // A reply without transport accounting (an injected transport) is charged the full reservation, as before.
-    inbound += reply === null ? 0 : extensionResponseWireBytes(reply) ?? EXTENSION_LIMITS.responseBytes;
+    if (reply !== null && !metered && extensionResponseWireBytes(reply) === undefined) inbound += EXTENSION_LIMITS.responseBytes;
     return reply;
   };
   const attempt = async (used: string | undefined): Promise<unknown> => {
@@ -206,6 +219,10 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   if (Buffer.byteLength(JSON.stringify(redacted)) > EXTENSION_LIMITS.responseBytes) throw new ExtensionError(502, 'MCP response too large');
   return redacted;
   } finally {
+    // Settle the charge with every byte read so far; a chunk still arriving is charged to the grant directly.
+    accounting = false;
+    if (responseBytes < EXTENSION_LIMITS.responseBytes) responseBytes = Math.min(EXTENSION_LIMITS.responseBytes, Math.max(responseBytes, inbound));
+    // A call that read past its reservation is charged all of it; nothing after the chunk that crossed it is read.
     try { if (decision && !recordedDecision) await store.recordGatewayNetwork(token, decision.host, decision.allowed); }
     finally { await store.finishGatewayCall(token, responseBytes); }
   }

@@ -104,6 +104,11 @@ export interface ExtensionMcpExchange {
   method?: 'POST' | 'DELETE';
   /** Response bytes this exchange may read, at most `EXTENSION_LIMITS.responseBytes`: a gateway call's exchanges share one reservation. */
   maxBytes?: number;
+  /**
+   * Every response body chunk read from the upstream, whether the exchange later succeeds or fails, including a
+   * drained error body. Returning false (the shared reservation is spent) ends the response and fails the exchange.
+   */
+  onResponseBytes?: (bytes: number) => boolean;
   /** Set by the transport: the `Mcp-Session-Id` the upstream assigned. */
   assignedSessionId?: string;
   /** A server-to-client request arrived on the response stream. It is never relayed to the agent. */
@@ -180,6 +185,15 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     }, response => {
+      const limit = Math.min(EXTENSION_LIMITS.responseBytes, exchange.maxBytes ?? EXTENSION_LIMITS.responseBytes);
+      let bytes = 0;
+      /** Charge a chunk read from the upstream; past this exchange's limit or the shared reservation, the response is ended. */
+      const meter = (chunk: Buffer): boolean => {
+        bytes += chunk.length;
+        const within = (exchange.onResponseBytes?.(chunk.length) ?? true) && bytes <= limit;
+        if (!within) { response.destroy(); unavailable(); }
+        return within;
+      };
       // A settled exchange hands the pinned socket back: drain the rest of the response so the socket (and a sticky
       // session) survives, but end a response the upstream keeps open after a short grace. Its socket is then
       // replaced by a new one to the same vetted address; an upstream that binds sessions to connections answers
@@ -192,7 +206,14 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
         const ended = () => clearTimeout(grace);
         response.once('end', ended); response.once('close', ended);
       };
-      const discard = () => { if (exchange.connection) release(); else response.destroy(); };
+      const discard = () => {
+        if (!exchange.connection) { response.destroy(); return; }
+        // A drained body is read from the upstream too: it is metered like any other.
+        if (!metered) response.on('data', meter);
+        release();
+      };
+      /** The 200 path below attaches its own metering listener. */
+      let metered = false;
       if (remove) { discard(); finish(null); return; }
       if (response.statusCode === 401 && token) { discard(); fail(new ExtensionUpstreamUnauthorizedError()); return; }
       if (response.statusCode === 404 && exchange.sessionId) { discard(); fail(new ExtensionUpstreamSessionNotFoundError()); return; }
@@ -202,8 +223,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
       const type = response.headers?.['content-type'] ?? '';
       const stream = type.startsWith('text/event-stream');
       if (response.statusCode !== 200 || !(stream || type.startsWith('application/json'))) { discard(); unavailable(); return; }
-      const chunks: Buffer[] = []; let bytes = 0; let reply: object | undefined;
-      const limit = Math.min(EXTENSION_LIMITS.responseBytes, exchange.maxBytes ?? EXTENSION_LIMITS.responseBytes);
+      const chunks: Buffer[] = []; let reply: object | undefined;
       const events = stream ? eventStreamParser() : undefined;
       const accept = (messages: unknown[]) => {
         for (const message of messages) {
@@ -216,12 +236,14 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
           }
           if (reply === undefined && rpc.id === requestId) reply = rpc;
         }
-        // The call's own response ends the exchange, even if the stream stays open.
+        // The call's own response ends the exchange. The stream may still end cleanly (keeping a pinned socket), but
+        // nothing more is read from it: an event after the response ends it instead of being drained unaccounted.
         if (reply && !settled) { responseWireBytes.set(reply, bytes); finish(reply); discard(); }
       };
+      metered = true;
       response.on('data', (chunk: Buffer) => {
-        bytes += chunk.length;
-        if (bytes > limit) { response.destroy(); unavailable(); return; }
+        if (reply) { meter(chunk); response.destroy(); return; }
+        if (!meter(chunk)) return;
         if (events) accept(events.push(chunk)); else chunks.push(chunk);
       });
       response.on('error', unavailable);

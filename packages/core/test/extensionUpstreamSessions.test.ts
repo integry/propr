@@ -571,3 +571,112 @@ test('handshake responses share the call\'s response reservation and are charged
   assert.equal(await bytes() - before, wire.initialize);
   assert.equal((await f.database('extension_run_grants').where({ token_hash: grant }).first()).connections, 0);
 });
+
+/** A stateless 2025 TLS upstream for byte accounting; `sent` totals every response body byte it wrote. */
+async function accountedUpstream(t: TestContext, handler: (rpc: Record<string, unknown>, reply: (text: string, type?: string) => void, res: import('node:http').ServerResponse) => boolean | Promise<boolean>) {
+  const meter = { sent: 0 };
+  await tlsUpstream(t, async (_req, res, body) => {
+    const rpc = JSON.parse(body) as Record<string, unknown>;
+    const reply = (text: string, type = 'application/json') => { meter.sent += Buffer.byteLength(text); res.writeHead(200, { 'content-type': type }).end(text); };
+    if (await handler(rpc, reply, res)) return;
+    if (rpc.method === 'initialize') { reply(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18', capabilities: {} } })); return; }
+    if (rpc.id === undefined) { res.writeHead(202).end(); return; }
+    reply(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'ok' }] } }));
+  });
+  return meter;
+}
+async function accountedGrant(t: TestContext, taskId: string) {
+  const f = await fixture(t);
+  const token = await f.launch(taskId);
+  const row = () => f.database('extension_run_grants').where({ token_hash: extensionTokenHash(token) }).first();
+  return { f, token, call: (body: unknown) => extensionGatewayCall(f.store, token, 'echo', body, undefined, f.sessions), bytes: async () => Number((await row()).bytes), connections: async () => Number((await row()).connections) };
+}
+
+test('a failed initialize response that falls back to server/discover is still charged; an oversized one spends the reservation', async t => {
+  let initialize = '';
+  const upstream = await accountedUpstream(t, (rpc, reply) => {
+    if (rpc.method === 'initialize') { reply(initialize); return true; }
+    if (rpc.method === 'server/discover') { reply(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { supportedVersions: [MCP_2026_REVISION] } })); return true; }
+    return false;
+  });
+  const g = await accountedGrant(t, 'failed-initialize-run');
+  // Unparsable: the 2025 handshake fails and the 2026 revision is used, but the bytes it read are charged.
+  initialize = `{${'x'.repeat(600 * 1024)}`;
+  const result = await g.call(callEcho(1, 'fallback')) as { result: unknown };
+  assert.ok(result.result);
+  assert.equal(g.f.sessions.peek(extensionTokenHash(g.token), 'echo')!.state?.era, '2026');
+  assert.equal(await g.bytes(), upstream.sent);
+  // Over the whole reservation: discovery cannot read what the failed initialize already consumed.
+  await g.f.sessions.closeGrant(extensionTokenHash(g.token), 'test');
+  const before = await g.bytes();
+  initialize = `{${'x'.repeat(EXTENSION_LIMITS.responseBytes + 1024)}`;
+  await assert.rejects(g.call(callEcho(2, 'overrun')), /connection failed/);
+  assert.equal(await g.bytes() - before, EXTENSION_LIMITS.responseBytes);
+  assert.equal(await g.connections(), 0);
+});
+
+test('events an upstream sends after the call\'s event-stream response are charged and end the stream', async t => {
+  let lateWrites = 0; let repliedAt = 0; let closedAt = 0;
+  const upstream = await accountedUpstream(t, (rpc, _reply, res) => {
+    if (rpc.method !== 'tools/call') return false;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const event = `data: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'streamed' }] } })}\n\n`;
+    upstream.sent += Buffer.byteLength(event); res.write(event); repliedAt = Date.now();
+    res.on('close', () => { closedAt = Date.now(); });
+    const more = () => {
+      if (res.destroyed || lateWrites >= 8) return;
+      const notification = `data: ${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/message', params: { data: 'n'.repeat(128 * 1024) } })}\n\n`;
+      lateWrites++; upstream.sent += Buffer.byteLength(notification); res.write(notification);
+      setTimeout(more, 100);
+    };
+    setTimeout(more, 100);
+    return true;
+  });
+  const g = await accountedGrant(t, 'post-reply-stream-run');
+  const result = await g.call(callEcho(1, 'stream')) as { result: { content: { text: string }[] } };
+  assert.equal(result.result.content[0].text, 'streamed');
+  const settled = await g.bytes();
+  assert.equal(settled, upstream.sent, 'the call settled on its handshake and response, before the late events');
+  await new Promise(resolve => setTimeout(resolve, 600));
+  // The first late event was read and charged to the grant; the stream was ended right away, not drained for the grace.
+  assert.ok(await g.bytes() > settled, 'late event bytes are charged');
+  assert.ok(await g.bytes() <= upstream.sent);
+  assert.ok(closedAt > 0 && closedAt - repliedAt < 900, 'the stream was ended before the release grace');
+  assert.ok(lateWrites < 4, `the upstream kept writing (${lateWrites} late events)`);
+  assert.equal(await g.connections(), 0);
+});
+
+test('responses to answered server-to-client requests share the call\'s reservation', async t => {
+  let answerPadding = 0; let answered = 0; let requests = 0;
+  let release: () => void = () => undefined;
+  const upstream = await accountedUpstream(t, async (rpc, reply, res) => {
+    if (rpc.error) { answered++; reply(JSON.stringify({ jsonrpc: '2.0', result: { padding: 'a'.repeat(answerPadding) } })); if (answered === requests) release(); return true; }
+    if (rpc.method !== 'tools/call') return false;
+    answered = 0;
+    const all = new Promise<void>(resolve => { release = resolve; });
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    for (let i = 0; i < requests; i++) {
+      const event = `data: ${JSON.stringify({ jsonrpc: '2.0', id: `sampling-${i}`, method: 'sampling/createMessage', params: {} })}\n\n`;
+      upstream.sent += Buffer.byteLength(event); res.write(event);
+    }
+    // The upstream answers the call only after every server-to-client request was answered.
+    await Promise.race([all, new Promise(resolve => setTimeout(resolve, 2_000))]);
+    if (res.destroyed) return true;
+    const event = `data: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: 'after answers' }] } })}\n\n`;
+    upstream.sent += Buffer.byteLength(event); res.end(event);
+    return true;
+  });
+  const g = await accountedGrant(t, 'reverse-answer-run');
+  // Three answers, each answered upstream with a 100 KiB body: all of it is charged with the call.
+  requests = 3; answerPadding = 100 * 1024;
+  const result = await g.call(callEcho(1, 'answers')) as { result: { content: { text: string }[] } };
+  assert.equal(result.result.content[0].text, 'after answers');
+  assert.equal(answered, 3);
+  assert.equal(await g.bytes(), upstream.sent);
+  // Eight answers of 200 KiB exceed the reservation: the call fails and keeps all of it.
+  const before = await g.bytes();
+  requests = 8; answerPadding = 200 * 1024;
+  await assert.rejects(g.call(callEcho(2, 'flood')), /connection failed/);
+  assert.equal(await g.bytes() - before, EXTENSION_LIMITS.responseBytes);
+  assert.equal(await g.connections(), 0);
+});
