@@ -19,6 +19,7 @@ function supportsRuntimeEnforcedRepositoryInspection(agent: Agent): boolean {
         case 'opencode':
         case 'vibe':
         case 'antigravity':
+        case 'pi':
             // Scout analysis disables every built-in tool and exposes only the
             // path-validating repository MCP server from the runtime adapter.
             return true;

@@ -1195,7 +1195,7 @@ export interface TaskSubmission {
 
 /** Library items that would apply automatically to a task for this repository and agent. */
 export interface TaskSubmissionExtensions {
-  /** False when the agent's runtime does not use extensions (only Claude and Codex do). */
+  /** False when the agent's runtime does not use extensions (only Claude, Codex and Pi do). */
   qualified: boolean;
   /** Current library revision; tasks resolve the library again at launch. */
   revision: number;

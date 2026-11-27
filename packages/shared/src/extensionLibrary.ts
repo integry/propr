@@ -13,7 +13,14 @@ import { EXTENSION_PACKAGE_ECOSYSTEMS, extensionPackageEnvConflict, packageServe
  */
 export const EXTENSION_LIBRARY_VERSION = EXTENSION_PROFILE_VERSION;
 export const EXTENSION_LIBRARY_LIMITS = { servers: 32, bundles: 32, repositories: 64, agents: 64 } as const;
-export const EXTENSION_RUNTIMES = ['claude', 'codex'] as const;
+/** Agent types whose task adapters launch extension library items (`executeWithExtensions`). */
+export const EXTENSION_RUNTIMES = ['claude', 'codex', 'pi'] as const;
+export type ExtensionRuntime = typeof EXTENSION_RUNTIMES[number];
+/** The extension runtimes as prose, for refusals and help text. */
+export const EXTENSION_RUNTIME_NAMES = 'Claude, Codex or Pi';
+export function isExtensionRuntime(runtime: unknown): runtime is ExtensionRuntime {
+  return (EXTENSION_RUNTIMES as readonly unknown[]).includes(runtime);
+}
 
 const itemLimits = {
   /** Empty means every repository. */
@@ -151,7 +158,7 @@ const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 /** Why an item does not apply to a run, or null when it does (ignoring `autoApply` and per-run limits). */
 export function extensionItemSkipReason(library: LibraryView, item: ExtensionLibraryServer | ExtensionLibrarySkill, context: Omit<ExtensionResolutionContext, 'additional' | 'limits' | 'autoApply'>): ExtensionSkipReason | null {
   if (!item.enabled) return 'disabled';
-  if (!(EXTENSION_RUNTIMES as readonly string[]).includes(context.runtime)) return 'runtime';
+  if (!isExtensionRuntime(context.runtime)) return 'runtime';
   if (item.repositories.length) {
     const repositories = runRepositories(context.repository);
     // Every repository of the run must be within the item's limit.
