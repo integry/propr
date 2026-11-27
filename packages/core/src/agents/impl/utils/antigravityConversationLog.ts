@@ -161,40 +161,56 @@ function streamNarrationToClaudeEvents(update: StreamStepUpdate): unknown[] {
 }
 
 /**
+ * Whether the terminal response adds nothing to the final streamed answer:
+ * it is empty, equal to it, or a truncated copy of it. Mirrors the live projector.
+ */
+function repeatsFinalNarration(response: string | undefined, narration: string): boolean {
+    const answer = (response ?? '').trim();
+    return !answer || narration.trim().startsWith(answer);
+}
+
+/**
  * The persisted trace of one implementation run. Usage stays on the run's
  * token totals: stream usage is cumulative, so it is not repeated per step.
  * Stream `tool` steps become tool calls; `user_input` and other non-tool steps
  * carry no content of their own and are skipped. The terminal response is
- * kept only when the stream narrated nothing for its conversation.
+ * kept unless it repeats, or is a truncated copy of, the conversation's final
+ * narration: the text streamed since its latest init or new tool step.
  */
 export function buildAntigravityConversationLog(events: AntigravityOutputEvent[]): unknown[] {
     const aggregated = aggregateDeltaMessages(events);
     const toolUpdates = new Map<string, StreamStepUpdate>();
-    const streamedText = new Map<string, string>();
     for (const event of aggregated) {
-        if (!isAntigravityStreamEvent(event) || event.event !== 'step_update') continue;
+        if (!isAntigravityStreamEvent(event) || event.event !== 'step_update' || !isStreamToolStep(event.step_update)) continue;
         const update = event.step_update;
-        if (normalize(update.step_type) === AGENT_RESPONSE) streamedText.set(update.conversation_id, (streamedText.get(update.conversation_id) ?? '') + (update.text_delta ?? ''));
-        else if (isStreamToolStep(update)) toolUpdates.set(stepKey(update), mergeToolUpdate(toolUpdates.get(stepKey(update)), update));
+        toolUpdates.set(stepKey(update), mergeToolUpdate(toolUpdates.get(stepKey(update)), update));
     }
+    const finalNarration = new Map<string, string>();
     const emittedSteps = new Set<string>();
     const log: unknown[] = [];
     aggregated.forEach((event, position) => {
         if (isTranscriptEvent(event)) { log.push(...transcriptStepToClaudeEvents(event, position)); return; }
         if (!isAntigravityStreamEvent(event)) { log.push(convertEventToClaudeFormat(event)); return; }
-        if (event.event === 'init') { log.push({ type: 'system', session_id: event.conversation_id, conversation_id: event.conversation_id, model: event.init.model, message: { content: [] } }); return; }
+        if (event.event === 'init') { finalNarration.set(event.conversation_id, ''); log.push({ type: 'system', session_id: event.conversation_id, conversation_id: event.conversation_id, model: event.init.model, message: { content: [] } }); return; }
         if (event.event === 'result') {
             const { conversation_id: conversationId, status, response } = event.result;
-            const text = response && !streamedText.get(conversationId)?.trim() ? [{ type: 'text', text: response }] : [];
+            const text = repeatsFinalNarration(response, finalNarration.get(conversationId) ?? '') ? [] : [{ type: 'text', text: response }];
+            finalNarration.set(conversationId, '');
             log.push({ type: 'result', session_id: conversationId, conversation_id: conversationId, status: status.toLowerCase(), isError: status.toUpperCase() === 'ERROR', message: { content: text } });
             return;
         }
         const update = event.step_update;
-        if (normalize(update.step_type) === AGENT_RESPONSE) { log.push(...streamNarrationToClaudeEvents(update)); return; }
+        if (normalize(update.step_type) === AGENT_RESPONSE) {
+            finalNarration.set(update.conversation_id, (finalNarration.get(update.conversation_id) ?? '') + (update.text_delta ?? ''));
+            log.push(...streamNarrationToClaudeEvents(update));
+            return;
+        }
         if (!isStreamToolStep(update)) return;
         const key = stepKey(update);
         if (emittedSteps.has(key)) return;
         emittedSteps.add(key);
+        // Narration before a tool call is progress, not the final answer.
+        finalNarration.set(update.conversation_id, '');
         log.push(...streamToolStepToClaudeEvents(toolUpdates.get(key) ?? update));
     });
     return log;

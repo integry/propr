@@ -8,7 +8,8 @@
  * by `tool_name` with `tool_info.parameters` when the step first appears, and
  * a tool_result with `tool_info.output` once it reaches a terminal state.
  * USER_INPUT and other step types are not tools. The terminal result
- * contributes its response only when no narration streamed, and its usage.
+ * contributes its usage, and its response unless that response repeats (or
+ * is a truncated copy of) the narration streamed since the last tool step.
  */
 import type { ConversationEvent } from '@propr/shared';
 
@@ -26,8 +27,8 @@ export interface AntigravityStreamParseState {
 export interface AntigravityStreamProjectionState {
   /** The AGENT_RESPONSE step whose deltas are buffered, `conversation:step`. */
   pendingStep: string | null;
-  /** Narration streamed per conversation since its latest init. */
-  streamedText: Map<string, string>;
+  /** Narration streamed per conversation since its latest init or new tool step: the final answer when the result arrives. */
+  finalNarration: Map<string, string>;
   toolSteps: Set<string>;
   finishedToolSteps: Set<string>;
   /** Latest usage snapshot per step, and the largest cumulative result usage. */
@@ -52,7 +53,7 @@ const COMMAND_EXIT_CODE = /Command exited with code (-?\d+)/;
 
 export function createAntigravityStreamProjectionState(): AntigravityStreamProjectionState {
   return {
-    pendingStep: null, streamedText: new Map(), toolSteps: new Set(), finishedToolSteps: new Set(),
+    pendingStep: null, finalNarration: new Map(), toolSteps: new Set(), finishedToolSteps: new Set(),
     stepUsage: new Map(), resultUsage: emptyUsage(), appliedUsage: emptyUsage(),
   };
 }
@@ -140,7 +141,7 @@ function processStepUpdate(update: NonNullable<StreamEnvelope['step_update']>, t
     stream.pendingStep = key;
     state.pendingAssistantMessage += text;
     state.pendingAssistantTimestamp ??= timestamp;
-    stream.streamedText.set(conversationId, (stream.streamedText.get(conversationId) ?? '') + text);
+    stream.finalNarration.set(conversationId, (stream.finalNarration.get(conversationId) ?? '') + text);
     return;
   }
   if (stepType.toUpperCase() !== 'TOOL') return;
@@ -149,6 +150,8 @@ function processStepUpdate(update: NonNullable<StreamEnvelope['step_update']>, t
   if (!stream.toolSteps.has(key)) {
     flushNarration(state, timestamp, flush);
     stream.toolSteps.add(key);
+    // Narration before a tool call is progress, not the final answer.
+    stream.finalNarration.set(conversationId, '');
     state.events.push({ type: 'tool_use', toolName: tool.name, input: tool.input, id, timestamp });
   }
   if (TERMINAL_STEP_STATES.has(stepState) && !stream.finishedToolSteps.has(key)) {
@@ -159,16 +162,25 @@ function processStepUpdate(update: NonNullable<StreamEnvelope['step_update']>, t
   }
 }
 
+/**
+ * Whether the terminal response adds nothing to the final streamed answer:
+ * it is empty, equal to it, or a truncated copy of it. A response that
+ * differs from (or extends) the final narration is a distinct answer.
+ */
+function repeatsFinalNarration(response: string, finalNarration: string): boolean {
+  const answer = response.trim();
+  return !answer || finalNarration.trim().startsWith(answer);
+}
+
 function processResult(result: NonNullable<StreamEnvelope['result']>, timestamp: string, state: AntigravityStreamParseState, flush: (timestamp: string) => void): void {
   const stream = state.antigravityStream;
   flushNarration(state, timestamp, flush);
   const conversationId = result.conversation_id as string;
   const response = typeof result.response === 'string' ? result.response : '';
-  // Streamed narration already shows the answer; the response stands in only when none streamed.
-  if (response.trim() && !stream.streamedText.get(conversationId)?.trim()) {
+  if (!repeatsFinalNarration(response, stream.finalNarration.get(conversationId) ?? '')) {
     state.events.push({ type: 'thought', content: truncate(response), timestamp });
   }
-  stream.streamedText.set(conversationId, '');
+  stream.finalNarration.set(conversationId, '');
   const usage = toRedisUsage(result.usage);
   for (const key of USAGE_KEYS) stream.resultUsage[key] = Math.max(stream.resultUsage[key], usage[key]);
   applyUsage(state);
@@ -178,7 +190,7 @@ function processResult(result: NonNullable<StreamEnvelope['result']>, timestamp:
 export function processAntigravityStreamEnvelope(event: StreamEnvelope, timestamp: string, state: AntigravityStreamParseState, flush: (timestamp: string) => void): void {
   if (event.event === 'init') {
     flushNarration(state, timestamp, flush);
-    state.antigravityStream.streamedText.set(event.conversation_id as string, '');
+    state.antigravityStream.finalNarration.set(event.conversation_id as string, '');
     return;
   }
   if (event.event === 'step_update' && event.step_update) processStepUpdate(event.step_update, timestamp, state, flush);

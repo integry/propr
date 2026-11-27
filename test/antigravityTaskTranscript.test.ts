@@ -267,6 +267,29 @@ describe('Antigravity task result processing', () => {
         });
     });
 
+    test('a final answer supplied only by the result survives intermediate stream narration', () => {
+        const step = (step_index: number, state: string, step_type: string, extra: Record<string, unknown> = {}) => ({ event: 'step_update', step_update: { conversation_id: 'agy-final', step_index, state, step_type, ...extra } });
+        const result = (response: string) => ({ event: 'result', result: { conversation_id: 'agy-final', status: 'SUCCESS', response } });
+        const events = (response: string, finalDelta?: string) => [
+            { event: 'init', conversation_id: 'agy-final', init: { model: 'gemini-3.8-flash-medium' } },
+            step(1, 'DONE', 'agent_response', { text_delta: 'I will inspect the repository.' }),
+            step(2, 'ACTIVE', 'tool', { tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'npm test' } } }),
+            step(2, 'DONE', 'tool', { tool_name: 'run_command', tool_info: { output: 'Command exited with code 0.' } }),
+            // The answering step carries usage and, in the first case, no text_delta.
+            step(3, 'DONE', 'agent_response', { usage: { input_tokens: 30, output_tokens: 5 }, ...(finalDelta ? { text_delta: finalDelta } : {}) }),
+            result(response),
+        ] as unknown as AntigravityOutputEvent[];
+        type Entry = { type: string; message: { content: Array<Record<string, unknown>> } };
+        const resultText = (log: unknown[]) => (log as Entry[]).filter(entry => entry.type === 'result').flatMap(entry => entry.message.content.map(block => block.text));
+
+        assert.deepEqual(resultText(buildAntigravityConversationLog(events('Added subtract; npm test passes.'))), ['Added subtract; npm test passes.']);
+        // A genuine duplicate or a truncated copy of the final narrated answer is not repeated.
+        assert.deepEqual(resultText(buildAntigravityConversationLog(events('Added subtract.', 'Added subtract.'))), []);
+        assert.deepEqual(resultText(buildAntigravityConversationLog(events('Added sub', 'Added subtract.'))), []);
+        // A response that extends the final narration is distinct.
+        assert.deepEqual(resultText(buildAntigravityConversationLog(events('Added subtract. Tests pass.', 'Added subtract.'))), ['Added subtract. Tests pass.']);
+    });
+
     test('a non-zero command exit code marks a transcript tool step as an error', () => {
         const log = buildAntigravityConversationLog([
             { source: 'MODEL', type: 'RUN_COMMAND', step_index: 1, status: 'DONE', content: 'Created At: x\nCommand exited with code 128.\n\nfatal: not a git repository' },
