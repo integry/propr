@@ -12,6 +12,7 @@ import { ExtensionOAuthStore, setExtensionOAuth } from '../src/extensions/extens
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
 import { ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, type ExtensionMcpExchange } from '../src/extensions/endpointPolicy.js';
 import { ExtensionUpstreamSessions } from '../src/extensions/mcpUpstreamSessions.js';
+import { testExtensionConnections } from '../src/extensions/extensionConnectionTest.js';
 import type { OAuthTransport } from '../src/extensions/extensionOAuthHttp.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
@@ -77,6 +78,9 @@ test('the Fly smoke OAuth fixture signs in, refreshes mid-session and ends its s
   assert.deepEqual([check.authorizationRequired, check.registration, check.issuer, check.resource], [true, 'dynamic', ORIGIN, `${ORIGIN}/mcp`]);
   const server = { kind: 'https', name: 'fixture-oauth', url: `${ORIGIN}/mcp`, enabled: true, tools: ['echo'], capability: 'read', authentication: 'oauth', repositories: [], agents: [], autoApply: true } as ExtensionLibraryServerInput;
   await store.saveLibrary('1', { version: 1, servers: [server], skills: [] }, {}, 0);
+  // Test connections before sign-in: unavailable, and it says why.
+  const oauthResult = (fields: Record<string, unknown>) => [{ name: 'fixture-oauth', authentication: 'oauth', ...fields }];
+  assert.deepEqual(await testExtensionConnections(store, '1', send), oauthResult({ reachable: false, status: 'unavailable', session: null, reason: 'OAuth not connected' }));
   // The consent page approves at once and redirects to ProPR's callback, as the smoke's curl follows it.
   const { authorizationUrl } = await oauth.startSignIn('1', 'smoke-session', 'fixture-oauth', urls);
   const consent = await fetch(local(authorizationUrl), { redirect: 'manual' });
@@ -84,6 +88,14 @@ test('the Fly smoke OAuth fixture signs in, refreshes mid-session and ends its s
   const callback = new URL(consent.headers.get('location')!);
   assert.equal(callback.origin + callback.pathname, REDIRECT);
   assert.deepEqual(await oauth.completeSignIn('1', 'smoke-session', { state: callback.searchParams.get('state'), code: callback.searchParams.get('code'), iss: callback.searchParams.get('iss') }), { name: 'fixture-oauth' });
+  // The smoke's step: Test connections right after sign-in reaches the server with the new token, in a session of
+  // its own that it ends; it never uses (or is fenced by) the gateway's per-run sessions.
+  const signedIn = await stats();
+  assert.deepEqual(await testExtensionConnections(store, '1', send), oauthResult({ reachable: true, status: 'reachable', session: 'stateful' }));
+  const tested = await stats();
+  // Discovery's unauthenticated probes were the only 401s: the token went with every Test connections request.
+  assert.deepEqual([tested.sessionsOpened, tested.sessionsDeleted, tested.unauthorized - signedIn.unauthorized, tested.refreshes], [1, 1, 0, 0]);
+  deleted.length = 0;
 
   const prepared = await store.resolveLaunch(context, false);
   const token = await store.createGrant(prepared, 'oauth-fixture-run');
@@ -99,11 +111,15 @@ test('the Fly smoke OAuth fixture signs in, refreshes mid-session and ends its s
   assert.equal(await echo(2, 'after-refresh'), 'after-refresh');
   const during = await stats();
   assert.equal(during.refreshes >= 1, true, 'the access token was refreshed mid-run');
-  assert.deepEqual([during.sessionsOpened, during.sessionNotFound], [1, 0], 'one session across the refresh');
+  assert.deepEqual([during.sessionsOpened, during.sessionNotFound], [2, 0], 'one gateway session across the refresh (after Test connections\' own)');
   const entry = sessions.peek(extensionTokenHash(token), 'fixture-oauth')!;
   assert.deepEqual([entry.state?.mode, entry.authentication], ['stateful', 'oauth']);
   assert.ok(entry.refreshes >= 1);
   await sessions.closeGrant(extensionTokenHash(token), 'grant_ended');
   assert.equal(deleted.length, 1);
-  assert.equal((await stats()).sessionsDeleted, 1);
+  assert.equal((await stats()).sessionsDeleted, 2);
+  // Test connections after the run's session was dropped at grant end: still reachable, in a new session it ends.
+  assert.deepEqual(await testExtensionConnections(store, '1', send), oauthResult({ reachable: true, status: 'reachable', session: 'stateful' }));
+  const after = await stats();
+  assert.deepEqual([after.sessionsOpened, after.sessionsDeleted, after.sessionNotFound], [3, 3, 0]);
 });

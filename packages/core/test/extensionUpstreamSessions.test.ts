@@ -9,7 +9,7 @@ import { extensionTestResources } from './helpers/extensionTestResources.js';
 import { ExtensionLibraryStore, extensionTokenHash, type ExtensionLaunchContext } from '../src/extensions/extensionProfileStore.js';
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
 import { EXTENSION_LIMITS } from '@propr/shared';
-import { ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, type ExtensionMcpExchange, type ExtensionMcpSend } from '../src/extensions/endpointPolicy.js';
+import { ExtensionUpstreamRequestError, ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, type ExtensionMcpExchange, type ExtensionMcpSend } from '../src/extensions/endpointPolicy.js';
 import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessionCapacityError, ExtensionUpstreamSessionEndedError, ExtensionUpstreamSessions, MCP_2026_REVISION, UPSTREAM_SESSION_LIMITS, closeExtensionGrantSessions, closeExtensionUpstreamSessions, extensionUpstreamSessions, openUpstreamSession, probeExtensionMcp } from '../src/extensions/mcpUpstreamSessions.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
@@ -623,6 +623,37 @@ async function tlsUpstream(t: TestContext, handler: (req: import('node:http').In
     original(`https://127.0.0.1:${port}/mcp`, { ...options, lookup: undefined, ca: cert, servername: 'mcp.synthetic.example' }, callback));
   extensionTestResources(t).defer(() => t.mock.restoreAll());
 }
+
+test('Test connections names why a server is unavailable: HTTP status, JSON-RPC error code, timeout, never upstream content', async t => {
+  const leaked = 'UPSTREAM-DETAIL-SENTINEL';
+  let mode: 'status' | 'rpc-error' = 'status';
+  await tlsUpstream(t, (req, res, body) => {
+    const rpc = JSON.parse(body);
+    if (mode === 'rpc-error' && rpc.method === 'initialize') { res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, error: { code: -32600, message: leaked } })); return; }
+    res.writeHead(rpc.method === 'initialize' ? 503 : 400, { 'content-type': 'text/plain' }).end(leaked);
+  });
+  const { requestExtensionMcp } = await import('../src/extensions/endpointPolicy.js');
+  // The real transport: each era's failure, by status.
+  const status = await probeExtensionMcp('https://8.8.8.8/mcp', 'probe-token', {}, requestExtensionMcp);
+  assert.deepEqual([status.reachable, status.session, status.reason], [false, null, 'initialize: HTTP 503; server/discover: HTTP 400']);
+  mode = 'rpc-error';
+  const refused = await probeExtensionMcp('https://8.8.8.8/mcp', 'probe-token', {}, requestExtensionMcp);
+  assert.equal(refused.reason, 'initialize: JSON-RPC error -32600; server/discover: HTTP 400');
+  assert.ok(!JSON.stringify([status, refused]).includes(leaked) && !JSON.stringify([status, refused]).includes('probe-token'));
+  // A request timed out by the transport (its 10 s timer) is named as such.
+  const timedOut: ExtensionMcpSend = async (_endpoint, body) => {
+    if ((body as { method?: string }).method === 'initialize') throw new ExtensionUpstreamRequestError('timeout after 10 s');
+    throw new ExtensionUpstreamRequestError('HTTP 400');
+  };
+  assert.equal((await probeExtensionMcp('https://8.8.8.8/mcp', undefined, {}, timedOut)).reason, 'initialize: timeout after 10 s; server/discover: HTTP 400');
+  // A reachable server has no reason.
+  const ok: ExtensionMcpSend = async (_endpoint, body, _token, _policy, exchange = {}) => {
+    const rpc = body as { id?: number; method?: string } | null;
+    if (rpc?.method === 'initialize') { exchange.assignedSessionId = 'reason-session'; return { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18', capabilities: {} } }; }
+    return null;
+  };
+  assert.deepEqual(await probeExtensionMcp('https://8.8.8.8/mcp', undefined, {}, ok), { reachable: true, session: 'stateful', protocolVersion: '2025-06-18' });
+});
 
 test('an event stream whose CRLF is split across network chunks keeps each multi-line event whole', async t => {
   await tlsUpstream(t, async (_req, res, body) => {

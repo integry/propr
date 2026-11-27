@@ -35,6 +35,8 @@ export type ExtensionValidationResult = {
   /** URL servers: the session mode the upstream chose; null when it was not reached. */
   session?: ExtensionSessionMode | null;
   authentication?: 'none' | 'bearer' | 'oauth';
+  /** Unavailable URL servers: why, short and secret-free (an HTTP status, a timeout, a failed token refresh). */
+  reason?: string;
 };
 export const getExtensionLibrary = () => request<ExtensionLibraryResponse>('');
 /**

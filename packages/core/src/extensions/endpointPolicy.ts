@@ -24,6 +24,8 @@ export class ExtensionUpstreamUnauthorizedError extends Error { constructor() { 
 export class ExtensionUpstreamSessionNotFoundError extends Error { constructor() { super('MCP session not found'); } }
 /** A request waited too long for its session's one connection, busy with earlier calls; it was never sent. */
 export class ExtensionUpstreamSessionBusyError extends Error { constructor() { super('MCP session busy'); } }
+/** A failed exchange. `reason` is short and secret-free (an HTTP status, a timeout, a socket error code), for Test connections. */
+export class ExtensionUpstreamRequestError extends Error { constructor(readonly reason: string) { super('MCP connection failed'); } }
 export function extensionPublicAddress(address: string): boolean {
   return !isNonPublicAddress(address) && !additional.check(address, isIP(address) === 6 ? 'ipv6' : 'ipv4');
 }
@@ -162,6 +164,24 @@ function eventStreamParser() {
   };
 }
 
+/** Fixed endpoint-check messages of {@link resolveExtensionEndpoint}: they name no host, address or credential. */
+const ENDPOINT_REASONS: Record<string, string> = {
+  'Invalid MCP endpoint': 'invalid endpoint', 'MCP endpoint outside run network policy': 'endpoint outside the run network policy', 'Endpoint DNS timeout': 'DNS timeout',
+  'MCP endpoint must resolve exclusively to public addresses or authorized pinned catalog addresses': 'endpoint resolves to a non-public address', 'MCP request too large': 'request too large',
+  'MCP endpoint must be public': 'endpoint is not public', 'MCP endpoints require HTTPS without credentials, query parameters or fragments': 'invalid endpoint',
+};
+/** A short, secret-free reason for a failed request: never an upstream body, header, host or token. */
+export function extensionRequestFailureReason(error: unknown): string {
+  if (error instanceof ExtensionUpstreamRequestError) return error.reason;
+  if (error instanceof ExtensionUpstreamUnauthorizedError) return 'credential refused (HTTP 401)';
+  if (error instanceof ExtensionUpstreamSessionNotFoundError) return 'session not found (HTTP 404)';
+  if (error instanceof ExtensionUpstreamSessionBusyError) return 'session busy';
+  if (error instanceof Error && Object.hasOwn(ENDPOINT_REASONS, error.message)) return ENDPOINT_REASONS[error.message];
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  // DNS failures (ENOTFOUND, EAI_AGAIN) come from the endpoint lookup.
+  return typeof code === 'string' && /^[A-Z0-9_]{2,40}$/.test(code) ? `request failed (${code})` : 'request failed';
+}
+
 /** Resolve on every request, dial only the checked address, keep original TLS
  * identity. No redirect, proxy environment, cookies, content decompression or
  * upstream response headers other than `Mcp-Session-Id` cross this boundary.
@@ -187,7 +207,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
     let settled = false;
     const finish = (value: unknown) => { if (!settled) { settled = true; resolve(value); } };
     const fail = (error: Error) => { if (!settled) { settled = true; reject(error); } };
-    const unavailable = () => fail(new Error('MCP connection failed'));
+    const unavailable = (reason: string) => fail(new ExtensionUpstreamRequestError(reason));
     let timer: NodeJS.Timeout | undefined;
     const request = https.request(destination, {
       method: remove ? 'DELETE' : 'POST', agent: exchange.connection?.agent ?? false,
@@ -206,7 +226,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
       const meter = (chunk: Buffer): boolean => {
         bytes += chunk.length;
         const within = (exchange.onResponseBytes?.(chunk.length) ?? true) && bytes <= limit;
-        if (!within) { response.destroy(); unavailable(); }
+        if (!within) { response.destroy(); unavailable('response too large'); }
         return within;
       };
       // A settled exchange hands the pinned socket back: drain the rest of the response so the socket (and a sticky
@@ -237,7 +257,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
       if (response.statusCode === 202 || response.statusCode === 204) { discard(); finish(null); return; }
       const type = response.headers?.['content-type'] ?? '';
       const stream = type.startsWith('text/event-stream');
-      if (response.statusCode !== 200 || !(stream || type.startsWith('application/json'))) { discard(); unavailable(); return; }
+      if (response.statusCode !== 200 || !(stream || type.startsWith('application/json'))) { discard(); unavailable(response.statusCode !== 200 ? `HTTP ${response.statusCode}` : 'HTTP 200 without a JSON or event-stream body'); return; }
       const chunks: Buffer[] = []; let reply: object | undefined;
       const events = stream ? eventStreamParser() : undefined;
       const accept = (messages: unknown[]) => {
@@ -261,14 +281,14 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
         if (!meter(chunk)) return;
         if (events) accept(events.push(chunk)); else chunks.push(chunk);
       });
-      response.on('error', unavailable);
+      response.on('error', () => unavailable('response interrupted'));
       response.on('end', () => {
         if (events) {
           accept(events.end());
-          if (!reply) unavailable();
+          if (!reply) unavailable('event stream ended without a reply');
           return;
         }
-        try { const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (parsed !== null && typeof parsed === 'object') responseWireBytes.set(parsed, bytes); finish(parsed); } catch { unavailable(); }
+        try { const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (parsed !== null && typeof parsed === 'object') responseWireBytes.set(parsed, bytes); finish(parsed); } catch { unavailable('invalid JSON response'); }
       });
     });
     // The request timeout runs from the moment a connection is assigned; before that the request is queued on its
@@ -276,8 +296,10 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
     const queued = setTimeout(() => { request.destroy(); fail(new ExtensionUpstreamSessionBusyError()); }, PINNED_QUEUE_WAIT_MS);
     request.once('socket', () => {
       clearTimeout(queued);
-      if (!settled) timer = setTimeout(() => { request.destroy(); unavailable(); }, EXTENSION_LIMITS.timeoutMs);
+      if (!settled) timer = setTimeout(() => { unavailable(`timeout after ${EXTENSION_LIMITS.timeoutMs / 1000} s`); request.destroy(); }, EXTENSION_LIMITS.timeoutMs);
     });
-    request.on('close', () => { clearTimeout(queued); clearTimeout(timer); unavailable(); }); request.on('error', unavailable); request.end(payload);
+    request.on('close', () => { clearTimeout(queued); clearTimeout(timer); unavailable('connection closed'); });
+    request.on('error', (error: NodeJS.ErrnoException) => unavailable(typeof error.code === 'string' && /^[A-Z0-9_]{2,40}$/.test(error.code) ? `connection failed (${error.code})` : 'connection failed'));
+    request.end(payload);
   });
 }

@@ -5012,7 +5012,7 @@ paths:
               $ref: "#/components/schemas/JsonObject"
       responses:
         "200":
-          description: "Per server: name, reachable boolean, status, the session mode the upstream chose (stateful or stateless; null when not reached) and the configured authentication. No upstream content."
+          description: "Per server: name, reachable boolean, status, the session mode the upstream chose (stateful or stateless; null when not reached) and the configured authentication. An unavailable server also has a short reason (an HTTP status, a timeout, `OAuth not connected`, `token refresh failed`), never upstream content or credentials."
           content:
             application/json:
               schema:

@@ -6,11 +6,11 @@ import { ExtensionError, ExtensionLibraryStore, type ExtensionLibraryItemRef } f
 import { extensionLibraryUsage } from '../../core/src/extensions/extensionLibraryUsage.js';
 import { extensionGatewayCall } from '../../core/src/extensions/mcpGateway.js';
 import { probeExtensionMcp } from '../../core/src/extensions/mcpUpstreamSessions.js';
+import { testExtensionConnections } from '../../core/src/extensions/extensionConnectionTest.js';
 import { readSkillArchive, skillPath, type SkillFile } from '../../core/src/extensions/skillBundles.js';
 import { resolveGitHubMetadataToken, verifyGitHubRepositoryAccess } from '../githubMetadataAuth.js';
 import { isDemoViewer } from '../demoMode.js';
 import { refuseDemoViewer } from '../permissionGuards.js';
-import { extensionOAuth } from '../../core/src/extensions/extensionOAuthStore.js';
 import { resolveNpmPackage } from '../../core/src/extensions/packageRegistry.js';
 import { createExtensionOAuthRoutes, extensionOAuthInstanceInfo } from './extensionOAuthRoutes.js';
 
@@ -49,23 +49,10 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
     setEnabled: handle(async (req, actor) => { exact(req, ['item', 'enabled']); return { library: await store.setItemEnabled(actor, itemRef(req.body.item), req.body.enabled) }; }),
     replaceSecret: handle(async (req, actor) => { exact(req, ['name', 'secret', 'expectedRevision']); return { library: await store.replaceSecret(actor, req.body.name, req.body.secret, req.body.expectedRevision) }; }),
     history: handle(async (_req, actor) => ({ revisions: await store.history(actor) })),
+    // Test connections; an unavailable server carries a short, secret-free `reason`.
     validate: handle(async (req, actor) => {
       exact(req, []);
-      const { servers, secrets } = await store.validationTargets(actor);
-      const library = { instanceId: await store.instanceId() };
-      const results = [];
-      for (const server of servers) {
-        // Catalog and package servers run inside the task container; nothing is started here.
-        if (server.kind !== 'https') { results.push({ name: server.name, reachable: null, status: 'not_validated' }); continue; }
-        // Session mode comes from the upstream's answer; authentication from the server's setting.
-        let probe: { reachable: boolean; session: 'stateful' | 'stateless' | null } = { reachable: false, session: null };
-        try {
-          // An OAuth server is validated with its current access token; its library secret is a client secret, never sent upstream.
-          const credential = server.authentication === 'oauth' ? await extensionOAuth(store).accessToken(library.instanceId, server) : secrets[server.name];
-          probe = await probeExtensionMcp(server.url, credential);
-        } catch { /* No response content or error from upstream is disclosed. */ }
-        results.push({ name: server.name, reachable: probe.reachable, status: probe.reachable ? 'reachable' : 'unavailable', session: probe.reachable ? probe.session : null, authentication: server.authentication });
-      }
+      const results = await testExtensionConnections(store, actor);
       await store.authorize(actor); return { results };
     }),
     discoverTools: handle(async (req, actor) => {

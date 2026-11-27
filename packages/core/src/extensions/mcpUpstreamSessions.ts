@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import logger from '../utils/logger.js';
-import { ExtensionUpstreamUnauthorizedError, extensionPinnedConnection, requestExtensionMcp, type ExtensionMcpExchange, type ExtensionMcpSend, type ExtensionPinnedConnection } from './endpointPolicy.js';
+import { ExtensionUpstreamUnauthorizedError, extensionPinnedConnection, extensionRequestFailureReason, requestExtensionMcp, type ExtensionMcpExchange, type ExtensionMcpSend, type ExtensionPinnedConnection } from './endpointPolicy.js';
 
 /**
  * Upstream MCP sessions of URL servers, owned by the gateway.
@@ -64,6 +64,8 @@ export interface HandshakeOutcome {
   reply?: unknown;
   /** Bytes the handshake sent. */
   requestBytes: number;
+  /** Without a state: why each era's handshake failed, short and secret-free (for Test connections). */
+  failure?: string;
 }
 
 /**
@@ -83,7 +85,7 @@ export class ExtensionUpstreamHandshakeUnauthorizedError extends ExtensionUpstre
  * assigned no session is not held to this: its calls need no initialized state.
  */
 export class ExtensionUpstreamHandshakeIncompleteError extends Error {
-  constructor(readonly pending: HandshakeOutcome & { state: UpstreamSessionState }) { super('MCP session initialization incomplete'); }
+  constructor(readonly pending: HandshakeOutcome & { state: UpstreamSessionState }, readonly reason = 'initialized notification failed') { super('MCP session initialization incomplete'); }
 }
 
 /**
@@ -110,10 +112,17 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
     requestBytes += Buffer.byteLength(JSON.stringify(body));
     return post(body, exchange);
   };
-  /** Protocol discovery: any failure but a refused credential only means this era is unavailable. */
+  const failures: string[] = [];
+  /** Protocol discovery: any failure but a refused credential only means this era is unavailable (its reason is kept). */
   const send = async (body: unknown, exchange: ExtensionMcpExchange) => {
     try { return await charged(body, exchange); }
-    catch (error) { if (isUnauthorized(error)) throw error; return undefined; }
+    catch (error) { if (isUnauthorized(error)) throw error; failures.push(`${(body as { method: string }).method}: ${extensionRequestFailureReason(error)}`); return undefined; }
+  };
+  /** An answer that was not a usable result: a JSON-RPC error code, never its message. */
+  const refused = (method: string, reply: unknown, unsupported: boolean) => {
+    if (reply === undefined) return;
+    const code = (reply as { error?: { code?: unknown } } | null)?.error?.code;
+    failures.push(`${method}: ${unsupported ? 'no supported protocol version' : Number.isInteger(code) ? `JSON-RPC error ${code as number}` : 'not a JSON-RPC result'}`);
   };
   /**
    * Send the initialized notification in `state`. Only an accepted notification completes the handshake: a refused
@@ -128,7 +137,7 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
       // A stateless upstream (no session id) that mishandles the notification (a 400/405, an empty or non-JSON 200)
       // still serves calls, as it did before the gateway sent one: keep the stateless state.
       if (!state.id) return pending;
-      throw new ExtensionUpstreamHandshakeIncompleteError(pending);
+      throw new ExtensionUpstreamHandshakeIncompleteError(pending, `notifications/initialized: ${extensionRequestFailureReason(error)}`);
     }
     return { state, reply, requestBytes };
   };
@@ -160,17 +169,19 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
     const state: UpstreamSessionState = { mode: id ? 'stateful' : 'stateless', era: '2025', protocolVersion, ...(id ? { id } : {}), ...(connection ? { connection } : {}) };
     return notify(state, reply);
   }
+  refused('initialize', reply, Boolean(initialized));
   await abandon(opening);
   const discovering: ExtensionMcpExchange = { protocolVersion: MCP_2026_REVISION, headers: { 'Mcp-Method': 'server/discover' }, pin: true };
-  let discovered: Record<string, unknown> | undefined;
-  try { discovered = resultOf(await send({ jsonrpc: '2.0', id: 'propr-gateway-discover', method: 'server/discover', params: { _meta: MCP_2026_META } }, discovering)); }
+  let discovered: Record<string, unknown> | undefined; let answer: unknown;
+  try { discovered = resultOf(answer = await send({ jsonrpc: '2.0', id: 'propr-gateway-discover', method: 'server/discover', params: { _meta: MCP_2026_META } }, discovering)); }
   catch (error) { discovering.connection?.agent.destroy(); throw error; }
   if (discovered && Array.isArray(discovered.supportedVersions) && discovered.supportedVersions.includes(MCP_2026_REVISION)) {
     const connection = pooled(discovering.connection);
     return { state: { mode: 'stateless', era: '2026', protocolVersion: MCP_2026_REVISION, ...(connection ? { connection } : {}) }, reply, requestBytes };
   }
+  refused('server/discover', answer, Boolean(discovered));
   discovering.connection?.agent.destroy();
-  return { reply, requestBytes };
+  return { reply, requestBytes, ...(failures.length ? { failure: failures.join('; ') } : {}) };
 }
 
 /** Every session slot is held by a call in flight: a new session is refused rather than closing one of them. */
@@ -397,6 +408,8 @@ export interface ExtensionMcpProbe {
   protocolVersion: string | null;
   /** The `tools/list` reply, when asked for. */
   tools?: unknown;
+  /** When not reachable: why, short and secret-free. */
+  reason?: string;
 }
 
 /**
@@ -420,7 +433,8 @@ export async function probeExtensionMcp(endpoint: string, credential: string | u
       const request = sessionRequest(state, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
       tools = await post(request.body, request.exchange);
     }
-    return { reachable: Boolean(state) || Boolean(resultOf(outcome.reply)), session: state?.mode ?? null, protocolVersion: state?.protocolVersion ?? null, ...(options.listTools ? { tools } : {}) };
+    const reachable = Boolean(state) || Boolean(resultOf(outcome.reply));
+    return { reachable, session: state?.mode ?? null, protocolVersion: state?.protocolVersion ?? null, ...(options.listTools ? { tools } : {}), ...(reachable ? {} : { reason: outcome.failure ?? 'no MCP handshake completed' }) };
   } finally {
     if (state) await closeUpstreamSession(state, exchange => send(endpoint, null, credential, {}, exchange));
   }

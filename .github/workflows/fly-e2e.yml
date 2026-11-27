@@ -515,7 +515,7 @@ jobs:
           jq -e '.results[] | select(.name == "url-bearer") | .reachable == false and .status == "unavailable" and .authentication == "bearer"' "$OUT/validate-wrong.json" > /dev/null ||
             { echo "::error::A wrong Bearer token was not refused: $(jq -c '.results[] | select(.name == "url-bearer")' "$OUT/validate-wrong.json")"; exit 1; }
           (( elapsed < 60 )) || { echo "::error::Test connections took ${elapsed}s with a wrong Bearer token"; exit 1; }
-          echo "Wrong Bearer token refused in ${elapsed}s"
+          echo "Wrong Bearer token refused in ${elapsed}s ($(jq -r '.results[] | select(.name == "url-bearer") | .reason // "no reason"' "$OUT/validate-wrong.json"))"
           revision=$(jq -r .library.revision "$OUT/library.json")
           jq -n --arg secret "$URL_BEARER_TOKEN" --argjson revision "$revision" '{name: "url-bearer", secret: $secret, expectedRevision: $revision}' |
             post /api/instance/extensions/v1/secrets > "$OUT/library.json"
@@ -536,13 +536,28 @@ jobs:
           rm -f "$jar"
           get /api/instance/extensions/v1 | jq -e '.oauth.connections["url-oauth"].state == "connected"' > /dev/null
 
+          # The fixture answers right before Test connections, so an unreachable url-oauth is not a cold host.
+          health_started=$(date +%s)
+          for attempt in $(seq 0 24); do
+            curl --fail --silent --show-error --max-time 10 -o /dev/null "$OAUTH_FIXTURE_ORIGIN/health" && break
+            [[ $attempt -lt 24 ]] || { echo "::error::The OAuth fixture did not answer /health before Test connections"; exit 1; }
+            sleep 5
+          done
+          echo "OAuth fixture /health answered after $(( $(date +%s) - health_started ))s"
+          # Counters only (no tokens): whether Test connections' requests reached the fixture.
+          fixture_stats() { curl --silent --show-error --max-time 10 "$OAUTH_FIXTURE_ORIGIN/stats" | jq -c '{sessionsOpened, sessionsDeleted, unauthorized, refreshes, sessionNotFound}' || echo '"stats unavailable"'; }
+          echo "OAuth fixture before Test connections: $(fixture_stats)"
           # Test connections again: every URL server is reached and reports its session mode and authentication.
+          started=$(date +%s)
           echo '{}' | post /api/instance/extensions/v1/validate > "$OUT/validate.json"
+          echo "Test connections took $(( $(date +%s) - started ))s; OAuth fixture after: $(fixture_stats)"
+          # Each URL server's result; an unavailable one names why (HTTP status, timeout, token refresh failed ...).
+          jq -r '.results[] | select(.name | startswith("url-")) | "  \(.name): \(.status)\(if .reason then " (\(.reason))" else "" end)"' "$OUT/validate.json"
           jq -e '[.results[] | select(.name | startswith("url-")) | {key: .name, value: [.reachable, .session, .authentication]}] | from_entries == {
               "url-stateful": [true, "stateful", "none"], "url-stateless": [true, "stateless", "none"],
               "url-bearer": [true, "stateful", "bearer"], "url-oauth": [true, "stateful", "oauth"]
             }' "$OUT/validate.json" > /dev/null ||
-            { echo "::error::Test connections: $(jq -c '[.results[] | select(.name | startswith("url-"))]' "$OUT/validate.json")"; exit 1; }
+            { echo "::error::Test connections: $(jq -r '[.results[] | select(.name | startswith("url-")) | select(.reachable != true) | "\(.name) \(.status): \(.reason // "no reason")"] | join("; ")' "$OUT/validate.json") — $(jq -c '[.results[] | select(.name | startswith("url-"))]' "$OUT/validate.json")"; exit 1; }
           {
             echo "### Extension Library (revision $(jq -r .library.revision "$OUT/library.json"))"
             echo "- Skill bundle \`fixture-token\` ($bundle), auto-applied to $REPO"
