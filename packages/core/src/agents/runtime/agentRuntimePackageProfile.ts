@@ -102,6 +102,14 @@ export interface RemoteAgentRuntimeOptions {
 /** The runtimes the enabled agents (or the default, without any) select, and whether any of them is Docker-based. */
 export interface AgentRuntimeUsage { runtimes: string[]; docker: boolean }
 
+/** The runtime one agent's runs select, with the worker's published default when this process (the API) sets none. */
+export async function effectiveAgentRuntimeName(
+    config: Pick<AgentConfig, 'runtime'> | null, environment: NodeJS.ProcessEnv = process.env,
+    { published = readPublishedWorkerAgentRuntime }: RemoteAgentRuntimeOptions = {},
+): Promise<string> {
+    return selectedAgentRuntimeName(config, await runtimeEnvironment(environment, published));
+}
+
 /**
  * Which runtimes are in use. The default runtime is this process's `PROPR_AGENT_RUNTIME`, or else the
  * one the worker published, so the API decides like the worker that runs the agents.

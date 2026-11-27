@@ -6,10 +6,12 @@ import {
   getManagedAgentConfigPath,
   isAgentLoginSupported,
   isManagedAgentConfigPath,
+  supportsPastedAgentCredentials,
   type ReasoningLevel,
 } from '@propr/shared';
 import { getAgentVersions, AvailableVersionsResponse } from '../../api/agentVersionApi';
 import AgentCredentialSetup from './AgentCredentialSetup';
+import AgentPastedCredentials, { type PendingAgentCredential } from './AgentPastedCredentials';
 import AgentEnabledToggle from './AgentEnabledToggle';
 import {
   createNewAgentFormData,
@@ -30,7 +32,7 @@ interface AgentConfigModalProps {
   agent: AgentConfig | null;
   existingAliases: string[];
   onClose: () => void;
-  onSave: (agent: AgentConfig, options?: { loginAfterSave: boolean }) => void;
+  onSave: (agent: AgentConfig, options?: { loginAfterSave: boolean; credential?: PendingAgentCredential }) => void;
   saving?: boolean;
 }
 
@@ -45,6 +47,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   const [formData, setFormData] = useState<AgentFormData>(createNewAgentFormData);
   const [credentialSetup, setCredentialSetup] = useState<CredentialSetup>('login');
+  const [pendingCredential, setPendingCredential] = useState<PendingAgentCredential | null>(null);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [versionData, setVersionData] = useState<AvailableVersionsResponse | null>(null);
@@ -116,6 +119,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const handleTypeChange = (newType: AgentType) => {
     const defaults = AGENT_DEFAULTS[newType];
     const prevDefaults = AGENT_DEFAULTS[formData.type];
+    setPendingCredential(null);
+    if (credentialSetup === 'paste' && !supportsPastedAgentCredentials(newType)) setCredentialSetup('login');
     setFormData(prev => ({
       ...prev,
       type: newType,
@@ -123,7 +128,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       alias: prev.alias === prevDefaults.defaultAlias ? defaults.defaultAlias : prev.alias,
       dockerImage: defaults.dockerImage, // Docker image is predefined and not editable
       configPath: (
-        (!isEditing && credentialSetup === 'login')
+        (!isEditing && (credentialSetup === 'login' || credentialSetup === 'paste'))
         || isManagedAgentConfigPath(prev.configPath)
       ) && isAgentLoginSupported(newType)
         ? getManagedAgentConfigPath(prev.id!, newType)
@@ -144,7 +149,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     setErrors(prev => ({ ...prev, configPath: '' }));
     setFormData(prev => ({
       ...prev,
-      configPath: next === 'login' && isAgentLoginSupported(prev.type)
+      configPath: (next === 'login' || next === 'paste') && isAgentLoginSupported(prev.type)
         ? getManagedAgentConfigPath(prev.id!, prev.type)
         : AGENT_DEFAULTS[prev.type].configPath,
     }));
@@ -211,6 +216,9 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   const validateForm = (): boolean => {
     const newErrors = validateAgentFormData(formData, existingAliases, agent?.alias);
+    if (!isEditing && credentialSetup === 'paste' && !pendingCredential?.value.trim()) {
+      newErrors.pastedCredential = 'Paste a key or token, or choose another credential setup';
+    }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -225,12 +233,17 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
     const agentToSave = buildAgentConfig(formData);
 
+    const credential = pendingCredential?.value.trim() && supportsPastedAgentCredentials(formData.type)
+      && (isEditing || credentialSetup === 'paste')
+      ? pendingCredential
+      : undefined;
     onSave(agentToSave, {
       loginAfterSave: shouldLoginAfterSave(
         isEditing,
         credentialSetup,
         formData.type,
       ),
+      ...(credential ? { credential } : {}),
     });
   };
 
@@ -339,6 +352,19 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               setFormData(prev => ({ ...prev, configPath }));
             }}
           />
+
+          {supportsPastedAgentCredentials(formData.type) && (isEditing || credentialSetup === 'paste') && (
+            <AgentPastedCredentials
+              type={formData.type}
+              agentId={isEditing && agent?.type === formData.type ? agent.id : undefined}
+              value={pendingCredential}
+              onChange={next => {
+                setPendingCredential(next);
+                setErrors(prev => ({ ...prev, pastedCredential: '' }));
+              }}
+              error={errors.pastedCredential}
+            />
+          )}
 
           <ModelSelector
             agentType={formData.type} agentAlias={formData.alias}

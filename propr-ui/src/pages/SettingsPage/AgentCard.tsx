@@ -180,7 +180,7 @@ const AgentHeaderStatus: React.FC<{ enabled: boolean; health?: AgentHealthState 
   if (health?.status !== 'ready' && health?.status !== 'checking') return null;
   const ready = health.status === 'ready';
   return (
-    <span role="status" title={ready ? `Checked with ${formatModelName(health.model || '')}` : 'Checking agent…'} className="inline-flex shrink-0 items-center gap-1 text-[11px] text-slate-500">
+    <span role="status" title={ready ? (health.detail ? `Ready on ${health.detail}` : `Checked with ${formatModelName(health.model || '')}`) : 'Checking agent…'} className="inline-flex shrink-0 items-center gap-1 text-[11px] text-slate-500">
       <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-emerald-500' : 'animate-pulse bg-slate-400'}`} />
       {ready ? 'Ready' : <><span aria-hidden="true">Checking…</span><span className="sr-only">Checking agent…</span></>}
     </span>

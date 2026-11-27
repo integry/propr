@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 333
+    total: 336
     documented: 95
-    undocumented: 238
+    undocumented: 241
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -1474,6 +1474,106 @@ paths:
         - bearerAuth: []
       parameters:
         - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_agents
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agents/{agentId}/credentials:
+    get:
+      operationId: getApiAgentsAgentIdCredentials
+      summary: GET /api/agents/{agentId}/credentials
+      description: |-
+        This route is registered but not documented yet.
+
+        Requires the `instance.manage_agents` instance permission.
+      tags:
+        - Agents
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_agents
+      x-undocumented: true
+      x-legacy-error: true
+    put:
+      operationId: putApiAgentsAgentIdCredentials
+      summary: PUT /api/agents/{agentId}/credentials
+      description: |-
+        This route is registered but not documented yet.
+
+        Requires the `instance.manage_agents` instance permission.
+      tags:
+        - Agents
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_agents
+      x-undocumented: true
+      x-legacy-error: true
+  /api/agents/{agentId}/credentials/{kind}:
+    delete:
+      operationId: deleteApiAgentsAgentIdCredentialsKind
+      summary: DELETE /api/agents/{agentId}/credentials/{kind}
+      description: |-
+        This route is registered but not documented yet.
+
+        Requires the `instance.manage_agents` instance permission.
+      tags:
+        - Agents
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      parameters:
+        - name: agentId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: kind
           in: path
           required: true
           schema:

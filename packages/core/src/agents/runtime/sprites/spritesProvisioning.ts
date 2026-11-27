@@ -9,14 +9,14 @@ import type { Sprite, SpritesClient, StreamMessage } from '@fly/sprites';
 import { projectRoot, readSpritesCliPins } from './spritesCliPins.js';
 import { sameSpriteNetworkPolicy, OPEN_SPRITE_NETWORK_POLICY } from './spritesNetwork.js';
 import { installSpritePackageServers } from './spritesPackageServers.js';
-import { provisionedPackages, slotPoolKey, spritePoolKey, type Slot } from './spritesSlot.js';
+import { provisionedPackages, queueWindow, slotPoolKey, SpritePoolCapacityError, spritePoolKey, type Slot } from './spritesSlot.js';
 import { packageServersDigest, type RemotePackageInstall } from '../../../extensions/remotePackageServers.js';
 import { startupStep } from '../startupStep.js';
 import { checkAgentRuntimePackagesBeforeInstall } from '../agentRuntimePackageIndex.js';
 import { installSpriteRuntimePackages, type SpritePackageSource } from './spritesPackageBase.js';
 import { agentRuntimePackagesDigest } from '../agentRuntimePackageProfile.js';
 
-export { startupStep };
+export { startupStep, SpritePoolCapacityError };
 export { readSpritesCliPins, type SpritesCliPins } from './spritesCliPins.js';
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'> & Partial<Pick<SpritesClient, 'listAllSprites' | 'getSprite'>>;
@@ -197,16 +197,17 @@ export class SpritePool {
     }
 
     /** A clean Sprite whose checkpoint has exactly the current runtime packages and the run's package MCP servers installed. */
-    async acquire(signal: AbortSignal, onWaiting?: () => void, servers?: RemotePackageInstall): Promise<Slot & { queueMs: number }> {
+    async acquire(signal: AbortSignal, onWaiting?: () => void, servers?: RemotePackageInstall, { maxQueueMs }: { maxQueueMs?: number } = {}): Promise<Slot & { queueMs: number }> {
         signal.throwIfAborted();
         if (this.closed) throw new Error('Sprite pool is closed');
         const serversDigest = packageServersDigest(servers?.servers);
         signal = AbortSignal.any([signal, this.shutdown.signal]);
         const inventory = this.inventory;
         const minutes = inventory?.queueMinutes ?? 10;
-        const timeout = () => new Error(`No Sprite available: cap ${inventory?.cap} reached after ${minutes}m`);
+        const queue = queueWindow(minutes, maxQueueMs);
+        const timeout = () => new SpritePoolCapacityError(`No Sprite available: cap ${inventory?.cap} reached after ${queue.label}`, inventory?.cap);
         const started = Date.now();
-        const deadline = performance.now() + minutes * 60_000;
+        const deadline = performance.now() + queue.ms;
         let attempt = 0;
         const elapsedQueueMs = () => attempt ? Date.now() - started : 0;
         const reserveForRun = async (name: string) => {

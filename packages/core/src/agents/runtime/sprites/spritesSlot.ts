@@ -30,3 +30,16 @@ export function provisionedPackages(packages: readonly string[], packageInstallM
  */
 export const spritePoolKey = (packagesDigest: string, serversDigest: string) => packagesDigest + '/' + serversDigest;
 export const slotPoolKey = (slot: Pick<Slot, 'packagesDigest' | 'packageServersDigest'>) => spritePoolKey(slot.packagesDigest, slot.packageServersDigest);
+
+/** Every Sprite slot (`PROPR_SPRITES_MAX`) stayed in use for the whole queue wait. */
+export class SpritePoolCapacityError extends Error {
+    constructor(message: string, readonly cap: number | undefined) {
+        super(message);
+        this.name = 'SpritePoolCapacityError';
+    }
+}
+
+/** How long `acquire` queues at the cap: `PROPR_SPRITES_QUEUE_TIMEOUT` minutes, or a caller's shorter wait (an interactive login). */
+export function queueWindow(minutes: number, maxQueueMs?: number) {
+    return maxQueueMs === undefined ? { ms: minutes * 60_000, label: `${minutes}m` } : { ms: maxQueueMs, label: `${Math.round(maxQueueMs / 1000)}s` };
+}

@@ -4,6 +4,8 @@ import Alert from './Alert';
 import AgentConfigModal from './AgentConfigModal';
 import AgentCard from './AgentCard';
 import AgentLoginModal from './AgentLoginModal';
+import type { PendingAgentCredential } from './AgentPastedCredentials';
+import { setAgentCredential } from '../../api/agentCredentialApi';
 import { useAgentHealth } from './useAgentHealth';
 
 // --- Icons ---
@@ -60,6 +62,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
   const [showModal, setShowModal] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null);
   const [loginAgent, setLoginAgent] = useState<AgentConfig | null>(null);
+  const [credentialMessage, setCredentialMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const localHealth = useAgentHealth(agents, loading || readOnly || Boolean(agentHealth));
   const { health, recheck } = agentHealth ?? localHealth;
@@ -93,7 +96,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
 
   const handleSaveAgent = async (
     agent: AgentConfig,
-    options?: { loginAfterSave: boolean },
+    options?: { loginAfterSave: boolean; credential?: PendingAgentCredential },
   ) => {
     let updatedAgents: AgentConfig[];
     const existingIndex = agents.findIndex(a => a.id === agent.id);
@@ -112,6 +115,16 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
     setShowModal(false);
     setEditingAgent(null);
     onCloseAddModal?.();
+    setCredentialMessage(null);
+    if (options?.credential) {
+      try {
+        await setAgentCredential(agent.id, options.credential.kind, options.credential.value);
+        setCredentialMessage({ type: 'success', text: `Credential saved for ${agent.alias}.` });
+      } catch (credentialError) {
+        setCredentialMessage({ type: 'error', text: `The agent was saved, but its credential was not: ${(credentialError as Error).message}` });
+      }
+      recheck(agent.id);
+    }
     if (options?.loginAfterSave) {
       setLoginAgent(savedAgents.find(saved => saved.id === agent.id) ?? agent);
     }
@@ -131,6 +144,7 @@ const AgentsListSection: React.FC<AgentsListSectionProps> = ({
       {error && <Alert message={error} type="error" />}
       {warning && <Alert message={warning} type="warning" />}
       {success && <Alert message={success} type="success" />}
+      {credentialMessage && <Alert message={credentialMessage.text} type={credentialMessage.type} />}
 
       {loading ? (
         <p className="text-gray-600">Loading agents...</p>

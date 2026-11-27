@@ -26,6 +26,7 @@ import type { AgentRuntimePackageLoader } from './agentRuntimePackageIndex.js';
 import { remoteRuntimePackageSource } from './agentRuntimeRemotePackages.js';
 import { startRunPipeline } from './runPipeline.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
+import type { RemoteLoginProcess, RemoteLoginRequest } from './remoteLogin.js';
 
 // Operator catalog executables are not part of the Fly image contract: those servers stay refused (explicit) or dropped (auto-applied).
 const FLY_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false });
@@ -50,6 +51,17 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
     unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec) {
         if (!['claude', 'codex'].includes(spec.profile.agentType)) return 'Fly Machines supports Claude Code and Codex';
         if (config?.cliVersionType && config.cliVersionType !== 'default') return 'Fly Machines uses the CLI version in PROPR_FLY_IMAGE';
+    }
+
+    /**
+     * An interactive provider login on an ephemeral Machine from PROPR_FLY_IMAGE. It holds a
+     * PROPR_FLY_MACHINES_MAX slot and is destroyed when the returned process is closed.
+     */
+    async startLogin(request: RemoteLoginRequest): Promise<RemoteLoginProcess> {
+        if (!['claude', 'codex'].includes(request.agentType)) throw new Error('Fly Machines supports the Claude Code and Codex logins');
+        const config = flyConfig(this.environment);
+        const { startFlyLogin } = await import('./fly/flyLogin.js');
+        return startFlyLogin(this.client ?? new MachinesClient(config), config, request);
     }
 
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {

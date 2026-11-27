@@ -8,13 +8,15 @@ import {
   AgentLoginSessionNotFoundError,
   agentLoginSessionManager,
 } from '../services/agentLoginSessionManager.js';
+import { createAgentCredentialRoutes } from './agentCredentialRoutes.js';
 
 interface AgentLoginRoutesDeps {
   sessionManager?: AgentLoginSessionManager;
   resolveAgent?: (agentId: string) => Promise<AgentConfig | undefined>;
+  credentials?: Omit<Parameters<typeof createAgentCredentialRoutes>[0], 'resolveAgent'>;
 }
 
-async function defaultResolveAgent(agentId: string): Promise<AgentConfig | undefined> {
+export async function defaultResolveAgent(agentId: string): Promise<AgentConfig | undefined> {
   const registry = getAgentRegistry();
   try {
     await registry.ensureInitialized();
@@ -128,5 +130,5 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
     }
   };
 
-  return { startLogin, getLogin, sendInput, cancelLogin };
+  return { startLogin, getLogin, sendInput, cancelLogin, ...createAgentCredentialRoutes({ ...deps.credentials, resolveAgent }) };
 }

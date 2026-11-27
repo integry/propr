@@ -1,5 +1,5 @@
 import React from 'react';
-import { ANTIGRAVITY_EXISTING_LOGIN_HINT, ANTIGRAVITY_MANAGED_LOGIN_HINT, isAgentLoginSupported } from '@propr/shared';
+import { ANTIGRAVITY_EXISTING_LOGIN_HINT, ANTIGRAVITY_MANAGED_LOGIN_HINT, isAgentLoginSupported, supportsPastedAgentCredentials } from '@propr/shared';
 import {
   AGENT_DEFAULTS,
   type AgentType,
@@ -27,17 +27,20 @@ const AgentCredentialSetup: React.FC<AgentCredentialSetupProps> = ({
   onConfigPathChange,
 }) => {
   const supportsLogin = isAgentLoginSupported(type);
+  const supportsPaste = supportsLogin && supportsPastedAgentCredentials(type);
+  const options = [
+    { value: 'login' as const, label: 'Log in to a new account' },
+    ...(supportsPaste ? [{ value: 'paste' as const, label: 'Paste a key or token' }] : []),
+    { value: 'existing' as const, label: 'Use existing config' },
+  ];
 
   return (
     <>
       {!isEditing && supportsLogin && (
         <div>
           <span className="block text-gray-700 mb-1.5 font-medium text-sm">Credentials</span>
-          <div className="grid grid-cols-2 gap-2" role="group" aria-label="Credential setup">
-            {[
-              { value: 'login' as const, label: 'Log in to a new account' },
-              { value: 'existing' as const, label: 'Use existing config' },
-            ].map(option => (
+          <div className={`grid gap-2 ${options.length > 2 ? 'grid-cols-3' : 'grid-cols-2'}`} role="group" aria-label="Credential setup">
+            {options.map(option => (
               <button
                 key={option.value}
                 type="button"
@@ -58,6 +61,13 @@ const AgentCredentialSetup: React.FC<AgentCredentialSetupProps> = ({
               ProPR will keep this account isolated at{' '}
               <code className="break-all font-mono">{configPath}</code> and open the provider login after saving.
               {type === 'antigravity' && <> {ANTIGRAVITY_MANAGED_LOGIN_HINT}</>}
+            </div>
+          )}
+          {credentialSetup === 'paste' && (
+            <div className="mt-2 rounded-md border border-cyan-200 bg-cyan-50 px-3 py-2 text-xs text-cyan-900">
+              ProPR will keep this account isolated at{' '}
+              <code className="break-all font-mono">{configPath}</code> and write the pasted credential there. It works on
+              Docker, Sprites and Fly Machines, without an interactive login.
             </div>
           )}
         </div>

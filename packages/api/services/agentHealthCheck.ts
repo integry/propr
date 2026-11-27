@@ -1,4 +1,4 @@
-import type { Agent, AgentConfig } from '@propr/core';
+import type { Agent, AgentConfig, RemoteRuntimeReadiness } from '@propr/core';
 import { effectiveAgentBaseImage, redactSecrets } from '@propr/core';
 import { AGENT_MODELS } from '@propr/shared';
 
@@ -23,8 +23,15 @@ export interface AgentHealthResult {
   status: 'ready' | 'error' | 'disabled' | 'preparing';
   model?: string;
   error?: string;
-  errorCode?: 'auth_required' | 'rate_limit' | 'unknown' | 'preparation_failed';
+  errorCode?: 'auth_required' | 'rate_limit' | 'unknown' | 'preparation_failed' | 'runtime_unavailable';
+  /** The remote runtime the agent runs on (`sprites`, `fly-machines`); absent for Docker. */
+  runtime?: string;
+  /** What a remote run would use, e.g. "Sprites, claude CLI 2.1.330". */
+  detail?: string;
 }
+
+/** How long a remote runtime readiness answer is reused by non-fresh checks. */
+const REMOTE_READINESS_TTL_MS = 30_000;
 
 function healthErrorCode(error: unknown): NonNullable<AgentHealthResult['errorCode']> {
   const details = error as { code?: unknown; status?: unknown; statusCode?: unknown; message?: unknown } | undefined;
@@ -44,7 +51,50 @@ export function createAgentHealthCheck(dependencies: {
   // Saved configs name the base bundle tag; probes must run on the image the
   // registry resolved, so a missing image is reported instead of pulled.
   resolveExecutionImage?: (config: AgentConfig) => Promise<{ image?: string; error?: string }>;
+
+  // Agents on Sprites or Fly Machines: report the runtime's readiness and never touch a local
+  // Docker image. Undefined for Docker agents, which keep the image checks and the model probe.
+  remoteReadiness?: (config: AgentConfig) => Promise<RemoteRuntimeReadiness | undefined>;
+  /** Why the agent's credential store cannot authenticate a remote run, or undefined when it has credentials. */
+  remoteCredentialProblem?: (config: AgentConfig) => string | undefined;
+  now?: () => number;
 }) {
+  const now = dependencies.now ?? Date.now;
+  const remoteAnswers = new Map<string, { at: number; value: RemoteRuntimeReadiness | undefined }>();
+
+  async function remoteReadiness(config: AgentConfig, fresh: boolean): Promise<RemoteRuntimeReadiness | undefined> {
+    if (!dependencies.remoteReadiness) return undefined;
+    const key = JSON.stringify(config);
+    const cached = remoteAnswers.get(key);
+    if (!fresh && cached && now() - cached.at < REMOTE_READINESS_TTL_MS) return cached.value;
+    const value = await dependencies.remoteReadiness(config);
+    remoteAnswers.set(key, { at: now(), value });
+    return value;
+  }
+
+  /** The health of an agent on a remote runtime, or undefined for a Docker agent. */
+  async function remoteCheck(config: AgentConfig, fresh: boolean): Promise<AgentHealthResult | undefined> {
+    let readiness: RemoteRuntimeReadiness | undefined;
+    try {
+      readiness = await remoteReadiness(config, fresh);
+    } catch (error) {
+      return { agentId: config.id, status: 'error', errorCode: 'runtime_unavailable',
+        error: redactSecrets(error instanceof Error ? error.message : 'Could not check the agent runtime.').slice(0, 2000) };
+    }
+    return readiness && remoteResult(config, readiness);
+  }
+
+  function remoteResult(config: AgentConfig, readiness: RemoteRuntimeReadiness): AgentHealthResult {
+    const base = { agentId: config.id, runtime: readiness.runtime };
+    if (!readiness.ready) {
+      return { ...base, status: 'error', errorCode: 'runtime_unavailable', error: redactSecrets(readiness.error || 'The agent runtime is unavailable.').slice(0, 2000) };
+    }
+    const credentialProblem = dependencies.remoteCredentialProblem?.(config);
+    if (credentialProblem) return { ...base, status: 'error', errorCode: 'auth_required', error: credentialProblem, ...(readiness.detail ? { detail: readiness.detail } : {}) };
+    const model = agentHealthModel(config);
+    return { ...base, status: 'ready', ...(model ? { model } : {}), ...(readiness.detail ? { detail: readiness.detail } : {}) };
+  }
+
   // Share worker requests across providers using the same exact image.
   const preparations = new Map<string, { failed: boolean; pending: boolean }>();
   const inFlight = new Map<string, Promise<AgentHealthResult>>();
@@ -70,6 +120,8 @@ export function createAgentHealthCheck(dependencies: {
     const config = agents.find(agent => agent.id === agentId);
     if (!config) return undefined;
     if (!config.enabled) return { agentId, status: 'disabled' };
+    const remote = await remoteCheck(config, fresh);
+    if (remote) return remote;
     const key = JSON.stringify(config);
     let preparationResult: AgentHealthResult | undefined;
     if (dependencies.imageExists && dependencies.prepareImage) {

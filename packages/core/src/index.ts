@@ -364,7 +364,7 @@ export type {
     RuntimePackageValidation
 } from './agents/runtime/agentRuntimePackages.js';
 export * from './agents/runtime/agentRuntimePackageVerification.js';
-export { agentRuntimePackagesDigest, agentRuntimeUsage, describeRemoteAgentRuntimePackageInstall, publishWorkerAgentRuntime, remoteAgentRuntimeConfigured,
+export { agentRuntimePackagesDigest, agentRuntimeUsage, describeRemoteAgentRuntimePackageInstall, effectiveAgentRuntimeName, publishWorkerAgentRuntime, remoteAgentRuntimeConfigured,
     remoteAgentRuntimePackageInstall, type AgentRuntimeUsage } from './agents/runtime/agentRuntimePackageProfile.js';
 export { acceptRemoteAgentRuntimePackages, describeAgentRuntimePackageRuntimes, loadAcceptedRemoteAgentRuntimePackages, remoteAgentRuntimePackageTargets,
     warmRemoteAgentRuntimePackageIndexes, type AgentRuntimePackageRuntimeState, type RemoteRuntimePackageRecord,
@@ -380,6 +380,11 @@ export { COMPUTE_USAGE_SAMPLE_MS_ENV, DEFAULT_COMPUTE_USAGE_SAMPLE_MS, DockerCom
 export * from './agents/credentials/broker.js';
 export * from './agents/credentials/providerManifests.js';
 export {
+    applyPastedCredential, describePastedCredentials, MAX_PASTED_CREDENTIAL_BYTES, PastedCredentialError, removePastedCredential, storedLoginPresent,
+    type CredentialFileReader,
+} from './agents/credentials/pastedCredentials.js';
+export { readCredentialStoreFile, writeCredentialStoreFiles, type CredentialStoreWrite } from './agents/credentials/credentialStoreWriter.js';
+export {
     withCredentialStoreLock, CredentialStoreLockTimeoutError, CredentialStoreLeaseRevokedError, type CredentialStoreLease, type CredentialStoreLockOptions,
 } from './agents/credentials/credentialStoreLock.js';
 export {
@@ -388,6 +393,13 @@ export {
 } from './agents/credentials/hostCredentialStaging.js';
 export { FlyMachinesRuntime } from './agents/runtime/flyMachinesRuntime.js';
 export { SpritesRuntime } from './agents/runtime/spritesRuntime.js';
+export {
+    REMOTE_LOGIN_HOME, REMOTE_LOGIN_SLOT_WAIT_MS, RemoteLoginCapacityError, type RemoteLoginProcess, type RemoteLoginRequest,
+} from './agents/runtime/remoteLogin.js';
+export { checkRemoteRuntimeReadiness, type RemoteRuntimeReadiness, type RemoteRuntimeReadinessDeps } from './agents/runtime/remoteRuntimeReadiness.js';
+export {
+    FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME, selectedAgentRuntimeName,
+} from './agents/runtime/runtimeSelection.js';
 export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
 export {
     AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, closeAgentRuntimes, getAgentRuntime, registerAgentRuntime,
