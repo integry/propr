@@ -40,7 +40,7 @@ const proprServer = { name: 'propr', url: 'http://api:4000/api/mcp', bearerToken
 const docsServer = { name: 'docs', url: `${GATEWAY}/docs`, bearerTokenEnv: 'PROPR_EXTENSION_MCP_0_TOKEN', bearerToken: TOKEN };
 
 function extensionPolicy(bridgeConfig = 'c3R1Yg'): AgentToolPolicy {
-    return { allowWeb: true, exclusiveMcp: true, mcpServers: [proprServer, docsServer], localMcpServers: [stdioServer(bridgeConfig)], skillNames: ['release-notes'], dockerNetwork: 'propr_default' };
+    return { allowWeb: true, exclusiveMcp: true, mcpServers: [proprServer, docsServer], localMcpServers: [stdioServer(bridgeConfig)], skills: [{ id: 'bundle-1', name: 'release-notes' }], dockerNetwork: 'propr_default' };
 }
 
 describe('Vibe MCP launch builder', () => {

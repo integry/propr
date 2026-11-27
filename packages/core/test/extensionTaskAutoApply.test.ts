@@ -91,7 +91,7 @@ test('a Vibe run registers its skill bundles natively and reaches gateway server
     return { policy: policy!, prompt };
   };
   const vibe = await policyFor({ ...claude, type: 'vibe', alias: 'vibe-main' });
-  assert.deepEqual(vibe.policy.skillNames, ['release-notes']);
+  assert.deepEqual(vibe.policy.skills?.map(skill => skill.name), ['release-notes']);
   assert.match(vibe.prompt, /\/opt\/propr\/extensions\/.+\/SKILL\.md for release-notes/, 'the prompt pointer stays');
   const { env, cliArgs } = vibeToolPolicyArgs(vibe.policy);
   assert.deepEqual(cliArgs, []);
@@ -103,7 +103,7 @@ test('a Vibe run registers its skill bundles natively and reaches gateway server
   assert.equal(env.PROPR_EXTENSION_MCP_0_TOKEN, vibe.policy.mcpServers![0].bearerToken);
   assert.ok(!env.VIBE_MCP_SERVERS.includes(vibe.policy.mcpServers![0].bearerToken), 'the token is referenced by name only');
   // Prompt-pointer runtimes do not get native registration.
-  assert.equal((await policyFor(claude)).policy.skillNames, undefined);
+  assert.equal((await policyFor(claude)).policy.skills, undefined);
 });
 
 test('disabled items do not apply, and re-enabling applies them to the next launched run', async t => {

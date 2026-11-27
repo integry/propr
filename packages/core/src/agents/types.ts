@@ -67,10 +67,11 @@ export interface AgentToolPolicy {
     /** Internal operator-resolved stdio descriptors; never customer API input. */
     localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
     /**
-     * Names of the run's skill bundles staged at `/opt/propr/extensions`, set
-     * for runtimes whose capability map entry has native skills (Vibe).
+     * Skill bundles staged read-only at `/opt/propr/extensions/<id>`, set for
+     * runtimes whose capability map entry has native skills (Antigravity, Vibe),
+     * which also register them through their own skill mechanism.
      */
-    skillNames?: string[];
+    skills?: { id: string; name: string }[];
 }
 
 export interface AgentExtensionRequest {

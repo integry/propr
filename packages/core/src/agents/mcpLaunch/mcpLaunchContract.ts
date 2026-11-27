@@ -13,7 +13,7 @@ import type { AgentToolPolicy, AgentToolPolicyMcpServer } from '../types.js';
  *   passed only as `PROPR_EXTENSION_STDIO_*` environment names.
  * - `exclusiveMcp`: no ambient servers or skills from the runtime's own
  *   configuration; only the run's servers.
- * - `skillNames`: the run's skill bundle names, staged at
+ * - `skills`: the run's skill bundles (id and name), staged at
  *   {@link EXTENSION_SKILLS_ROOT}, for runtimes with native skills.
  *
  * Tokens and secret values only ever appear in the returned `env` map: the

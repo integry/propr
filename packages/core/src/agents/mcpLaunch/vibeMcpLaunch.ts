@@ -32,7 +32,7 @@ export function vibeToolPolicyArgs(policy: AgentToolPolicy): ToolPolicyLaunchArg
     ];
     const env: Record<string, string> = Object.fromEntries(servers.map(server => [server.bearerTokenEnv, server.bearerToken]));
     if (entries.length || policy.exclusiveMcp) env[VIBE_MCP_SERVERS_ENV] = JSON.stringify(entries);
-    const skills = policy.skillNames ?? [];
+    const skills = (policy.skills ?? []).map(skill => skill.name);
     if (skills.length) env.VIBE_SKILL_PATHS = JSON.stringify([EXTENSION_SKILLS_ROOT]);
     if (policy.exclusiveMcp) {
         env.PROPR_EXTENSION_EXCLUSIVE_MCP = '1';
