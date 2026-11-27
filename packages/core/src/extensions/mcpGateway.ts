@@ -115,13 +115,12 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     catch { throw new ExtensionError(502, 'MCP connection failed'); }
   };
   const grant = extensionTokenHash(token);
-  let latest: string | undefined;
   let session: ReturnType<ExtensionUpstreamSessions['entry']>;
   try {
     session = sessions.entry({
       grant, server: serverName, taskId, authentication: server.kind === 'https' ? server.authentication : operatorToken ? 'bearer' : 'none',
-      // The DELETE at grant end needs no telemetry: the grant row may already be gone.
-      remove: exchange => send(endpoint, null, latest, transportPolicy, exchange),
+      // A new entry has no session to delete yet; `attempt` sets the DELETE once this call's credential is resolved.
+      remove: async () => null,
       alive: () => extensionGrantAlive(store, grant),
     });
   } catch (error) {
@@ -163,7 +162,8 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     return reply;
   };
   const attempt = async (used: string | undefined): Promise<unknown> => {
-    latest = used; sessions.credentialUsed(session, used);
+    // The DELETE at grant end needs no telemetry: the grant row may already be gone.
+    sessions.credentialUsed(session, used, exchange => send(endpoint, null, used, transportPolicy, exchange));
     const handshake = async (resume?: Parameters<typeof openUpstreamSession>[2]) => {
       const charge = (bytes: number) => store.database('extension_run_grants').where({ token_hash: grant }).increment('request_bytes', bytes);
       let outcome: HandshakeOutcome;

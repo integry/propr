@@ -204,7 +204,11 @@ export interface UpstreamSessionEntry {
   calls: number; toolCalls: number; refreshes: number; reinitialized: number;
   /** Digest of the last credential used, to count OAuth refreshes without keeping the token. */
   credential?: string;
-  /** Replaced on every call with the current call's transport and credential. */
+  /**
+   * The session's `DELETE`, with the last credential a call resolved on this entry. Set when the entry is created and
+   * replaced by `credentialUsed` only once a call has resolved its credential, so a grant-end `DELETE` that races a
+   * call still waiting on its credential carries the previous token, never none.
+   */
   remove: (exchange: ExtensionMcpExchange) => Promise<unknown>;
   /** Whether the run grant is still active and unexpired. */
   alive: () => Promise<boolean>;
@@ -244,7 +248,8 @@ export class ExtensionUpstreamSessions {
       this.entries.set(key, entry);
       this.schedule();
     }
-    entry.remove = init.remove; entry.alive = init.alive; entry.lastUsed = this.now(); entry.active++;
+    // `remove` is not replaced here: this call's credential is not resolved yet (see `credentialUsed`).
+    entry.alive = init.alive; entry.lastUsed = this.now(); entry.active++;
     return entry;
   }
 
@@ -297,8 +302,12 @@ export class ExtensionUpstreamSessions {
     entry.state = undefined; state.connection?.agent.destroy();
   }
 
-  /** Count a credential change (an OAuth refresh) for this session's telemetry. */
-  credentialUsed(entry: UpstreamSessionEntry, credential: string | undefined): void {
+  /**
+   * A call resolved its credential: the entry's `DELETE` now uses it (with that call's transport), and a change (an
+   * OAuth refresh) is counted for this session's telemetry.
+   */
+  credentialUsed(entry: UpstreamSessionEntry, credential: string | undefined, remove: UpstreamSessionEntry['remove']): void {
+    entry.remove = remove;
     if (!credential) return;
     const next = digest(credential);
     if (entry.credential && entry.credential !== next) entry.refreshes++;

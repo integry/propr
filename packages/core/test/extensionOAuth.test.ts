@@ -706,6 +706,45 @@ test('a stateful OAuth server keeps its upstream session across token refreshes 
   assert.deepEqual(deleted, ['oauth-session-1']);
 });
 
+test('a grant ending while a second call waits on its credential deletes the session with the previous token', async t => {
+  const { ExtensionUpstreamSessions } = await import('../src/extensions/mcpUpstreamSessions.js');
+  const { extensionTokenHash } = await import('../src/extensions/extensionProfileStore.js');
+  // The second call's credential() refreshes the token; the hook holds that refresh until the grant has ended.
+  let hold = false; const refreshing = deferred(); const answer = deferred();
+  const f = await hooked(t, { advertise: { dynamic: true }, accessTtl: 120 }, async (request, forward) => {
+    if (hold && grantType(request) === 'refresh_token') { hold = false; refreshing.resolve(); await answer.promise; }
+    return forward();
+  });
+  await f.save([oauthServer()]);
+  await f.connect();
+  const { token } = await f.launch();
+  const sessions = new ExtensionUpstreamSessions();
+  t.after(() => sessions.closeAll('test'));
+  const bearers: (string | undefined)[] = []; const deleted: { sessionId?: string; bearer?: string }[] = [];
+  const send = async (endpoint: string, body: unknown, bearer?: string, _policy?: unknown, exchange: { sessionId?: string; assignedSessionId?: string; method?: string } = {}) => {
+    if (exchange.method === 'DELETE') { deleted.push({ sessionId: exchange.sessionId, bearer }); return null; }
+    const rpc = body as { id?: number; method: string };
+    bearers.push(bearer);
+    const reply = await f.synthetic.send(endpoint, body, bearer);
+    if (rpc.method === 'initialize') exchange.assignedSessionId = 'oauth-session-1';
+    return rpc.id === undefined ? null : reply;
+  };
+  const call = (id: number) => extensionGatewayCall(f.store, token, 'docs', { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'lookup', arguments: {} } }, send, sessions);
+  // An established session, opened and used with the first token.
+  assert.match(JSON.stringify(await call(1)), /Found the document/);
+  const previous = bearers.at(-1);
+  assert.ok(previous, 'the first call carried a token');
+  // Past the refresh margin: the second call waits on credential() while the grant ends.
+  f.tick(61 * 1000); hold = true;
+  const second = call(2);
+  await refreshing.promise;
+  await sessions.closeGrant(extensionTokenHash(token), 'grant_ended');
+  assert.deepEqual(deleted, [{ sessionId: 'oauth-session-1', bearer: previous }], 'the grant-end DELETE carries the previous token');
+  answer.resolve();
+  await assert.rejects(second, /grant expired/);
+  assert.equal(deleted.length, 1, 'no new upstream session for the ended grant');
+});
+
 test('a token refused on the initialized notification is refreshed and the notification retried in the same session', async t => {
   const { ExtensionUpstreamSessions } = await import('../src/extensions/mcpUpstreamSessions.js');
   const { extensionTokenHash } = await import('../src/extensions/extensionProfileStore.js');
