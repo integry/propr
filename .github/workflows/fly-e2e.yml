@@ -709,14 +709,19 @@ jobs:
           # Same list -> the first run's digest with no build Machine; a changed list -> one build and a new digest.
           # The script reads agent-runtime.env itself as KEY=value data (the token has a space, so the
           # shell must never evaluate it), and its output goes through redact_fly_tokens.
-          AGENT_RUNTIME_ENV="$OUT/agent-runtime.env" \
-            RUNTIME_PACKAGES="[\"$RUNTIME_PACKAGE\"]" CHANGED_PACKAGES="[\"$RUNTIME_PACKAGE\",\"cowsay\"]" \
-            node --import tsx --input-type=module 2>&1 <<'JS' | redact_fly_tokens
+          # It runs from a file, not stdin with --input-type: the imported modules start pino's transport
+          # worker, which inherits execArgv, and Node refuses --input-type for a worker's file entry.
+          # Its imports therefore resolve against the checkout (the working directory), not the file.
+          script="$RUNNER_TEMP/derived-image-check.mts"
+          cat > "$script" <<'JS'
           import { readFileSync } from 'node:fs';
           import { setTimeout as delay } from 'node:timers/promises';
-          import { MachinesClient } from './packages/core/src/agents/runtime/fly/api.ts';
-          import { flyConfig } from './packages/core/src/agents/runtime/fly/config.ts';
-          import { FlyPackageImages } from './packages/core/src/agents/runtime/fly/derivedImage.ts';
+          import { pathToFileURL } from 'node:url';
+          const checkout = pathToFileURL(process.cwd() + '/');
+          const fly = (file: string) => import(new URL('packages/core/src/agents/runtime/fly/' + file, checkout).href);
+          const { MachinesClient } = await fly('api.ts');
+          const { flyConfig } = await fly('config.ts');
+          const { FlyPackageImages } = await fly('derivedImage.ts');
           const fail = message => { console.log('::error::' + message); process.exit(1); };
           // Only these keys, each exactly KEY=value; anything else is refused without echoing it.
           const allowed = new Set(['PROPR_FLY_APP', 'PROPR_FLY_IMAGE', 'PROPR_FLY_REGION', 'PROPR_FLY_API_TOKEN']);
@@ -757,6 +762,9 @@ jobs:
           if (left.length) fail('Machines left in the agent app: ' + left.map(m => `${m.name} (${m.state})`).join(', '));
           console.log('No Machines left in ' + config.app);
           JS
+          AGENT_RUNTIME_ENV="$OUT/agent-runtime.env" \
+            RUNTIME_PACKAGES="[\"$RUNTIME_PACKAGE\"]" CHANGED_PACKAGES="[\"$RUNTIME_PACKAGE\",\"cowsay\"]" \
+            node --import tsx "$script" 2>&1 | redact_fly_tokens
           {
             echo "### Derived Fly Machine image"
             echo "- first run built \`$DERIVED_IMAGE\`; the same list reused it with no build Machine"
