@@ -46,7 +46,8 @@ export interface AntigravityStreamResultEvent {
 }
 export type AntigravityStreamEvent = AntigravityStreamInitEvent | AntigravityStreamStepUpdateEvent | AntigravityStreamResultEvent;
 
-export interface AntigravityTranscriptEvent { step_index?: number; source: string; type: string; status?: string; created_at?: string; content?: string }
+/** One agy transcript step; PLANNER_RESPONSE carries `thinking`, ERROR_MESSAGE carries `error`. */
+export interface AntigravityTranscriptEvent { step_index?: number; source: string; type: string; status?: string; created_at?: string; content?: string; thinking?: string; error?: string }
 export type AntigravityOutputEvent = AntigravityEvent | AntigravityStreamEvent | AntigravityTranscriptEvent;
 export type AntigravityTerminalStatus = 'success' | 'error';
 
@@ -62,7 +63,7 @@ export interface AntigravityParsedOutput {
 }
 
 const ANSI_REGEX = new RegExp('[' + String.fromCharCode(0x1b) + String.fromCharCode(0x9b) + '][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]', 'g');
-const ANTIGRAVITY_TRANSCRIPT_SOURCES = new Set(['MODEL', 'USER_EXPLICIT']);
+const ANTIGRAVITY_TRANSCRIPT_SOURCES = new Set(['MODEL', 'USER_EXPLICIT', 'SYSTEM']);
 const LEGACY_EVENT_TYPES = ['init', 'message', 'tool_use', 'tool_result', 'result', 'error'];
 const LEGACY_RESULT_STAT_KEYS = ['total_tokens', 'input_tokens', 'output_tokens', 'inputTokens', 'outputTokens', 'duration_ms', 'tool_calls'] as const;
 const STREAM_USAGE_KEYS = ['input_tokens', 'output_tokens', 'thinking_tokens', 'cache_read_tokens', 'total_tokens'] as const;
@@ -94,7 +95,7 @@ function extractAntigravityResult(lines: Array<{ line: string; isJson: boolean }
 }
 function extractLegacyFallback(lines: Array<{ line: string; isJson: boolean }>, hasStreamEnvelopes: boolean): string | undefined { return hasStreamEnvelopes ? undefined : extractAntigravityResult(lines); }
 
-function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent {
+export function isTranscriptEvent(event: unknown): event is AntigravityTranscriptEvent {
     if (!isRecord(event)) return false;
     return typeof event.source === 'string'
         && ANTIGRAVITY_TRANSCRIPT_SOURCES.has(normalizeTranscriptIdentifier(event.source))
@@ -172,7 +173,7 @@ const STREAM_EVENT_VALIDATORS: Record<string, (candidate: Record<string, unknown
     result: isStreamResultEvent,
 };
 
-function isAntigravityStreamEvent(event: unknown): event is AntigravityStreamEvent {
+export function isAntigravityStreamEvent(event: unknown): event is AntigravityStreamEvent {
     return isRecord(event) && typeof event.event === 'string' && Object.hasOwn(STREAM_EVENT_VALIDATORS, event.event)
         && STREAM_EVENT_VALIDATORS[event.event](event);
 }
@@ -346,8 +347,8 @@ export function parseAntigravityJsonl(output: string): AntigravityParsedOutput {
         }
         if (isAntigravityStreamEvent(value)) processStreamEvent(value, state, events);
         else { events.push(value); if (isTranscriptEvent(value)) {
-            if (!state.streamConversationId && normalizeTranscriptIdentifier(value.source) === 'MODEL'
-                && typeof value.content === 'string' && value.content.trim()) state.lastCompleteAssistantMessage = value.content;
+            // Only planner responses are the model's narration; tool steps carry command output.
+            if (!state.streamConversationId && getAntigravityAnalysisText(value)?.trim()) state.lastCompleteAssistantMessage = value.content!;
         } else processLegacyEvent(value, state); }
     }
     if (state.currentAssistantMessage) state.lastCompleteAssistantMessage = state.currentAssistantMessage;

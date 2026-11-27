@@ -371,3 +371,49 @@ test('parseRedisOutput keeps Vibe 2 role-based records unchanged', () => {
         { type: 'thought', content: 'Changed the greeting and verified it.', timestamp: '2026-06-03T20:56:56.000Z' }
     ]);
 });
+
+test('parseRedisOutput projects agy stream-json envelopes into thoughts, step tools and usage', () => {
+    const step = (index: number, state: string, stepType: string, extra: Record<string, unknown> = {}) => JSON.stringify({
+        event: 'step_update', step_update: { conversation_id: 'agy-task', step_index: index, state, step_type: stepType, ...extra },
+    });
+    const parsed = parseRedisOutput([
+        'Using disposable Antigravity runtime state',
+        JSON.stringify({ event: 'init', conversation_id: 'agy-task', init: { model: 'gemini-3.8-flash-medium', cwd: '/home/node/workspace', tools: [] } }),
+        step(1, 'RUNNING', 'AGENT_RESPONSE', { text_delta: 'I will inspect ' }),
+        step(1, 'DONE', 'AGENT_RESPONSE', { text_delta: 'the repository.', usage: { input_tokens: 900, output_tokens: 12 } }),
+        step(2, 'RUNNING', 'RUN_COMMAND'),
+        step(2, 'DONE', 'RUN_COMMAND', { usage: { input_tokens: 1000, output_tokens: 8 } }),
+        step(3, 'RUNNING', 'LIST_DIRECTORY'),
+        step(3, 'ERROR', 'LIST_DIRECTORY'),
+        step(4, 'DONE', 'AGENT_RESPONSE', { text_delta: 'Done. Added subtract.' }),
+        JSON.stringify({ event: 'result', result: { conversation_id: 'agy-task', status: 'SUCCESS', response: 'Done. Added subtract.\n\nAll tests pass.', usage: { input_tokens: 4100, output_tokens: 120, cache_read_tokens: 3000 } } }),
+    ]);
+
+    assert.deepStrictEqual(parsed.events.map(event => ({ type: event.type, content: event.content, toolName: event.toolName, isError: event.isError })), [
+        { type: 'thought', content: 'I will inspect the repository.', toolName: undefined, isError: undefined },
+        { type: 'tool_use', content: undefined, toolName: 'RUN_COMMAND', isError: undefined },
+        { type: 'tool_result', content: undefined, toolName: undefined, isError: false },
+        { type: 'tool_use', content: undefined, toolName: 'LIST_DIRECTORY', isError: undefined },
+        { type: 'tool_result', content: undefined, toolName: undefined, isError: true },
+        { type: 'thought', content: 'Done. Added subtract.', toolName: undefined, isError: undefined },
+        { type: 'thought', content: 'Done. Added subtract.\n\nAll tests pass.', toolName: undefined, isError: undefined },
+    ]);
+    assert.equal(parsed.events[2].toolUseId, parsed.events[1].id);
+    assert.deepStrictEqual(parsed.tokenUsage, { input_tokens: 4100, output_tokens: 120, cache_creation_input_tokens: 0, cache_read_input_tokens: 3000 });
+});
+
+test('parseRedisOutput buffers live agy narration and does not repeat a terminal response that equals it', () => {
+    const lines = [
+        JSON.stringify({ event: 'init', conversation_id: 'agy-goal', init: { model: 'gemini-3.8-flash-medium' } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'agy-goal', step_index: 1, state: 'RUNNING', step_type: 'agent_response', text_delta: 'Adding ', usage: { input_tokens: 40, output_tokens: 1 } } }),
+        JSON.stringify({ event: 'step_update', step_update: { conversation_id: 'agy-goal', step_index: 1, state: 'DONE', step_type: 'agent_response', text_delta: 'subtract.', usage: { input_tokens: 40, output_tokens: 2 } } }),
+    ];
+    const live = parseRedisOutput(lines);
+    assert.deepStrictEqual(live.events.map(event => event.content), ['Adding subtract.']);
+    assert.equal(live.tokenUsage?.input_tokens, 40);
+
+    const finished = parseRedisOutput([...lines,
+        JSON.stringify({ event: 'result', result: { conversation_id: 'agy-goal', status: 'SUCCESS', response: 'Adding subtract.', usage: { input_tokens: 45, output_tokens: 2 } } })]);
+    assert.deepStrictEqual(finished.events.map(event => event.content), ['Adding subtract.']);
+    assert.equal(finished.tokenUsage?.input_tokens, 45);
+});
