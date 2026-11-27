@@ -375,6 +375,30 @@ describe('readLatestVibeSessionTokenUsage', () => {
         }
     });
 
+    test('falls back to the pinned container session dir when export.json is missing', () => {
+        const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-pinned-session-test-'));
+        try {
+            // The runtime home is mounted at /tmp/propr-vibe-home and VIBE_SESSION_LOGGING__SAVE_DIR
+            // points at /tmp/propr-vibe-home/logs/session, so sessions land under <runtime home>/logs/session.
+            const sessionId = 'a1b2c3d4-e5f6-4789-8abc-def012345678';
+            const unifiedDir = path.join(runtimeHome, 'logs', 'session', 'unified', sessionId);
+            fs.mkdirSync(path.join(unifiedDir, 'generations', '0000000000000004'), { recursive: true });
+            fs.writeFileSync(path.join(unifiedDir, 'CURRENT'), JSON.stringify({ generation: '0000000000000004' }));
+            fs.writeFileSync(path.join(unifiedDir, 'generations', '0000000000000004', 'projection-state.json'), JSON.stringify({
+                snapshot: { session: { tokenUsage: { inputTokens: 34171, outputTokens: 347, cachedInputTokens: 27904 } } }
+            }));
+            assert.ok(!fs.existsSync(path.join(runtimeHome, 'propr-export', 'export.json')));
+
+            assert.deepStrictEqual(readLatestVibeSessionTokenUsage(runtimeHome, sessionId), {
+                input_tokens: 6267,
+                output_tokens: 347,
+                cache_read_input_tokens: 27904
+            });
+        } finally {
+            fs.rmSync(runtimeHome, { recursive: true, force: true });
+        }
+    });
+
     test('moves Vibe 3 cached input into cache_read_input_tokens without counting it twice', () => {
         const runtimeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-cached-usage-test-'));
         try {
@@ -470,6 +494,20 @@ describe('VibeAgent Docker args', () => {
         } finally {
             fs.rmSync(configPath, { recursive: true, force: true });
         }
+    });
+
+    test('always pins Vibe session logs inside the container runtime home', () => {
+        withRestoredEnv(() => {
+            process.env.MISTRAL_API_KEY = 'test-key';
+            // Real configs carry an absolute host save_dir; a user override must not win either.
+            const agent = createAgent({ envVars: { VIBE_SESSION_LOGGING__SAVE_DIR: '/home/someone/.vibe/logs/session' } });
+            for (const params of [{}, { runtimeHomePath: '/tmp/vibe-runtime-home' }, { mode: 'analysis' as const, issueNumber: 0 }]) {
+                const args = buildArgs(agent, params);
+                const values = args.filter((arg, index) => args[index - 1] === '-e' && arg.startsWith('VIBE_SESSION_LOGGING__SAVE_DIR='));
+                assert.strictEqual(values.at(-1), 'VIBE_SESSION_LOGGING__SAVE_DIR=/tmp/propr-vibe-home/logs/session', JSON.stringify(params));
+                assert.ok(args.indexOf(values.at(-1)!) < args.indexOf('propr/agent:bundle-test'), 'override must be a docker env arg, not a Vibe CLI arg');
+            }
+        });
     });
 
     test('analysis mode uses bridge network for outbound Mistral API access', () => {
@@ -649,6 +687,10 @@ describe('VibeAgent Docker args', () => {
         assert.match(script, /ensure_runtime_dirs/);
         assert.match(script, /chown -R node:node "\$RUNTIME_VIBE_HOME"/);
         assert.match(script, /export VIBE_BYPASS_TOOL_PERMISSIONS=true/);
+        // Vibe's env layer outranks config.toml, so absolute host save_dir values cannot break the run.
+        const saveDirIndex = script.indexOf('export VIBE_SESSION_LOGGING__SAVE_DIR="$RUNTIME_VIBE_HOME/logs/session"');
+        assert.ok(saveDirIndex !== -1, 'entrypoint should pin the Vibe session dir inside the runtime home');
+        assert.ok(saveDirIndex < suExecIndex, 'session dir override should be exported before dropping privileges');
         assert.match(
             script,
             /if \[ -n "\$VIBE_PROMPT_FILE_TO_INJECT" \]; then\s+exec env PROPR_VIBE_PROMPT_FILE="\$VIBE_PROMPT_FILE_TO_INJECT" "\$@"\s+fi\s+exec "\$@"/

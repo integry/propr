@@ -10,6 +10,11 @@ RUNTIME_VIBE_HOME="${VIBE_RUNTIME_HOME:-/tmp/propr-vibe-home}"
 VIBE_READ_ONLY_CONFIG="${VIBE_READ_ONLY_CONFIG:-0}"
 export HOME="$RUNTIME_VIBE_HOME"
 export VIBE_HOME="$RUNTIME_VIBE_HOME"
+# User configs written by Vibe carry an absolute host session_logging.save_dir
+# (e.g. /home/<user>/.vibe/logs/session) that does not exist in the container,
+# so Vibe exits before running. Vibe's env layer (VIBE_ prefix, __ nesting)
+# outranks config.toml, so pin session logs inside the runtime home.
+export VIBE_SESSION_LOGGING__SAVE_DIR="$RUNTIME_VIBE_HOME/logs/session"
 
 copy_vibe_home() {
     mkdir -p "$RUNTIME_VIBE_HOME"
