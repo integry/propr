@@ -7,6 +7,7 @@ import {
   redactVisualPreviewValue,
   type GoalArtifact,
   type GoalArtifactStats,
+  type GoalDesiredState,
   type GoalLaunchStrategy,
 } from '@propr/core';
 import { projectTaskLiveDetails } from '../routes/liveDetailsRoutes.js';
@@ -39,7 +40,7 @@ export interface GoalProjectionRow {
   effective_model: string | null;
   max_parallel_tasks: number | null;
   ultrafix: number | boolean | null;
-  desired_state: 'running' | 'paused' | 'cancelled';
+  desired_state: GoalDesiredState;
   result_state: 'completed' | 'failed' | 'cancelled' | null;
   current_task_id: string;
   session_id: string | null;
@@ -198,8 +199,10 @@ function parseCheckpointPaths(value: unknown): string[] | null {
 }
 
 function goalTiming(row: GoalProjectionRow): { elapsedMs: number; pausedMs: number; activeMs: number } {
+  if (row.desired_state === 'draft') return { elapsedMs: 0, pausedMs: 0, activeMs: 0 };
   const endMs = row.completed_at ? new Date(row.completed_at).getTime() : Date.now();
-  const startMs = row.started_at ? new Date(row.started_at).getTime() : new Date(row.created_at).getTime();
+  const queuedAt = row.create_idempotency_operation === 'goal.createDraft' ? row.updated_at : row.created_at;
+  const startMs = new Date(row.started_at ?? queuedAt).getTime();
   const currentPauseMs = row.desired_state === 'paused' && row.paused_at
     ? Math.max(0, Date.now() - new Date(row.paused_at).getTime())
     : 0;
@@ -356,5 +359,10 @@ export async function serializeGoal(
   const redacted = redactVisualPreviewValue(projection) as typeof projection;
   // Attention is the shared projection every surface reads; it is attached as projected so the
   // console, MCP and the attention listing show the same blocker text.
-  return { ...redacted, createdBy, attention, ...optionalInputs };
+  return {
+    ...redacted,
+    // The draft editor must round-trip the author's description verbatim.
+    objective: row.desired_state === 'draft' ? row.objective : redacted.objective,
+    createdBy, attention, ...optionalInputs,
+  };
 }

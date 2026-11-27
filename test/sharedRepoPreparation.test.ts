@@ -358,6 +358,7 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
     await git(clonePath, ['worktree', 'add', '--no-track', '-b', 'task-ro', worktreePath, 'origin/main']);
     await writeFile(path.join(worktreePath, 'in-progress.txt'), 'uncommitted agent work\n');
     const configBefore = await readLocalConfig(clonePath);
+    await mkdir(path.join(clonePath, '.git', 'propr-preparation'));
     const restore = await denyGitDirWrites(clonePath);
     const started = Date.now();
     try {
@@ -366,9 +367,9 @@ test('preparation of an unwritable shared clone is not reported as lock contenti
                 repoUrl: REPO_URL.replace(OWNER, owner), owner, repoName: REPO, authToken: TOKEN, baseBranch: 'main',
                 lockRetry: { attempts: 3, initialDelayMs: 5000, maxDelayMs: 5000 },
             }),
-            (error: Error) => {
+            (error: NodeJS.ErrnoException) => {
+                assert.notStrictEqual(error.name, 'GitLockContentionError');
                 assert.doesNotMatch(error.message, /stayed locked by another Git process/);
-                // The real config write must be what failed, not an earlier lookup.
                 assert.match(error.message, /could not lock config file [^\n]*config: Permission denied/);
                 assert.doesNotMatch(error.message, /failed to stat|unable to access/);
                 assert.ok(!error.message.includes(TOKEN));
@@ -460,4 +461,96 @@ test('concurrent pushes from worktrees do not contend on shared config', async (
         assert.strictEqual(remoteRef.split(/\s+/)[0], await git(worktreePath, ['rev-parse', 'HEAD']));
     }
     assert.ok(!(await readLocalConfig(clonePath)).includes(TOKEN));
+});
+
+for (const entry of ['refresh', 'index-branch', 'index-all'] as const) {
+    test(`${entry} repairs missing local objects before retrying an interrupted fetch`, async () => {
+        const owner = `${OWNER}-thin-${entry}`;
+        const repoUrl = REPO_URL.replace(OWNER, owner);
+        const clone = await createSharedClone(`thin-${entry}`, repoUrl);
+        const writer = path.join(rootDir, `thin-writer-${entry}`);
+        const branch = `thin-${entry}`;
+        await git(rootDir, ['clone', `file://${remotePath}`, writer]);
+        await git(writer, ['checkout', '-b', branch]);
+        const before = Array.from({ length: 6000 }, (_, index) => `line ${index} for delta compression in ${entry}\n`).join('');
+        await writeFile(path.join(writer, 'delta.txt'), before);
+        await git(writer, ['add', 'delta.txt']);
+        await git(writer, ['commit', '-m', 'delta base']);
+        await git(writer, ['push', 'origin', branch]);
+        await git(clone, ['fetch', 'origin']);
+        const blob = await git(clone, ['rev-parse', `origin/${branch}:delta.txt`]);
+
+        await writeFile(path.join(writer, 'delta.txt'), before.replace('line 2000', 'edited 2000'));
+        await git(writer, ['commit', '-am', 'small edit']);
+        await git(writer, ['push', 'origin', branch]);
+        await rm(path.join(clone, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+        await assert.rejects(git(clone, ['fetch', 'origin', '--prune']), /failed to resolve \d+ delta|unresolved deltas left after unpacking/);
+
+        if (entry === 'refresh') {
+            await repoManager.ensureRepoCloned({ repoUrl, owner, repoName: REPO, baseBranch: branch, authToken: TOKEN });
+        } else {
+            const fetchLatest = () => repoManager.fetchLatestChanges({
+                owner, repoName: REPO, authToken: TOKEN, branch: entry === 'index-branch' ? branch : undefined,
+            });
+            if (entry === 'index-branch') {
+                const marker = path.join(clone, '.git', 'propr-object-repair-required.json');
+                await writeFile(marker, JSON.stringify({ revision: await git(clone, ['rev-parse', `origin/${branch}`]) }));
+                await assert.rejects(fetchLatest(), { name: 'RepositoryRepairRequiredError' });
+                await rm(marker);
+            }
+            const result = await fetchLatest();
+            assert.ok(result.success, result.error);
+        }
+        assert.strictEqual(await git(clone, ['rev-parse', `origin/${branch}`]), await git(writer, ['rev-parse', 'HEAD']));
+    });
+}
+
+for (const entry of ['refresh', 'index'] as const) {
+    test(`${entry} reports a held preparation gate as retryable contention instead of an ordinary fetch warning`, async t => {
+        const owner = `${OWNER}-busy-${entry}`;
+        const repoUrl = REPO_URL.replace(OWNER, owner);
+        const clone = await createSharedClone(`busy-${entry}`, repoUrl);
+        const { withRepositoryPreparation } = await import('../packages/core/src/git/repositoryPreparation.js');
+        // Contend on the real gate without waiting out the production timeout.
+        const { StorageLifecycle } = await import('../packages/core/src/storage/lifecycle.js');
+        const exclusive = StorageLifecycle.prototype.exclusive;
+        const shortWait = t.mock.method(StorageLifecycle.prototype, 'exclusive', function <T>(this: InstanceType<typeof StorageLifecycle>, run: () => Promise<T>) {
+            return exclusive.call(this, run, 1) as Promise<T>;
+        });
+        let release!: () => void;
+        let entered!: () => void;
+        const ready = new Promise<void>(resolve => { entered = resolve; });
+        const wait = new Promise<void>(resolve => { release = resolve; });
+        // No repair marker: another worker is simply still preparing the shared clone.
+        const holder = withRepositoryPreparation(hooklessGit.createHooklessGit(clone), async () => { entered(); await wait; });
+        await ready;
+        try {
+            // The contender must not inherit the holder's async context.
+            const contend = () => entry === 'refresh'
+                ? repoManager.ensureRepoCloned({ repoUrl, owner, repoName: REPO, authToken: TOKEN })
+                : repoManager.fetchLatestChanges({ owner, repoName: REPO, authToken: TOKEN });
+            await assert.rejects(contend(), { name: 'RepositoryPreparationBusyError' });
+        } finally {
+            release();
+            await holder;
+        }
+        assert.ok(existsSync(path.join(clone, '.git')), 'the busy clone is retained');
+        shortWait.mock.restore();
+        if (entry === 'index') {
+            const result = await repoManager.fetchLatestChanges({ owner, repoName: REPO, authToken: TOKEN });
+            assert.ok(result.success, result.error);
+        }
+    });
+}
+
+test('failure to resolve the common Git directory is classified as a retained refresh failure', async () => {
+    const owner = `${OWNER}-invalid-gitdir`;
+    const repoUrl = REPO_URL.replace(OWNER, owner);
+    const clone = path.join(clonesDir, owner, REPO);
+    await mkdir(clone, { recursive: true });
+    await writeFile(path.join(clone, '.git'), 'gitdir: missing-directory\n');
+
+    await assert.rejects(repoManager.ensureRepoCloned({ repoUrl, owner, repoName: REPO, authToken: TOKEN }),
+        /could not be refreshed; retained for recovery/);
+    assert.strictEqual(await readFile(path.join(clone, '.git'), 'utf8'), 'gitdir: missing-directory\n');
 });

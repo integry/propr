@@ -7,7 +7,9 @@ import type { ConfigManager } from "../packages/cli/src/config/index.js";
 import type { PlanIssue } from "../packages/cli/src/api/plans.js";
 import {
   PLAN_GENERATION_TIMEOUT_MS,
+  PLAN_ISSUES_POLL_INTERVAL_MS,
   PLAN_ISSUES_TIMEOUT_MS,
+  PLAN_POLL_INTERVAL_MS,
   PLAN_REQUEST_TIMEOUT_MS,
   PLAN_RETRY_MIN_REMAINING_MS,
   PLAN_SUITE_CLEANUP_MS,
@@ -93,7 +95,7 @@ function fakePlanServer(
       onGetPlan?.(++getPlanCount);
       const elapsed = clock.now() - startedAt.get(id)!;
       const plan_json = [{}, {}];
-      if (finalized.has(id)) return { status: "approved", plan_json, generation_trace: {} };
+      if (finalized.has(id)) return { status: "executed", plan_json, generation_trace: {} };
       if (failGeneration) return { status: "failed", plan_json: [], generation_trace: { error: "Plan generation failed." } };
       return { status: elapsed >= generationMs ? "review" : "generating", plan_json, generation_trace: {} };
     },
@@ -134,6 +136,27 @@ describe("E2E plan creation", () => {
     });
     assert.equal(result.issues.length, 2);
     assert.equal(server.calls.filter(call => call.startsWith("finalize:")).length, 1);
+  });
+
+  test("published issues are not returned while the draft is still executing", async () => {
+    const clock = virtualClock();
+    const server = fakePlanServer(clock, { generationMs: 0 });
+    const publicationDoneAt = PLAN_POLL_INTERVAL_MS + PLAN_ISSUES_POLL_INTERVAL_MS * 2;
+    const api: PlanApi = {
+      ...server.api,
+      async getPlan(id, plannerClient, request) {
+        const plan = await server.api.getPlan(id, plannerClient, request);
+        return plan.status === "executed" && clock.now() < publicationDoneAt
+          ? { ...plan, status: "executing" }
+          : plan;
+      },
+    };
+
+    const result = await createAndGeneratePlan("repo", "prompt", client, [], {
+      api, now: clock.now, sleep: clock.sleep, log: () => {}, deadline: PLAN_TEST_BUDGET_MS,
+    });
+    assert.equal(clock.now(), publicationDoneAt);
+    assert.equal(result.issues.length, 2);
   });
 
   test("the first retry-managed attempt requires enough remaining job budget", async () => {
@@ -194,6 +217,32 @@ describe("E2E plan creation", () => {
     assert.equal(result.issues.length, 0);
     assert.equal(server.created.length, 2);
     assert.ok(logs.some((line) => /not starting attempt/.test(line)));
+  });
+
+  test("a generation failure reports the draft, run, and known stages without trace payloads", async () => {
+    const clock = virtualClock();
+    const server = fakePlanServer(clock, { generationMs: 0, failGeneration: true });
+    const logs: string[] = [];
+    const api: PlanApi = {
+      ...server.api,
+      async getPlan(id, plannerClient, request) {
+        const plan = await server.api.getPlan(id, plannerClient, request);
+        return { ...plan, generation_trace: {
+          ...plan.generation_trace,
+          runId: "run-1",
+          steps: [
+            { name: "context", status: "completed" },
+            { name: "llm", status: "failed", data: { detail: "private trace data" } },
+          ],
+        } };
+      },
+    };
+    const result = await createAndGeneratePlan("repo", "prompt", client, [], {
+      api, now: clock.now, sleep: clock.sleep, log: (line) => logs.push(line), deadline: PLAN_TEST_BUDGET_MS,
+    });
+    assert.deepEqual(result.issues, []);
+    assert.ok(logs.includes("    Plan plan-1-0000, run run-1 failed: Plan generation failed. (context=completed, llm=failed)"));
+    assert.ok(logs.every(line => !line.includes("private trace data")));
   });
 
   test("cancellation stops polling and prevents any further retry or plan creation", async () => {

@@ -61,13 +61,9 @@ it('renders a published GitHub preview through the native session boundary and s
         `--propr-published-preview-image=${join(root, 'propr-ui/public/logo.png')}`,
       ],
       name: 'Published preview Electron fixture',
-      // A spent budget is only the shape the one recorded failure happened to
-      // take. The same loopback outage can error the image while the page still
-      // fires `load`, so the fixture reports `fallbackHidden: false` and shuts
-      // down well inside its budget — and the wider the budget, the likelier
-      // that is the shape it takes. Naming the evidence relaunches that run too;
-      // a preview that is genuinely broken fails the same assertion below on
-      // every attempt.
+      // A loopback outage can fire the image's `error` event before the
+      // launch budget expires. Retry that report too, then assert on the
+      // final report if the preview still fails.
       rejectReport: report => (report.visible?.fallbackHidden === true
         ? undefined
         : 'reported the preview image as unavailable'),
@@ -93,9 +89,16 @@ it('renders a published GitHub preview through the native session boundary and s
       'github-production-user-asset-6210df.s3.amazonaws.com:443',
     ]);
     assert.deepEqual(report.boundary.map(request => request.url), report.handled.map(request => request.url));
-    assert.ok(report.boundary.every(request => request.rendererOwned === true
-      && request.resourceType === 'image' && !request.cancelled
-      && !request.authorization && !request.cookie));
+    for (const [index, request] of report.boundary.entries()) {
+      const { rendererOwned, resourceType, cancelled, authorization, cookie } = request;
+      assert.deepEqual({ rendererOwned, resourceType, cancelled, authorization, cookie }, {
+        rendererOwned: true,
+        resourceType: 'image',
+        cancelled: false,
+        authorization: false,
+        cookie: false,
+      }, `Unexpected session boundary decision for image request ${index + 1}`);
+    }
     assert.equal(report.handled.some(request => request.cookie), false);
     assert.equal(report.responseCookiesPersisted, false);
   } finally {

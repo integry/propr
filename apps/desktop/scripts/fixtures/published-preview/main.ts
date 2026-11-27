@@ -145,7 +145,7 @@ app.whenReady().then(async () => {
         #status { color:#166534; font-weight:600; margin:10px 0 0; }
         #fallback { color:#b91c1c; }
       </style></head><body><main><h1>Published preview</h1>
-        <img id="preview" alt="Published GitHub preview" src="${attachment}"
+        <img id="preview" alt="Published GitHub preview"
           onload="document.getElementById('status').textContent='Preview loaded securely'"
           onerror="document.getElementById('fallback').hidden=false;this.hidden=true">
         <p id="status">Loading preview…</p><p id="fallback" hidden>Image unavailable</p>
@@ -186,11 +186,19 @@ app.whenReady().then(async () => {
       getMainRenderer: () => window.webContents,
       isTrustedRendererUrl: value => value === rendererUrl,
     });
+    // Start the image request after navigation has committed the trusted main
+    // frame. Chromium can dispatch a parser-discovered image while Electron
+    // is still updating the frame metadata used by the ownership check.
     await window.loadURL(rendererUrl);
-    const visible = await window.webContents.executeJavaScript(`(() => {
+    const visible = await window.webContents.executeJavaScript(`(async () => {
       const image = document.getElementById('preview');
       const fallback = document.getElementById('fallback');
       const status = document.getElementById('status');
+      await new Promise(resolve => {
+        image.addEventListener('load', resolve, { once: true });
+        image.addEventListener('error', resolve, { once: true });
+        image.src = ${JSON.stringify(attachment)};
+      });
       const style = getComputedStyle(image);
       return { complete: image.complete, fallbackHidden: fallback.hidden,
         naturalHeight: image.naturalHeight, naturalWidth: image.naturalWidth,
