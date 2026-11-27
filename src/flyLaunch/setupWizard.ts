@@ -10,8 +10,12 @@
  * issued; POSTs must come from the instance's own origin.
  *
  * Steps, in order; each is resumable because its result is on the volume:
- *   claim → GitHub App (manifest flow) → install → administrator sign-in →
- *   agent runtime → finish (idle shutdown opt-in).
+ *   claim → GitHub, one of
+ *     - the ProPR App (default, connectSetup.ts): install the shared App,
+ *       enroll a relay token → register the sign-in OAuth App;
+ *     - your own App (advanced): manifest flow → install;
+ *   → administrator sign-in → agent runtime → finish (idle shutdown opt-in;
+ *   on the ProPR App path it registers the /wake URL with Connect).
  *
  * Writes: every step's handler awaits GitHub or a runtime check before it
  * saves, so two of them can overlap (a slow runtime check and Finish). All
@@ -27,14 +31,21 @@ import { GITHUB_APP_KEY_FILE, readLaunchConfig, writeLaunchConfig, type LaunchCo
 import type { LaunchStore } from './launchStore.js';
 import { SETUP_CLAIM_COOKIE, type SetupAccess } from './setupAccess.js';
 import {
-    convertManifestCode, GithubSetupError, githubAppInstallUrl, githubAppRegistrationUrl, githubOAuthAuthorizeUrl,
+    adminRedirectUri, convertManifestCode, GithubSetupError, githubAppInstallUrl, githubAppRegistrationUrl, githubOAuthAuthorizeUrl,
     launchGithubAppManifest, signInAdministrator, storeManifestCredentials, verifyInstallation, SETUP_PATHS,
 } from './githubSetup.js';
-import { RUNTIME_ENV_KEYS, validateRuntimeChoice, type RuntimeValidators } from './runtimeValidation.js';
 import {
-    adminPage, claimedElsewherePage, claimPage, finishPage, githubAppPage, installPage, manifestRedirectPage, runtimePage, setupCompletedPage, startingPage,
-    type SetupStep,
+    DEFAULT_PROPR_GH_RELAY_URL, enrollConnect, OAUTH_CALLBACK_PATH, parseSignInClient, parseUserToken, registerWakeTarget,
+    relayTokenLabel, storeConnectEnrollment, storeSignInClient,
+} from './connectSetup.js';
+import { RUNTIME_ENV_KEYS, validateRuntimeChoice, type RuntimeValidators } from './runtimeValidation.js';
+import { currentSetupStep, githubPath } from './setupSteps.js';
+import {
+    adminPage, claimedElsewherePage, claimPage, finishPage, githubPage, installPage, manifestRedirectPage, runtimePage, setupCompletedPage,
+    signInAppPage, startingPage, type GithubPageOptions, type SetupStep,
 } from './setupPages.js';
+
+export { currentSetupStep, githubPath };
 
 const STATE_TTL_MS = 60 * 60_000;
 const MAX_BODY_BYTES = 16 * 1024;
@@ -51,6 +62,10 @@ export interface SetupWizardOptions {
     access: SetupAccess;
     publicUrl: string;
     controlPlaneApp?: string;
+    /** The ProPR Connect relay (PROPR_GH_RELAY_URL); the hosted one by default. */
+    relayUrl?: string;
+    /** The host in the relay token label `fly:<app>@<host>`; os.hostname() by default. */
+    labelHost?: string;
     fetcher?: typeof fetch;
     validators?: RuntimeValidators;
     log?: (message: string) => void;
@@ -68,15 +83,6 @@ type StateKind = 'manifest' | 'install' | 'admin';
 /** A setup write that arrived after Finish saved `completedAt`; answered with 409. */
 export class SetupCompletedError extends Error {
     constructor() { super('setup already completed'); }
-}
-
-/** Which step the stored config is at. */
-export function currentSetupStep(config: LaunchConfig, keyExists: boolean): Exclude<SetupStep, 'claim'> {
-    if (!config.github || !config.env.GH_APP_ID || !keyExists) return 'github';
-    if (!config.env.GH_INSTALLATION_ID) return 'install';
-    if (!config.env.PROPR_ADMIN_USERS) return 'admin';
-    if (!config.runtime) return 'runtime';
-    return 'finish';
 }
 
 function readCookie(request: IncomingMessage, name: string): string | undefined {
@@ -152,13 +158,20 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         response.end();
     };
 
-    const stepPage = (config: LaunchConfig, error?: string): string => {
+    const relayUrl = options.relayUrl ?? DEFAULT_PROPR_GH_RELAY_URL;
+    const adminCallback = (config: LaunchConfig): string =>
+        adminRedirectUri(publicUrl, githubPath(config) === 'connect' ? OAUTH_CALLBACK_PATH : SETUP_PATHS.admin);
+
+    /** `form`: which GitHub form an error came from, so the page shows it there. */
+    const stepPage = (config: LaunchConfig, error?: string, form?: 'connect' | 'own-app'): string => {
+        const path = githubPath(config);
         switch (currentSetupStep(config, keyExists())) {
-            case 'github': return githubAppPage(publicUrl, error);
+            case 'github': return githubPage(publicUrl, form === 'own-app' ? { ownAppError: error } : { connectError: error });
             case 'install': return installPage(config.github!.slug, error);
-            case 'admin': return adminPage((config.env.GITHUB_REPOS_TO_MONITOR ?? '').split(',').filter(Boolean), error);
-            case 'runtime': return runtimePage(config.admin?.login ?? config.env.PROPR_ADMIN_USERS!, options.controlPlaneApp ?? '', error);
-            case 'finish': return finishPage(RUNTIME_LABELS[config.runtime!], error);
+            case 'signin-app': return signInAppPage(publicUrl, config.connect?.accountLogin ?? '', error);
+            case 'admin': return adminPage((config.env.GITHUB_REPOS_TO_MONITOR ?? '').split(',').filter(Boolean), error, path);
+            case 'runtime': return runtimePage(config.admin?.login ?? config.env.PROPR_ADMIN_USERS!, options.controlPlaneApp ?? '', error, { path });
+            case 'finish': return finishPage(RUNTIME_LABELS[config.runtime!], error, path);
         }
     };
 
@@ -213,18 +226,66 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         redirect(response, '/setup');
     };
 
+    const enrollInstance: Route = async ({ request, response, step }) => {
+        if (step !== 'github') return redirect(response, '/setup');
+        const form = await readForm(request);
+        const userToken = parseUserToken(form.get('githubToken'));
+        const label = relayTokenLabel(options.controlPlaneApp || new URL(publicUrl).hostname.split('.')[0], options.labelHost);
+        const result = await enrollConnect({ userToken, installationId: form.get('installation') ?? undefined, label, relayUrl, fetcher: options.fetcher });
+        if (result.kind === 'pick') {
+            const page: GithubPageOptions = { installations: result.installations };
+            return send(response, 200, githubPage(publicUrl, page));
+        }
+        const { enrollment } = result;
+        try {
+            await commitConfig(latest => {
+                if (currentSetupStep(latest, keyExists()) !== 'github') throw new GithubSetupError('Another setup step finished while this instance was being connected. Continue from here.');
+                return storeConnectEnrollment(store, latest, enrollment);
+            });
+        } catch (error) {
+            // The relay token was issued for a result that is not kept; it must not stay valid.
+            await result.revoke();
+            throw error;
+        }
+        log(`fly-launch: connected to the ProPR App (installation ${enrollment.installationId}, ${enrollment.repositories.length} repositories); relay token ${enrollment.tokenPrefix || enrollment.tokenId} labelled ${enrollment.label} stored on the volume`);
+        redirect(response, '/setup');
+    };
+
+    const showSignInApp: Route = ({ response, config, step }) => {
+        if (step !== 'signin-app' && !(config.connect && step === 'admin')) return redirect(response, '/setup');
+        send(response, 200, signInAppPage(publicUrl, config.connect?.accountLogin ?? ''));
+    };
+
+    const saveSignInApp: Route = async ({ request, response, config, step }) => {
+        if (!config.connect || (step !== 'signin-app' && step !== 'admin')) return redirect(response, '/setup');
+        const form = await readForm(request);
+        let client: { clientId: string; clientSecret: string };
+        try {
+            client = parseSignInClient(form.get('clientId'), form.get('clientSecret'));
+        } catch (error) {
+            return send(response, 400, signInAppPage(publicUrl, config.connect.accountLogin, (error as Error).message));
+        }
+        await commitConfig(latest => {
+            const latestStep = currentSetupStep(latest, keyExists());
+            if (!latest.connect || (latestStep !== 'signin-app' && latestStep !== 'admin')) throw new GithubSetupError('An earlier setup step changed. Continue from here.');
+            return storeSignInClient(latest, client);
+        });
+        log('fly-launch: sign-in OAuth App stored on the volume');
+        redirect(response, '/setup');
+    };
+
     const startSignIn: Route = ({ response, config }) => {
         const clientId = config.env.GH_OAUTH_CLIENT_ID;
-        redirect(response, clientId ? githubOAuthAuthorizeUrl(clientId, publicUrl, issueState('admin')) : '/setup');
+        redirect(response, clientId ? githubOAuthAuthorizeUrl(clientId, adminCallback(config), issueState('admin')) : '/setup');
     };
 
     const adminSignedIn: Route = async ({ response, url, config }) => {
         if (!takeState(url.searchParams.get('state'), 'admin')) throw new GithubSetupError('This sign-in link is not from this setup session. Sign in again.');
         const { GH_OAUTH_CLIENT_ID: clientId, GH_OAUTH_CLIENT_SECRET: clientSecret } = config.env;
-        if (!clientId || !clientSecret) throw new GithubSetupError('Create the GitHub App first.');
-        const admin = await signInAdministrator({ clientId, clientSecret }, url.searchParams.get('code') ?? '', publicUrl, options.fetcher);
+        if (!clientId || !clientSecret) throw new GithubSetupError(config.connect ? 'Register the sign-in app first.' : 'Create the GitHub App first.');
+        const admin = await signInAdministrator({ clientId, clientSecret }, url.searchParams.get('code') ?? '', adminCallback(config), options.fetcher);
         await commitConfig(latest => {
-            if (latest.env.GH_OAUTH_CLIENT_ID !== clientId) throw new GithubSetupError('The GitHub App changed during the sign-in. Sign in again.');
+            if (latest.env.GH_OAUTH_CLIENT_ID !== clientId) throw new GithubSetupError('The sign-in app changed during the sign-in. Sign in again.');
             return { ...latest, admin, env: { ...latest.env, PROPR_ADMIN_USERS: admin.login } };
         });
         log(`fly-launch: first administrator is ${admin.login}`);
@@ -242,7 +303,7 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         }, { controlPlaneApp: options.controlPlaneApp }, options.validators);
         if (!result.ok) {
             const kept = { runtime, flyApp: field('flyApp'), flyImage: field('flyImage'), flyMachinesMax: field('flyMachinesMax') };
-            return send(response, 400, runtimePage(config.admin?.login ?? '', options.controlPlaneApp ?? '', result.error, kept));
+            return send(response, 400, runtimePage(config.admin?.login ?? '', options.controlPlaneApp ?? '', result.error, { ...kept, path: githubPath(config) }));
         }
         await commitConfig(latest => {
             const latestStep = currentSetupStep(latest, keyExists());
@@ -255,17 +316,35 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         redirect(response, '/setup');
     };
 
-    const finishSetup: Route = async ({ request, response, step }) => {
+    /**
+     * Idle shutdown on the ProPR App path: Connect must know where to wake the
+     * stopped Machine, or GitHub events would wait until a browser starts it.
+     */
+    const registerWake = async (config: LaunchConfig): Promise<string | undefined> => {
+        const relayToken = config.env.PROPR_GH_RELAY_TOKEN;
+        if (!config.connect || !relayToken) return undefined;
+        const wakeUrl = `${publicUrl}/wake`;
+        try {
+            await registerWakeTarget({ relayUrl: config.env.PROPR_GH_RELAY_URL || relayUrl, bearer: relayToken, fetcher: options.fetcher ?? fetch }, wakeUrl);
+        } catch (error) {
+            throw new GithubSetupError(`ProPR Connect could not register this instance's wake URL (${(error as Error).message}) Leave idle shutdown off, or try again.`);
+        }
+        return wakeUrl;
+    };
+
+    const finishSetup: Route = async ({ request, response, config, step }) => {
         if (step !== 'finish') return redirect(response, '/setup');
         const form = await readForm(request);
         const idle = form.get('idleShutdown') === 'on';
+        const wakeTarget = idle ? await registerWake(config) : undefined;
         const final = await commitConfig(latest => {
             if (currentSetupStep(latest, keyExists()) !== 'finish') throw new GithubSetupError('An earlier setup step changed. Check it and finish again.');
             const env = { ...latest.env };
             delete env.PROPR_IDLE_SHUTDOWN;
             delete env.PROPR_IDLE_SHUTDOWN_AFTER;
             if (idle) Object.assign(env, { PROPR_IDLE_SHUTDOWN: 'on', PROPR_IDLE_SHUTDOWN_AFTER: FLY_LAUNCH_IDLE_SHUTDOWN_AFTER });
-            return { ...latest, env, completedAt: new Date().toISOString() };
+            const connect = latest.connect && wakeTarget ? { ...latest.connect, wakeTarget } : latest.connect;
+            return { ...latest, env, ...(connect ? { connect } : {}), completedAt: new Date().toISOString() };
         });
         access.close();
         done = true;
@@ -282,6 +361,9 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         [`GET ${SETUP_PATHS.created}`]: manifestCreated,
         'GET /setup/github/install': startInstall,
         [`GET ${SETUP_PATHS.installed}`]: installed,
+        'POST /setup/connect/enroll': enrollInstance,
+        'GET /setup/connect/signin-app': showSignInApp,
+        'POST /setup/connect/signin-app': saveSignInApp,
         'GET /setup/github/signin': startSignIn,
         [`GET ${SETUP_PATHS.admin}`]: adminSignedIn,
         'POST /setup/runtime': saveRuntime,
@@ -301,7 +383,7 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
             }
             const message = error instanceof GithubSetupError ? error.message : 'Something went wrong. Try again.';
             if (!(error instanceof GithubSetupError)) log(`fly-launch: setup step failed: ${(error as Error)?.message ?? 'unknown error'}`);
-            send(response, 400, stepPage(readLaunchConfig(store), message));
+            send(response, 400, stepPage(readLaunchConfig(store), message, url.pathname.startsWith('/setup/connect/') ? 'connect' : 'own-app'));
         }
     }
 
@@ -331,6 +413,13 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
             return true;
         }
         if (url.pathname.startsWith('/setup')) return false;
+        // The ProPR App path's sign-in app has one callback, the API's; while the
+        // wizard runs it continues on the wizard's admin callback, where the
+        // claim cookie (Path=/setup) and the state are checked.
+        if (url.pathname === OAUTH_CALLBACK_PATH && request.method === 'GET') {
+            redirect(response, `${SETUP_PATHS.admin}${url.search}`);
+            return true;
+        }
         if (request.method === 'GET' || request.method === 'HEAD') {
             redirect(response, '/setup');
         } else {

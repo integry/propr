@@ -13,7 +13,7 @@
  */
 import { createSign } from 'node:crypto';
 import { buildGithubAppManifest } from '@propr/shared';
-import { GITHUB_APP_KEY_FILE, type LaunchConfig } from './launchConfig.js';
+import { CONNECT_ONLY_ENV_KEYS, GITHUB_APP_KEY_FILE, type LaunchConfig } from './launchConfig.js';
 import type { LaunchStore } from './launchStore.js';
 
 export const SETUP_PATHS = {
@@ -39,7 +39,7 @@ export class GithubSetupError extends Error {
 
 type Fetcher = typeof fetch;
 
-async function githubJson<T>(fetcher: Fetcher, url: string, init: RequestInit & { token?: string; jwt?: string } = {}): Promise<T> {
+export async function githubJson<T>(fetcher: Fetcher, url: string, init: RequestInit & { token?: string; jwt?: string } = {}): Promise<T> {
     const { token, jwt, ...rest } = init;
     let response: Response;
     try {
@@ -89,8 +89,17 @@ export function githubAppInstallUrl(slug: string, state: string): string {
     return `https://github.com/apps/${encodeURIComponent(slug)}/installations/new?state=${encodeURIComponent(state)}`;
 }
 
-export function githubOAuthAuthorizeUrl(clientId: string, publicUrl: string, state: string): string {
-    const query = new URLSearchParams({ client_id: clientId, redirect_uri: `${publicUrl.replace(/\/+$/, '')}${SETUP_PATHS.admin}`, state, allow_signup: 'false' });
+/**
+ * Where GitHub sends the administrator back. The own App registers
+ * SETUP_PATHS.admin as an extra callback; an OAuth App (the ProPR App path)
+ * has a single callback, the API's, which the wizard forwards while it runs.
+ */
+export function adminRedirectUri(publicUrl: string, path: string = SETUP_PATHS.admin): string {
+    return `${publicUrl.replace(/\/+$/, '')}${path}`;
+}
+
+export function githubOAuthAuthorizeUrl(clientId: string, redirectUri: string, state: string): string {
+    const query = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, state, allow_signup: 'false' });
     return `https://github.com/login/oauth/authorize?${query}`;
 }
 
@@ -112,7 +121,7 @@ export async function convertManifestCode(code: string, fetcher: Fetcher = fetch
 export function storeManifestCredentials(store: LaunchStore, config: LaunchConfig, credentials: ManifestCredentials): LaunchConfig {
     store.writeText(GITHUB_APP_KEY_FILE, credentials.pem.endsWith('\n') ? credentials.pem : `${credentials.pem}\n`);
     const env = { ...config.env };
-    for (const key of ['GH_INSTALLATION_ID', 'GITHUB_REPOS_TO_MONITOR', 'PROPR_ADMIN_USERS']) delete env[key];
+    for (const key of ['GH_INSTALLATION_ID', 'GITHUB_REPOS_TO_MONITOR', 'PROPR_ADMIN_USERS', ...CONNECT_ONLY_ENV_KEYS]) delete env[key];
     Object.assign(env, {
         GH_APP_ID: String(credentials.id),
         GH_WEBHOOK_SECRET: credentials.webhook_secret!,
@@ -124,6 +133,7 @@ export function storeManifestCredentials(store: LaunchStore, config: LaunchConfi
     });
     const rest: LaunchConfig = { ...config };
     delete rest.admin;
+    delete rest.connect;
     return {
         ...rest,
         env,
@@ -167,7 +177,7 @@ export async function verifyInstallation(appId: number, pem: string, installatio
 export async function signInAdministrator(
     credentials: { clientId: string; clientSecret: string },
     code: string,
-    publicUrl: string,
+    redirectUri: string,
     fetcher: Fetcher = fetch,
 ): Promise<{ login: string; id: number }> {
     if (!/^[a-zA-Z0-9_-]{1,200}$/.test(code)) throw new GithubSetupError('GitHub returned an invalid sign-in code.');
@@ -178,7 +188,7 @@ export async function signInAdministrator(
             client_id: credentials.clientId,
             client_secret: credentials.clientSecret,
             code,
-            redirect_uri: `${publicUrl.replace(/\/+$/, '')}${SETUP_PATHS.admin}`,
+            redirect_uri: redirectUri,
         }),
     });
     if (!exchange.access_token) throw new GithubSetupError('GitHub did not complete the sign-in. Try again.');

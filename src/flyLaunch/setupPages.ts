@@ -6,9 +6,17 @@
  *
  * Pages never contain stored secrets; token fields are always rendered empty.
  */
-export type SetupStep = 'claim' | 'github' | 'install' | 'admin' | 'runtime' | 'finish';
+import type { RelayInstallation } from './connectSetup.js';
+import { GITHUB_OAUTH_APP_SETTINGS_URL, GITHUB_TOKEN_SETTINGS_URL, OAUTH_CALLBACK_PATH, PROPR_APP_INSTALL_URL } from './connectSetup.js';
 
-export const SETUP_STEPS: ReadonlyArray<{ id: SetupStep; label: string }> = [
+export type SetupStep = 'claim' | 'github' | 'install' | 'signin-app' | 'admin' | 'runtime' | 'finish';
+/** `connect`: the shared ProPR App (the default); `own-app`: an App created with the manifest flow. */
+export type GithubPath = 'connect' | 'own-app';
+
+type StepList = ReadonlyArray<{ id: SetupStep; label: string }>;
+
+/** Steps of the own-App path. */
+export const SETUP_STEPS: StepList = [
     { id: 'claim', label: 'Setup code' },
     { id: 'github', label: 'GitHub App' },
     { id: 'install', label: 'Install' },
@@ -17,13 +25,25 @@ export const SETUP_STEPS: ReadonlyArray<{ id: SetupStep; label: string }> = [
     { id: 'finish', label: 'Start' },
 ];
 
+/** Steps of the ProPR App path, also shown before a path is chosen (it is the default). */
+export const CONNECT_SETUP_STEPS: StepList = [
+    { id: 'claim', label: 'Setup code' },
+    { id: 'github', label: 'GitHub' },
+    { id: 'signin-app', label: 'Sign-in app' },
+    { id: 'admin', label: 'Administrator' },
+    { id: 'runtime', label: 'Agent runtime' },
+    { id: 'finish', label: 'Start' },
+];
+
+const stepsFor = (path: GithubPath | undefined): StepList => (path === 'own-app' ? SETUP_STEPS : CONNECT_SETUP_STEPS);
+
 export const escapeHtml = (value: string): string =>
     value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
 const STYLE = `
 :root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--text:#1b1f24;--muted:#5b6470;--line:#d9dde3;--accent:#4f46e5;--accent-text:#fff;--error:#b42318;--error-bg:#fef3f2;--ok:#067647}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a21;--text:#e6e8eb;--muted:#9aa3ae;--line:#2a2f38;--accent:#818cf8;--accent-text:#0f1115;--error:#fda29b;--error-bg:#3a1714;--ok:#75e0a7}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}a{color:var(--accent)}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 Inter,system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:640px;margin:0 auto;padding:32px 20px 48px}h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:0 0 12px}
 .sub{color:var(--muted);margin:0 0 24px}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px}
 ol.steps{display:flex;flex-wrap:wrap;gap:6px 14px;list-style:none;padding:0;margin:0 0 20px;font-size:13px;color:var(--muted)}
@@ -34,11 +54,16 @@ label{display:block;font-weight:600;margin:16px 0 6px}input[type=text],input[typ
 .error{background:var(--error-bg);color:var(--error);border-radius:8px;padding:10px 12px;margin:0 0 16px}
 fieldset{border:1px solid var(--line);border-radius:10px;margin:12px 0;padding:4px 14px 14px}legend{padding:0 6px}
 .choice{display:flex;gap:8px;align-items:baseline;font-weight:600;margin:12px 0 0}.choice input{margin:0}
-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}ul{padding-left:20px}`;
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}ul{padding-left:20px}
+.path{border:1px solid var(--line);border-radius:10px;padding:16px;margin:0 0 16px}.path h3{font-size:15px;margin:0 0 4px}.badge{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;background:var(--accent);color:var(--accent-text);font-size:12px;font-weight:600;vertical-align:1px}
+ol.todo{padding-left:20px;margin:8px 0 0}ol.todo li{margin:0 0 10px}a.secondary{display:inline-block;margin-top:6px;color:var(--accent);font-weight:600}
+details.path summary{cursor:pointer;font-weight:600}details.path[open] summary{margin-bottom:8px}.warn{border-left:3px solid var(--accent);padding:2px 0 2px 10px;margin:12px 0 0}`;
 
 export interface PageOptions {
     title: string;
     step?: SetupStep;
+    /** Which path's step list to show; the ProPR App path by default. */
+    path?: GithubPath;
     error?: string;
     body: string;
     nonce?: string;
@@ -46,10 +71,11 @@ export interface PageOptions {
     refreshSeconds?: number;
 }
 
-function stepList(current: SetupStep | undefined): string {
+function stepList(current: SetupStep | undefined, path: GithubPath | undefined): string {
     if (!current) return '';
-    const index = SETUP_STEPS.findIndex(step => step.id === current);
-    return `<ol class="steps" aria-label="Setup steps">${SETUP_STEPS.map((step, i) =>
+    const steps = stepsFor(path);
+    const index = steps.findIndex(step => step.id === current);
+    return `<ol class="steps" aria-label="Setup steps">${steps.map((step, i) =>
         `<li class="${i < index ? 'done' : i === index ? 'current' : ''}"${i === index ? ' aria-current="step"' : ''}>${i + 1}. ${step.label}</li>`).join('')}</ol>`;
 }
 
@@ -57,7 +83,7 @@ export function renderPage(options: PageOptions): string {
     return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">${options.refreshSeconds ? `<meta http-equiv="refresh" content="${options.refreshSeconds};url=/">` : ''}
 <title>${escapeHtml(options.title)} · ProPR setup</title><style>${STYLE}</style></head>
-<body><main><h1>Set up ProPR</h1><p class="sub">First-visit setup for this Fly instance.</p>${stepList(options.step)}
+<body><main><h1>Set up ProPR</h1><p class="sub">First-visit setup for this Fly instance.</p>${stepList(options.step, options.path)}
 <section class="card"><h2>${escapeHtml(options.title)}</h2>${options.error ? `<p class="error" role="alert">${escapeHtml(options.error)}</p>` : ''}${options.body}</section>
 </main>${options.script && options.nonce ? `<script nonce="${options.nonce}">${options.script}</script>` : ''}</body></html>`;
 }
@@ -82,19 +108,51 @@ export function claimedElsewherePage(): string {
     });
 }
 
-export function githubAppPage(publicUrl: string, error?: string): string {
-    return renderPage({
-        title: 'Create the GitHub App',
-        step: 'github',
-        error,
-        body: `<p>ProPR reads issues and opens pull requests as a GitHub App you own. GitHub creates it from a manifest with this instance's URLs filled in:</p>
+/** The own-App manifest form, unchanged from the single-path wizard. */
+function manifestForm(publicUrl: string): string {
+    return `<p>ProPR reads issues and opens pull requests as a GitHub App you own, with no ProPR-hosted service in the path. GitHub creates it from a manifest with this instance's URLs filled in:</p>
 <ul><li>Webhook: <code>${escapeHtml(publicUrl)}/webhook</code></li><li>Sign-in callback: <code>${escapeHtml(publicUrl)}/api/auth/github/callback</code></li></ul>
 <form method="post" action="/setup/github/start">
 <label for="org">Organization (optional)</label><input id="org" name="org" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty for your personal account">
 <p class="hint">Create the App in an organization you administer, or in your personal account.</p>
 <label for="name">App name (optional)</label><input id="name" name="name" type="text" autocomplete="off" maxlength="34" placeholder="ProPR-${escapeHtml(new URL(publicUrl).hostname.split('.')[0])}">
 <p class="hint">GitHub App names are unique across GitHub. If the name is taken, change it on GitHub and submit again.</p>
-<button type="submit">Continue to GitHub</button></form>`,
+<button type="submit">Continue to GitHub</button></form>`;
+}
+
+function installationPicker(installations: RelayInstallation[]): string {
+    if (!installations.length) return '';
+    return `<fieldset><legend>Installation</legend>${installations.map((entry, i) =>
+        `<label class="choice"><input type="radio" name="installation" value="${escapeHtml(entry.installationId)}"${i === 0 ? ' checked' : ''}> ${escapeHtml(entry.accountLogin || `installation ${entry.installationId}`)}${entry.accountType ? ` <span class="hint">(${escapeHtml(entry.accountType)})</span>` : ''}</label>`).join('')}
+<p class="hint">The ProPR App is installed on more than one account you can use. Pick one, then paste the token again: it was not kept.</p></fieldset>`;
+}
+
+export interface GithubPageOptions {
+    /** An error from the ProPR App form. */
+    connectError?: string;
+    /** An error from the own-App form; opens that section. */
+    ownAppError?: string;
+    /** Installations to pick from, after a token that can use more than one. */
+    installations?: RelayInstallation[];
+}
+
+/** The GitHub step: the ProPR App (recommended, default) or your own App (advanced). */
+export function githubPage(publicUrl: string, options: GithubPageOptions = {}): string {
+    const { connectError, ownAppError, installations = [] } = options;
+    return renderPage({
+        title: 'Connect GitHub',
+        step: 'github',
+        body: `<section class="path" aria-labelledby="connect-title"><h3 id="connect-title">Use the ProPR App <span class="badge">Recommended</span></h3>
+<p class="hint">The shared ProPR App delivers GitHub events to this instance through ProPR Connect, as <code>propr deploy fly</code> sets it up. No public webhook, and no App of your own.</p>
+${connectError ? `<p class="error" role="alert">${escapeHtml(connectError)}</p>` : ''}<ol class="todo">
+<li><strong>Install the ProPR App</strong> on the repositories ProPR should work on.<br><a class="secondary" href="${PROPR_APP_INSTALL_URL}" target="_blank" rel="noopener noreferrer">Install the ProPR App on GitHub ↗</a></li>
+<li><strong>Prove who you are to ProPR Connect</strong> with a GitHub token, so it can issue this instance's relay token. <a href="${GITHUB_TOKEN_SETTINGS_URL}" target="_blank" rel="noopener noreferrer">Create a fine-grained token ↗</a> with the shortest expiry and <strong>no</strong> permissions: Connect only reads who you are.</li></ol>
+<form method="post" action="/setup/connect/enroll">${installationPicker(installations)}
+<label for="githubToken">GitHub token</label><input id="githubToken" name="githubToken" type="password" autocomplete="off" spellcheck="false" required placeholder="github_pat_…">
+<p class="hint">Used once to enroll this instance and then discarded: it is never stored or logged. You can delete it on GitHub right after.</p>
+<button type="submit">Connect this instance</button></form></section>
+<details class="path"${ownAppError ? ' open' : ''}><summary>Advanced: Create your own GitHub App</summary>
+${ownAppError ? `<p class="error" role="alert">${escapeHtml(ownAppError)}</p>` : ''}${manifestForm(publicUrl)}</details>`,
     });
 }
 
@@ -102,6 +160,7 @@ export function manifestRedirectPage(action: string, manifest: unknown, nonce: s
     return renderPage({
         title: 'Opening GitHub…',
         step: 'github',
+        path: 'own-app',
         nonce,
         script: `document.getElementById('manifest-form').submit()`,
         body: `<form id="manifest-form" method="post" action="${escapeHtml(action)}"><input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}">
@@ -113,6 +172,7 @@ export function installPage(slug: string, error?: string): string {
     return renderPage({
         title: 'Install the GitHub App',
         step: 'install',
+        path: 'own-app',
         error,
         body: `<p>The App <strong>${escapeHtml(slug)}</strong> was created and its credentials were saved on this instance's volume.</p>
 <p>Install it on the repositories ProPR should work on. Choose <strong>Only select repositories</strong> to limit what agents can reach.</p>
@@ -120,16 +180,37 @@ export function installPage(slug: string, error?: string): string {
     });
 }
 
-export function adminPage(repositories: string[], error?: string): string {
+/** The ProPR App path: register the GitHub OAuth App browsers sign in with. */
+export function signInAppPage(publicUrl: string, accountLogin: string, error?: string): string {
+    const callback = `${publicUrl}${OAUTH_CALLBACK_PATH}`;
+    return renderPage({
+        title: 'Register the sign-in app',
+        step: 'signin-app',
+        error,
+        body: `<p>This instance is connected to the ProPR App${accountLogin ? ` on <strong>${escapeHtml(accountLogin)}</strong>` : ''}.</p>
+<p>ProPR Connect signs browsers in only through a hosted tunnel, so this instance signs you in with a GitHub OAuth App of your own. It only identifies who signs in; it gets no access to repositories.</p>
+<ol class="todo"><li><a href="${GITHUB_OAUTH_APP_SETTINGS_URL}" target="_blank" rel="noopener noreferrer">Register a new OAuth App on GitHub ↗</a> with:
+<ul><li>Homepage URL: <code>${escapeHtml(publicUrl)}</code></li><li>Authorization callback URL: <code>${escapeHtml(callback)}</code></li></ul></li>
+<li>Copy its <strong>Client ID</strong>, then <strong>Generate a new client secret</strong> and copy that too.</li></ol>
+<form method="post" action="/setup/connect/signin-app">
+<label for="clientId">Client ID</label><input id="clientId" name="clientId" type="text" autocomplete="off" spellcheck="false" required>
+<label for="clientSecret">Client secret</label><input id="clientSecret" name="clientSecret" type="password" autocomplete="off" required>
+<p class="hint">Stored on this instance's volume, like the rest of the setup. A Fly secret with the same name (<code>GH_OAUTH_CLIENT_ID</code>, <code>GH_OAUTH_CLIENT_SECRET</code>) wins.</p>
+<button type="submit">Save and continue</button></form>`,
+    });
+}
+
+export function adminPage(repositories: string[], error?: string, path: GithubPath = 'own-app'): string {
     const list = repositories.length
         ? `<p>Installed on ${repositories.length} ${repositories.length === 1 ? 'repository' : 'repositories'}: ${repositories.slice(0, 8).map(name => `<code>${escapeHtml(name)}</code>`).join(', ')}${repositories.length > 8 ? ', …' : ''}.</p>`
-        : '<p>The App is installed.</p>';
+        : `<p>The ${path === 'connect' ? 'ProPR App' : 'App'} is installed.</p>`;
     return renderPage({
         title: 'Sign in as the administrator',
         step: 'admin',
+        path,
         error,
         body: `${list}<p>Sign in with GitHub. Your GitHub account becomes this instance's first administrator; you can add others later in Settings → Access.</p>
-<a class="button" href="/setup/github/signin">Sign in with GitHub</a>`,
+<a class="button" href="/setup/github/signin">Sign in with GitHub</a>${path === 'connect' ? '<p class="hint"><a href="/setup/connect/signin-app">Use a different sign-in app</a> if GitHub refuses this one.</p>' : ''}`,
     });
 }
 
@@ -139,6 +220,8 @@ export interface RuntimeFormValues {
     flyApp?: string;
     flyImage?: string;
     flyMachinesMax?: string;
+    /** Which path's step list to show (not a form value). */
+    path?: GithubPath;
 }
 
 export function runtimePage(admin: string, controlPlaneApp: string, error?: string, values: RuntimeFormValues = {}): string {
@@ -149,6 +232,7 @@ export function runtimePage(admin: string, controlPlaneApp: string, error?: stri
     return renderPage({
         title: 'Choose where agents run',
         step: 'runtime',
+        path: values.path,
         error,
         body: `<p>Signed in as <strong>${escapeHtml(admin)}</strong>. Agents do not run on this Machine; pick a runtime. Each choice is checked before it is saved.</p>
 <form method="post" action="/setup/runtime">
@@ -169,15 +253,21 @@ export function runtimePage(admin: string, controlPlaneApp: string, error?: stri
     });
 }
 
-export function finishPage(runtime: string, error?: string): string {
+const IDLE_HINTS: Record<GithubPath, string> = {
+    'own-app': 'Off by default. When on, the Machine stops itself when idle and any request (the UI, a GitHub webhook) starts it again in 10–20 seconds. Polling keeps it awake.',
+    connect: 'Off by default. When on, this registers the instance\'s <code>/wake</code> URL with ProPR Connect. While the Machine is stopped, Connect keeps GitHub events for it (on the free tier the newest 25, for one hour), wakes it through <code>/wake</code> and replays them once it reconnects; a request to the UI also starts it. The Machine stops only after Connect has acknowledged the wake hint.',
+};
+
+export function finishPage(runtime: string, error?: string, path: GithubPath = 'own-app'): string {
     return renderPage({
         title: 'Start ProPR',
         step: 'finish',
+        path,
         error,
         body: `<p>Agent runtime: <strong>${escapeHtml(runtime)}</strong>. Everything is saved on the volume and survives restarts and idle stops.</p>
 <form method="post" action="/setup/finish">
 <label class="choice"><input type="checkbox" name="idleShutdown" value="on"> Stop the Machine when idle (after 15 minutes without work)</label>
-<p class="hint">Off by default. When on, the Machine stops itself when idle and any request (the UI, a GitHub webhook) starts it again in 10–20 seconds. Polling keeps it awake.</p>
+<p class="hint">${IDLE_HINTS[path]}</p>
 <button type="submit">Finish setup and start ProPR</button></form>
 <p class="hint">Next, sign in and add a model provider in Settings → Agents, as on any ProPR instance.</p>`,
     });

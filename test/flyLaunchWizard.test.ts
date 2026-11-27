@@ -12,6 +12,8 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
+import { readdirSync } from 'node:fs';
+import { PROPR_APP_INSTALL_URL, storeConnectEnrollment, type ConnectEnrollment } from '../src/flyLaunch/connectSetup.ts';
 import { storeManifestCredentials, type ManifestCredentials } from '../src/flyLaunch/githubSetup.ts';
 import { applyLaunchEnv, GITHUB_APP_KEY_FILE, readLaunchConfig, setupRequired, type LaunchConfig } from '../src/flyLaunch/launchConfig.ts';
 import { createLaunchStore, type LaunchStore } from '../src/flyLaunch/launchStore.ts';
@@ -33,12 +35,71 @@ function credentials(overrides: Partial<ManifestCredentials> = {}): ManifestCred
     };
 }
 
-function fakeGithub(calls: string[]): typeof fetch {
+const USER_TOKEN = `github_pat_${'u'.repeat(40)}`;
+const RELAY_TOKEN = 'prt_relay_secret_value';
+
+/** The hosted relay (propr-routing), as the CLI's relay client sees it. */
+interface RelayFake {
+    installations: Array<{ installation_id: number; account_login: string; account_type: string }>;
+    /** Status the named route answers instead of success. */
+    fail: Partial<Record<'me' | 'enroll' | 'mint' | 'wake', number>>;
+    /** Held until resolved, before POST /v1/relay-tokens answers. */
+    holdEnroll?: Promise<void>;
+    enrollStarted?: () => void;
+    enrolled: Array<{ installation_id: number; label: string }>;
+    revoked: Array<{ installation_id: number; token_id: string }>;
+    wake: Array<{ url: string }>;
+    /** `<route> <Authorization header>` for every relay call. */
+    auth: string[];
+}
+
+function relayFake(overrides: Partial<RelayFake> = {}): RelayFake {
+    return {
+        installations: [{ installation_id: 77, account_login: 'octo', account_type: 'User' }],
+        fail: {}, enrolled: [], revoked: [], wake: [], auth: [], ...overrides,
+    };
+}
+
+async function relayRoute(relay: RelayFake, key: string, init: RequestInit | undefined, json: (body: unknown, status?: number) => Response): Promise<Response | undefined> {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const auth = new Headers(init?.headers).get('authorization') ?? '';
+    const failed = (route: keyof RelayFake['fail']) => relay.fail[route] && json({ error: { code: 'fake' } }, relay.fail[route]);
+    const record = (route: string) => relay.auth.push(`${route} ${auth}`);
+    switch (key) {
+        case 'GET webhook.propr.dev/v1/auth/me':
+            record('me');
+            return failed('me') || json({ username: 'octo', installations: relay.installations });
+        case 'POST webhook.propr.dev/v1/relay-tokens':
+            record('enroll');
+            relay.enrollStarted?.();
+            await relay.holdEnroll;
+            if (failed('enroll')) return failed('enroll') as Response;
+            relay.enrolled.push(body);
+            return json({ token: RELAY_TOKEN, token_id: 'tok-1', token_prefix: 'prt_rel', installation_id: body.installation_id, label: body.label }, 201);
+        case 'POST webhook.propr.dev/v1/relay-tokens/revoke':
+            record('revoke');
+            relay.revoked.push(body);
+            return json({ status: 'revoked', token_id: body.token_id });
+        case 'POST webhook.propr.dev/v1/installation-token':
+            record('mint');
+            return failed('mint') || json({ token: 'ghs_relay_installation', expires_at: new Date(Date.now() + 3600_000).toISOString() });
+        case 'PUT webhook.propr.dev/v1/wake-target':
+            record('wake');
+            if (failed('wake')) return failed('wake') as Response;
+            relay.wake.push(body);
+            return json({ wake_target: { token_id: 'tok-1', url: body.url, secret: 'pws_generated' } });
+        default: return undefined;
+    }
+}
+
+function fakeGithub(calls: string[], relay: RelayFake = relayFake()): typeof fetch {
     return (async (input: string | URL | Request, init?: RequestInit) => {
         const url = new URL(String(input));
         const key = `${init?.method ?? 'GET'} ${url.host}${url.pathname}`;
         calls.push(key);
         const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+        const relayed = await relayRoute(relay, key, init, json);
+        if (relayed) return relayed;
         switch (key) {
             case 'POST api.github.com/app-manifests/manifest-code/conversions': return json(credentials(), 201);
             case 'GET api.github.com/app/installations/7': return json({ id: 7, app_id: 42 });
@@ -54,6 +115,8 @@ function fakeGithub(calls: string[]): typeof fetch {
 
 interface Harness {
     store: LaunchStore;
+    relay: RelayFake;
+    options: SetupWizardOptions;
     /** Resolves with the final config: on Finish, or (`run`) once runSetupWizard has closed its server. */
     completed: Promise<LaunchConfig>;
     port: number;
@@ -67,16 +130,29 @@ interface Harness {
  * `run: true` serves through the real runSetupWizard lifecycle (listen, Finish,
  * bounded close) instead of a test server around createSetupWizard.
  */
-async function startWizard(overrides: { validators?: Partial<RuntimeValidators>; run?: boolean; closeGraceMs?: number } = {}): Promise<Harness> {
-    const root = mkdtempSync(join(tmpdir(), 'fly-launch-wizard-'));
-    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-    const store = createLaunchStore(join(root, 'fly-launch'));
+interface WizardOverrides {
+    validators?: Partial<RuntimeValidators>;
+    run?: boolean;
+    closeGraceMs?: number;
+    relay?: RelayFake;
+    /** Reuse a volume (a restart); the claim on it carries over. */
+    store?: LaunchStore;
+}
+
+async function startWizard(overrides: WizardOverrides = {}): Promise<Harness> {
+    let store = overrides.store;
+    if (!store) {
+        const root = mkdtempSync(join(tmpdir(), 'fly-launch-wizard-'));
+        cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+        store = createLaunchStore(join(root, 'fly-launch'));
+    }
     const access = createSetupAccess(store);
     const code = access.issueCode()!;
+    const relay = overrides.relay ?? relayFake();
     const calls: string[] = [];
     const logs: string[] = [];
     const options: SetupWizardOptions = {
-        store, access, publicUrl: PUBLIC_URL, controlPlaneApp: 'propr-test', fetcher: fakeGithub(calls), log: message => logs.push(message),
+        store, access, publicUrl: PUBLIC_URL, controlPlaneApp: 'propr-test', labelHost: 'machine-1', fetcher: fakeGithub(calls, relay), log: message => logs.push(message),
         validators: {
             sprites: async token => { if (token !== 'good-sprites') throw new Error('401'); },
             flyApp: async (app, token) => (app === 'propr-agents' && token === 'FlyV1 agent' ? 200 : 403),
@@ -101,7 +177,7 @@ async function startWizard(overrides: { validators?: Partial<RuntimeValidators>;
     }
     const base = `http://127.0.0.1:${port}`;
     return {
-        store, completed, port, calls, logs, code,
+        store, relay, options, completed, port, calls, logs, code,
         request(path, options = {}) {
             const headers: Record<string, string> = {};
             if (options.cookie) headers.Cookie = options.cookie;
@@ -150,7 +226,7 @@ test('a wrong code does not claim; the right code claims once and a second brows
     assert.equal(wrong.status, 400);
     assert.equal(wrong.headers.get('set-cookie'), null);
     const cookie = await claim(h);
-    assert.match(await (await h.request('/setup', { cookie })).text(), /Create the GitHub App/);
+    assert.match(await (await h.request('/setup', { cookie })).text(), /Connect GitHub/);
     const stranger = await h.request('/setup/claim', { method: 'POST', form: { code: h.code } });
     assert.equal(stranger.status, 403);
     assert.equal((await h.request('/setup')).status, 403);
@@ -393,4 +469,281 @@ test('an instance configured with Fly secrets (or a propr deploy fly redeploy) n
     assert.equal(setupRequired(config, { GH_APP_ID: '1' }), false);
     assert.equal(setupRequired(config, { PROPR_GH_RELAY_TOKEN: 'relay' }), false);
     assert.equal(setupRequired(config, { PROPR_DEMO_MODE: 'true' }), false);
+});
+
+// ── The ProPR App path (ProPR Connect), the default ──────────────────────────
+
+const CLIENT_ID = 'Ov23liClientIdValue1';
+const CLIENT_SECRET = 'c'.repeat(40);
+
+/** Every byte the wizard keeps on the volume. */
+function volumeText(store: LaunchStore): string {
+    return readdirSync(store.dir).map(name => readFileSync(join(store.dir, name), 'utf8')).join('\n');
+}
+
+async function enroll(h: Harness, cookie: string, form: Record<string, string> = {}): Promise<Response> {
+    return h.request('/setup/connect/enroll', { method: 'POST', cookie, form: { githubToken: USER_TOKEN, ...form } });
+}
+
+/** Enroll, register the sign-in app and sign the administrator in through the API callback the wizard forwards. */
+async function connectThroughAdministrator(h: Harness, cookie: string): Promise<void> {
+    assert.equal((await enroll(h, cookie)).status, 303);
+    assert.equal((await h.request('/setup/connect/signin-app', { method: 'POST', cookie, form: { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET } })).status, 303);
+    const authorize = new URL((await h.request('/setup/github/signin', { cookie })).headers.get('location')!);
+    assert.equal(authorize.searchParams.get('client_id'), CLIENT_ID);
+    // The OAuth App's one callback is the API's; the wizard forwards it to its own admin route.
+    assert.equal(authorize.searchParams.get('redirect_uri'), `${PUBLIC_URL}/api/auth/github/callback`);
+    const query = `code=oauth-code&state=${authorize.searchParams.get('state')}`;
+    const forwarded = await h.request(`/api/auth/github/callback?${query}`);
+    assert.equal(forwarded.status, 303);
+    assert.equal(forwarded.headers.get('location'), `/setup/github/admin?${query}`);
+    assert.equal((await h.request(forwarded.headers.get('location')!, { cookie })).status, 303);
+}
+
+test('the GitHub step offers the ProPR App first (recommended) and your own App as the advanced choice', async () => {
+    const h = await startWizard();
+    const page = await (await h.request('/setup', { cookie: await claim(h) })).text();
+    const connect = page.indexOf('Use the ProPR App');
+    const advanced = page.indexOf('Advanced: Create your own GitHub App');
+    assert.ok(connect > 0 && advanced > connect, 'the ProPR App comes first');
+    assert.match(page, /Recommended/);
+    assert.ok(page.includes(`href="${PROPR_APP_INSTALL_URL}"`), 'links the shared App install page');
+    assert.match(page, /<details class="path"><summary>Advanced/, 'the own-App form starts collapsed');
+    assert.match(page, /action="\/setup\/connect\/enroll"/);
+    assert.match(page, /action="\/setup\/github\/start"/, 'the manifest form is still there');
+    assert.match(page, /aria-current="step">2\. GitHub</);
+    assert.match(page, /3\. Sign-in app/);
+    assert.equal(h.calls.length, 0, 'nothing is sent anywhere until a path is chosen');
+});
+
+test('the ProPR App path end to end: enroll, sign-in app, administrator, runtime, finish with idle wake; restart-safe and the user token is never kept', async () => {
+    const h = await startWizard({ run: true });
+    const cookie = await claim(h);
+    await connectThroughAdministrator(h, cookie);
+
+    // Enrollment: discovery and enrollment with the user token, the label the CLI uses, then one installation token with the relay token.
+    assert.deepEqual(h.relay.enrolled, [{ installation_id: 77, label: 'fly:propr-test@machine-1' }]);
+    assert.deepEqual(h.relay.auth.slice(0, 3), [`me Bearer ${USER_TOKEN}`, `enroll Bearer ${USER_TOKEN}`, `mint Bearer ${RELAY_TOKEN}`]);
+    assert.deepEqual(h.relay.revoked, []);
+
+    assert.equal((await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'none' } })).status, 303);
+    const finish = await (await h.request('/setup', { cookie })).text();
+    assert.match(finish, /registers the instance's <code>\/wake<\/code> URL with ProPR Connect/);
+    assert.equal((await h.request('/setup/finish', { method: 'POST', cookie, form: { idleShutdown: 'on' } })).status, 200);
+    const final = await h.completed;
+
+    // Idle shutdown registered this instance's /wake with Connect, with the relay token.
+    assert.deepEqual(h.relay.wake, [{ url: `${PUBLIC_URL}/wake` }]);
+    assert.equal(h.relay.auth.at(-1), `wake Bearer ${RELAY_TOKEN}`);
+
+    const stored = readLaunchConfig(h.store);
+    assert.deepEqual(stored, final);
+    assert.deepEqual(stored.connect, { installationId: '77', accountLogin: 'octo', label: 'fly:propr-test@machine-1', tokenId: 'tok-1', tokenPrefix: 'prt_rel', wakeTarget: `${PUBLIC_URL}/wake` });
+    assert.equal(stored.github, undefined);
+    assert.deepEqual(
+        Object.fromEntries(['GH_AUTH_MODE', 'PROPR_GH_RELAY_URL', 'PROPR_GH_RELAY_TOKEN', 'GH_INSTALLATION_ID', 'GITHUB_EVENT_INTAKE_MODE', 'GITHUB_REPOS_TO_MONITOR', 'GH_OAUTH_CLIENT_ID', 'PROPR_ADMIN_USERS', 'PROPR_IDLE_SHUTDOWN'].map(key => [key, stored.env[key]])),
+        {
+            GH_AUTH_MODE: 'relay', PROPR_GH_RELAY_URL: 'https://webhook.propr.dev/v1', PROPR_GH_RELAY_TOKEN: RELAY_TOKEN, GH_INSTALLATION_ID: '77',
+            GITHUB_EVENT_INTAKE_MODE: 'routing_websocket', GITHUB_REPOS_TO_MONITOR: 'octo/repo,octo/other', GH_OAUTH_CLIENT_ID: CLIENT_ID,
+            PROPR_ADMIN_USERS: 'Octo', PROPR_IDLE_SHUTDOWN: 'on',
+        },
+    );
+    for (const key of ['GH_APP_ID', 'GH_WEBHOOK_SECRET']) assert.equal(stored.env[key], undefined, `no own-App ${key}`);
+    assert.equal(existsSync(h.store.path(GITHUB_APP_KEY_FILE)), false);
+    assert.equal(statSync(h.store.path('config.json')).mode & 0o777, 0o600);
+
+    // The user token and everything Connect returns besides the relay token never reach the volume or the logs.
+    const volume = volumeText(h.store);
+    for (const secret of [USER_TOKEN, 'ghs_relay_installation', 'gho_user', 'pws_generated']) assert.ok(!volume.includes(secret), `the volume must not contain ${secret}`);
+    const logged = h.logs.join('\n');
+    for (const secret of [USER_TOKEN, RELAY_TOKEN, CLIENT_SECRET, 'ghs_relay_installation', 'gho_user', h.code]) assert.ok(!logged.includes(secret), `logs must not contain ${secret}`);
+    assert.match(logged, /labelled fly:propr-test@machine-1/);
+
+    // A restart boots the control plane, not the wizard, in relay mode with no public webhook.
+    assert.equal(setupRequired(stored, {}), false);
+    const env: NodeJS.ProcessEnv = { FLY_APP_NAME: 'propr-test' };
+    applyLaunchEnv(env, h.store, stored, { mcp: true, keyExists: existsSync });
+    assert.equal(env.GH_AUTH_MODE, 'relay');
+    assert.equal(env.GITHUB_EVENT_INTAKE_MODE, 'routing_websocket');
+    assert.equal(env.PROPR_GH_RELAY_TOKEN, RELAY_TOKEN);
+    assert.equal(env.GH_PRIVATE_KEY_PATH, undefined);
+    assert.equal(env.GH_OAUTH_CALLBACK_URL, `${PUBLIC_URL}/api/auth/github/callback`, 'the sign-in app\'s callback');
+});
+
+test('a Fly secret still wins over every value the ProPR App path stored', async () => {
+    const h = await startWizard();
+    assert.equal((await enroll(h, await claim(h))).status, 303);
+    const stored = readLaunchConfig(h.store);
+    const env: NodeJS.ProcessEnv = { FLY_APP_NAME: 'propr-test', GITHUB_EVENT_INTAKE_MODE: 'polling', GH_INSTALLATION_ID: '900', PROPR_GH_RELAY_URL: 'https://relay.example/v1' };
+    const applied = applyLaunchEnv(env, h.store, stored, { mcp: true, keyExists: existsSync });
+    assert.equal(env.GITHUB_EVENT_INTAKE_MODE, 'polling');
+    assert.equal(env.GH_INSTALLATION_ID, '900');
+    assert.equal(env.PROPR_GH_RELAY_URL, 'https://relay.example/v1');
+    assert.equal(env.PROPR_GH_RELAY_TOKEN, RELAY_TOKEN, 'unset values still come from the volume');
+    assert.deepEqual(applied.overridden.sort(), ['GH_INSTALLATION_ID', 'GITHUB_EVENT_INTAKE_MODE', 'PROPR_GH_RELAY_URL']);
+    assert.ok(!JSON.stringify(applied).includes(RELAY_TOKEN), 'only names are reported');
+});
+
+test('a restart mid-setup resumes the ProPR App path where it stopped, with the same claim', async () => {
+    const first = await startWizard();
+    const cookie = await claim(first);
+    assert.equal((await enroll(first, cookie)).status, 303);
+    assert.match(await (await first.request('/setup', { cookie })).text(), /Register the sign-in app/);
+
+    // Same volume, new process: no new code is printed, the claim cookie still works, the step is the same.
+    const second = await startWizard({ store: first.store });
+    assert.equal(createSetupAccess(first.store).issueCode(), null);
+    const page = await (await second.request('/setup', { cookie })).text();
+    assert.match(page, /Register the sign-in app/);
+    assert.ok(page.includes(`${PUBLIC_URL}/api/auth/github/callback`), 'shows the callback URL to register');
+    assert.equal(second.relay.enrolled.length, 0, 'nothing is enrolled again');
+    assert.equal((await enroll(second, cookie)).status, 303, 'a stale enroll form only returns to the current step');
+    assert.equal(second.relay.enrolled.length, 0);
+
+    // Registering the sign-in app, then the administrator, still continues from the stored state after another restart.
+    assert.equal((await second.request('/setup/connect/signin-app', { method: 'POST', cookie, form: { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET } })).status, 303);
+    const third = await startWizard({ store: first.store });
+    assert.match(await (await third.request('/setup', { cookie })).text(), /Sign in as the administrator/);
+    assert.match(await (await third.request('/setup/connect/signin-app', { cookie })).text(), /Register the sign-in app/, 'the sign-in app can be replaced before sign-in');
+});
+
+test('more than one installation: the wizard asks which one, keeps no token, and enrolls the one picked', async () => {
+    const relay = relayFake({
+        installations: [
+            { installation_id: 77, account_login: 'octo', account_type: 'User' },
+            { installation_id: 78, account_login: 'octo-org', account_type: 'Organization' },
+        ],
+    });
+    const h = await startWizard({ relay });
+    const cookie = await claim(h);
+    const pick = await enroll(h, cookie);
+    assert.equal(pick.status, 200);
+    const page = await pick.text();
+    assert.match(page, /name="installation" value="77" checked/);
+    assert.match(page, /name="installation" value="78"/);
+    assert.match(page, /octo-org/);
+    assert.match(page, /paste the token again/);
+    assert.ok(!page.includes(USER_TOKEN), 'the token is not rendered back');
+    assert.deepEqual(relay.enrolled, []);
+    assert.equal(existsSync(h.store.path('config.json')), false, 'nothing is stored before enrollment');
+
+    assert.equal((await enroll(h, cookie, { installation: '999' })).status, 400, 'an installation the account cannot use is refused');
+    assert.equal((await enroll(h, cookie, { installation: '78' })).status, 303);
+    assert.deepEqual(relay.enrolled, [{ installation_id: 78, label: 'fly:propr-test@machine-1' }]);
+    assert.equal(readLaunchConfig(h.store).env.GH_INSTALLATION_ID, '78');
+});
+
+test('enrollment failures store nothing and say what to do', async () => {
+    const cases: Array<{ name: string; relay: RelayFake; form?: Record<string, string>; message: RegExp; revoked?: boolean }> = [
+        { name: 'malformed token', relay: relayFake(), form: { githubToken: 'not a token' }, message: /Paste a GitHub token/ },
+        { name: 'no installation', relay: relayFake({ installations: [] }), message: /Install the ProPR App first/ },
+        { name: 'token GitHub refuses', relay: relayFake({ fail: { me: 401 } }), message: /did not accept that token/ },
+        { name: 'not the installation owner', relay: relayFake({ fail: { enroll: 403 } }), message: /Only the owner/ },
+        { name: 'relay down', relay: relayFake({ fail: { enroll: 503 } }), message: /answered HTTP 503/ },
+        { name: 'new relay token cannot mint', relay: relayFake({ fail: { mint: 500 } }), message: /answered HTTP 500/, revoked: true },
+    ];
+    for (const entry of cases) {
+        const h = await startWizard({ relay: entry.relay });
+        const cookie = await claim(h);
+        const response = await enroll(h, cookie, entry.form);
+        assert.equal(response.status, 400, entry.name);
+        const page = await response.text();
+        assert.match(page, entry.message, entry.name);
+        assert.match(page, /Use the ProPR App/, `${entry.name}: the GitHub step is shown again`);
+        assert.ok(!page.includes(USER_TOKEN), `${entry.name}: the token is not rendered back`);
+        assert.equal(readLaunchConfig(h.store).connect, undefined, `${entry.name}: nothing stored`);
+        assert.deepEqual(entry.relay.revoked, entry.revoked ? [{ installation_id: 77, token_id: 'tok-1' }] : [], `${entry.name}: revoke`);
+        assert.ok(!h.logs.join('\n').includes(USER_TOKEN));
+    }
+});
+
+test('an enrollment still running when the own App is stored is refused under the write lock, and its relay token revoked', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const enrolling = new Promise<void>(resolve => { started = resolve; });
+    const relay = relayFake({ holdEnroll: new Promise<void>(resolve => { release = resolve; }), enrollStarted: () => started() });
+    const h = await startWizard({ relay });
+    const cookie = await claim(h);
+
+    const pending = enroll(h, cookie);
+    await enrolling;
+    // Meanwhile the same browser finishes the advanced path's manifest flow.
+    const start = await (await h.request('/setup/github/start', { method: 'POST', cookie, form: { org: '' } })).text();
+    assert.equal((await h.request(`/setup/github/created?code=manifest-code&state=${stateIn(start)}`, { cookie })).status, 303);
+    const withApp = readLaunchConfig(h.store);
+    release();
+
+    const late = await pending;
+    assert.equal(late.status, 400);
+    assert.match(await late.text(), /Another setup step finished/);
+    assert.deepEqual(relay.revoked, [{ installation_id: 77, token_id: 'tok-1' }], 'the relay token issued for the refused result is revoked');
+    const stored = readLaunchConfig(h.store);
+    assert.deepEqual(stored, withApp, 'the own App stays as stored');
+    assert.equal(stored.env.PROPR_GH_RELAY_TOKEN, undefined);
+    assert.equal(existsSync(h.store.path(GITHUB_APP_KEY_FILE)), true);
+    assert.deepEqual(readdirSync(h.store.dir).filter(name => name.endsWith('.tmp')), [], 'every write was a complete rename');
+});
+
+test('idle shutdown on the ProPR App path needs the wake URL registered: a failure keeps the wizard open', async () => {
+    const relay = relayFake({ fail: { wake: 500 } });
+    const h = await startWizard({ relay });
+    const cookie = await claim(h);
+    await connectThroughAdministrator(h, cookie);
+    assert.equal((await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'none' } })).status, 303);
+
+    const refusedFinish = await h.request('/setup/finish', { method: 'POST', cookie, form: { idleShutdown: 'on' } });
+    assert.equal(refusedFinish.status, 400);
+    assert.match(await refusedFinish.text(), /could not register this instance&#39;s wake URL/);
+    assert.equal(readLaunchConfig(h.store).completedAt, undefined);
+    assert.ok(await isPending(h.completed));
+
+    // Without idle shutdown nothing is registered and setup finishes.
+    assert.equal((await h.request('/setup/finish', { method: 'POST', cookie, form: {} })).status, 200);
+    const final = await h.completed;
+    assert.equal(final.env.PROPR_IDLE_SHUTDOWN, undefined);
+    assert.equal(final.connect?.wakeTarget, undefined);
+    assert.equal(relay.auth.filter(entry => entry.startsWith('wake ')).length, 1, 'only the failed attempt');
+});
+
+test('the sign-in app form refuses malformed credentials and a new one clears an earlier administrator', async () => {
+    const h = await startWizard();
+    const cookie = await claim(h);
+    await connectThroughAdministrator(h, cookie);
+    const bad = await h.request('/setup/connect/signin-app', { method: 'POST', cookie, form: { clientId: 'x', clientSecret: 'y' } });
+    assert.equal(bad.status, 303, 'past the admin step the form only returns to the current step');
+    assert.equal(readLaunchConfig(h.store).env.PROPR_ADMIN_USERS, 'Octo');
+
+    const h2 = await startWizard();
+    const cookie2 = await claim(h2);
+    assert.equal((await enroll(h2, cookie2)).status, 303);
+    const malformed = await h2.request('/setup/connect/signin-app', { method: 'POST', cookie: cookie2, form: { clientId: CLIENT_ID, clientSecret: 'short' } });
+    assert.equal(malformed.status, 400);
+    const page = await malformed.text();
+    assert.match(page, /client secret/);
+    assert.ok(!page.includes('short'), 'the secret is not rendered back');
+    assert.equal(readLaunchConfig(h2.store).env.GH_OAUTH_CLIENT_ID, undefined);
+});
+
+test('the two paths never mix: storing one clears the other, including the App key file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'fly-launch-paths-'));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const store = createLaunchStore(join(root, 'fly-launch'));
+    const withApp = storeManifestCredentials(store, { version: 1, env: { SPRITES_TOKEN: 'keep' } }, credentials());
+    const enrollment: ConnectEnrollment = {
+        relayUrl: 'https://webhook.propr.dev/v1', relayToken: RELAY_TOKEN, repositories: [], installationId: '77',
+        accountLogin: 'octo', label: 'fly:a@b', tokenId: 'tok-1', tokenPrefix: 'prt_rel',
+    };
+    const connected = storeConnectEnrollment(store, withApp, enrollment);
+    assert.equal(existsSync(store.path(GITHUB_APP_KEY_FILE)), false);
+    assert.equal(connected.github, undefined);
+    for (const key of ['GH_APP_ID', 'GH_WEBHOOK_SECRET', 'GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GITHUB_REPOS_TO_MONITOR']) assert.equal(connected.env[key], undefined, key);
+    assert.equal(connected.env.SPRITES_TOKEN, 'keep');
+    assert.equal(connected.env.GH_AUTH_MODE, 'relay');
+
+    const back = storeManifestCredentials(store, connected, credentials());
+    assert.equal(back.connect, undefined);
+    assert.equal(back.env.PROPR_GH_RELAY_TOKEN, undefined);
+    assert.equal(back.env.PROPR_GH_RELAY_URL, undefined);
+    assert.equal(back.env.GH_AUTH_MODE, 'app');
+    assert.equal(back.env.GITHUB_EVENT_INTAKE_MODE, 'direct_webhook');
 });

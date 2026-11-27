@@ -3,8 +3,9 @@
  * and how it reaches the process environment on every boot.
  *
  * The wizard stores plain env values (GitHub App ids, OAuth client, webhook
- * secret, runtime tokens, the first administrator) in `config.json` and the
- * App private key in `github-app.pem`, both mode 0600 on the volume. On boot
+ * secret or Connect relay token, runtime tokens, the first administrator) in
+ * `config.json` and an own App's private key in `github-app.pem`, both mode
+ * 0600 on the volume. On boot
  * they fill only the variables the environment leaves unset: a Fly secret or
  * a fly.toml [env] value always wins, so an operator can override any of them
  * with `fly secrets set` (or the dashboard's Secrets page) at any time.
@@ -24,11 +25,35 @@ export interface LaunchGithubApp {
     htmlUrl: string;
 }
 
+/**
+ * The ProPR App path (ProPR Connect): the shared App's installation and the
+ * relay token enrolled for this instance, as `propr deploy fly` enrolls it.
+ * The token itself is in `env` (PROPR_GH_RELAY_TOKEN); these are its labels.
+ */
+export interface LaunchConnect {
+    installationId: string;
+    accountLogin: string;
+    label: string;
+    tokenId: string;
+    tokenPrefix: string;
+    /** The /wake URL registered with Connect, when idle shutdown was chosen. */
+    wakeTarget?: string;
+}
+
+/**
+ * Env only the ProPR App path writes. Storing an own App clears them, so a
+ * relay token from an abandoned Connect enrollment never outranks the App.
+ */
+export const CONNECT_ONLY_ENV_KEYS = ['PROPR_GH_RELAY_URL', 'PROPR_GH_RELAY_TOKEN'] as const;
+
 export interface LaunchConfig {
     version: 1;
     /** Plain env values, applied where the environment has none. */
     env: Record<string, string>;
+    /** Your own GitHub App (manifest flow). Never set together with `connect`. */
     github?: LaunchGithubApp;
+    /** The shared ProPR App through ProPR Connect. Never set together with `github`. */
+    connect?: LaunchConnect;
     admin?: { login: string; id: number };
     runtime?: LaunchRuntime;
     completedAt?: string;

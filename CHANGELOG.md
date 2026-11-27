@@ -22,9 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     volume (mode 0600); Fly secrets still win. `propr deploy fly` instances
     are unchanged.
   - A first-visit setup wizard, bound to a one-time code in the Machine's
-    logs, creates the GitHub App with the manifest flow, installs it, signs
-    the first administrator in, and checks a Sprites or Fly Machines runtime.
-  - Idle shutdown (off by default) needs no stop token in this layout. A
+    logs, connects GitHub, signs the first administrator in, and checks a
+    Sprites or Fly Machines runtime.
+  - GitHub is a choice. The default is the shared ProPR App through ProPR
+    Connect, as `propr deploy fly` sets it up: install the App, paste a
+    GitHub token once (never stored), and the wizard enrolls a relay token
+    labelled `fly:<app>@<host>`. It then stores relay auth with
+    `routing_websocket` intake, so no public webhook or own App is needed.
+    Browser sign-in uses a GitHub OAuth App you register. The advanced
+    choice creates your own App with the manifest flow, as before.
+  - Idle shutdown (off by default) needs no stop token in this layout. On
+    the ProPR App path it registers the instance's `/wake` URL with Connect,
+    which wakes the Machine and replays cached deliveries. A
     **Build Fly agent image** workflow builds the Fly Machines agent image
     without a terminal.
 
