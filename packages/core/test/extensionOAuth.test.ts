@@ -705,3 +705,34 @@ test('a stateful OAuth server keeps its upstream session across token refreshes 
   await sessions.closeGrant(extensionTokenHash(token), 'grant_ended');
   assert.deepEqual(deleted, ['oauth-session-1']);
 });
+
+test('a token refused on the initialized notification is refreshed and the notification retried in the same session', async t => {
+  const { ExtensionUpstreamSessions } = await import('../src/extensions/mcpUpstreamSessions.js');
+  const { extensionTokenHash } = await import('../src/extensions/extensionProfileStore.js');
+  const { ExtensionUpstreamUnauthorizedError } = await import('../src/extensions/endpointPolicy.js');
+  const f = await fixture(t, { advertise: { dynamic: true }, accessTtl: 120 });
+  await f.save([oauthServer()]);
+  await f.connect();
+  const { token } = await f.launch();
+  const sessions = new ExtensionUpstreamSessions();
+  t.after(() => sessions.closeAll('test'));
+  const seen: { method: string; sessionId?: string }[] = []; const deleted: string[] = []; let initialized = 0;
+  const send = async (endpoint: string, body: unknown, bearer?: string, _policy?: unknown, exchange: { sessionId?: string; assignedSessionId?: string; method?: string } = {}) => {
+    if (exchange.method === 'DELETE') { deleted.push(exchange.sessionId!); return null; }
+    const rpc = body as { id?: number; method: string };
+    seen.push({ method: rpc.method, sessionId: exchange.sessionId });
+    // The access token is invalidated between initialize and the initialized notification.
+    if (rpc.method === 'notifications/initialized' && !initialized++) { f.synthetic.expireAccessTokens(); throw new ExtensionUpstreamUnauthorizedError(); }
+    const reply = await f.synthetic.send(endpoint, body, bearer);
+    if (rpc.method === 'initialize') exchange.assignedSessionId = `oauth-session-${seen.filter(s => s.method === 'initialize').length}`;
+    return rpc.id === undefined ? null : reply;
+  };
+  const result = await extensionGatewayCall(f.store, token, 'docs', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'lookup', arguments: {} } }, send, sessions);
+  assert.match(JSON.stringify(result), /Found the document/);
+  assert.equal(f.synthetic.state.tokenRequests.refresh_token, 1);
+  assert.deepEqual(seen.map(s => [s.method, s.sessionId ?? null]), [
+    ['initialize', null], ['notifications/initialized', 'oauth-session-1'], ['notifications/initialized', 'oauth-session-1'], ['tools/call', 'oauth-session-1'],
+  ]);
+  await sessions.closeGrant(extensionTokenHash(token), 'grant_ended');
+  assert.deepEqual(deleted, ['oauth-session-1'], 'one upstream session, deleted at grant end');
+});

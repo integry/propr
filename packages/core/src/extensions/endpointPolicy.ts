@@ -79,6 +79,8 @@ export async function resolveExtensionEndpoint(value: string, lookup: ExtensionL
 export interface ExtensionPinnedConnection { address: string; family: number; agent: https.Agent }
 /** How long an idle pinned socket stays open; the upstream may close it sooner. */
 const PINNED_SOCKET_IDLE_MS = 60_000;
+/** How long a settled response may keep the pinned socket before it is ended, so the session's next request can proceed. */
+const PINNED_RELEASE_GRACE_MS = 1_000;
 export function extensionPinnedConnection(address: string, family: number): ExtensionPinnedConnection {
   // One socket: servers with sticky sessions lose the session on a new connection.
   return { address, family, agent: new https.Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1, timeout: PINNED_SOCKET_IDLE_MS, lookup: pinnedLookup(address, family) }) };
@@ -171,8 +173,19 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     }, response => {
-      // Drain instead of destroying on a pinned connection, so the socket (and a sticky session) survives.
-      const discard = () => { if (exchange.connection) response.resume(); else response.destroy(); };
+      // A settled exchange hands the pinned socket back: drain the rest of the response so the socket (and a sticky
+      // session) survives, but end a response the upstream keeps open after a short grace. Its socket is then
+      // replaced by a new one to the same vetted address; an upstream that binds sessions to connections answers
+      // the next request with 404, which the gateway's session recovery handles.
+      const release = () => {
+        clearTimeout(timer);
+        if (response.complete) return;
+        response.resume();
+        const grace = setTimeout(() => response.destroy(), PINNED_RELEASE_GRACE_MS);
+        const ended = () => clearTimeout(grace);
+        response.once('end', ended); response.once('close', ended);
+      };
+      const discard = () => { if (exchange.connection) release(); else response.destroy(); };
       if (remove) { discard(); finish(null); return; }
       if (response.statusCode === 401 && token) { discard(); fail(new ExtensionUpstreamUnauthorizedError()); return; }
       if (response.statusCode === 404 && exchange.sessionId) { discard(); fail(new ExtensionUpstreamSessionNotFoundError()); return; }
@@ -196,7 +209,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
           if (reply === undefined && rpc.id === requestId) reply = rpc;
         }
         // The call's own response ends the exchange, even if the stream stays open.
-        if (reply && !settled) { responseWireBytes.set(reply, bytes); finish(reply); if (!exchange.connection) response.destroy(); }
+        if (reply && !settled) { responseWireBytes.set(reply, bytes); finish(reply); discard(); }
       };
       response.on('data', (chunk: Buffer) => {
         bytes += chunk.length;

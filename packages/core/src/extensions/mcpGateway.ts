@@ -1,7 +1,7 @@
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { ExtensionError, ExtensionLibraryStore, extensionTokenHash } from './extensionProfileStore.js';
 import { ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, requestExtensionMcp, extensionResponseWireBytes, resolveExtensionEndpoint, type ExtensionMcpExchange, type ExtensionMcpSend } from './endpointPolicy.js';
-import { extensionUpstreamSessions, openUpstreamSession, sessionRequest, type ExtensionUpstreamSessions, type UpstreamSessionState } from './mcpUpstreamSessions.js';
+import { ExtensionUpstreamHandshakeUnauthorizedError, closeUpstreamSession, extensionUpstreamSessions, openUpstreamSession, sessionRequest, type ExtensionUpstreamSessions, type HandshakeOutcome, type UpstreamSessionState } from './mcpUpstreamSessions.js';
 import { extensionOAuth } from './extensionOAuthStore.js';
 import { redactExtensionOutput } from './extensionOutput.js';
 export { redactExtensionOutput } from './extensionOutput.js';
@@ -11,13 +11,22 @@ const initializeProjection = (name: string) => ({ protocolVersion: '2025-03-26',
 /** An agent `initialize` answered by the gateway itself, the upstream session already open. */
 const LOCAL_INITIALIZE = Symbol('local initialize');
 
+/** Whether a run grant is still active and unexpired (not merely over its concurrency or budget limits). */
+const extensionGrantAlive = async (store: ExtensionLibraryStore, grant: string) =>
+  Boolean(await store.database('extension_run_grants').where({ token_hash: grant, active: true }).where('expires_at', '>', Date.now()).first());
+
 // eslint-disable-next-line max-params, complexity -- protocol validation, policy enforcement and budget release share one gateway boundary
 export async function extensionGatewayCall(store: ExtensionLibraryStore, token: string, serverName: string, body: unknown, send: ExtensionMcpSend = requestExtensionMcp, sessions: ExtensionUpstreamSessions = extensionUpstreamSessions): Promise<unknown> {
   let granted: Awaited<ReturnType<ExtensionLibraryStore['grantSnapshot']>>;
   try { granted = await store.grantSnapshot(token); }
   catch (error) {
-    // An ended or expired grant takes its upstream sessions with it.
-    if (error instanceof ExtensionError && error.status === 401) await sessions.closeGrant(extensionTokenHash(token), 'grant_ended').catch(() => undefined);
+    // An ended or expired grant takes its upstream sessions with it. The same 401 also refuses a call over the
+    // grant's concurrency or budget limits while other admitted calls still use the session: close only a grant
+    // that is revoked, missing or expired.
+    if (error instanceof ExtensionError && error.status === 401) {
+      const grant = extensionTokenHash(token);
+      if (!await extensionGrantAlive(store, grant).catch(() => true)) await sessions.closeGrant(grant, 'grant_ended').catch(() => undefined);
+    }
     throw error;
   }
   const { snapshot, secrets, network, allowWrite, taskId } = granted;
@@ -87,7 +96,7 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     grant, server: serverName, taskId, authentication: server.kind === 'https' ? server.authentication : operatorToken ? 'bearer' : 'none',
     // The DELETE at grant end needs no telemetry: the grant row may already be gone.
     remove: exchange => send(endpoint, null, latest, transportPolicy, exchange),
-    alive: async () => Boolean(await store.database('extension_run_grants').where({ token_hash: grant, active: true }).where('expires_at', '>', Date.now()).first()),
+    alive: () => extensionGrantAlive(store, grant),
   });
   session.calls++;
   let handshakeBytes = 0;
@@ -113,9 +122,17 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   };
   const attempt = async (used: string | undefined): Promise<unknown> => {
     latest = used; sessions.credentialUsed(session, used);
-    const handshake = async () => {
-      const outcome = await openUpstreamSession(post(used), rpc.method === 'initialize' ? rpc.id as string | number : undefined);
-      await store.database('extension_run_grants').where({ token_hash: grant }).increment('request_bytes', outcome.requestBytes);
+    const handshake = async (resume?: Parameters<typeof openUpstreamSession>[2]) => {
+      const charge = (bytes: number) => store.database('extension_run_grants').where({ token_hash: grant }).increment('request_bytes', bytes);
+      let outcome: HandshakeOutcome;
+      try { outcome = await openUpstreamSession(post(used), rpc.method === 'initialize' ? rpc.id as string | number : undefined, resume); }
+      catch (error) {
+        // The refused handshake's bytes were sent; its session stays with the entry for the retry.
+        if (error instanceof ExtensionUpstreamHandshakeUnauthorizedError) await charge(error.pending.requestBytes).catch(() => undefined);
+        throw error;
+      }
+      try { await charge(outcome.requestBytes); }
+      catch (error) { if (outcome.state) await closeUpstreamSession(outcome.state, session.remove); throw error; }
       return outcome;
     };
     let state = session.state;

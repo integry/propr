@@ -8,8 +8,9 @@ import type { ExtensionLibraryServerInput } from '@propr/shared';
 import { extensionTestResources } from './helpers/extensionTestResources.js';
 import { ExtensionLibraryStore, extensionTokenHash, type ExtensionLaunchContext } from '../src/extensions/extensionProfileStore.js';
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
-import { ExtensionUpstreamSessionNotFoundError, type ExtensionMcpExchange } from '../src/extensions/endpointPolicy.js';
-import { ExtensionUpstreamSessions, MCP_2026_REVISION, probeExtensionMcp } from '../src/extensions/mcpUpstreamSessions.js';
+import { EXTENSION_LIMITS } from '@propr/shared';
+import { ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, type ExtensionMcpExchange, type ExtensionMcpSend } from '../src/extensions/endpointPolicy.js';
+import { ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessions, MCP_2026_REVISION, openUpstreamSession, probeExtensionMcp } from '../src/extensions/mcpUpstreamSessions.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
@@ -275,4 +276,157 @@ test('the real transport keeps a stateful session on one pinned connection, read
   assert.deepEqual([probe.reachable, probe.session, probe.protocolVersion], [true, 'stateful', '2025-06-18']);
   assert.deepEqual((probe.tools as { result: unknown }).result, { tools: [{ name: 'echo' }] });
   assert.deepEqual(deleted, ['sticky-2', 'sticky-3']);
+});
+
+test('a call refused for capacity leaves the grant\'s sessions open; only a revoked or expired grant closes them', async t => {
+  const f = await fixture(t);
+  const token = await f.launch('busy-run');
+  const upstream = statefulUpstream();
+  const call = (id: number) => extensionGatewayCall(f.store, token, 'echo', callEcho(id, 'busy'), upstream.send, f.sessions);
+  await call(1);
+  const grant = extensionTokenHash(token);
+  const entry = f.sessions.peek(grant, 'echo')!;
+  const state = entry.state!;
+  // Four admitted calls hold every connection slot; a fifth is refused with the grant's 401.
+  await f.database('extension_run_grants').where({ token_hash: grant }).update({ connections: 4 });
+  await assert.rejects(call(2), /expired or exhausted/);
+  assert.equal(f.sessions.peek(grant, 'echo'), entry, 'the session admitted calls use is kept');
+  assert.equal(entry.state, state);
+  assert.deepEqual(upstream.state.deleted, []);
+  // An exhausted call budget is not grant termination either.
+  await f.database('extension_run_grants').where({ token_hash: grant }).update({ connections: 0, calls: 1_000_000 });
+  await assert.rejects(call(3), /expired or exhausted/);
+  assert.deepEqual(upstream.state.deleted, []);
+  await f.database('extension_run_grants').where({ token_hash: grant }).update({ calls: 1 });
+  assert.match(JSON.stringify(await call(4)), /busy session=\[REDACTED\]/);
+  assert.equal(upstream.state.requests.filter(r => r.method === 'initialize').length, 1, 'the same session served the next call');
+  // Expiry does close it on the next refused call.
+  await f.database('extension_run_grants').where({ token_hash: grant }).update({ expires_at: Date.now() - 1 });
+  await assert.rejects(call(5), /expired or exhausted/);
+  assert.deepEqual(upstream.state.deleted, ['upstream-session-1']);
+  assert.equal(f.sessions.size(), 0);
+});
+
+test('a credential refused on the initialized notification keeps the session: the next handshake resumes it', async t => {
+  const f = await fixture(t);
+  const token = await f.launch('refused-notification-run');
+  const upstream = statefulUpstream();
+  let refuse = true;
+  const send: typeof upstream.send = async (endpoint, body, bearer, policy, exchange = {}) => {
+    if (refuse && (body as { method?: string })?.method === 'notifications/initialized') { refuse = false; throw new ExtensionUpstreamUnauthorizedError(); }
+    return upstream.send(endpoint, body, bearer, policy, exchange);
+  };
+  await assert.rejects(extensionGatewayCall(f.store, token, 'echo', callEcho(1, 'x'), send, f.sessions), /connection failed/);
+  const entry = f.sessions.peek(extensionTokenHash(token), 'echo')!;
+  assert.equal(entry.state, undefined);
+  assert.equal(entry.pending?.state.id, 'upstream-session-1', 'the assigned session stays owned by the entry');
+  assert.match(JSON.stringify(await extensionGatewayCall(f.store, token, 'echo', callEcho(2, 'resumed'), send, f.sessions)), /resumed session=\[REDACTED\]/);
+  assert.deepEqual(upstream.state.requests.map(r => [r.method, r.sessionId ?? null]), [
+    ['initialize', null], ['notifications/initialized', 'upstream-session-1'], ['tools/call', 'upstream-session-1'],
+  ], 'no second initialize: the notification was retried in the first session');
+  assert.equal(entry.pending, undefined);
+  await f.sessions.closeGrant(extensionTokenHash(token), 'grant_ended');
+  assert.deepEqual(upstream.state.deleted, ['upstream-session-1']);
+
+  // A session still pending when its grant ends is deleted too.
+  const second = await f.launch('pending-at-end-run');
+  refuse = true;
+  await assert.rejects(extensionGatewayCall(f.store, second, 'echo', callEcho(1, 'x'), send, f.sessions), /connection failed/);
+  await f.sessions.closeGrant(extensionTokenHash(second), 'grant_ended');
+  assert.deepEqual(upstream.state.deleted, ['upstream-session-1', 'upstream-session-2']);
+});
+
+test('every abandoned handshake closes the connection it pinned and ends an assigned session', async t => {
+  const agents: { destroyed: boolean }[] = [];
+  const pinned = (exchange: ExtensionMcpExchange) => {
+    if (!exchange.pin) return;
+    const agent = { destroyed: false, destroy() { this.destroyed = true; } };
+    agents.push(agent);
+    exchange.connection = { address: '8.8.8.8', family: 4, agent: agent as unknown as import('node:https').Agent };
+  };
+  // Refused on initialize, and on server/discover after initialize was declined.
+  for (const refused of ['initialize', 'server/discover']) {
+    agents.length = 0;
+    await assert.rejects(openUpstreamSession(async (body, exchange) => {
+      pinned(exchange);
+      const rpc = body as { id: string; method: string };
+      if (rpc.method === refused) throw new ExtensionUpstreamUnauthorizedError();
+      return { jsonrpc: '2.0', id: rpc.id, error: { code: -32602, message: 'Use server/discover' } };
+    }), ExtensionUpstreamUnauthorizedError);
+    assert.ok(agents.length > 0 && agents.every(a => a.destroyed), refused);
+  }
+  // Settings' probe has no refresh: a session assigned before the refusal is DELETEd and its connection closed.
+  agents.length = 0;
+  const deleted: string[] = [];
+  const send: ExtensionMcpSend = async (_endpoint, body, _token, _policy, exchange = {}) => {
+    if (exchange.method === 'DELETE') { deleted.push(exchange.sessionId!); return null; }
+    pinned(exchange);
+    const rpc = body as { id?: number; method: string };
+    if (rpc.method === 'notifications/initialized') throw new ExtensionUpstreamUnauthorizedError();
+    exchange.assignedSessionId = 'probe-session';
+    return { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18', capabilities: {} } };
+  };
+  await assert.rejects(probeExtensionMcp('https://8.8.8.8/mcp', 'refused', {}, send), ExtensionUpstreamUnauthorizedError);
+  assert.deepEqual(deleted, ['probe-session']);
+  assert.ok(agents.length === 1 && agents[0].destroyed);
+
+  // An entry dropped while the refused handshake ran does not keep its session.
+  const sessions = new ExtensionUpstreamSessions();
+  t.after(() => sessions.closeAll('test'));
+  const removed: string[] = [];
+  const entry = sessions.entry({ grant: 'g', server: 's', taskId: 't', authentication: 'oauth', remove: async exchange => { removed.push(exchange.sessionId!); return null; }, alive: async () => true });
+  await assert.rejects(sessions.open(entry, async () => {
+    await sessions.closeGrant('g', 'grant_ended');
+    throw new ExtensionUpstreamHandshakeUnauthorizedError({ state: { mode: 'stateful', era: '2025', protocolVersion: '2025-06-18', id: 'dropped-session' }, requestBytes: 0 });
+  }), ExtensionUpstreamUnauthorizedError);
+  assert.equal(entry.pending, undefined);
+  assert.deepEqual(removed, ['dropped-session']);
+});
+
+test('the real transport frees the pinned connection after an event-stream response the upstream leaves open', async t => {
+  const https = (await import('node:https')).default;
+  const { execFileSync } = await import('node:child_process');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'extension-open-stream-'));
+  extensionTestResources(t).defer(() => fs.rm(root, { recursive: true, force: true }));
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(root, 'key.pem'), '-out', path.join(root, 'cert.pem'), '-days', '1', '-subj', '/CN=mcp.synthetic.example', '-addext', 'subjectAltName=DNS:mcp.synthetic.example'], { stdio: 'ignore' });
+  const cert = await fs.readFile(path.join(root, 'cert.pem'));
+  const sessions = new Set<string>(); let next = 0; let abandoned = 0;
+  const upstream = https.createServer({ key: await fs.readFile(path.join(root, 'key.pem')), cert }, async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk as Buffer);
+    const id = req.headers['mcp-session-id'] as string | undefined;
+    if (req.method === 'DELETE') { sessions.delete(id!); res.writeHead(204).end(); return; }
+    const rpc = JSON.parse(Buffer.concat(chunks).toString());
+    if (rpc.method === 'initialize') {
+      const session = `open-${++next}`; sessions.add(session);
+      res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': session }).end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18', capabilities: {} } }));
+      return;
+    }
+    if (!id || !sessions.has(id)) { res.writeHead(404).end(); return; }
+    if (rpc.id === undefined) { res.writeHead(202).end(); return; }
+    // The call's response, on a stream the upstream never ends.
+    res.on('close', () => { if (!res.writableEnded) abandoned++; });
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write(`data: ${JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: `${rpc.params.arguments.message} via ${id}` }] } })}\n\n`);
+  });
+  extensionTestResources(t).defer(() => new Promise<void>(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()); }));
+  await new Promise<void>(r => upstream.listen(0, '127.0.0.1', r));
+  const { port } = upstream.address() as import('node:net').AddressInfo;
+  const original = https.request;
+  t.mock.method(https, 'request', (_url: URL, options: import('node:https').RequestOptions, callback: Parameters<typeof https.request>[2]) =>
+    original(`https://127.0.0.1:${port}/mcp`, { ...options, lookup: undefined, ca: cert, servername: 'mcp.synthetic.example' }, callback));
+  extensionTestResources(t).defer(() => t.mock.restoreAll());
+  const f = await fixture(t, [server({ capability: 'write' })]);
+  const token = await f.launch('open-stream-run', true);
+  const started = Date.now();
+  for (const [id, message] of [[1, 'first'], [2, 'second'], [3, 'third']] as const) {
+    const result = await extensionGatewayCall(f.store, token, 'echo', callEcho(id, message), undefined, f.sessions) as { result: { content: { text: string }[] } };
+    assert.equal(result.result.content[0].text, `${message} via [REDACTED]`);
+  }
+  // Far below the 10 s request timeout each call would otherwise wait out behind the open stream.
+  assert.ok(Date.now() - started < EXTENSION_LIMITS.timeoutMs / 2, `three calls took ${Date.now() - started} ms`);
+  assert.equal(f.sessions.peek(extensionTokenHash(token), 'echo')!.reinitialized, 0, 'the session survived; the write calls were not refused');
+  // The last stream is ended once its short grace passes.
+  await new Promise(resolve => setTimeout(resolve, 1_200));
+  assert.equal(abandoned, 3, 'each open stream was ended by the gateway');
+  assert.equal((await f.database('extension_run_grants').first()).connections, 0);
 });

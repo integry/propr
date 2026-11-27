@@ -67,33 +67,55 @@ export interface HandshakeOutcome {
 }
 
 /**
+ * The upstream refused the credential partway through a handshake. A session
+ * the upstream already assigned travels with the error, so the caller keeps
+ * owning it: it resumes the handshake with a refreshed credential, or closes it.
+ */
+export class ExtensionUpstreamHandshakeUnauthorizedError extends ExtensionUpstreamUnauthorizedError {
+  constructor(readonly pending: HandshakeOutcome & { state: UpstreamSessionState }) { super(); }
+}
+
+/**
  * Open an upstream session: `initialize` (2025 era; stateful when the upstream
  * assigns an `Mcp-Session-Id`), otherwise `server/discover` (2026-07-28, stateless).
- * A refused credential propagates so an OAuth server can refresh and retry.
+ * A refused credential propagates so an OAuth server can refresh and retry;
+ * every connection opened for an abandoned handshake is closed first. Given
+ * `resume` (a session initialized before its credential was refused), only the
+ * initialized notification is sent again, in that session.
  */
-export async function openUpstreamSession(post: Post, initializeId: string | number = 'propr-gateway-initialize'): Promise<HandshakeOutcome> {
+export async function openUpstreamSession(post: Post, initializeId: string | number = 'propr-gateway-initialize', resume?: HandshakeOutcome & { state: UpstreamSessionState }): Promise<HandshakeOutcome> {
   let requestBytes = 0;
   const send = async (body: unknown, exchange: ExtensionMcpExchange) => {
     requestBytes += Buffer.byteLength(JSON.stringify(body));
     try { return await post(body, exchange); }
     catch (error) { if (isUnauthorized(error)) throw error; return undefined; }
   };
+  /** Send the initialized notification in `state`; a refused credential hands the session back with the error. */
+  const notify = async (state: UpstreamSessionState, reply: unknown): Promise<HandshakeOutcome> => {
+    const notification = sessionRequest(state, { jsonrpc: '2.0', method: 'notifications/initialized' });
+    try { await send(notification.body, notification.exchange); }
+    catch (error) { throw isUnauthorized(error) ? new ExtensionUpstreamHandshakeUnauthorizedError({ state, reply, requestBytes }) : error; }
+    return { state, reply, requestBytes };
+  };
+  if (resume) return notify(resume.state, resume.reply);
   const initialize = { jsonrpc: '2.0', id: initializeId, method: 'initialize', params: { protocolVersion: MCP_2025_REVISIONS[0], capabilities: {}, clientInfo: { name: 'propr-extension-gateway', version: '1' } } };
   const opening: ExtensionMcpExchange = { protocolVersion: MCP_2025_REVISIONS[0], pin: true };
-  const reply = await send(initialize, opening);
+  let reply: unknown;
+  try { reply = await send(initialize, opening); }
+  catch (error) { opening.connection?.agent.destroy(); throw error; }
   const initialized = resultOf(reply);
   if (initialized) {
     const offered = initialized.protocolVersion;
     const protocolVersion = MCP_2025_REVISIONS.find(version => version === offered) ?? '2025-03-26';
     const id = opening.assignedSessionId;
     const state: UpstreamSessionState = { mode: id ? 'stateful' : 'stateless', era: '2025', protocolVersion, ...(id ? { id } : {}), ...(opening.connection ? { connection: opening.connection } : {}) };
-    const notification = sessionRequest(state, { jsonrpc: '2.0', method: 'notifications/initialized' });
-    await send(notification.body, notification.exchange);
-    return { state, reply, requestBytes };
+    return notify(state, reply);
   }
   opening.connection?.agent.destroy();
   const discovering: ExtensionMcpExchange = { protocolVersion: MCP_2026_REVISION, headers: { 'Mcp-Method': 'server/discover' }, pin: true };
-  const discovered = resultOf(await send({ jsonrpc: '2.0', id: 'propr-gateway-discover', method: 'server/discover', params: { _meta: MCP_2026_META } }, discovering));
+  let discovered: Record<string, unknown> | undefined;
+  try { discovered = resultOf(await send({ jsonrpc: '2.0', id: 'propr-gateway-discover', method: 'server/discover', params: { _meta: MCP_2026_META } }, discovering)); }
+  catch (error) { discovering.connection?.agent.destroy(); throw error; }
   if (discovered && Array.isArray(discovered.supportedVersions) && discovered.supportedVersions.includes(MCP_2026_REVISION)) {
     return { state: { mode: 'stateless', era: '2026', protocolVersion: MCP_2026_REVISION, ...(discovering.connection ? { connection: discovering.connection } : {}) }, reply, requestBytes };
   }
@@ -101,8 +123,11 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
   return { reply, requestBytes };
 }
 
-/** End an upstream session: `DELETE` with its id (best effort), then close its pinned connection. */
+const closedSessions = new WeakSet<UpstreamSessionState>();
+/** End an upstream session: `DELETE` with its id (best effort), then close its pinned connection. Later calls for the same state are no-ops. */
 export async function closeUpstreamSession(state: UpstreamSessionState, remove: (exchange: ExtensionMcpExchange) => Promise<unknown>): Promise<boolean> {
+  if (closedSessions.has(state)) return false;
+  closedSessions.add(state);
   let deleted = false;
   try {
     if (state.id) { await remove({ method: 'DELETE', sessionId: state.id, protocolVersion: state.protocolVersion, ...(state.connection ? { connection: state.connection } : {}) }); deleted = true; }
@@ -115,6 +140,8 @@ export interface UpstreamSessionEntry {
   grant: string; server: string; taskId: string; authentication: UpstreamAuthentication;
   state?: UpstreamSessionState;
   opening?: Promise<HandshakeOutcome>;
+  /** A session initialized before the upstream refused the credential on the initialized notification; the next handshake resumes it. */
+  pending?: HandshakeOutcome & { state: UpstreamSessionState };
   lastUsed: number;
   /** Gateway calls, successful upstream tool calls, OAuth credential changes and re-initializations after a lost session. */
   calls: number; toolCalls: number; refreshes: number; reinitialized: number;
@@ -149,19 +176,31 @@ export class ExtensionUpstreamSessions {
     return entry;
   }
 
-  /** The open session, or a new one. Concurrent callers share one handshake; a failed handshake is not kept. */
-  async open(entry: UpstreamSessionEntry, handshake: () => Promise<HandshakeOutcome>): Promise<HandshakeOutcome & { own: boolean }> {
+  /**
+   * The open session, or a new one. Concurrent callers share one handshake; a
+   * failed handshake is not kept, except a session the upstream assigned before
+   * refusing the credential: the entry keeps it and the next handshake resumes it.
+   */
+  async open(entry: UpstreamSessionEntry, handshake: (resume?: HandshakeOutcome & { state: UpstreamSessionState }) => Promise<HandshakeOutcome>): Promise<HandshakeOutcome & { own: boolean }> {
     if (entry.state) return { state: entry.state, requestBytes: 0, own: false };
     if (entry.opening) { const shared = await entry.opening; return { state: shared.state, requestBytes: 0, own: false }; }
-    const opening = handshake();
+    const resume = entry.pending; entry.pending = undefined;
+    const opening = handshake(resume);
     entry.opening = opening;
+    const current = () => this.entries.get(`${entry.grant}\0${entry.server}`) === entry;
     try {
       const outcome = await opening;
-      if (outcome.state && this.entries.get(`${entry.grant}\0${entry.server}`) === entry) {
+      if (outcome.state && current()) {
         entry.state = outcome.state;
         logger.info({ taskId: entry.taskId, server: entry.server, sessionMode: outcome.state.mode, protocolVersion: outcome.state.protocolVersion, authentication: entry.authentication, reinitialized: entry.reinitialized }, 'Opened extension URL MCP upstream session');
       } else if (outcome.state) await closeUpstreamSession(outcome.state, entry.remove);
       return { ...outcome, own: true };
+    } catch (error) {
+      if (error instanceof ExtensionUpstreamHandshakeUnauthorizedError) {
+        if (current()) entry.pending = error.pending;
+        else await closeUpstreamSession(error.pending.state, entry.remove);
+      } else if (resume) await closeUpstreamSession(resume.state, entry.remove);
+      throw error;
     } finally { entry.opening = undefined; }
   }
 
@@ -204,7 +243,7 @@ export class ExtensionUpstreamSessions {
     const key = `${entry.grant}\0${entry.server}`;
     if (this.entries.get(key) !== entry) return;
     this.entries.delete(key);
-    const state = entry.state; entry.state = undefined;
+    const state = entry.state ?? entry.pending?.state; entry.state = undefined; entry.pending = undefined;
     const deleted = state ? await closeUpstreamSession(state, entry.remove) : false;
     logger.info({ taskId: entry.taskId, server: entry.server, sessionMode: state?.mode ?? null, authentication: entry.authentication, reason, calls: entry.calls, toolCalls: entry.toolCalls, refreshes: entry.refreshes, reinitialized: entry.reinitialized, deleted }, 'Closed extension URL MCP upstream session');
     if (!this.entries.size && this.timer) { clearInterval(this.timer); this.timer = undefined; }
@@ -241,7 +280,13 @@ export interface ExtensionMcpProbe {
  */
 export async function probeExtensionMcp(endpoint: string, credential: string | undefined, options: { listTools?: boolean } = {}, send: ExtensionMcpSend = requestExtensionMcp): Promise<ExtensionMcpProbe> {
   const post = (body: unknown, exchange: ExtensionMcpExchange) => send(endpoint, body, credential, {}, exchange);
-  const outcome = await openUpstreamSession(post, 1);
+  let outcome: HandshakeOutcome;
+  try { outcome = await openUpstreamSession(post, 1); }
+  catch (error) {
+    // No refresh here: end a session the upstream assigned before refusing the credential.
+    if (error instanceof ExtensionUpstreamHandshakeUnauthorizedError) await closeUpstreamSession(error.pending.state, exchange => send(endpoint, null, credential, {}, exchange));
+    throw error;
+  }
   const { state } = outcome;
   try {
     let tools: unknown;
