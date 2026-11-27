@@ -1,0 +1,328 @@
+import type { ConversationEvent } from '@propr/shared';
+
+/**
+ * Live projection of `pi --mode json` output (see Pi's docs/json.md). Records
+ * key on `type` alone: a session header, then `agent_*`, `turn_*`,
+ * `message_*` and `tool_execution_*` session events. `message_update` records
+ * are delta-only, so assistant text and thinking are buffered per
+ * `contentIndex` until `text_end`/`thinking_end` or `message_end`, which carry
+ * the authoritative content.
+ */
+
+type JsonRecord = Record<string, unknown>;
+
+interface PiUsage { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown }
+
+interface PiBlock { kind: 'text' | 'thinking'; text: string }
+
+interface PiToolCall { name?: string; input?: Record<string, unknown> }
+
+/** Pi-specific parser state, one per projection. */
+export interface PiStreamState {
+  /** Streaming blocks of the current assistant message, by `contentIndex`. */
+  blocks: Map<number, PiBlock>;
+  /** Content indexes of the current assistant message already emitted. */
+  emittedBlocks: Set<number>;
+  /** The block mirrored into the pending assistant message. */
+  activeIndex: number | null;
+  toolCalls: Map<string, PiToolCall>;
+  emittedToolUseIds: Set<string>;
+  emittedToolResultIds: Set<string>;
+  /** Latest real timestamp seen; tool and update records carry none. */
+  lastTimestamp: string | null;
+}
+
+/** The slice of the Redis parser state the Pi projection reads and writes. */
+export interface PiParseState {
+  events: ConversationEvent[];
+  tokenUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number };
+  pendingAssistantMessage: string;
+  pendingAssistantTimestamp: string | null;
+  pendingAssistantInternalReasoning: boolean;
+  pendingAssistantKey: string | null;
+  eventKeys: WeakMap<object, string>;
+  skippedSlots: number[];
+  pi: PiStreamState;
+}
+
+const MAX_CONTENT_LENGTH = 2000;
+const FAILED_STOP_REASONS = new Set(['error', 'aborted']);
+/** Session events without a distinguishing payload; each name is Pi's own. */
+const PI_BARE_EVENT_TYPES = new Set([
+  'agent_start', 'agent_end', 'agent_settled', 'turn_start', 'turn_end',
+  'compaction_start', 'compaction_end', 'auto_retry_start', 'auto_retry_end',
+  'summarization_retry_scheduled', 'summarization_retry_attempt_start', 'summarization_retry_finished',
+]);
+const PI_TOOL_EVENT_TYPES = new Set(['tool_execution_start', 'tool_execution_update', 'tool_execution_end']);
+
+export function createPiStreamState(): PiStreamState {
+  return {
+    blocks: new Map(),
+    emittedBlocks: new Set(),
+    activeIndex: null,
+    toolCalls: new Map(),
+    emittedToolUseIds: new Set(),
+    emittedToolResultIds: new Set(),
+    lastTimestamp: null,
+  };
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** True for a Pi JSON-mode record; every other agent's records are left alone. */
+export function isPiRecord(event: unknown): boolean {
+  if (!isRecord(event) || typeof event.type !== 'string') return false;
+  const type = event.type;
+  if (type === 'session') return typeof event.version === 'number' && typeof event.id === 'string';
+  if (PI_BARE_EVENT_TYPES.has(type)) return true;
+  if (type === 'message_start' || type === 'message_end') return isRecord(event.message) && typeof event.message.role === 'string';
+  if (type === 'message_update') return isRecord(event.assistantMessageEvent);
+  if (PI_TOOL_EVENT_TYPES.has(type)) return typeof event.toolCallId === 'string';
+  return false;
+}
+
+function truncateContent(content: string): string {
+  if (content.length <= MAX_CONTENT_LENGTH) return content;
+  return content.substring(0, MAX_CONTENT_LENGTH) + '... [truncated]';
+}
+
+function contentText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((block): block is JsonRecord => isRecord(block) && block.type === 'text' && typeof block.text === 'string')
+    .map(block => block.text as string)
+    .join('');
+}
+
+function toolInput(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+function count(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function timestampFor(state: PiParseState, fallback: string): string {
+  return state.pi.lastTimestamp ?? fallback;
+}
+
+function pushEvent(state: PiParseState, event: ConversationEvent, key?: string | null): void {
+  if (key) state.eventKeys.set(event, key);
+  state.events.push(event);
+}
+
+/** An event an earlier record already emitted keeps its slot in this one. */
+function skipEvent(state: PiParseState): void {
+  state.skippedSlots.push(state.events.length);
+}
+
+function clearPending(state: PiParseState): void {
+  state.pendingAssistantMessage = '';
+  state.pendingAssistantTimestamp = null;
+  state.pendingAssistantInternalReasoning = false;
+  state.pendingAssistantKey = null;
+  state.pi.activeIndex = null;
+}
+
+/**
+ * Emit a completed text or thinking block. When it is the block being streamed,
+ * it takes the buffered message's key and timestamp so its identity stays put.
+ */
+function emitBlock(state: PiParseState, index: number, { kind, text }: PiBlock, timestamp: string): void {
+  const streamed = state.pi.activeIndex === index;
+  const key = streamed ? state.pendingAssistantKey : null;
+  const eventTimestamp = streamed ? state.pendingAssistantTimestamp ?? timestamp : timestamp;
+  if (streamed) clearPending(state);
+  state.pi.emittedBlocks.add(index);
+  state.pi.blocks.delete(index);
+  if (!text.trim()) return;
+  pushEvent(state, {
+    type: 'thought' as const,
+    content: truncateContent(text),
+    ...(kind === 'thinking' ? { internalReasoning: true } : {}),
+    timestamp: eventTimestamp,
+  }, key);
+}
+
+/** A new block started before the streamed one ended: show what was buffered. */
+function commitActiveBlock(state: PiParseState, timestamp: string): void {
+  const index = state.pi.activeIndex;
+  if (index === null) return;
+  const block = state.pi.blocks.get(index);
+  if (block) emitBlock(state, index, block, timestamp);
+  else clearPending(state);
+}
+
+function resetAssistantMessage(state: PiParseState): void {
+  state.pi.blocks.clear();
+  state.pi.emittedBlocks.clear();
+}
+
+function processMessageUpdate(update: JsonRecord, timestamp: string, state: PiParseState): void {
+  const type = typeof update.type === 'string' ? update.type : '';
+  const index = typeof update.contentIndex === 'number' ? update.contentIndex : null;
+  const kind: PiBlock['kind'] | null = type.startsWith('text_') ? 'text' : type.startsWith('thinking_') ? 'thinking' : null;
+  // Tool-call blocks surface through message_end and tool_execution_* records;
+  // a block still streaming before one stays buffered for message_end.
+  if (index === null || !kind) return;
+  if (state.pi.emittedBlocks.has(index)) return;
+  if (state.pi.activeIndex !== null && state.pi.activeIndex !== index) commitActiveBlock(state, timestamp);
+  const block = state.pi.blocks.get(index) ?? { kind, text: '' };
+  state.pi.blocks.set(index, block);
+  if (type.endsWith('_end')) {
+    const content = typeof update.content === 'string' ? update.content : block.text;
+    emitBlock(state, index, { kind, text: content }, timestamp);
+    return;
+  }
+  if (type.endsWith('_delta') && typeof update.delta === 'string') block.text += update.delta;
+  if (!block.text) return;
+  state.pi.activeIndex = index;
+  state.pendingAssistantMessage = truncateContent(block.text);
+  state.pendingAssistantInternalReasoning = kind === 'thinking';
+  state.pendingAssistantTimestamp ??= timestamp;
+}
+
+function emitToolUse(state: PiParseState, id: string, timestamp: string): void {
+  if (state.pi.emittedToolUseIds.has(id)) {
+    skipEvent(state);
+    return;
+  }
+  state.pi.emittedToolUseIds.add(id);
+  const call = state.pi.toolCalls.get(id);
+  pushEvent(state, { type: 'tool_use' as const, toolName: call?.name || 'tool', input: call?.input, id, timestamp });
+}
+
+/** Pi reports a result in `tool_execution_end`, a `toolResult` message and `turn_end`: one event per call. */
+function emitToolResult(state: PiParseState, id: string, { content, isError }: { content: unknown; isError: boolean }, timestamp: string): void {
+  if (state.pi.emittedToolResultIds.has(id)) {
+    skipEvent(state);
+    return;
+  }
+  emitToolUse(state, id, timestamp);
+  state.pi.emittedToolResultIds.add(id);
+  pushEvent(state, { type: 'tool_result' as const, toolUseId: id, result: truncateContent(contentText(content)), isError, timestamp });
+}
+
+function rememberToolCall(state: PiParseState, id: string, name: unknown, input: unknown): void {
+  const known = state.pi.toolCalls.get(id) ?? {};
+  state.pi.toolCalls.set(id, {
+    name: known.name ?? (typeof name === 'string' && name ? name : undefined),
+    input: known.input ?? toolInput(input),
+  });
+}
+
+function addUsage(state: PiParseState, usage: unknown): void {
+  if (!isRecord(usage)) return;
+  const piUsage = usage as PiUsage;
+  state.tokenUsage.input_tokens += count(piUsage.input);
+  state.tokenUsage.output_tokens += count(piUsage.output);
+  state.tokenUsage.cache_read_input_tokens += count(piUsage.cacheRead);
+  state.tokenUsage.cache_creation_input_tokens += count(piUsage.cacheWrite);
+}
+
+function processAssistantMessageEnd(message: JsonRecord, timestamp: string, state: PiParseState): void {
+  const content = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content;
+  if (Array.isArray(content)) {
+    content.forEach((block, index) => {
+      if (!isRecord(block)) return;
+      if (block.type === 'text' || block.type === 'thinking') {
+        if (state.pi.emittedBlocks.has(index)) {
+          if (typeof block[block.type] === 'string' && (block[block.type] as string).trim()) skipEvent(state);
+          return;
+        }
+        const text = block.type === 'text' ? block.text : block.thinking;
+        emitBlock(state, index, { kind: block.type, text: typeof text === 'string' ? text : '' }, timestamp);
+      } else if (block.type === 'toolCall' && typeof block.id === 'string') {
+        rememberToolCall(state, block.id, block.name, block.arguments);
+        emitToolUse(state, block.id, timestamp);
+      }
+    });
+  }
+  // A block that streamed but is missing from the final message is dropped.
+  if (state.pi.activeIndex !== null) clearPending(state);
+  resetAssistantMessage(state);
+  addUsage(state, message.usage);
+  if (FAILED_STOP_REASONS.has(String(message.stopReason)) && typeof message.errorMessage === 'string' && message.errorMessage) {
+    pushEvent(state, { type: 'thought' as const, content: truncateContent(`Pi stopped (${message.stopReason}): ${message.errorMessage}`), timestamp });
+  }
+}
+
+function processMessage(type: string, message: JsonRecord, timestamp: string, state: PiParseState): void {
+  if (message.role === 'assistant') {
+    if (type === 'message_start') {
+      commitActiveBlock(state, timestamp);
+      resetAssistantMessage(state);
+    } else {
+      processAssistantMessageEnd(message, timestamp, state);
+    }
+    return;
+  }
+  if (type === 'message_end' && message.role === 'toolResult' && typeof message.toolCallId === 'string') {
+    rememberToolCall(state, message.toolCallId, message.toolName, undefined);
+    emitToolResult(state, message.toolCallId, { content: message.content, isError: message.isError === true }, timestamp);
+  }
+  // The user prompt is not narration.
+}
+
+function processToolExecution(event: JsonRecord, timestamp: string, state: PiParseState): void {
+  const id = event.toolCallId as string;
+  rememberToolCall(state, id, event.toolName, event.args);
+  if (event.type === 'tool_execution_start') {
+    emitToolUse(state, id, timestamp);
+  } else if (event.type === 'tool_execution_end') {
+    const result = isRecord(event.result) ? event.result : { content: event.result };
+    emitToolResult(state, id, { content: result.content, isError: event.isError === true || result.isError === true }, timestamp);
+  }
+}
+
+function processTurnEnd(event: JsonRecord, timestamp: string, state: PiParseState): void {
+  if (!Array.isArray(event.toolResults)) return;
+  for (const result of event.toolResults) {
+    if (!isRecord(result) || typeof result.toolCallId !== 'string') continue;
+    rememberToolCall(state, result.toolCallId, result.toolName, undefined);
+    emitToolResult(state, result.toolCallId, { content: result.content, isError: result.isError === true }, timestamp);
+  }
+}
+
+function messageTimestamp(message: JsonRecord): string | null {
+  const ms = message.timestamp;
+  return typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+/** Projects one Pi record; returns false when the record is not Pi's. */
+export function processPiRecord(event: unknown, fallbackTimestamp: string, state: PiParseState): boolean {
+  if (!isPiRecord(event)) return false;
+  const record = event as JsonRecord;
+  const type = record.type as string;
+  if (type === 'session') {
+    if (typeof record.timestamp === 'string') state.pi.lastTimestamp = record.timestamp;
+    return true;
+  }
+  if (type === 'message_start' || type === 'message_end') {
+    const message = record.message as JsonRecord;
+    const own = messageTimestamp(message);
+    if (own) state.pi.lastTimestamp = own;
+    processMessage(type, message, own ?? timestampFor(state, fallbackTimestamp), state);
+    return true;
+  }
+  const timestamp = timestampFor(state, fallbackTimestamp);
+  if (type === 'message_update') processMessageUpdate(record.assistantMessageEvent as JsonRecord, timestamp, state);
+  else if (PI_TOOL_EVENT_TYPES.has(type)) processToolExecution(record, timestamp, state);
+  else if (type === 'turn_end') processTurnEnd(record, timestamp, state);
+  return true;
+}
+
+const PI_LINE_PREFIX = /^\s*\{"type":"(?:session|agent_|turn_|message_|tool_execution_|compaction_|auto_retry_|summarization_retry_)/;
+
+/** Pi writes `type` first; the prefix check keeps other agents' lines from being parsed twice. */
+export function isPiJsonLine(line: string): boolean {
+  if (!PI_LINE_PREFIX.test(line)) return false;
+  try {
+    return isPiRecord(JSON.parse(line));
+  } catch {
+    return false;
+  }
+}

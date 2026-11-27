@@ -14,6 +14,7 @@ import {
   type ClaudeMessageContent,
 } from './liveDetailsCodexParser.js';
 import type { TokenUsage, ConversationResult, TodoItem, PendingSubagent } from './liveDetailsTypes.js';
+import { parseRedisOutput } from '../services/redisOutputParser.js';
 
 function resolveAntigravityLiveDetailsTokenUsage(
   parsedUsage: Partial<TokenUsage>,
@@ -148,4 +149,17 @@ export function parseVibeOutputToConversationResult(output: string): Conversatio
   const currentTask = deriveCurrentTask(todos);
   const hasTokens = tokenUsage.input_tokens > 0 || tokenUsage.output_tokens > 0;
   return { events, todos, currentTask, tokenUsage: hasTokens ? tokenUsage : null };
+}
+
+/** Pi's JSON-mode stdout, projected through the same parser as its live view (LF-only framing). */
+export function parsePiOutputToConversationResult(output: string): ConversationResult | null {
+  const lines = output.split('\n').map(line => line.endsWith('\r') ? line.slice(0, -1) : line).filter(line => line.trim());
+  const parsed = parseRedisOutput(lines);
+  if (!parsed.events.length && !parsed.tokenUsage) return null;
+  return {
+    events: parsed.events as unknown as Array<Record<string, unknown>>,
+    todos: parsed.todos,
+    currentTask: parsed.currentTask,
+    tokenUsage: parsed.tokenUsage,
+  };
 }
