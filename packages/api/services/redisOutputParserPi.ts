@@ -145,7 +145,7 @@ function piBlockKey(messageId: string, index: number): string {
 
 /**
  * Emit a completed text or thinking block under its message's block key. With
- * no known message it falls back to the streamed record's key, or the current
+ * no known message it falls back to the key it streamed under, or the current
  * record's.
  */
 function emitBlock(state: PiParseState, index: number, { kind, text }: PiBlock, timestamp: string): void {
@@ -188,11 +188,8 @@ function processMessageUpdate(update: JsonRecord, timestamp: string, state: PiPa
   // a block still streaming before one stays buffered for message_end.
   if (index === null || !kind) return;
   if (state.pi.emittedBlocks.has(index)) return;
-  if (state.pi.activeIndex !== null && state.pi.activeIndex !== index) {
-    // An unknown message's earlier block stays buffered for message_end, like an ended one.
-    if (state.pi.messageId) commitActiveBlock(state, timestamp);
-    else clearPending(state);
-  }
+  // Only a known message's blocks stream, so the active block has its key.
+  if (state.pi.activeIndex !== null && state.pi.activeIndex !== index) commitActiveBlock(state, timestamp);
   const block = state.pi.blocks.get(index) ?? { kind, text: '' };
   state.pi.blocks.set(index, block);
   if (type.endsWith('_end')) {
@@ -205,13 +202,16 @@ function processMessageUpdate(update: JsonRecord, timestamp: string, state: PiPa
     }
     block.text = content;
   } else if (type.endsWith('_delta') && typeof update.delta === 'string') block.text += update.delta;
-  if (!block.text) return;
+  // A block of a message whose start retention trimmed stays buffered, unpublished:
+  // shown now it could only be named by this record, and message_end, which
+  // carries the message's identity, would emit it under its block key instead.
+  if (!block.text || !state.pi.messageId) return;
   state.pi.activeIndex = index;
   state.pendingAssistantMessage = truncateContent(block.text);
   state.pendingAssistantInternalReasoning = kind === 'thinking';
   state.pendingAssistantTimestamp ??= timestamp;
   // Streaming under the block's key keeps its ID when it completes.
-  if (state.pi.messageId) state.pendingAssistantKey = piBlockKey(state.pi.messageId, index);
+  state.pendingAssistantKey = piBlockKey(state.pi.messageId, index);
 }
 
 function emitToolUse(state: PiParseState, id: string, timestamp: string): void {

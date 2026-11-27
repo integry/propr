@@ -124,3 +124,45 @@ test('Pi text and thinking keep their IDs when retention leaves only their end o
     assert.deepEqual(trimmed, full, `the read from record ${retained} names what the watcher emitted`);
   }
 });
+
+test('a Pi block streaming when a watcher starts past its message_start is not published until message_end names it', () => {
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } };
+  const update = (assistantMessageEvent: Record<string, unknown>) => JSON.stringify({ type: 'message_update', usage, assistantMessageEvent });
+  const timestamp = 1795790301000;
+  const records = [
+    JSON.stringify({ type: 'session', version: 3, id: 'session-1', timestamp: '2026-11-27T00:00:00.000Z', cwd: '/w' }),
+    JSON.stringify({ type: 'message_start', message: { role: 'assistant', timestamp, stopReason: 'pending', content: [] } }),
+    update({ type: 'thinking_start', contentIndex: 0 }),
+    update({ type: 'thinking_delta', contentIndex: 0, delta: 'Weighing the ' }),
+    update({ type: 'thinking_delta', contentIndex: 0, delta: 'options' }),
+    update({ type: 'thinking_end', contentIndex: 0, content: 'Weighing the options.' }),
+    update({ type: 'text_start', contentIndex: 1 }),
+    update({ type: 'text_delta', contentIndex: 1, delta: 'All ' }),
+  ];
+  const end = JSON.stringify({ type: 'message_end', message: { role: 'assistant', timestamp, stopReason: 'stop', content: [
+    { type: 'thinking', thinking: 'Weighing the options.' }, { type: 'text', text: 'All checks pass.' },
+  ] } });
+  const all = [...records, end];
+  const text = `${all.join('\n')}\n`;
+  const midMessage = Buffer.byteLength(`${records.join('\n')}\n`);
+  const full = new LiveOutputProjector({ taskId: 'pi', epoch: 'generation:1', offset: 0 }).feed(text, 0) as Event[];
+
+  // Retention trimmed the message_start: the watcher's first read starts at a delta.
+  for (const retained of [3, 4, 7]) {
+    const base = Buffer.byteLength(`${all.slice(0, retained).join('\n')}\n`);
+    const read: LiveOutputRead = {
+      epoch: 'generation:1', base, end: midMessage, start: 0, head: all[0], from: base, envelopes: retained,
+      text: Buffer.from(text).subarray(base, midMessage).toString(),
+    };
+    const projection = projectLiveOutputRead(read, 'pi', null, { selectEvents: false });
+    const watched = projection.events as Event[];
+    assert.deepEqual(watched, [], `the read from record ${retained} publishes no unidentified block`);
+    assert.equal(projection.projector.pending(), null, `the read from record ${retained} has no pending block to show`);
+
+    const completed = projection.projector.feed(`${end}\n`, projection.projector.offset) as Event[];
+    const shown = [...watched, ...completed];
+    assert.equal(new Set(shown.map(event => event.id)).size, shown.length, 'no block is shown twice');
+    assert.deepEqual(completed.map(event => event.content), ['Weighing the options.', 'All checks pass.']);
+    assert.deepEqual(completed, full.filter(event => event.type === 'thought'), 'message_end names each block as a full read does');
+  }
+});
