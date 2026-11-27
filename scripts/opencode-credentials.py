@@ -28,19 +28,17 @@ def seed(source, runtime, runtime_auth):
     rows = source.execute(f"SELECT {COLUMNS} FROM credential").fetchall() if has_credential_table(source) else []
     with runtime:
         if rows:
-            # The source DB is authoritative even if a stale legacy auth.json remains.
+            # An OpenCode 2 host: its credential table is the host store and is
+            # authoritative even if a stale legacy auth.json remains.
             runtime.execute("DELETE FROM credential")
             runtime.executemany(f"INSERT INTO credential ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?)", rows)
-        # Otherwise the credentials came from auth.json, which OpenCode already
-        # imported into the runtime database. Keep those rows and record them
-        # as missing from the host, so sync can persist them and any refresh.
-        runtime.execute(
-            "CREATE TABLE propr_original_credential AS SELECT id, value, ? AS on_host FROM credential",
-            (1 if rows else 0,),
-        )
-        if not has_credential_table(source):
-            # Without a host credential table, auth.json is the only host store.
-            # Remember what was imported so sync can detect concurrent edits.
+        # Otherwise the host is still on OpenCode 1.x (no or an empty credential
+        # table): 1.x ignores that table, so auth.json is the only host store.
+        # OpenCode already imported it into the runtime database; keep those rows.
+        runtime.execute("CREATE TABLE propr_original_credential AS SELECT id, value FROM credential")
+        if not rows:
+            # Remember what was imported so sync writes refreshes back to
+            # auth.json and can detect host logins made during the run.
             runtime.execute("CREATE TABLE propr_original_auth_json (content TEXT)")
             runtime.execute(
                 "INSERT INTO propr_original_auth_json VALUES (?)", (json.dumps(read_auth_json(runtime_auth)),)
@@ -56,7 +54,7 @@ def sync_auth_json(runtime, host_auth):
     for integration_id, value in runtime.execute("""
         SELECT current.integration_id, current.value
         FROM credential AS current JOIN propr_original_credential AS original USING (id)
-        WHERE original.on_host = 0 AND current.value != original.value
+        WHERE current.value != original.value
     """):
         seeded = original.get(integration_id)
         refreshed = json.loads(value)
@@ -88,37 +86,23 @@ def sync_auth_json(runtime, host_auth):
 def sync(source, runtime, host_auth):
     if not runtime.execute("SELECT 1 FROM sqlite_master WHERE name='propr_original_credential'").fetchone():
         return
+    if runtime.execute("SELECT 1 FROM sqlite_master WHERE name='propr_original_auth_json'").fetchone():
+        # A 1.x host store: refresh auth.json, never the host database. A 1.x
+        # CLI ignores (and may migrate) that database, and once its table has
+        # rows the next seed would prefer them over later host logins.
+        sync_auth_json(runtime, host_auth)
+        return
     if not has_credential_table(source):
-        # Never create a database or table in the host data dir: a pinned 1.x
-        # CLI runs its own migrations against it. Refresh auth.json instead,
-        # which OpenCode 2 imports into the next disposable database.
-        if runtime.execute("SELECT 1 FROM sqlite_master WHERE name='propr_original_auth_json'").fetchone():
-            sync_auth_json(runtime, host_auth)
         return
     changes = runtime.execute("""
         SELECT current.value, current.time_updated, current.id, original.value
         FROM credential AS current JOIN propr_original_credential AS original USING (id)
-        WHERE original.on_host = 1 AND current.value != original.value
-    """).fetchall()
-    # Imported from auth.json: copy every surviving row, refreshed or not.
-    # Once the host table is non-empty it becomes authoritative for the next
-    # seed, so leaving unchanged rows behind would drop those logins.
-    imported = runtime.execute(f"""
-        SELECT {", ".join("current." + column.strip() for column in COLUMNS.split(","))}
-        FROM credential AS current JOIN propr_original_credential AS original USING (id)
-        WHERE original.on_host = 0
+        WHERE current.value != original.value
     """).fetchall()
     # Persist refreshes only if the host still holds the value we started with,
-    # and imported rows only if the host still has no credential with that id
-    # or for that integration. Concurrent logins, revocations and unrelated
-    # sessions stay intact. auth.json is left untouched for pinned 1.x CLIs.
+    # so concurrent logins, revocations and unrelated sessions stay intact.
     with source:
         source.executemany("UPDATE credential SET value=?, time_updated=? WHERE id=? AND value=?", changes)
-        source.executemany(
-            f"""INSERT INTO credential ({COLUMNS}) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9
-            WHERE NOT EXISTS (SELECT 1 FROM credential WHERE id=?1 OR integration_id=?2)""",
-            imported,
-        )
 
 
 def connect(path, mode):

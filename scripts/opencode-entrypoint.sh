@@ -86,8 +86,8 @@ if [ $# -gt 0 ]; then
         if [ -n "$opencode_source_data" ] && { [ -f "$source_db" ] || [ -f "$opencode_source_data/auth.json" ]; } && [[ "$(su-exec node env HOME=/home/node opencode --version)" == "opencode v2."* ]]; then
             # Initialize the disposable schema (including v1 JSON migration)
             # before importing credentials. Keep the host session DB out of it.
-            # A host with only auth.json (or a DB without a credential table)
-            # gets refreshes written back to auth.json by sync instead.
+            # A 1.x host (only auth.json, or a DB with no or an empty credential
+            # table) gets refreshes written back to auth.json by sync instead.
             su-exec node env HOME=/home/node opencode auth list --standalone >/dev/null
             su-exec node python3 /opt/propr/opencode-credentials.py seed "$source_db" "$runtime_db"
             sync_database=1

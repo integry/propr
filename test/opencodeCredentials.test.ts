@@ -31,93 +31,8 @@ function runCredentials(action: 'seed' | 'sync', sourceDb: string, runtimeDb: st
 }
 
 describe('opencode-credentials.py', () => {
-    function withLegacyStore(run: (sourceDb: string, runtimeDb: string, authJson: string) => void): void {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-credentials-'));
-        try {
-            const sourceDir = path.join(dir, 'source');
-            const runtimeDir = path.join(dir, 'runtime');
-            fs.mkdirSync(sourceDir);
-            fs.mkdirSync(runtimeDir);
-            const sourceDb = path.join(sourceDir, 'opencode.db');
-            const runtimeDb = path.join(runtimeDir, 'opencode.db');
-            const authJson = path.join(sourceDir, 'auth.json');
-
-            // OpenCode 1.x data directory: credentials in auth.json, empty credential table.
-            fs.writeFileSync(authJson, JSON.stringify({
-                openai: { type: 'oauth', refresh: 'refresh-1', access: 'access-1', expires: 1 },
-                openrouter: { type: 'api', key: 'router-key' }
-            }));
-            runSql(sourceDb, createCredentialTable);
-
-            // `opencode auth list --standalone` has already imported auth.json into the runtime DB.
-            runSql(runtimeDb, `${createCredentialTable};
-                INSERT INTO credential VALUES ('cred-openai', 'openai', 'OpenAI', '{"refresh":"refresh-1"}', NULL, 'oauth', 1, 1, 1);
-                INSERT INTO credential VALUES ('cred-openrouter', 'openrouter', 'OpenRouter', '{"key":"router-key"}', NULL, 'api', 1, 1, 1);`);
-            run(sourceDb, runtimeDb, authJson);
-        } finally {
-            fs.rmSync(dir, { recursive: true, force: true });
-        }
-    }
-
-    test('moves auth.json credentials and their refreshes from an OpenCode 1.x store into the host database', () => {
-        withLegacyStore((sourceDb, runtimeDb, authJson) => {
-            const authBefore = fs.readFileSync(authJson, 'utf8');
-            runCredentials('seed', sourceDb, runtimeDb);
-
-            // The imported credentials survive seeding.
-            assert.deepStrictEqual(
-                querySql(runtimeDb, 'SELECT id, value FROM credential ORDER BY id'),
-                [['cred-openai', '{"refresh":"refresh-1"}'], ['cred-openrouter', '{"key":"router-key"}']]
-            );
-
-            // OAuth refresh during the task.
-            runSql(runtimeDb, `UPDATE credential SET value='{"refresh":"refresh-2"}', time_updated=2 WHERE id='cred-openai'`);
-            runCredentials('sync', sourceDb, runtimeDb);
-
-            assert.deepStrictEqual(
-                querySql(sourceDb, 'SELECT id, integration_id, value, time_updated FROM credential ORDER BY id'),
-                [
-                    ['cred-openai', 'openai', '{"refresh":"refresh-2"}', 2],
-                    ['cred-openrouter', 'openrouter', '{"key":"router-key"}', 1]
-                ]
-            );
-            assert.strictEqual(fs.readFileSync(authJson, 'utf8'), authBefore);
-
-            // The next task seeds from the host database, including the refreshed token.
-            const nextRuntimeDb = path.join(path.dirname(runtimeDb), 'next.db');
-            runSql(nextRuntimeDb, `${createCredentialTable};
-                INSERT INTO credential VALUES ('cred-openai-reimport', 'openai', 'OpenAI', '{"refresh":"refresh-1"}', NULL, 'oauth', 1, 1, 1);`);
-            runCredentials('seed', sourceDb, nextRuntimeDb);
-            assert.deepStrictEqual(
-                querySql(nextRuntimeDb, 'SELECT id, value FROM credential ORDER BY id'),
-                [['cred-openai', '{"refresh":"refresh-2"}'], ['cred-openrouter', '{"key":"router-key"}']]
-            );
-            assert.deepStrictEqual(
-                querySql(nextRuntimeDb, 'SELECT id, value, on_host FROM propr_original_credential ORDER BY id'),
-                [['cred-openai', '{"refresh":"refresh-2"}', 1], ['cred-openrouter', '{"key":"router-key"}', 1]]
-            );
-        });
-    });
-
-    test('does not overwrite host credentials added while an OpenCode 1.x store was being migrated', () => {
-        withLegacyStore((sourceDb, runtimeDb) => {
-            runCredentials('seed', sourceDb, runtimeDb);
-            runSql(runtimeDb, `UPDATE credential SET value='{"refresh":"refresh-2"}', time_updated=2 WHERE id='cred-openai'`);
-
-            // The host gains rows during the run: one with the same id, one for the same integration.
-            runSql(sourceDb, `
-                INSERT INTO credential VALUES ('cred-openai', 'openai', 'OpenAI', '{"refresh":"host-login"}', NULL, 'oauth', 1, 5, 5);
-                INSERT INTO credential VALUES ('cred-router-host', 'openrouter', 'OpenRouter', '{"key":"host-key"}', NULL, 'api', 1, 5, 5);`);
-            runCredentials('sync', sourceDb, runtimeDb);
-
-            assert.deepStrictEqual(
-                querySql(sourceDb, 'SELECT id, value FROM credential ORDER BY id'),
-                [['cred-openai', '{"refresh":"host-login"}'], ['cred-router-host', '{"key":"host-key"}']]
-            );
-        });
-    });
-
-    type HostShape = 'auth.json only' | 'database without credential table';
+    // OpenCode 1.x host stores. 1.19.6 creates an empty credential table and never reads it.
+    type HostShape = 'empty credential table' | 'auth.json only' | 'database without credential table';
 
     // What `opencode auth list --standalone` (2.4.2) imports from a v1 auth.json
     // into a fresh disposable database; row ids are random on every run.
@@ -153,6 +68,7 @@ describe('opencode-credentials.py', () => {
             }), { mode: 0o600 });
             // A pre-credential-table 1.x database: sessions only, no credential table.
             if (shape === 'database without credential table') runSql(sourceDb, 'CREATE TABLE session (id TEXT PRIMARY KEY)');
+            if (shape === 'empty credential table') runSql(sourceDb, `CREATE TABLE session (id TEXT PRIMARY KEY); ${createCredentialTable}`);
             run({ sourceDb, runtimeDir, authJson });
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
@@ -208,7 +124,16 @@ finally:
         return fs.existsSync(sourceDb) ? querySql(sourceDb, "SELECT name FROM sqlite_master ORDER BY name") : [];
     }
 
-    for (const shape of ['auth.json only', 'database without credential table'] as HostShape[]) {
+    function hostCredentialRows(sourceDb: string): unknown[] {
+        const hasTable = fs.existsSync(sourceDb) && querySql(sourceDb, "SELECT 1 FROM sqlite_master WHERE name='credential'").length > 0;
+        return hasTable ? querySql(sourceDb, 'SELECT * FROM credential') : [];
+    }
+
+    function seededOpenAiRefresh(runtimeDb: string): unknown[] {
+        return querySql(runtimeDb, "SELECT json_extract(value, '$.refresh') FROM credential WHERE integration_id='openai'");
+    }
+
+    for (const shape of ['empty credential table', 'auth.json only', 'database without credential table'] as HostShape[]) {
         test(`writes OAuth refreshes back to auth.json for a host with ${shape}`, () => {
             withAuthJsonHost(shape, (dirs) => {
                 const schemaBefore = hostSchema(dirs.sourceDb);
@@ -221,20 +146,36 @@ finally:
                 });
                 assert.strictEqual(fs.statSync(dirs.authJson).mode & 0o777, 0o600);
                 assert.deepStrictEqual(fs.readdirSync(path.dirname(dirs.authJson)).filter((name) => name.includes('propr-tmp')), []);
-                // No database or credential table is created on the host.
+                // The host database is untouched: none is created, and an empty
+                // credential table stays empty (the 1.x CLI never reads it).
                 assert.strictEqual(fs.existsSync(dirs.sourceDb), shape !== 'auth.json only');
                 assert.deepStrictEqual(hostSchema(dirs.sourceDb), schemaBefore);
+                assert.deepStrictEqual(hostCredentialRows(dirs.sourceDb), []);
 
                 // The next run imports the refreshed token, and its refresh persists too.
                 const next = containerRun(dirs, 2, (runtimeDb) => {
-                    assert.deepStrictEqual(
-                        querySql(runtimeDb, "SELECT json_extract(value, '$.refresh') FROM credential WHERE integration_id='openai'"),
-                        [['refresh-2']]
-                    );
+                    assert.deepStrictEqual(seededOpenAiRefresh(runtimeDb), [['refresh-2']]);
                     refreshOpenAi(runtimeDb, 'refresh-3');
                 });
                 assert.ok(fs.existsSync(next));
                 assert.strictEqual(JSON.parse(fs.readFileSync(dirs.authJson, 'utf8')).openai.refresh, 'refresh-3');
+                assert.deepStrictEqual(hostCredentialRows(dirs.sourceDb), []);
+            });
+        });
+
+        test(`uses a host login made between runs for a host with ${shape}`, () => {
+            withAuthJsonHost(shape, (dirs) => {
+                containerRun(dirs, 1, (runtimeDb) => refreshOpenAi(runtimeDb, 'refresh-2'));
+
+                // The 1.x host CLI logs in again; it only writes auth.json.
+                const auth = JSON.parse(fs.readFileSync(dirs.authJson, 'utf8'));
+                fs.writeFileSync(dirs.authJson, JSON.stringify({
+                    ...auth,
+                    openai: { type: 'oauth', refresh: 'host-login', access: 'host-access', expires: 5 }
+                }));
+
+                containerRun(dirs, 2, (runtimeDb) => assert.deepStrictEqual(seededOpenAiRefresh(runtimeDb), [['host-login']]));
+                assert.deepStrictEqual(hostCredentialRows(dirs.sourceDb), []);
             });
         });
 
@@ -265,26 +206,87 @@ finally:
                     openai: hostLogin,
                     openrouter: { type: 'api', key: 'router-key' }
                 });
+                assert.deepStrictEqual(hostCredentialRows(dirs.sourceDb), []);
+
+                // The next run uses the host login.
+                containerRun(dirs, 2, (runtimeDb) => assert.deepStrictEqual(seededOpenAiRefresh(runtimeDb), [['host-login']]));
             });
         });
     }
 
-    test('replaces runtime rows with the source rows when the source has OpenCode 2 credentials', () => {
+    // An OpenCode 2 host: its populated credential table is the host store.
+    function withDatabaseHost(run: (sourceDb: string, runtimeDb: string, authJson: string) => void): void {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-credentials-'));
         try {
-            const sourceDb = path.join(dir, 'source.db');
+            const sourceDb = path.join(dir, 'opencode.db');
             const runtimeDb = path.join(dir, 'runtime.db');
+            const authJson = path.join(dir, 'auth.json');
+            // A stale legacy auth.json the host imported long ago.
+            fs.writeFileSync(authJson, JSON.stringify({ openai: { type: 'oauth', refresh: 'legacy', access: 'legacy', expires: 1 } }));
             runSql(sourceDb, `${createCredentialTable};
-                INSERT INTO credential VALUES ('cred-openai', 'openai', 'OpenAI', 'token-1', NULL, 'oauth', 1, 1, 1);`);
+                INSERT INTO credential VALUES ('cred-openai', 'openai', 'OpenAI', 'token-1', NULL, 'oauth', 1, 1, 1);
+                INSERT INTO credential VALUES ('cred-router', 'openrouter', 'OpenRouter', 'router-key', NULL, 'api', 1, 1, 1);`);
+            // `opencode auth list --standalone` imported the stale auth.json.
             runSql(runtimeDb, `${createCredentialTable};
                 INSERT INTO credential VALUES ('stale', 'openai', 'Stale', 'stale-token', NULL, 'oauth', 1, 1, 1);`);
-
-            runCredentials('seed', sourceDb, runtimeDb);
-
-            assert.deepStrictEqual(querySql(runtimeDb, 'SELECT id, value FROM credential'), [['cred-openai', 'token-1']]);
-            assert.deepStrictEqual(querySql(runtimeDb, 'SELECT id, value, on_host FROM propr_original_credential'), [['cred-openai', 'token-1', 1]]);
+            run(sourceDb, runtimeDb, authJson);
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }
+    }
+
+    test('replaces runtime rows with the source rows when the source has OpenCode 2 credentials', () => {
+        withDatabaseHost((sourceDb, runtimeDb) => {
+            runCredentials('seed', sourceDb, runtimeDb);
+
+            assert.deepStrictEqual(
+                querySql(runtimeDb, 'SELECT id, value FROM credential ORDER BY id'),
+                [['cred-openai', 'token-1'], ['cred-router', 'router-key']]
+            );
+            assert.deepStrictEqual(
+                querySql(runtimeDb, 'SELECT id, value FROM propr_original_credential ORDER BY id'),
+                [['cred-openai', 'token-1'], ['cred-router', 'router-key']]
+            );
+        });
+    });
+
+    test('writes refreshes back to a populated host credential table and leaves auth.json alone', () => {
+        withDatabaseHost((sourceDb, runtimeDb, authJson) => {
+            const authBefore = fs.readFileSync(authJson, 'utf8');
+            runCredentials('seed', sourceDb, runtimeDb);
+            runSql(runtimeDb, `UPDATE credential SET value='token-2', time_updated=2 WHERE id='cred-openai'`);
+            runCredentials('sync', sourceDb, runtimeDb);
+
+            assert.deepStrictEqual(
+                querySql(sourceDb, 'SELECT id, value, time_updated FROM credential ORDER BY id'),
+                [['cred-openai', 'token-2', 2], ['cred-router', 'router-key', 1]]
+            );
+            assert.strictEqual(fs.readFileSync(authJson, 'utf8'), authBefore);
+        });
+    });
+
+    test('keeps a host credential replaced during the run', () => {
+        withDatabaseHost((sourceDb, runtimeDb) => {
+            runCredentials('seed', sourceDb, runtimeDb);
+            runSql(runtimeDb, `UPDATE credential SET value='token-2', time_updated=2 WHERE id='cred-openai'`);
+            runSql(sourceDb, `UPDATE credential SET value='host-login', time_updated=5 WHERE id='cred-openai'`);
+            runCredentials('sync', sourceDb, runtimeDb);
+
+            assert.deepStrictEqual(
+                querySql(sourceDb, 'SELECT id, value FROM credential ORDER BY id'),
+                [['cred-openai', 'host-login'], ['cred-router', 'router-key']]
+            );
+        });
+    });
+
+    test('does not restore a host credential deleted during the run', () => {
+        withDatabaseHost((sourceDb, runtimeDb) => {
+            runCredentials('seed', sourceDb, runtimeDb);
+            runSql(runtimeDb, `UPDATE credential SET value='token-2', time_updated=2 WHERE id='cred-openai'`);
+            runSql(sourceDb, `DELETE FROM credential WHERE id='cred-openai'`);
+            runCredentials('sync', sourceDb, runtimeDb);
+
+            assert.deepStrictEqual(querySql(sourceDb, 'SELECT id, value FROM credential ORDER BY id'), [['cred-router', 'router-key']]);
+        });
     });
 });
