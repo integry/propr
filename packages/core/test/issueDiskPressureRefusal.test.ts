@@ -36,7 +36,7 @@ await mock.module('../src/webhook/planIssueTrigger.js', { namedExports: {
 } });
 const { PlanIssueStatus: S, updatePlanIssue } = await import('../src/config/planIssueManager.js');
 const { createEpicExecutionQueue, getEpicExecutionQueue, startEpicQueueHead, summarizeEpicQueue } = await import('../src/services/taskPlanning/epicExecutionQueue.js');
-const { reportIssueDiskPressureRefusal, diskPressureRefusalCommentBody } = await import('../src/services/issueDiskPressureRefusal.js');
+const { reportIssueDiskPressureRefusal, diskPressureRefusalCommentBody, refusalDetails } = await import('../src/services/issueDiskPressureRefusal.js');
 const { diskPressureRefusedReason } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
 
 await database.schema.createTable('task_drafts', table => {
@@ -114,4 +114,14 @@ test('a failed comment is logged, never thrown', async () => {
   const failing = { request: async () => { throw new Error('GitHub unavailable'); } };
   const outcome = await reportIssueDiskPressureRefusal(refusedJob(9), { octokit: failing, database, now: () => NOW });
   assert.equal(outcome.commented, false);
+});
+
+test('the comment states what admission measured, from the final error or from the job', async () => {
+  const details = 'filesystem /tmp/git-processor: free 6.2 GiB < required 7.0 GiB = reserve 2.0 GiB + 4 other claims × 1.0 GiB + this job 1.0 GiB';
+  // Only the message survives the queue round-trip.
+  const error = new Error(`Worktree disk pressure: admission reserve unavailable after waiting 60 minutes (7 refusals); data retained (${details})`);
+  await reportIssueDiskPressureRefusal(refusedJob(9), { octokit, database, now: () => NOW, error });
+  assert.ok(String(comments[0].params.body).includes(`Measured at the last refusal:\n\n\`\`\`\n${details}\n\`\`\``), String(comments[0].params.body));
+  assert.equal(refusalDetails({ data: { diskPressureDetails: details } }), details);
+  assert.equal(diskPressureRefusalCommentBody({ data: {} }, { inPlan: false }).includes('Measured'), false);
 });

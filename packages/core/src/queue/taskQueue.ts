@@ -1,4 +1,4 @@
-import { repositoryStorageLifecycle, protectStorageQueue, isWorktreeDiskPressureError } from '../storage/lifecycle.js';
+import { repositoryStorageLifecycle, protectStorageQueue, isWorktreeDiskPressureError, worktreeDiskPressureLogFields } from '../storage/lifecycle.js';
 import { deferIssueJobOnDiskPressure, endIssueDiskPressureWait, isFinalJobFailure, ISSUE_JOB_NAME } from './issueDiskPressureDeferral.js';
 // Task queue module for processing GitHub issues and PR comments
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
@@ -235,7 +235,7 @@ async function reportIssueDiskPressureFailure(job: Job | undefined, err: Error):
     if (!job || job.name !== ISSUE_JOB_NAME || !isWorktreeDiskPressureError(err) || !isFinalJobFailure(job, err)) return;
     try {
         const { reportIssueDiskPressureRefusal } = await import('../services/issueDiskPressureRefusal.js');
-        await reportIssueDiskPressureRefusal(job as unknown as Parameters<typeof reportIssueDiskPressureRefusal>[0]);
+        await reportIssueDiskPressureRefusal(job as unknown as Parameters<typeof reportIssueDiskPressureRefusal>[0], { error: err });
     } catch (error) {
         logger.warn({ jobId: job.id, error: (error as Error).message }, 'Failed to report an issue job refused for disk pressure');
     }
@@ -322,7 +322,8 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
             data: job?.data,
             errMessage: err.message,
             stack: err.stack,
-            attemptsMade: job?.attemptsMade
+            attemptsMade: job?.attemptsMade,
+            ...worktreeDiskPressureLogFields(err),
         }, 'Job failed');
         try {
             const metricsRedis = createMetricsRedis();

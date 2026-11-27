@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { claimOwnerGone, currentClaimOwner, isClaimOwner, type ClaimOwner, type ClaimOwnerProbe } from './claimOwner.js';
+import { WorktreeDiskPressureError, formatCountedClaims, type CountedStorageClaim } from './diskPressure.js';
 
 /**
  * The holder's record inside the gate directory, named `owner-<token>` with the
@@ -26,24 +27,10 @@ interface GateRecord { owner: ClaimOwner; token: string; takenAt: number }
 /** What a waiter saw inside the gate: the holder's record (by file name) and every other entry. */
 interface GateContents { holder: { file: string; record: GateRecord } | null; entries: string[] }
 
-/**
- * Admission refused a task because the worktree filesystem is below its
- * reserve. Thrown before the task's processor runs, so the processor's own
- * failure reporting never sees it; callers that owe someone an answer (a PR
- * comment job, for instance) recognise it by name.
- */
-export class WorktreeDiskPressureError extends Error {
-  constructor() {
-    super('Worktree disk pressure: admission reserve unavailable; data retained');
-    this.name = 'WorktreeDiskPressureError';
-  }
-}
-
-/** True for the admission refusal above, whether or not the instance survived a queue round-trip. */
-export function isWorktreeDiskPressureError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return error.name === 'WorktreeDiskPressureError' || error.message.startsWith('Worktree disk pressure:');
-}
+export {
+  WorktreeDiskPressureError, isWorktreeDiskPressureError, worktreeDiskPressureDetails, worktreeDiskPressureLogFields,
+  worktreeDiskPressureMeasurementOf, formatWorktreeDiskPressure, type WorktreeDiskPressureMeasurement,
+} from './diskPressure.js';
 
 export interface StorageLifecycleOptions {
   /** Interval of the default "still waiting for the gate" warning. */
@@ -345,7 +332,7 @@ export class StorageLifecycle {
     await fs.writeFile(claim, JSON.stringify({ ...(admission ? { reservedBytes: admission.taskBytes } : {}), owner: currentClaimOwner() }), { flag: 'wx' });
     try {
       await this.withWaitWarning(() => this.exclusive(async () => {
-        if (admission) await this.admit(admission);
+        if (admission) await this.admit(admission, claim);
         if (options.recordUse !== false) await this.touch();
       }, Infinity), options.waitWarning);
     } catch (error) { await fs.unlink(claim); throw error; }
@@ -372,9 +359,12 @@ export class StorageLifecycle {
     finally { clearTimeout(timer); clearInterval(timer); }
   }
 
-  private async admit(admission: { filesystem: string; reserveBytes: number; taskBytes: number }): Promise<void> {
+  private async admit(admission: { filesystem: string; reserveBytes: number; taskBytes: number }, ownClaim: string): Promise<void> {
     if (![admission.reserveBytes, admission.taskBytes].every(value => Number.isSafeInteger(value) && value > 0)) throw new Error('Invalid worktree admission reserve');
     let reserved = 0;
+    // Every claim counted, own included, for the refusal's claim listing.
+    const counted: CountedStorageClaim[] = [];
+    const ownName = path.basename(ownClaim);
     for (const name of await fs.readdir(path.join(this.root, 'readers'))) {
       const file = await fs.open(path.join(this.root, 'readers', name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {
@@ -392,6 +382,10 @@ export class StorageLifecycle {
           if (record.reservedBytes === undefined) continue;
           if (!Number.isSafeInteger(record.reservedBytes) || record.reservedBytes <= 0) throw new StorageBusyError();
           reserved += record.reservedBytes;
+          counted.push({
+            file: name, reservedBytes: record.reservedBytes, ageMs: Date.now() - stat.mtimeMs,
+            ...(isClaimOwner(record.owner) ? { owner: { host: record.owner.host, pid: record.owner.pid } } : {}),
+          });
         }
       } finally { await file.close(); }
     }
@@ -406,7 +400,17 @@ export class StorageLifecycle {
       }
     }
     const stat = await fs.statfs(filesystem);
-    if (stat.bavail * stat.bsize < admission.reserveBytes + reserved) throw new WorktreeDiskPressureError();
+    const freeBytes = stat.bavail * stat.bsize;
+    if (freeBytes >= admission.reserveBytes + reserved) return;
+    // The job's own claim (written before admission) is its taskBytes; the rest belongs to other claims.
+    const own = counted.find(claim => claim.file === ownName);
+    const others = counted.filter(claim => claim !== own);
+    const measurement = {
+      filesystem, freeBytes, reserveBytes: admission.reserveBytes, taskBytes: admission.taskBytes,
+      reservedBytes: others.reduce((sum, claim) => sum + claim.reservedBytes, 0), claimCount: others.length,
+    };
+    console.warn(formatCountedClaims(measurement, counted, ownName));
+    throw new WorktreeDiskPressureError(measurement);
   }
 
   private async release(scope: StorageUseScope): Promise<void> {

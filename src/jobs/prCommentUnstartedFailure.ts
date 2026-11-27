@@ -1,5 +1,5 @@
 import type { Job } from 'bullmq';
-import { getAuthenticatedOctokit, isWorktreeDiskPressureError, logger, type CommentJobData } from '@propr/core';
+import { getAuthenticatedOctokit, isWorktreeDiskPressureError, logger, worktreeDiskPressureDetails, type CommentJobData } from '@propr/core';
 import { sanitizeErrorMessage } from './errorSanitizer.js';
 import { buildWorkEvidenceMarker, filterRealComments } from '../shared/workEvidenceMarker.js';
 
@@ -28,8 +28,10 @@ function requestedComments(data: CommentJobData): Array<{ id: number; author: st
 
 function explanation(error: Error, attempts: number): string {
     if (isWorktreeDiskPressureError(error)) {
+        const details = worktreeDiskPressureDetails(error);
         return 'The ProPR worker refused the job because the disk that holds its working copies is nearly full. '
-            + 'Nothing was changed on this pull request. Once space has been freed on the worker host, post the command again.';
+            + 'Nothing was changed on this pull request. Once space has been freed on the worker host, post the command again.'
+            + (details ? `\n\nMeasured at the refusal:\n\n\`\`\`\n${details}\n\`\`\`` : '');
     }
     const times = attempts > 1 ? ` ${attempts} times` : '';
     return `The job failed${times} before processing began:\n\n\`\`\`\n${sanitizeErrorMessage(error.message)}\n\`\`\`\n\nPost the command again once the cause is resolved.`;
@@ -57,7 +59,9 @@ export async function postUnstartedPRCommentFailure(job: UnstartedJob, error: Er
             owner: repoOwner, repo: repoName, issue_number: pullRequestNumber,
             body: unstartedPRCommentFailureBody(job, error),
         });
-        log.info({ jobId: job.id, pullRequestNumber, diskPressure: isWorktreeDiskPressureError(error) }, 'Reported a PR comment job that failed before it started on the pull request');
+        const details = worktreeDiskPressureDetails(error);
+        log.info({ jobId: job.id, pullRequestNumber, diskPressure: isWorktreeDiskPressureError(error), ...(details ? { diskPressureDetails: details } : {}) },
+            `Reported a PR comment job that failed before it started on the pull request${details ? ` (${details})` : ''}`);
         return true;
     } catch (postError) {
         log.error({ jobId: job.id, pullRequestNumber, error: (postError as Error).message, cause: error.message }, 'Failed to report a PR comment job that failed before it started');

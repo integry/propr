@@ -16,7 +16,7 @@
  */
 // A namespace import: suites that mock `bullmq` with a fixed export list load this module too.
 import * as bullmq from 'bullmq';
-import { isWorktreeDiskPressureError } from '../storage/lifecycle.js';
+import { isWorktreeDiskPressureError, worktreeDiskPressureDetails, worktreeDiskPressureLogFields, worktreeDiskPressureMeasurementOf } from '../storage/lifecycle.js';
 import logger from '../utils/logger.js';
 
 export const ISSUE_JOB_NAME = 'processGitHubIssue';
@@ -29,6 +29,8 @@ export interface IssueDiskPressureWaitData {
     diskPressureSince?: number;
     /** Epoch ms of the next attempt. */
     diskPressureRetryAt?: number;
+    /** What admission measured at the latest refusal, in words (`formatWorktreeDiskPressure`). */
+    diskPressureDetails?: string;
 }
 
 const MINUTE_MS = 60_000;
@@ -76,10 +78,10 @@ export function decideIssueDiskPressure(
 }
 
 /** The message of the final refusal; it keeps the admission prefix, so `isWorktreeDiskPressureError` still recognises it. */
-export function exhaustedIssueDiskPressureMessage(waitedMs: number, deferrals: number): string {
+export function exhaustedIssueDiskPressureMessage(waitedMs: number, deferrals: number, details?: string | null): string {
     const minutes = Math.round(waitedMs / MINUTE_MS);
     return `Worktree disk pressure: admission reserve unavailable after waiting ${minutes} minute${minutes === 1 ? '' : 's'} `
-        + `(${deferrals + 1} refusal${deferrals === 0 ? '' : 's'}); data retained`;
+        + `(${deferrals + 1} refusal${deferrals === 0 ? '' : 's'}); data retained${details ? ` (${details})` : ''}`;
 }
 
 interface DeferrableIssueJob {
@@ -113,20 +115,29 @@ export async function deferIssueJobOnDiskPressure<T>(
         const decision = decideIssueDiskPressure(data, { now: options.now?.() ?? Date.now(), maxWaitMs });
         const log = typeof data.correlationId === 'string' ? logger.withCorrelation(data.correlationId) : logger;
         const target = { jobId: job.id, repository: `${data.repoOwner}/${data.repoName}`, issueNumber: data.number };
+        const details = worktreeDiskPressureDetails(error);
+        const measured = worktreeDiskPressureLogFields(error);
         if (decision.action === 'exhausted') {
-            log.error({ ...target, refusals: decision.deferrals + 1, waitedMs: decision.waitedMs },
-                'Issue job refused for disk pressure: the wait for free disk space ran out');
+            log.error({ ...target, ...measured, refusals: decision.deferrals + 1, waitedMs: decision.waitedMs },
+                `Issue job refused for disk pressure: the wait for free disk space ran out${details ? ` (${details})` : ''}`);
             const Unrecoverable = bullmq.UnrecoverableError;
-            const message = exhaustedIssueDiskPressureMessage(decision.waitedMs, decision.deferrals);
-            if (Unrecoverable) throw new Unrecoverable(message);
-            // Recognised by name by BullMQ, so the job is not retried.
-            throw Object.assign(new Error(message), { name: 'UnrecoverableError' });
+            const message = exhaustedIssueDiskPressureMessage(decision.waitedMs, decision.deferrals, details);
+            const final = Unrecoverable
+                ? new Unrecoverable(message)
+                // Recognised by name by BullMQ, so the job is not retried.
+                : Object.assign(new Error(message), { name: 'UnrecoverableError' });
+            const measurement = worktreeDiskPressureMeasurementOf(error);
+            if (measurement) Object.assign(final, { measurement });
+            throw final;
         }
-        const next: IssueJobDataWithWait = { ...data, diskPressureDeferrals: decision.deferrals, diskPressureSince: decision.since, diskPressureRetryAt: decision.retryAt };
+        const next: IssueJobDataWithWait = {
+            ...data, diskPressureDeferrals: decision.deferrals, diskPressureSince: decision.since, diskPressureRetryAt: decision.retryAt,
+            ...(details ? { diskPressureDetails: details } : {}),
+        };
         await job.updateData(next);
         await job.moveToDelayed(decision.retryAt, job.token);
-        log.warn({ ...target, refusals: decision.deferrals, retryAt: new Date(decision.retryAt).toISOString(), delayMs: decision.delayMs },
-            'Issue job refused for disk pressure: waiting for free disk space');
+        log.warn({ ...target, ...measured, refusals: decision.deferrals, retryAt: new Date(decision.retryAt).toISOString(), delayMs: decision.delayMs },
+            `Issue job refused for disk pressure: waiting for free disk space${details ? ` (${details})` : ''}`);
         const Delayed = bullmq.DelayedError;
         if (Delayed) throw new Delayed();
         throw Object.assign(new Error('bullmq:movedToDelayed'), { name: 'DelayedError' });
@@ -140,7 +151,7 @@ export async function deferIssueJobOnDiskPressure<T>(
 export async function endIssueDiskPressureWait(job: Pick<DeferrableIssueJob, 'id' | 'data' | 'updateData'>): Promise<void> {
     const data = job.data as IssueJobDataWithWait | undefined;
     if (!data || data.diskPressureSince === undefined) return;
-    const waitFields = new Set(['diskPressureDeferrals', 'diskPressureSince', 'diskPressureRetryAt']);
+    const waitFields = new Set(['diskPressureDeferrals', 'diskPressureSince', 'diskPressureRetryAt', 'diskPressureDetails']);
     const rest = Object.fromEntries(Object.entries(data).filter(([key]) => !waitFields.has(key)));
     try {
         await job.updateData(rest);

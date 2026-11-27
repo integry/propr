@@ -10,6 +10,7 @@ import { parentExecutionMarker, parentScopeFromCommentJob, parentScopeFromIssueB
 
 import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { worktreeDiskPressureDetails } from '../packages/core/src/storage/diskPressure.js';
 import { createUltrafixRedis, withResumeIndex, type UltrafixRedisDouble } from './fixtures/ultrafixRedisDouble.js';
 
 // --- Fake BullMQ queue: retains jobs by ID like BullMQ does ---
@@ -92,6 +93,7 @@ await mock.module('@propr/core', {
         getAuthenticatedOctokit: async () => ({ request: mockOctokitRequest }),
         getIssueQueue: mockGetIssueQueue,
         isWorktreeDiskPressureError: (error: unknown) => error instanceof Error && error.name === 'WorktreeDiskPressureError',
+        worktreeDiskPressureDetails,
         getPendingPrCommentsKey: (owner: string, repo: string, pr: number) => `pending:${owner}:${repo}:${pr}`,
         retryConfigs: { githubApi: {} },
         safeRemoveLabel: mockSafeRemoveLabel,
@@ -1586,9 +1588,11 @@ describe('Ultrafix recovery after a CI failure', () => {
     });
 });
 
-/** What worktree admission throws when the disk holding working copies is nearly full. */
+const DISK_PRESSURE_DETAILS = 'filesystem /tmp/git-processor: free 6.2 GiB < required 7.0 GiB = reserve 2.0 GiB + 4 other claims × 1.0 GiB + this job 1.0 GiB';
+
+/** What worktree admission throws when the disk holding working copies is nearly full (as it arrives after a queue round-trip). */
 function diskPressureError(): Error {
-    return Object.assign(new Error('Worktree disk pressure: admission reserve unavailable; data retained'), { name: 'WorktreeDiskPressureError' });
+    return Object.assign(new Error(`Worktree disk pressure: admission reserve unavailable; data retained (${DISK_PRESSURE_DETAILS})`), { name: 'WorktreeDiskPressureError' });
 }
 
 describe('Ultrafix steps refused at admission for disk pressure', () => {
@@ -1645,6 +1649,10 @@ describe('Ultrafix steps refused at admission for disk pressure', () => {
 
         // 1st refusal: one notice, no refusal counted toward the failed-step breaker.
         assert.deepEqual(await refusePendingStep(redis, 170, 'review'), { reportedOnPullRequest: true });
+        const waitingLog = logger.info.mock.calls.map(call => call.arguments as unknown[])
+            .find(([, message]) => String(message).startsWith('Ultrafix step refused for disk pressure: waiting for free disk space'));
+        assert.equal(waitingLog?.[1], `Ultrafix step refused for disk pressure: waiting for free disk space (${DISK_PRESSURE_DETAILS})`);
+        assert.equal((waitingLog?.[0] as { diskPressureDetails?: string }).diskPressureDetails, DISK_PRESSURE_DETAILS);
         let state = await loadState(redis as never, OWNER, REPO, 170);
         assert.equal(getConsecutiveFailedSteps(state!), 0);
         assert.equal(getDiskPressureWait(state!)?.refusals, 1);
@@ -1727,6 +1735,9 @@ describe('Ultrafix steps refused at admission for disk pressure', () => {
         assert.match(stops[0], /Stopped in cycle 2 of 5\./);
         assert.equal(stops[0].match(/cycle \d+ of \d+/g)?.length, 1, 'the notice names one cycle');
         assert.match(stops[0], /refused 6 times/);
+        assert.ok(stops[0].includes(`Measured at the last refusal:\n\n\`\`\`\n${DISK_PRESSURE_DETAILS}\n\`\`\``), 'the stop notice states what was measured');
+        const [notice] = bodies.filter(body => body.includes(WAIT_NOTICE));
+        assert.ok(notice.includes(`Measured at the refusal:\n\n\`\`\`\n${DISK_PRESSURE_DETAILS}\n\`\`\``), 'the waiting notice states what was measured');
         assert.doesNotMatch(stops[0], /unknown|Max cycles|failed \d+ times in a row/);
         assert.deepEqual(mockSafeRemoveLabel.mock.calls.map(call => call.arguments[1]), ['ultrafix'], 'the label is removed');
         assert.equal(await loadRearmRetry(redis as never, OWNER, REPO, 171), null);

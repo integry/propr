@@ -10,6 +10,7 @@
 import type { Knex } from 'knex';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
+import { worktreeDiskPressureDetails } from '../storage/lifecycle.js';
 import { PlanIssueStatus, findPlanIssueByRepoAndNumber, updatePlanIssueStatus } from '../config/planIssueManager.js';
 import { diskPressureRefusedReason, markEpicQueueIssueDispatchRefused } from './taskPlanning/epicQueueBlockedHead.js';
 
@@ -21,7 +22,7 @@ export interface RefusedIssueJob {
     id?: string;
     data: {
         repoOwner?: string; repoName?: string; number?: number; triggeringLabel?: string; correlationId?: string;
-        diskPressureDeferrals?: number; diskPressureSince?: number;
+        diskPressureDeferrals?: number; diskPressureSince?: number; diskPressureDetails?: string;
     };
 }
 
@@ -40,7 +41,15 @@ function waitedText(job: RefusedIssueJob, now: number): string {
     return ` It waited about ${minutes} minute${minutes === 1 ? '' : 's'} for space to be freed, then gave up.`;
 }
 
-export function diskPressureRefusalCommentBody(job: RefusedIssueJob, { inPlan, now = Date.now() }: { inPlan: boolean; now?: number }): string {
+/** What admission measured at the final refusal (from the error), or at the latest recorded one. */
+export function refusalDetails(job: RefusedIssueJob, error?: unknown): string | null {
+    return worktreeDiskPressureDetails(error) ?? (typeof job.data.diskPressureDetails === 'string' ? job.data.diskPressureDetails : null);
+}
+
+export function diskPressureRefusalCommentBody(
+    job: RefusedIssueJob,
+    { inPlan, now = Date.now(), details = null }: { inPlan: boolean; now?: number; details?: string | null },
+): string {
     const label = job.data.triggeringLabel || 'AI';
     return [
         '❌ **ProPR could not start on this issue: the worker had no free disk space.**',
@@ -48,6 +57,7 @@ export function diskPressureRefusalCommentBody(job: RefusedIssueJob, { inPlan, n
         'The ProPR worker refused to start this issue because the disk that holds its working copies is nearly full.'
             + `${waitedText(job, now)} Nothing was changed: no branch, commit or pull request was created.`,
         '',
+        ...(details ? ['Measured at the last refusal:', '', '```', details, '```', ''] : []),
         `To run it again once space has been freed on the worker host, remove the \`${label}\` label from this issue and add it again`
             + (inPlan ? ', or retry the issue from its plan.' : '.'),
     ].join('\n');
@@ -75,8 +85,9 @@ async function releasePlanIssue(
 
 export async function reportIssueDiskPressureRefusal(
     job: RefusedIssueJob,
-    { octokit, database = db, now = Date.now }: { octokit?: DiskPressureRefusalOctokit; database?: Knex; now?: () => number } = {},
+    { octokit, database = db, now = Date.now, error }: { octokit?: DiskPressureRefusalOctokit; database?: Knex; now?: () => number; error?: unknown } = {},
 ): Promise<DiskPressureRefusalOutcome> {
+    const details = refusalDetails(job, error);
     const { repoOwner, repoName, number } = job.data;
     const log = job.data.correlationId ? logger.withCorrelation(job.data.correlationId) : logger;
     const outcome: DiskPressureRefusalOutcome = { commented: false, planIssueReleased: false, queueBlocked: false };
@@ -94,12 +105,13 @@ export async function reportIssueDiskPressureRefusal(
     try {
         const client = octokit ?? await (await import('../auth/githubAuth.js')).getAuthenticatedOctokit();
         await client.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: repoOwner, repo: repoName, issue_number: number, body: diskPressureRefusalCommentBody(job, { inPlan, now: now() }),
+            owner: repoOwner, repo: repoName, issue_number: number, body: diskPressureRefusalCommentBody(job, { inPlan, now: now(), details }),
         });
         outcome.commented = true;
     } catch (error) {
         log.error({ jobId: job.id, repository, issueNumber: number, error: (error as Error).message }, 'Failed to report an issue job refused for disk pressure on the issue');
     }
-    log.warn({ jobId: job.id, repository, issueNumber: number, ...outcome }, 'Reported an issue job refused for disk pressure');
+    log.warn({ jobId: job.id, repository, issueNumber: number, ...outcome, ...(details ? { diskPressureDetails: details } : {}) },
+        `Reported an issue job refused for disk pressure${details ? ` (${details})` : ''}`);
     return outcome;
 }

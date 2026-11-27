@@ -1,6 +1,6 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { WorktreeDiskPressureError, isWorktreeDiskPressureError } from '../packages/core/src/storage/lifecycle.js';
+import { WorktreeDiskPressureError, isWorktreeDiskPressureError, worktreeDiskPressureDetails } from '../packages/core/src/storage/lifecycle.js';
 
 const logInfo = mock.fn();
 const logError = mock.fn();
@@ -9,7 +9,7 @@ const getAuthenticatedOctokit = mock.fn(async () => ({ request: defaultRequest }
 const log = { info: logInfo, error: logError, withCorrelation: () => log };
 
 await mock.module('@propr/core', {
-    namedExports: { logger: log, getAuthenticatedOctokit, isWorktreeDiskPressureError },
+    namedExports: { logger: log, getAuthenticatedOctokit, isWorktreeDiskPressureError, worktreeDiskPressureDetails },
 });
 
 const { postUnstartedPRCommentFailure, unstartedPRCommentFailureBody } = await import('../src/jobs/prCommentUnstartedFailure.js');
@@ -88,4 +88,21 @@ test('isWorktreeDiskPressureError recognises the error by name and by message af
     assert.equal(isWorktreeDiskPressureError(new Error('Worktree disk pressure: admission reserve unavailable; data retained')), true);
     assert.equal(isWorktreeDiskPressureError(new Error('Disk full')), false);
     assert.equal(isWorktreeDiskPressureError('Worktree disk pressure'), false);
+});
+
+test('a disk-pressure report states what admission measured, also after a queue round-trip', async () => {
+    const GIB = 1024 ** 3;
+    const refusal = new WorktreeDiskPressureError({
+        filesystem: '/tmp/git-processor', freeBytes: Math.round(6.2 * GIB), reserveBytes: 2 * GIB, reservedBytes: 4 * GIB, claimCount: 4, taskBytes: GIB,
+    });
+    const details = 'filesystem /tmp/git-processor: free 6.2 GiB < required 7.0 GiB = reserve 2.0 GiB + 4 other claims × 1.0 GiB + this job 1.0 GiB';
+    for (const error of [refusal, new Error(refusal.message)]) {
+        const body = unstartedPRCommentFailureBody({ id: 'job-6', data: { ...baseData, comments: [] } }, error);
+        assert.ok(body.includes(`Measured at the refusal:\n\n\`\`\`\n${details}\n\`\`\``), body);
+    }
+    defaultRequest.mock.resetCalls();
+    await postUnstartedPRCommentFailure({ id: 'job-7', data: { ...baseData, comments: [] } }, refusal);
+    const [fields, message] = logInfo.mock.calls.at(-1)!.arguments as unknown as [{ diskPressureDetails: string }, string];
+    assert.equal(fields.diskPressureDetails, details);
+    assert.ok(message.endsWith(`(${details})`));
 });
