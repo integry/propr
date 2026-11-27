@@ -321,7 +321,7 @@ jobs:
           const sprite = await client.getSprite(name);
           if (!sprite.url?.startsWith('https://')) throw new Error(`Sprite ${name} has no public HTTPS URL`);
           const origin = new URL(sprite.url).origin;
-          const home = (await sprite.exec('sh -c "mkdir -p ~/oauth-fixture && cd ~/oauth-fixture && pwd"')).stdout.toString().trim();
+          const home = (await sprite.execFile('sh', ['-c', 'mkdir -p ~/oauth-fixture && cd ~/oauth-fixture && pwd'])).stdout.toString().trim();
           await sprite.filesystem().writeFile(`${home}/fixture.mjs`, readFileSync('.github/fly-e2e/oauth-mcp-fixture.mjs'), { mode: 0o755 });
           // Sprites ship Node through a login-shell shim; a service survives the Sprite sleeping and waking.
           const started = await sprite.createService('oauth-mcp', {
