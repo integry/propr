@@ -223,7 +223,7 @@ export const TaskSubmissionRequest = component('TaskSubmissionRequest', z.object
   }])),
 }), 'A request to open a GitHub issue and start an implementation run for it.');
 
-export const TaskSubmissionExtensions = component('TaskSubmissionExtensions', z.object({ qualified: z.boolean().describe('False when the agent\'s runtime does not use extensions (only Claude and Codex do).'), revision: z.number().int().describe('Current library revision; tasks resolve the library again at launch.'),
+export const TaskSubmissionExtensions = component('TaskSubmissionExtensions', z.object({ qualified: z.boolean().describe('False when the agent\'s runtime does not use extensions (only Claude, Codex and Pi do).'), revision: z.number().int().describe('Current library revision; tasks resolve the library again at launch.'),
   servers: z.array(z.object({ name: z.string(), capability: z.enum(['read', 'write']) })).describe('MCP servers that would apply. Write servers apply only with `extensionAllowWrite`.'), skills: z.array(z.object({ name: z.string() })) }), 'Library items that would apply automatically to a task for this repository and agent.');
 export const TaskSubmission = component('TaskSubmission', z.object({
   id: z.string(),
