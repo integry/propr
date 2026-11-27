@@ -766,6 +766,33 @@ test('Machines API adopts a lost create response, uses argv exec and accepts a p
     await api.destroy(id);
 });
 
+test('Machines API reports an unconfirmed create when its lookup fails, and gone() only on 404 or destroyed', async t => {
+    const { MachinesClient, MachineCreateUnconfirmedError } = await import('../packages/core/src/agents/runtime/fly/api.ts');
+    const { prepareLaunch } = await import('../packages/core/src/agents/runtime/fly/launch.ts');
+    const { flyConfig } = await import('../packages/core/src/agents/runtime/fly/config.ts');
+    const config = flyConfig(env);
+    const { launch } = prepareLaunch(fixture().builder.build(), {}, config);
+    const states: Record<string, Response | (() => Response)> = {
+        '/machines/kept': Response.json({ id: 'kept', state: 'stopped' }),
+        '/machines/dying': Response.json({ id: 'dying', state: 'destroyed' }),
+        '/machines/missing': new Response(null, { status: 404 }),
+        '/machines/flaky': new Response('{}', { status: 503 }),
+    };
+    t.mock.method(globalThis, 'fetch', async (url: string) => {
+        if (url.endsWith('/machines')) throw new Error('lost response');
+        if (url.includes('?metadata.propr_run_id=')) return new Response('{}', { status: 503 });
+        const key = Object.keys(states).find(path => url.endsWith(path))!;
+        return states[key] as Response;
+    });
+    const api = new MachinesClient(config);
+    await assert.rejects(api.create(launch), (error: Error) => error instanceof MachineCreateUnconfirmedError && /lost response/.test(error.message));
+    await assert.rejects(api.find(launch.name), /HTTP 503/);
+    assert.equal(await api.gone('kept'), false);
+    assert.equal(await api.gone('dying'), true);
+    assert.equal(await api.gone('missing'), true);
+    await assert.rejects(api.gone('flaky'), /HTTP 503/, 'a failed lookup is not evidence of absence');
+});
+
 test('live logs resume after HTTP and timeout errors and keep tailing a page without a cursor', async t => {
     const { MachinesClient } = await import('../packages/core/src/agents/runtime/fly/api.ts');
     const { flyConfig } = await import('../packages/core/src/agents/runtime/fly/config.ts');

@@ -15,7 +15,7 @@ export function flyMachinesMax(env: NodeJS.ProcessEnv): number | undefined {
     const raw = env.PROPR_FLY_MACHINES_MAX?.trim();
     if (!raw) return;
     const value = Number(raw);
-    if (!Number.isSafeInteger(value) || value < 1) throw new Error('Invalid PROPR_FLY_MACHINES_MAX');
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1) throw new Error('Invalid PROPR_FLY_MACHINES_MAX');
     return value;
 }
 
@@ -92,6 +92,20 @@ export function releaseSlotWhenGone(release: () => void, confirmGone: () => Prom
     };
     logger.info({ ...context, afterMs }, 'Fly Machine kept past its run holds its capacity slot until it is gone');
     schedule(afterMs);
+}
+
+/**
+ * Deletes a run's Machine, then frees its slot. A failed deletion keeps the slot unless Fly confirms the Machine is
+ * gone (deleted elsewhere, reclaimed, or a deletion whose response was lost), which also ends the caller's retries.
+ */
+export async function destroyFreeingSlot(api: MachinesApi, machine: string, release: () => void, context: Record<string, unknown>) {
+    try { await api.destroy(machine); }
+    catch (error) {
+        const gone = await api.gone(machine).catch(() => false);
+        if (!gone) throw error;
+        logger.info({ ...context, machine, err: error }, 'Fly Machine deletion failed but the Machine is gone; capacity slot freed');
+    }
+    release();
 }
 
 interface UndeletedMachine {

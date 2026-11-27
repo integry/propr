@@ -13,7 +13,7 @@ import { extensionLaunchRefusal } from './extensionCapabilities.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.js';
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
 import { MachinesClient, type MachinesApi } from './fly/api.js';
-import { releaseUndeletedFlyMachineSlot } from './fly/capacity.js';
+import { destroyFreeingSlot, releaseUndeletedFlyMachineSlot } from './fly/capacity.js';
 import { flyConfig } from './fly/config.js';
 import { FlyPackageImages } from './fly/derivedImage.js';
 import { createFlyAgentMachine, dispatchFlyRun, flyDispatchUsage } from './fly/dispatch.js';
@@ -106,8 +106,9 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             const machine = id;
             if (machine && workspaceSafeToDestroy && !credentialsPending)
                 // The capacity slot is freed by the deletion that succeeds, including a background
-                // retry after the run settled, so a Machine still awaiting deletion keeps counting.
-                return destroyed ??= retryCleanup(machine, 'destroy', async () => { await api.destroy(machine); releaseSlot(); });
+                // retry after the run settled, so a Machine still awaiting deletion keeps counting. Fly
+                // confirming the Machine gone after a failed deletion also frees it and ends the retries.
+                return destroyed ??= retryCleanup(machine, 'destroy', () => destroyFreeingSlot(api, machine, releaseSlot, { app: config.app, run: spec.name }));
         };
         const releaseUndeletedSlot = () => releaseUndeletedFlyMachineSlot(releaseSlot, api, { config, machine: id, createUnconfirmed, launchName: prepared.launch.name, run: spec.name });
         let mayHaveStarted = false;

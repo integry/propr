@@ -5,7 +5,7 @@ import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachi
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { acquireFlyMachineSlot, flyMachinesMax, retainedMachineChecks } from '../packages/core/src/agents/runtime/fly/capacity.ts';
 import { flyConfig } from '../packages/core/src/agents/runtime/fly/config.ts';
-import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, MachinesClient, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
 import { RUN } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
@@ -18,7 +18,7 @@ test('PROPR_FLY_MACHINES_MAX is unlimited when unset and must be a positive inte
     assert.equal(flyMachinesMax({}), undefined);
     assert.equal(flyMachinesMax({ PROPR_FLY_MACHINES_MAX: ' ' }), undefined);
     assert.equal(flyMachinesMax({ PROPR_FLY_MACHINES_MAX: '2' }), 2);
-    for (const value of ['0', '-1', '1.5', 'two']) assert.throws(() => flyMachinesMax({ PROPR_FLY_MACHINES_MAX: value }), /Invalid PROPR_FLY_MACHINES_MAX/);
+    for (const value of ['0', '-1', '1.5', 'two', '1e2', '0x2', '2 slots', '99999999999999999999']) assert.throws(() => flyMachinesMax({ PROPR_FLY_MACHINES_MAX: value }), /Invalid PROPR_FLY_MACHINES_MAX/);
     assert.equal(flyConfig({ ...base, PROPR_FLY_MACHINES_MAX: '2' }).maxMachines, 2);
     assert.equal(flyConfig(base).maxMachines, undefined);
 });
@@ -89,17 +89,28 @@ function spec(name: string) {
     }).command('claude', '--version').build();
 }
 
-const until = async (check: () => boolean) => { while (!check()) await delay(5); };
+/** Most waits settle within milliseconds; the 5 s default makes a lifecycle regression fail promptly instead of hanging. */
+const UNTIL_TIMEOUT_MS = 5_000;
+/** A wait that spans the runtime's fixed 5 s background cleanup retry needs room for that delay. */
+const CLEANUP_RETRY_TIMEOUT_MS = 15_000;
+
+const until = async (what: string, check: () => boolean, timeoutMs = UNTIL_TIMEOUT_MS) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!check()) {
+        if (Date.now() >= deadline) assert.fail(`timed out after ${timeoutMs} ms waiting until ${what}`);
+        await delay(5);
+    }
+};
 
 test('runs over PROPR_FLY_MACHINES_MAX queue until a Machine is destroyed instead of failing', async () => {
     const api = new Machines();
     const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'capped', PROPR_FLY_MACHINES_MAX: '2' }, async () => []);
     const runs = ['a', 'b', 'c'].map(name => runtime.start(spec(name)));
-    await until(() => api.destroys.length === 2);
+    await until('both capped runs are deleting their Machines', () => api.destroys.length === 2);
     await delay(20);
     assert.deepEqual(api.created, ['m0', 'm1'], 'the third run waits for a free slot');
     api.destroys.shift()!();
-    await until(() => api.created.length === 3);
+    await until('the queued run creates its Machine after a deletion is confirmed', () => api.created.length === 3);
     while (api.destroys.length || api.live) { api.destroys.shift()?.(); await delay(5); }
     for (const run of runs) assert.equal((await run.wait()).exitCode, 0);
     assert.equal(api.peak, 2);
@@ -110,14 +121,14 @@ test('a queued run that is stopped never creates a Machine and frees its place',
     const api = new Machines();
     const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'stopped', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
     const first = runtime.start(spec('first'));
-    await until(() => api.destroys.length === 1);
+    await until('the first run is deleting its Machine', () => api.destroys.length === 1);
     const queued = runtime.start(spec('queued'));
     await delay(20);
     await Promise.all([queued.stop('SIGTERM'), assert.rejects(queued.wait(), /stopped before creation/)]);
     api.destroys.shift()!();
     assert.equal((await first.wait()).exitCode, 0);
     const next = runtime.start(spec('next'));
-    await until(() => api.destroys.length === 1);
+    await until('the next run, admitted after the stopped one left the queue, is deleting its Machine', () => api.destroys.length === 1);
     api.destroys.shift()!();
     assert.equal((await next.wait()).exitCode, 0);
     assert.deepEqual(api.created, ['m0', 'm1']);
@@ -143,13 +154,13 @@ test('a Machine whose deletion is retried in the background keeps its slot until
     assert.ok(api.failed.has('m0'));
     await delay(50);
     assert.deepEqual(api.created, ['m0'], 'the queued run must not create a Machine while m0 still exists');
-    await until(() => api.destroys.length === 1); // the background retry (after 5 s) is in flight
+    await until('the background retry (after 5 s) of m0\'s deletion is in flight', () => api.destroys.length === 1, CLEANUP_RETRY_TIMEOUT_MS);
     assert.deepEqual(api.created, ['m0']);
     api.destroys.shift()!();
-    await until(() => api.created.length === 2);
+    await until('the queued run creates its Machine once m0\'s deletion succeeds', () => api.created.length === 2);
     assert.equal(api.peak, 1);
-    await until(() => api.failed.has('m1'));
-    await until(() => api.destroys.length === 1);
+    await until('the first deletion of m1 has failed', () => api.failed.has('m1'));
+    await until('the background retry of m1\'s deletion is in flight', () => api.destroys.length === 1, CLEANUP_RETRY_TIMEOUT_MS);
     api.destroys.shift()!();
     assert.equal((await queued.wait()).exitCode, 0);
     await Promise.all([first, queued].map(run => run.release!()));
@@ -163,7 +174,7 @@ test('a run that fails before creating a Machine frees its slot at once', async 
     const failed = runtime.start(spec('failed'));
     await assert.rejects(failed.wait(), /packages unreadable/);
     const next = runtime.start(spec('next'));
-    await until(() => api.destroys.length === 1);
+    await until('the next run, admitted after the failed one freed its slot, is deleting its Machine', () => api.destroys.length === 1);
     api.destroys.shift()!();
     assert.equal((await next.wait()).exitCode, 0);
     assert.deepEqual(api.created, ['m0']);
@@ -192,13 +203,13 @@ test('a Machine kept for recovery holds its slot until Fly confirms it is gone',
     await delay(300);
     assert.deepEqual(api.goneChecks, [], 'no check before the recovery window ends');
     assert.deepEqual(api.created, ['m0'], 'the queued run waits while the recovery Machine exists');
-    await until(() => api.goneChecks.length >= 3);
+    await until('Fly has been asked at least 3 times whether the recovery Machine is gone', () => api.goneChecks.length >= 3);
     assert.deepEqual(api.created, ['m0'], 'a Machine Fly still lists keeps its slot');
     api.vanished.add('m0');
     api.live--;
-    await until(() => api.created.length === 2);
+    await until('the queued run creates its Machine once Fly reports m0 gone', () => api.created.length === 2);
     assert.equal(api.peak, 1);
-    await until(() => api.destroys.length === 1);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
     api.destroys.shift()!();
     assert.equal((await queued.wait()).exitCode, 0);
     await Promise.all([kept, queued].map(run => run.release!().catch(() => {})));
@@ -239,10 +250,10 @@ test('a run whose create outcome is unknown keeps its slot until the Machine is 
     assert.deepEqual(api.created, ['m0'], 'a failed lookup is not evidence that no Machine exists');
     assert.ok(api.lookups >= 2, 'the lookup is retried');
     api.lookupFails = false;
-    await until(() => api.created.length === 2);
+    await until('the queued run creates its Machine once the lost create is resolved', () => api.created.length === 2);
     assert.deepEqual(api.deleted, ['m0'], 'the found Machine, whose agent never started, is deleted first');
     assert.equal(api.peak, 1);
-    await until(() => api.destroys.length === 1);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
     api.destroys.shift()!();
     assert.equal((await queued.wait()).exitCode, 0);
     await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
@@ -282,10 +293,10 @@ test('a lost create whose lookups find nothing keeps its slot through the lookup
     assert.deepEqual(api.created, ['m0'], 'an empty lookup inside the window is not evidence that no Machine exists');
     assert.ok(api.lookups >= 3, 'the lookup is repeated through the window');
     api.visible = true; // the delayed create becomes visible
-    await until(() => api.created.length === 2);
+    await until('the queued run creates its Machine once the late Machine is deleted', () => api.created.length === 2);
     assert.deepEqual(api.deleted, ['m0'], 'the late Machine is deleted before the queued run creates its own');
     assert.equal(api.peak, 1);
-    await until(() => api.destroys.length === 1);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
     api.destroys.shift()!();
     assert.equal((await queued.wait()).exitCode, 0);
     await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
@@ -300,17 +311,17 @@ test('a lost create that stays absent past the lookup window frees its slot', as
     const failedAt = await lost.wait().then(() => assert.fail('the lost create must fail the run'), () => Date.now());
     api.live--; // nothing appeared: the counted Machine never existed
     const queued = runtime.start(spec('queued'));
-    await until(() => api.created.length === 2);
+    await until('the queued run creates its Machine once the lookup window has passed', () => api.created.length === 2);
     assert.ok(Date.now() - failedAt >= 140, 'the slot is held for the whole lookup window');
     assert.deepEqual(api.deleted, []);
-    await until(() => api.destroys.length === 1);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
     api.destroys.shift()!();
     assert.equal((await queued.wait()).exitCode, 0);
     await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
 });
 
 test('Machines API: a lost create whose lookup fails is unconfirmed, gone() only on 404 or destroyed, list() by name prefix', async t => {
-    const { MachinesClient, MachineCreateUnconfirmedError: Unconfirmed } = await import('../packages/core/src/agents/runtime/fly/api.ts');
+    const Unconfirmed = MachineCreateUnconfirmedError;
     const config = flyConfig(base);
     const launch = { name: 'propr-lost', skip_service_registration: true, skip_secrets: true, config: {} } as unknown as MachineLaunch;
     const created = '2026-11-26T10:00:00Z';
@@ -339,4 +350,69 @@ test('Machines API: a lost create whose lookup fails is unconfirmed, gone() only
     assert.equal(await api.gone('missing'), true);
     await assert.rejects(api.gone('flaky'), /HTTP 503/, 'a failed lookup is not evidence of absence');
     assert.deepEqual(await api.list('propr-build-'), [{ id: 'b1', name: 'propr-build-1', state: 'started', createdAt: Date.parse(created) }]);
+});
+
+/** m0 was already deleted at Fly (by an operator, or a deletion whose response was lost): deleting it returns HTTP 404. */
+class AlreadyDeleted extends Machines {
+    client = new MachinesClient(flyConfig(base));
+    deleteStatuses: number[] = [];
+    override destroy(id: string) {
+        if (id !== 'm0') return super.destroy();
+        this.live--;
+        return this.client.destroy(id);
+    }
+}
+
+test('a deletion answered with HTTP 404 frees the slot at once and admits the queued run', async t => {
+    const api = new AlreadyDeleted();
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+        assert.equal(init.method, 'DELETE');
+        assert.match(url, /\/machines\/m0\?force=true/);
+        api.deleteStatuses.push(404);
+        return new Response('{"error":"machine not found"}', { status: 404 });
+    });
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'unknown', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const first = runtime.start(spec('first'));
+    const queued = runtime.start(spec('queued'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await until('the queued run creates its Machine after m0\'s deletion returned 404', () => api.created.length === 2);
+    assert.deepEqual(api.deleteStatuses, [404], 'one deletion attempt, not a retry loop');
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    assert.equal(api.peak, 1);
+    await Promise.all([first, queued].map(run => run.release!()));
+});
+
+/** Every deletion of m0 fails with HTTP 500; the Machine disappears at Fly only when the test says so. */
+class DeletionAlwaysFails extends Machines {
+    attempts = 0;
+    override destroy(id: string) {
+        if (id !== 'm0') return super.destroy();
+        this.attempts++;
+        return Promise.reject(new Error('Fly Machines API DELETE returned HTTP 500'));
+    }
+}
+
+test('a Machine that disappears while its deletion keeps failing frees its slot and ends the retries', async () => {
+    const api = new DeletionAlwaysFails();
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'vanishing', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const first = runtime.start(spec('first'));
+    const queued = runtime.start(spec('queued'));
+    assert.equal((await first.wait()).exitCode, 0);
+    assert.equal(api.attempts, 1);
+    assert.deepEqual(api.goneChecks, ['m0'], 'a failed deletion asks Fly whether the Machine is gone');
+    await delay(50);
+    assert.deepEqual(api.created, ['m0'], 'a Machine Fly still lists keeps its slot');
+    api.vanished.add('m0');
+    api.live--;
+    await until('the queued run creates its Machine once a retry finds m0 gone', () => api.created.length === 2, CLEANUP_RETRY_TIMEOUT_MS);
+    assert.equal(api.attempts, 2);
+    assert.deepEqual(api.goneChecks, ['m0', 'm0']);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    assert.equal(api.attempts, 2, 'no retry after Fly confirmed the Machine is gone');
+    assert.equal(api.peak, 1);
+    await Promise.all([first, queued].map(run => run.release!()));
 });
