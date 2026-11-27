@@ -15,6 +15,11 @@ const { ensureWorktreeObjects, fetchWithObjectRecovery, RepositoryRepairRequired
     await import('../packages/core/src/git/objectRecovery.js');
 const { addWorktreeWithoutTracking } = await import('../packages/core/src/git/worktreeCreation.js');
 
+// Git 2.5x detaches a geometric repack after fetch and commit once donor packs
+// break the progression. It deletes packs a later step is reading ("index not
+// opened") and races the fixture cleanup, so the fixture repositories opt out.
+const NO_AUTO_MAINTENANCE = ['--config', 'maintenance.auto=false', '--config', 'gc.auto=0'];
+
 async function fixture(t: TestContext) {
     const root = await mkdtemp(path.join(tmpdir(), 'propr-object-recovery-'));
     t.after(() => rm(root, { recursive: true, force: true }));
@@ -25,9 +30,11 @@ async function fixture(t: TestContext) {
     await source.init(['--initial-branch=main']);
     await source.addConfig('user.name', 'Test');
     await source.addConfig('user.email', 'test@example.com');
+    await source.addConfig('maintenance.auto', 'false');
+    await source.addConfig('gc.auto', '0');
     await writeFile(path.join(remote, 'file'), 'original');
     await source.add('.').commit('original');
-    await simpleGit().clone(remote, clone, ['--no-hardlinks']);
+    await simpleGit().clone(remote, clone, ['--no-hardlinks', ...NO_AUTO_MAINTENANCE]);
     const git = simpleGit(clone);
     await git.addConfig('user.name', 'Test');
     await git.addConfig('user.email', 'test@example.com');
@@ -383,7 +390,7 @@ test('the donor accepts historical trees that strict fsck rejects', async t => {
     await assert.rejects(remote.raw(['fsck', '--strict', '--no-dangling']), /zeroPaddedFilemode/);
     // A local clone copies loose objects, so the malformed tree can be removed independently.
     const clone = path.join(f.root, 'historical');
-    await simpleGit().clone(f.remote, clone, ['--no-hardlinks']);
+    await simpleGit().clone(f.remote, clone, ['--no-hardlinks', ...NO_AUTO_MAINTENANCE]);
     await rm(path.join(clone, '.git', 'objects', tree.slice(0, 2), tree.slice(2)));
     assert.equal(await ensureWorktreeObjects(simpleGit(clone), revision), revision);
 });
@@ -401,7 +408,7 @@ test('shallow recovery fetches through an advanced tip to the live boundary with
 
     // Keep loose objects so the fixture can remove a specific blob below the tip.
     const clone = path.join(f.root, 'shallow');
-    await simpleGit().clone(f.remote, clone, ['--no-hardlinks']);
+    await simpleGit().clone(f.remote, clone, ['--no-hardlinks', ...NO_AUTO_MAINTENANCE]);
     await writeFile(path.join(clone, '.git', 'shallow'), boundary + '\n');
     for (const oid of [f.revision, missingBlob]) {
         await rm(path.join(clone, '.git', 'objects', oid.slice(0, 2), oid.slice(2)));
