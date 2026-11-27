@@ -109,16 +109,24 @@ export interface ParsedPiOutput {
 
 const FAILED_STOP_REASONS = new Set(['error', 'aborted']);
 /** Pi names MCP tools `mcp__<server>__<tool>`. */
-const PI_MCP_TOOL_NAME = /^mcp__([A-Za-z0-9_]+?)__(.+)$/;
+const PI_MCP_TOOL_PREFIX = 'mcp__';
+const PI_MCP_SERVER_NAME = /^[A-Za-z0-9_]+$/;
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
 
 /**
  * The tool name shown in persisted events and the live view: an MCP tool reads
  * `<server>/<tool>`; built-in tools and `codemode` keep their own names.
  */
 export function readablePiToolName(name: string | undefined): string | undefined {
-    if (!name) return name;
-    const match = PI_MCP_TOOL_NAME.exec(name);
-    return match ? `${match[1]}/${match[2]}` : name;
+    if (!name || !name.startsWith(PI_MCP_TOOL_PREFIX)) return name;
+    // String scanning, not a backtracking regex: tool names come from the model.
+    // The server is the shortest non-empty prefix before `__`, the tool the non-empty rest.
+    const rest = name.slice(PI_MCP_TOOL_PREFIX.length);
+    if (LINE_TERMINATOR.test(rest)) return name;
+    const separator = rest.indexOf('__', 1);
+    if (separator < 0 || separator + 2 >= rest.length) return name;
+    const server = rest.slice(0, separator);
+    return PI_MCP_SERVER_NAME.test(server) ? `${server}/${rest.slice(separator + 2)}` : name;
 }
 
 function isRecord(value: unknown): value is JsonRecord {

@@ -24,7 +24,7 @@ export function getModelShortName(modelId: string | undefined): string {
     const piModel = piUnderlyingModel(modelId);
     if (piModel && MODEL_INFO_MAP[`${PI_MODEL_PREFIX}${piModel}`]) return MODEL_INFO_MAP[`${PI_MODEL_PREFIX}${piModel}`].shortName;
     // Pi model refs may end in a `:<variant>` (e.g. OpenRouter `:free`), so their leaf is the model name.
-    const normalized = piModel ? piModel.replace(/:[^/]*$/, '') : modelId.substring(modelId.lastIndexOf(':') + 1);
+    const normalized = piModel ? stripPiModelVariant(piModel) : modelId.substring(modelId.lastIndexOf(':') + 1);
     const leaf = normalized.substring(normalized.lastIndexOf('/') + 1);
     return leaf
         .split(/[-_.]+/)
@@ -39,6 +39,12 @@ export function getModelShortName(modelId: string | undefined): string {
 }
 
 /** The `provider/model` behind a ProPR Pi model id, without a thinking suffix. */
+/** Drops a trailing `:<variant>` from the last path segment of a Pi model ref. */
+function stripPiModelVariant(model: string): string {
+    const colon = model.indexOf(':', model.lastIndexOf('/') + 1);
+    return colon < 0 ? model : model.slice(0, colon);
+}
+
 function piUnderlyingModel(modelId: string): string | undefined {
     if (!isPiModelId(modelId)) return undefined;
     try { return toPiCliModel(modelId).model; } catch { return undefined; }
