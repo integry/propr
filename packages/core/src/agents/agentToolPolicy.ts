@@ -1,11 +1,8 @@
 import type { AgentTaskOptions, AgentToolPolicy } from './types.js';
 
 /**
- * Pure builders that turn a per-run {@link AgentToolPolicy} into native CLI
- * switches. MCP bearer tokens only ever appear in the returned `env` map: the
- * launcher passes them to the container as `-e NAME` with the value supplied
- * through the docker process environment, so they never show up in `ps` or in
- * logged arguments, and nothing is written to the worktree.
+ * Run tool policy helpers. The per-agent builders that turn a policy into
+ * native CLI switches, and their shared contract, are in `./mcpLaunch`.
  */
 
 /** Fixed MCP server name so prompts can refer to "the `propr` MCP server". */
@@ -13,78 +10,9 @@ export const PROPR_MCP_SERVER_NAME = 'propr';
 /** Container environment variable carrying the run-scoped ProPR MCP credential. */
 export const PROPR_MCP_BEARER_TOKEN_ENV = 'PROPR_MCP_BEARER_TOKEN';
 
-export const CLAUDE_WEB_TOOLS = ['WebFetch', 'WebSearch'] as const;
-
-export interface ToolPolicyLaunchArgs {
-    cliArgs: string[];
-    env: Record<string, string>;
-}
-
-const ENV_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
-const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
-
-function mcpServers(policy: AgentToolPolicy): NonNullable<AgentToolPolicy['mcpServers']> {
-    const servers = policy.mcpServers ?? [];
-    for (const server of servers) {
-        if (!SERVER_NAME_PATTERN.test(server.name)) throw new Error(`Invalid MCP server name: ${server.name}`);
-        if (!ENV_NAME_PATTERN.test(server.bearerTokenEnv)) throw new Error(`Invalid MCP bearer token environment variable: ${server.bearerTokenEnv}`);
-    }
-    return servers;
-}
-
-function tokenEnv(servers: NonNullable<AgentToolPolicy['mcpServers']>): Record<string, string> {
-    return Object.fromEntries(servers.map(server => [server.bearerTokenEnv, server.bearerToken]));
-}
-
-function launchArgs(policy: AgentToolPolicy, cliArgs: string[], servers: NonNullable<AgentToolPolicy['mcpServers']>): ToolPolicyLaunchArgs {
-    const env = { ...tokenEnv(servers), ...Object.assign({}, ...(policy.localMcpServers ?? []).map(s => s.env)) };
-    // Operator secret values remain usable by the process launcher while being
-    // absent from accidental argument/config JSON serialization.
-    return policy.localMcpServers?.length ? Object.defineProperty({ cliArgs } as ToolPolicyLaunchArgs, 'env', { value: env, enumerable: false }) : { cliArgs, env };
-}
-
-/** Claude Code: `--disallowedTools` for web, inline `--mcp-config` with env-expanded auth. */
-export function claudeToolPolicyArgs(policy: AgentToolPolicy): ToolPolicyLaunchArgs {
-    const servers = mcpServers(policy);
-    const cliArgs: string[] = [];
-    if (!policy.allowWeb) cliArgs.push('--disallowedTools', ...CLAUDE_WEB_TOOLS);
-    if (policy.exclusiveMcp) cliArgs.push('--strict-mcp-config');
-    if (servers.length > 0 || policy.localMcpServers?.length || policy.exclusiveMcp) {
-        const config = {
-            mcpServers: { ...Object.fromEntries((policy.localMcpServers ?? []).map(s => [s.name, { type: 'stdio', command: '/usr/local/bin/node', args: ['/opt/propr/extension-stdio-bridge.mjs', s.bridgeConfig] }])), ...Object.fromEntries(servers.map(server => [server.name, {
-                type: 'http',
-                url: server.url,
-                // Claude Code expands `${VAR}` from its own environment.
-                headers: { Authorization: `Bearer \${${server.bearerTokenEnv}}` },
-            }])) },
-        };
-        cliArgs.push('--mcp-config', JSON.stringify(config));
-    }
-    return launchArgs(policy, cliArgs, servers);
-}
-
-/**
- * Codex: `-c web_search="disabled"` and `mcp_servers.<name>.*` reading the token
- * from the environment. The pinned Codex CLI ignores the legacy
- * `tools.web_search=false` and still offers the `web_search` tool.
- */
-export function codexToolPolicyArgs(policy: AgentToolPolicy): ToolPolicyLaunchArgs {
-    const servers = mcpServers(policy);
-    const cliArgs: string[] = [];
-    if (!policy.allowWeb) cliArgs.push('-c', 'web_search="disabled"');
-    if (policy.exclusiveMcp) {
-        const catalog = [...(policy.localMcpServers ?? []).map(s => `${s.name}={command="/usr/local/bin/node",args=["/opt/propr/extension-stdio-bridge.mjs",${JSON.stringify(s.bridgeConfig)}],env_vars=${JSON.stringify(Object.keys(s.env))}}`), ...servers.map(server => `${server.name}={url=${JSON.stringify(server.url)},bearer_token_env_var=${JSON.stringify(server.bearerTokenEnv)}}`)].join(',');
-        // The pinned runtime merges table overrides with its user catalog.
-        // Ignore that catalog while retaining auth custody in CODEX_HOME.
-        cliArgs.push('--ignore-user-config', '-c', `mcp_servers={${catalog}}`);
-    } else for (const server of servers) {
-        cliArgs.push(
-            '-c', `mcp_servers.${server.name}.url=${JSON.stringify(server.url)}`,
-            '-c', `mcp_servers.${server.name}.bearer_token_env_var=${JSON.stringify(server.bearerTokenEnv)}`,
-        );
-    }
-    return launchArgs(policy, cliArgs, servers);
-}
+// Per-runtime MCP rendering lives in one builder per agent type (`./mcpLaunch`);
+// these re-exports keep the existing import paths.
+export { CLAUDE_WEB_TOOLS, claudeToolPolicyArgs, codexToolPolicyArgs, mcpLaunchBuilder, MCP_LAUNCH_BUILDERS, type McpLaunchBuilder, type ToolPolicyLaunchArgs } from './mcpLaunch/index.js';
 
 /**
  * Tool policies are only applied to task execution. Goal mode launches through

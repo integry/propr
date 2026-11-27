@@ -1,3 +1,4 @@
+import { executeWithExtensions } from '../../extensions/extensionLaunch.js';
 import { retireProviderRuntime } from '../../diagnostics/managedLogRuntime.js';
 import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import fs from 'fs';
@@ -66,21 +67,18 @@ export class VibeAgent implements Agent {
     }
 
      
+    /** The capability map decides whether library items reach this runtime; skipped ones are recorded. */
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        return executeWithExtensions(this.config, options, prepared => this.executeTaskWithoutExtensions(prepared));
+    }
+
+    private async executeTaskWithoutExtensions(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
-        logger.info({
-            issueNumber: issueRef.number,
-            repository,
-            worktreePath,
-            dockerImage: this.config.dockerImage,
-            agentAlias: this.config.alias,
-            isRetry,
-            retryReason
-        }, isRetry ? 'Starting Vibe agent execution (RETRY)...' : 'Starting Vibe agent execution...');
+        logger.info({ issueNumber: issueRef.number, repository, worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason }, isRetry ? 'Starting Vibe agent execution (RETRY)...' : 'Starting Vibe agent execution...');
 
         let promptFilePath: string | undefined;
         let envFilePath: string | undefined;

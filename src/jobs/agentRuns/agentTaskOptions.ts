@@ -1,4 +1,5 @@
 import type { AgentTaskOptions, IssueRef, StoredAgentDefinition } from '@propr/core';
+import { agentRuntimeSupportsExtensions } from '@propr/shared';
 import { definitionReadsRepositories, type AgentRunWorkspace } from './workspace.js';
 import { agentRunToolPolicy, type AgentRunMcpGrant, type AgentRunPhase } from './toolPolicy.js';
 
@@ -65,7 +66,7 @@ export function agentRunExecutionUpdate(alias: string, model: string | undefined
  * never carry extensions.
  */
 export function launchCarriesExtensions(resolved: { agent: unknown }, options: AgentTaskOptions): boolean {
-    const config = (resolved.agent as { config?: { type: string } }).config;
-    // The runtimes whose adapters resolve library items (`executeWithExtensions`).
-    return !!config && !!options.extensions && ['claude', 'codex'].includes(config.type);
+    const config = (resolved.agent as { config?: { type: string; cliVersionResolved?: string } }).config;
+    // The runtimes the capability map enables for library items (`executeWithExtensions`).
+    return !!config && !!options.extensions && agentRuntimeSupportsExtensions(config.type, config.cliVersionResolved);
 }
