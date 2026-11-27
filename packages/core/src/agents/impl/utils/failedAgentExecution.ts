@@ -99,6 +99,7 @@ export function failedExecutionResult(
             sessionId: completed.sessionId, conversationId: completed.conversationId,
             conversationLog: completed.conversationLog, tokenUsage: completed.tokenUsage, cost: completed.cost,
             providerModel: completed.providerModel, prompt: completed.prompt,
+            ...(completed.providerCostUsd !== undefined && { providerCostUsd: completed.providerCostUsd }),
         }),
         executionId: completed?.executionId ?? assignExecutionId({}),
         success: false, error: error.message, executionTimeMs: context.executionTimeMs,

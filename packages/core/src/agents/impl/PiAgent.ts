@@ -18,6 +18,7 @@ import { buildPromptWithRetryContext, buildLogMetadata } from './utils/vibeAgent
 import { buildPiDockerArgs, forwardablePiEnvVars, type PiDockerArgsParams, type PiDockerInvocation } from './utils/piDockerArgsBuilder.js';
 import { buildPiFailureMessage, isSuccessfulPiResult, parsePiOutput, type ParsedPiOutput } from './utils/piOutputParser.js';
 import { buildPiExecutionResult, reportedPiReasoningLevel } from './utils/piExecutionResult.js';
+import { failedExecutionResult } from './utils/failedAgentExecution.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
 
@@ -27,8 +28,13 @@ export { parsePiOutput, parsePiConversationLog, isSuccessfulPiResult } from './u
 const DEFAULT_PI_ANALYSIS_TIMEOUT_MS = 1800000;
 const PI_ANALYSIS_ROOT = path.join(os.tmpdir(), 'propr-pi-analysis');
 
-function buildFailedExecutionResult(error: Error & { stderr?: string }, executionTimeMs: number, model: string | undefined, prompt?: string): AgentExecutionResult {
-    return { success: false, error: error.message, executionTimeMs, logs: error.stderr || error.message, modifiedFiles: [], commitMessage: null, summary: undefined, modelUsed: model || 'unknown', ...(prompt && { prompt }) };
+/** The run that threw as a failed result, keeping a finished run's tokens, cost, session and trace. */
+function buildFailedExecutionResult(error: Error, context: { executionTimeMs: number; model?: string; prompt?: string; completed?: AgentExecutionResult }): AgentExecutionResult {
+    const { executionTimeMs, model, prompt, completed } = context;
+    const failed = failedExecutionResult(error, { completed, model: model || 'unknown', executionTimeMs });
+    if (!completed && prompt) failed.prompt = prompt;
+    if (completed?.usageMetrics) failed.usageMetrics = completed.usageMetrics;
+    return failed;
 }
 
 export class PiAgent implements Agent {
@@ -50,6 +56,9 @@ export class PiAgent implements Agent {
             isRetry ? 'Starting Pi agent execution (RETRY)...' : 'Starting Pi agent execution...');
 
         let prompt: string | undefined;
+        // A finished run whose later step throws still spent tokens and produced a trace.
+        let completed: { response: AgentExecutionResult; parsed: ParsedPiOutput; result: DockerCommandResult } | undefined;
+        let logsPersisted = false;
         try {
             if (!effectiveModel) throw new NoDefaultModelConfiguredError();
             // Pi has no native web switch: the restriction is best effort through the prompt.
@@ -67,8 +76,10 @@ export class PiAgent implements Agent {
             }));
 
             const { response, parsed } = buildPiExecutionResult({ result, modelUsed: effectiveModel, thinkingLevel, prompt, executionTimeMs: Date.now() - startTime, usageMetrics });
+            completed = { response, parsed, result };
             if (parsed.sessionId && onSessionId) await onSessionId(parsed.sessionId);
             await this.persistTaskLog(response, parsed, { result, metadata, issueNumber: issueRef.number, repository, taskId, prNumber, isRetry, retryReason });
+            logsPersisted = true;
             if (response.success) {
                 logger.info({ issueNumber: issueRef.number, model: effectiveModel, agentAlias: this.config.alias }, 'Pi agent execution succeeded');
                 verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
@@ -80,9 +91,18 @@ export class PiAgent implements Agent {
             // A capacity wait is not a provider failure: the job defers or reports the wait.
             if (error instanceof UsageLimitError || isAgentCapacityError(error)) throw error;
             const executionTimeMs = Date.now() - startTime;
-            const err = error as Error & { stderr?: string };
-            logger.error({ issueNumber: issueRef.number, repository, executionTimeMs, error: err.message, agentAlias: this.config.alias }, 'Error during Pi agent execution');
-            return buildFailedExecutionResult(err, executionTimeMs, effectiveModel, prompt);
+            const err = error as Error;
+            logger.error({ issueNumber: issueRef.number, repository, executionTimeMs, error: err.message, agentAlias: this.config.alias, hadCompletedRun: !!completed }, 'Error during Pi agent execution');
+            const failed = buildFailedExecutionResult(err, { executionTimeMs, model: effectiveModel, prompt, completed: completed?.response });
+            if (completed && !logsPersisted) {
+                // The run's log row was never written: write it as failed, with the run's tokens and provider cost.
+                try {
+                    await this.persistTaskLog(failed, completed.parsed, { result: completed.result, metadata, issueNumber: issueRef.number, repository, taskId, prNumber, isRetry, retryReason });
+                } catch (persistError) {
+                    logger.warn({ issueNumber: issueRef.number, error: (persistError as Error).message, agentAlias: this.config.alias }, 'Failed to persist Pi task log after execution error');
+                }
+            }
+            return failed;
         }
     }
 
