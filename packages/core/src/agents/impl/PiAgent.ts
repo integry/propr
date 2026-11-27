@@ -24,6 +24,7 @@ import { buildPiExecutionResult, reportedPiReasoningLevel } from './utils/piExec
 import { failedExecutionResult } from './utils/failedAgentExecution.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import { createPiSessionSavedDetector, findPiGoalSessionFile, preparePiGoalSession, type PiGoalSession } from './utils/piGoalSession.js';
 
 export { UsageLimitError };
 export { parsePiOutput, parsePiConversationLog, isSuccessfulPiResult } from './utils/piOutputParser.js';
@@ -40,9 +41,38 @@ function buildFailedExecutionResult(error: Error, context: { executionTimeMs: nu
     return failed;
 }
 
+/** A goal run must stay in the goal's session: a run that reports any other session cannot be resumed. */
+function withGoalSessionCheck(response: AgentExecutionResult, parsed: ParsedPiOutput, session: PiGoalSession): AgentExecutionResult {
+    if (!parsed.sessionId || parsed.sessionId === session.sessionId) return response;
+    return { ...response, success: false, error: `Pi opened session ${parsed.sessionId} instead of the goal's session ${session.sessionId}` };
+}
+
+/**
+ * Reports the run's session once. A goal's session is reported from the stream
+ * as soon as Pi has written the prompt to the session file, so a run
+ * interrupted later still resumes the same conversation; otherwise it is
+ * reported after the run, and for a goal only if its session file was saved.
+ */
+function createSessionReporter(onSessionId: AgentTaskOptions['onSessionId'], goalSession?: PiGoalSession) {
+    let reported = false;
+    const report = onSessionId && (async (sessionId: string, conversationId?: string) => {
+        reported = true;
+        await onSessionId(sessionId, conversationId);
+    });
+    return {
+        streamOptions: { onSessionId: report, ...(goalSession && { sessionIdFromLine: createPiSessionSavedDetector(goalSession.sessionId) }) },
+        async afterRun(sessionId: string | undefined): Promise<void> {
+            if (!sessionId || !report || reported) return;
+            if (goalSession && (sessionId !== goalSession.sessionId || !findPiGoalSessionFile(goalSession.hostDir, sessionId))) return;
+            await report(sessionId);
+        },
+    };
+}
+
 export class PiAgent implements Agent {
     readonly config: AgentConfig;
-    readonly goalCapable = false;
+    /** Goals run as whole sessions: each boundary resumes the goal's saved Pi session with `--session`. */
+    readonly goalCapable = true;
     private readonly timeoutMs: number;
 
     constructor(config: AgentConfig) {
@@ -56,7 +86,8 @@ export class PiAgent implements Agent {
     }
 
     private async executeTaskWithoutExtensions(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata, environment } = options;
+        const goalMode = options.executionMode === 'goal';
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -70,23 +101,28 @@ export class PiAgent implements Agent {
         try {
             if (!effectiveModel) throw new NoDefaultModelConfiguredError();
             assertToolPolicySupported(options);
+            // Goal input is delivered verbatim (goal mode has no tool policy or retry context).
             // Pi has no native web switch: the restriction is best effort through the prompt.
-            prompt = buildPromptWithRetryContext(withPromptOnlyToolPolicy(customPrompt, options.toolPolicy), isRetry, retryReason);
+            prompt = goalMode ? customPrompt : buildPromptWithRetryContext(withPromptOnlyToolPolicy(customPrompt, options.toolPolicy), isRetry, retryReason);
             const thinkingLevel = await this.resolveThinkingLevel(options.reasoningLevel, effectiveModel);
-            await setWorktreeOwnership(worktreePath, issueRef.number);
+            await setWorktreeOwnership(worktreePath, issueRef.number, { protectGitMetadata: goalMode && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct' });
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
+            const goalSession = goalMode ? this.prepareGoalSession(options) : undefined;
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
-            const invocation = this.buildDockerArgs({ worktreePath, gitMountArgs, modelName: effectiveModel, thinkingLevel, issueNumber: issueRef.number, taskId, toolPolicy: options.toolPolicy }, githubToken);
+            const invocation = this.buildDockerArgs({ worktreePath, gitMountArgs, modelName: effectiveModel, thinkingLevel, issueNumber: issueRef.number, taskId, toolPolicy: options.toolPolicy, goalSession, environment }, githubToken);
+            const sessionReporter = createSessionReporter(onSessionId, goalSession);
             const { result, usageMetrics } = await executeWithUsageTracking('pi', async () => executeDockerCommand('docker', invocation.args, {
                 agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: this.diagnosticContext(invocation),
-                timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, taskId,
+                timeout: this.timeoutMs, cwd: worktreePath, ...sessionReporter.streamOptions, onContainerId, worktreePath, taskId,
                 stdinData: prompt, extraEnvVars: { ...invocation.configEnv, ...invocation.secretEnv },
                 streamToRedis: true, streamStderrToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
             }));
 
-            const { response, parsed } = buildPiExecutionResult({ result, modelUsed: effectiveModel, thinkingLevel, prompt, executionTimeMs: Date.now() - startTime, usageMetrics });
+            const built = buildPiExecutionResult({ result, modelUsed: effectiveModel, thinkingLevel, prompt, executionTimeMs: Date.now() - startTime, usageMetrics });
+            const parsed = built.parsed;
+            const response = goalSession ? withGoalSessionCheck(built.response, parsed, goalSession) : built.response;
             completed = { response, parsed, result };
-            if (parsed.sessionId && onSessionId) await onSessionId(parsed.sessionId);
+            await sessionReporter.afterRun(parsed.sessionId);
             await this.persistTaskLog(response, parsed, { result, metadata, issueNumber: issueRef.number, repository, taskId, prNumber, isRetry, retryReason });
             logsPersisted = true;
             if (response.success) {
@@ -113,6 +149,14 @@ export class PiAgent implements Agent {
             }
             return failed;
         }
+    }
+
+    /** The goal's persisted session store, and the exact session to resume when the goal has one. */
+    private prepareGoalSession(options: AgentTaskOptions): PiGoalSession {
+        if (!options.goalId) throw new Error('Pi goal runs need the goal identity to keep their session');
+        const session = preparePiGoalSession(options.goalId, options.resumeSessionId || options.resumeConversationId);
+        logger.info({ agentAlias: this.config.alias, goalId: options.goalId, sessionId: session.sessionId, resume: !!session.resumeFile }, session.resumeFile ? 'Resuming Pi goal session' : 'Starting Pi goal session');
+        return session;
     }
 
     private async persistTaskLog(response: AgentExecutionResult, parsed: ParsedPiOutput, context: {

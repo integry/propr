@@ -10,6 +10,7 @@ import { openCodeEnvVarRejection } from '../openCodeEnvForwarding.js';
 import { toPiCliModel } from '../piModelIds.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
 import { buildPiRepositoryScoutArgs, buildPiRepositoryScoutConfig, REPOSITORY_SCOUT_CONTAINER_ROOT } from './repositoryScoutMcpServer.js';
+import { PI_CONTAINER_GOAL_SESSION_DIR, PI_GOAL_SESSION_DIR_ENV, piGoalSessionCliArgs, type PiGoalSession } from './piGoalSession.js';
 
 /** Where the host Pi agent dir is mounted; pi-entrypoint.sh's PROPR_PI_SOURCE_DIR default. */
 export const PI_CONTAINER_SOURCE_DIR = CONTAINER_CONFIG_PATHS.pi;
@@ -27,7 +28,7 @@ export const PI_MCP_CONFIG_ENV = 'PROPR_PI_MCP_CONFIG';
 /** Variables pi-entrypoint.sh and ProPR own; a configured value would break the run's isolation. */
 const RESERVED_PI_ENV_NAMES = new Set([
     'PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR', 'PROPR_PI_SOURCE_DIR', 'PROPR_PI_RUNTIME_HOME',
-    'PROPR_PI_CREDENTIALS_HELPER', 'PROPR_PI_MCP_CONFIG', 'PROPR_AGENT_TYPE', 'HOME', 'USER', 'PATH',
+    'PROPR_PI_CREDENTIALS_HELPER', 'PROPR_PI_MCP_CONFIG', 'PROPR_PI_GOAL_SESSION_DIR', 'PROPR_PI_LOGIN', 'PROPR_AGENT_TYPE', 'HOME', 'USER', 'PATH',
 ]);
 
 export interface PiDockerArgsParams {
@@ -49,6 +50,10 @@ export interface PiDockerArgsParams {
     repositoryInspection?: boolean;
     /** Task runs only: the run's MCP servers and skills (ProPR MCP, extension library). */
     toolPolicy?: AgentToolPolicy;
+    /** Goal runs only: the goal's persisted session store and how to open its session. */
+    goalSession?: PiGoalSession;
+    /** Per-execution variables (goal mode and admission parent); passed by name like secrets. */
+    environment?: Record<string, string>;
 }
 
 export interface PiDockerInvocation {
@@ -84,8 +89,9 @@ export function forwardablePiEnvVars(envVars: Record<string, string> | undefined
  * its native file tools on a read-only workspace. The scout alone gets tools,
  * and only the repository MCP server's.
  */
-export function buildPiCliArgs(params: { modelName: string; thinkingLevel?: PiThinkingLevel | null; mode: 'execute' | 'analysis'; repositoryInspection?: boolean; toolPolicyArgs?: string[] }): string[] {
+export function buildPiCliArgs(params: { modelName: string; thinkingLevel?: PiThinkingLevel | null; mode: 'execute' | 'analysis'; repositoryInspection?: boolean; toolPolicyArgs?: string[]; goalSession?: PiGoalSession }): string[] {
     if (params.repositoryInspection && params.mode !== 'analysis') throw new Error('Repository inspection requires analysis mode');
+    if (params.goalSession && params.mode !== 'execute') throw new Error('A Pi goal session requires execute mode');
     const { model, thinking } = toPiCliModel(params.modelName);
     const effectiveThinking = params.thinkingLevel ?? thinking;
     const args = ['pi', '-p', '--mode', 'json', '--model', thinking ? `${model}:${thinking}` : model];
@@ -96,7 +102,8 @@ export function buildPiCliArgs(params: { modelName: string; thinkingLevel?: PiTh
         if (params.repositoryInspection) return [...args, ...buildPiRepositoryScoutArgs()];
         args.push('--no-tools');
     } else {
-        args.push('--session-dir', PI_CONTAINER_SESSION_DIR, ...(params.toolPolicyArgs ?? []));
+        // A goal keeps its session across runs; a task's session is disposable.
+        args.push(...(params.goalSession ? piGoalSessionCliArgs(params.goalSession) : ['--session-dir', PI_CONTAINER_SESSION_DIR]), ...(params.toolPolicyArgs ?? []));
     }
     // Never trust repository-provided .pi/ extensions, settings, MCP servers or
     // prompts. AGENTS.md / CLAUDE.md context files still load.
@@ -117,9 +124,13 @@ function buildPiContainerName(alias: string, taskType: string, taskId: string | 
  * run's MCP tokens and stdio bridge secrets (stdio servers inherit Pi's
  * environment), and the generated `mcp.json`.
  */
-function buildPiContainerEnv(params: { config: AgentConfig; githubToken: string; repositoryInspection: boolean; toolPolicy?: AgentToolPolicy }): { secretEnv: Record<string, string>; configEnv: Record<string, string>; cliArgs?: string[] } {
+function buildPiContainerEnv(params: { config: AgentConfig; githubToken: string; repositoryInspection: boolean; toolPolicy?: AgentToolPolicy; environment?: Record<string, string> }): { secretEnv: Record<string, string>; configEnv: Record<string, string>; cliArgs?: string[] } {
     const policy = params.toolPolicy ? piToolPolicyArgs(params.toolPolicy) : undefined;
     const secretEnv: Record<string, string> = { ...forwardablePiEnvVars(params.config.envVars) };
+    // ProPR's own per-run values (goal mode, the admission parent and its signing key).
+    for (const [name, value] of Object.entries(params.environment ?? {})) {
+        if (typeof value === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !RESERVED_PI_ENV_NAMES.has(name)) secretEnv[name] = value;
+    }
     if (params.githubToken && !params.repositoryInspection) Object.assign(secretEnv, { GH_TOKEN: params.githubToken, GITHUB_TOKEN: params.githubToken });
     if (policy) Object.assign(secretEnv, policy.env);
     const mcpConfig = params.repositoryInspection ? buildPiRepositoryScoutConfig() : policy?.mcpConfig;
@@ -132,12 +143,13 @@ function buildPiContainerEnv(params: { config: AgentConfig; githubToken: string;
  * runs as node.
  */
 export function buildPiDockerArgs(params: PiDockerArgsParams, githubToken: string): PiDockerInvocation {
-    const { config, worktreePath, configPath, modelName, thinkingLevel, issueNumber, taskId, executionType, mode = 'execute', repositoryInspection = false } = params;
+    const { config, worktreePath, configPath, modelName, thinkingLevel, issueNumber, taskId, executionType, mode = 'execute', repositoryInspection = false, goalSession } = params;
     const analysis = mode === 'analysis';
     if (repositoryInspection && !analysis) throw new Error('Repository inspection requires analysis mode');
+    if (goalSession && analysis) throw new Error('A Pi goal session requires execute mode');
     // Tool policies (MCP servers, extension items) only apply to task runs.
     const toolPolicy = analysis ? undefined : params.toolPolicy;
-    const { secretEnv, configEnv, cliArgs: toolPolicyArgs } = buildPiContainerEnv({ config, githubToken, repositoryInspection, toolPolicy });
+    const { secretEnv, configEnv, cliArgs: toolPolicyArgs } = buildPiContainerEnv({ config, githubToken, repositoryInspection, toolPolicy, environment: analysis ? undefined : params.environment });
     const workspaceMode = analysis ? 'ro' : 'rw';
     // A missing host dir is not mounted: Docker would create it, root-owned, on the host.
     // The mount is writable so refreshed OAuth tokens can be written back (pi-credentials.py).
@@ -149,6 +161,7 @@ export function buildPiDockerArgs(params: PiDockerArgsParams, githubToken: strin
         '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : WORKSPACE}:${workspaceMode}`,
         ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, analysis)),
         ...configMountArgs,
+        ...(goalSession ? ['-v', `${goalSession.hostDir}:${PI_CONTAINER_GOAL_SESSION_DIR}:rw`, '-e', `${PI_GOAL_SESSION_DIR_ENV}=${PI_CONTAINER_GOAL_SESSION_DIR}`] : []),
         '-e', 'PROPR_AGENT_TYPE=pi',
         '-e', `PROPR_PI_SOURCE_DIR=${PI_CONTAINER_SOURCE_DIR}`,
         '-e', `PROPR_PI_RUNTIME_HOME=${PI_CONTAINER_RUNTIME_HOME}`,
@@ -157,7 +170,7 @@ export function buildPiDockerArgs(params: PiDockerArgsParams, githubToken: strin
         ...Object.keys(configEnv).flatMap(name => ['-e', name]),
         ...buildAgentGitCredentialArgs(),
         '-w', WORKSPACE, config.dockerImage,
-        ...buildPiCliArgs({ modelName, thinkingLevel, mode, repositoryInspection, toolPolicyArgs }),
+        ...buildPiCliArgs({ modelName, thinkingLevel, mode, repositoryInspection, toolPolicyArgs, goalSession }),
     ];
     if (analysis) return { args: [dockerArgs[0], ...buildAgentContainerResourceArgs(), ...dockerArgs.slice(1)], secretEnv, configEnv };
     return { args: wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, 'pi'), secretEnv, configEnv };

@@ -55,7 +55,7 @@ Pi has three credential choices in the agent dialog:
 
 The health check runs `pi auth check --provider <provider> --json --no-refresh`: it reports whether credentials for the health-check model's provider are ready, missing (`not_ready`) or invalid, without spending tokens or refreshing OAuth tokens. See [Agent Runtime](../architecture/agent-runtime.md#pi) for the disposable agent directory and the token refresh write-back rules.
 
-Each run is `pi -p --mode json --no-approve` with the prompt on stdin, so repository `.pi/` extensions, settings and prompts are never trusted; `AGENTS.md` and `CLAUDE.md` still load. Sessions go to a disposable directory inside the container. ProPR records the full event stream (messages, thinking, tool calls and tool results) as the task's execution events, sums token usage over every response, and uses the provider-reported cost when every response carries one. The live view shows the same events while the task runs.
+Each run is `pi -p --mode json --no-approve` with the prompt on stdin, so repository `.pi/` extensions, settings and prompts are never trusted; `AGENTS.md` and `CLAUDE.md` still load. Task sessions go to a disposable directory inside the container; goal sessions are kept per goal (see [Goal sessions](#goal-sessions)). ProPR records the full event stream (messages, thinking, tool calls and tool results) as the task's execution events, sums token usage over every response, and uses the provider-reported cost when every response carries one. The live view shows the same events while the task runs.
 
 Analysis runs (AI reviews, PR and task summaries, commit subjects, plan generation and repository indexing) use the same JSON parser and success rule, on a read-only workspace with no saved session and no tools (`--no-tools`), like the other agents. The review context scout is the only analysis with tools, and only ProPR's repository MCP tools: ProPR writes an `mcp.json` with just the `propr_repository` server into the disposable agent dir and runs Pi with `--no-builtin-tools`, an allowlist of the three `mcp__propr_repository__*` tools, `--no-extensions --extension builtin:mcp`, `--no-skills`, `--no-prompt-templates` and `--no-approve`. `bash`, `edit`, `write` and `read` are unavailable, and no host or repository `mcp.json`, extension or skill loads. The repository is mounted read-only at the scout server's root and the scout gets no git credentials.
 
@@ -63,9 +63,9 @@ Pi task runs receive the [extension library](./agent-extensions.md) and the `pro
 
 ## Goal sessions
 
-Codex, Claude and Antigravity run goals on their native goal support. Antigravity goals use its `/goal` command in a persistent CLI conversation: ProPR streams activity, saves the conversation ID, and delivers checkpoints, operator input, pause and cancel by interrupting at the next finished step and resuming that exact conversation. Availability is checked against the configured image's CLI capabilities.
+Codex, Claude and Antigravity run goals on their native goal support. Pi runs goals as whole sessions: ProPR keeps each goal's Pi session in its own owner-only directory outside Pi's disposable agent directory and resumes it with `--session` at every boundary. Antigravity goals use its `/goal` command in a persistent CLI conversation: ProPR streams activity, saves the conversation ID, and delivers checkpoints, operator input, pause and cancel by interrupting at the next finished step and resuming that exact conversation. Availability is checked against the configured image's CLI capabilities.
 
-Keep Antigravity's mounted configuration directory across goal attempts, since it holds the goal conversation. See [Goals](./goals.md) for checkpoint, pause/resume, cancellation, and draft PR behavior.
+Keep Antigravity's mounted configuration directory across goal attempts, since it holds the goal conversation. Pi goal sessions are kept under `/tmp/git-processor/pi-goal-sessions/<goal-id>` (`PI_GOAL_SESSIONS_PATH`) and removed when the goal is deleted. See [Goals](./goals.md) for checkpoint, pause/resume, cancellation, and draft PR behavior.
 
 ## Agent Configuration
 

@@ -459,6 +459,7 @@ async function runPreparedGoal(data: GoalJobData, prepared: PreparedGoalAttempt)
             taskId: goal.current_task_id,
             executionMode: 'goal',
             nativeGoalObjective: goal.initial_prompt,
+            goalId: goal.goal_id,
             resumeSessionId: goal.session_id ?? undefined,
             resumeConversationId: goal.conversation_id ?? undefined,
             initialControlInputId: liveControl ? pendingInput?.input_id : undefined,
