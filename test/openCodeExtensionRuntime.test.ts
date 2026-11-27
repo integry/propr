@@ -129,6 +129,19 @@ describe('OpenCode Docker launch', () => {
         assert.equal(args[args.indexOf('--network') + 1], 'propr_default');
     });
 
+    test('emits one ProPR-owned inline config: an agent OPENCODE_CONFIG_CONTENT env var cannot replace the run servers', () => {
+        // OPENCODE_CONFIG_CONTENT is reserved, so the operator value never reaches docker and the
+        // run's config is the only assignment (Docker keeps the last one of a repeated variable).
+        const inline = JSON.stringify({ provider: { acme: { options: { baseURL: 'https://llm.acme.example/v1' } } } });
+        for (const policy of [extensionPolicy(), { allowWeb: true, mcpServers: [proprServer], dockerNetwork: 'propr_default' }]) {
+            const args = dockerArgs(policy, { envVars: { OPENCODE_CONFIG_CONTENT: inline } });
+            const assignments = args.filter(arg => arg.startsWith('OPENCODE_CONFIG_CONTENT='));
+            assert.equal(assignments.length, 1);
+            assert.deepEqual(JSON.parse(envValue(args, 'OPENCODE_CONFIG_CONTENT')!), openCodeMcpConfig(policy));
+        }
+        assert.equal(envValue(dockerArgs(undefined, { envVars: { OPENCODE_CONFIG_CONTENT: inline } }), 'OPENCODE_CONFIG_CONTENT'), undefined);
+    });
+
     test('runs without a tool policy keep the default bridge network and no inline config', () => {
         const args = dockerArgs();
         assert.equal(args[args.indexOf('--network') + 1], 'bridge');
@@ -206,6 +219,23 @@ describe('OpenCode entrypoint exclusive config', { skip: spawnSync('python3', ['
             // The mounted host dir is never changed.
             assert.equal(fs.readFileSync(path.join(source, 'opencode.jsonc'), 'utf8'), HOST_CONFIG);
             assert.ok(fs.existsSync(path.join(source, 'skills', 'ambient', 'SKILL.md')));
+        } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    test('accepts trailing commas followed by line or block comments, leaving string contents alone', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-exclusive-'));
+        try {
+            const source = path.join(root, 'host');
+            fs.mkdirSync(source);
+            fs.writeFileSync(path.join(source, 'opencode.jsonc'), '{"model":"acme/m", /* explanation */ }');
+            fs.writeFileSync(path.join(source, 'opencode.json'), '{\n  "share": "a, } // not a comment /* nor this */",\n  "list": [1, 2, // trailing\n  ],\n  "mcp": {"servers": {},},\n}\n');
+            fs.writeFileSync(path.join(source, 'config.json'), '{"small_model":"acme/s",/*a*/ /*b*/\n// c\n}');
+            const run = runExclusiveStep(source, path.join(root, 'runtime'));
+            assert.equal(run.status, 0, run.stderr);
+            const read = (name: string) => JSON.parse(fs.readFileSync(path.join(root, 'runtime', name), 'utf8'));
+            assert.deepEqual(read('opencode.jsonc'), { model: 'acme/m' });
+            assert.deepEqual(read('opencode.json'), { share: 'a, } // not a comment /* nor this */', list: [1, 2] });
+            assert.deepEqual(read('config.json'), { small_model: 'acme/s' });
         } finally { fs.rmSync(root, { recursive: true, force: true }); }
     });
 

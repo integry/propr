@@ -87,8 +87,8 @@ import json
 import sys
 
 
-def strip_jsonc(text):
-    """Remove // and /* */ comments and trailing commas outside strings."""
+def scan_jsonc(text, handle):
+    """Copy text, letting handle(text, i, out) consume tokens outside strings."""
     out, i, n, in_string = [], 0, len(text), False
     while i < n:
         c = text[i]
@@ -105,27 +105,43 @@ def strip_jsonc(text):
             in_string = True
             out.append(c)
             i += 1
-        elif text.startswith('//', i):
-            while i < n and text[i] != '\n':
-                i += 1
-        elif text.startswith('/*', i):
-            end = text.find('*/', i + 2)
-            if end < 0:
-                raise ValueError('unterminated comment')
-            i = end + 2
-        elif c == ',':
-            j = i + 1
-            while j < n and text[j] in ' \t\r\n':
-                j += 1
-            if j < n and text[j] in '}]':
-                i += 1
-                continue
-            out.append(c)
-            i += 1
         else:
-            out.append(c)
-            i += 1
+            i = handle(text, i, out)
     return ''.join(out)
+
+
+def drop_comment(text, i, out):
+    if text.startswith('//', i):
+        end = text.find('\n', i)
+        return len(text) if end < 0 else end
+    if text.startswith('/*', i):
+        end = text.find('*/', i + 2)
+        if end < 0:
+            raise ValueError('unterminated comment')
+        out.append(' ')
+        return end + 2
+    out.append(text[i])
+    return i + 1
+
+
+def drop_trailing_comma(text, i, out):
+    if text[i] == ',':
+        j = i + 1
+        while j < len(text) and text[j] in ' \t\r\n':
+            j += 1
+        if j < len(text) and text[j] in '}]':
+            return i + 1
+    out.append(text[i])
+    return i + 1
+
+
+def strip_jsonc(text):
+    """Remove // and /* */ comments, then trailing commas, outside strings.
+
+    Comments go first so a comma followed by a comment and then `}` or `]`
+    is still seen as trailing.
+    """
+    return scan_jsonc(scan_jsonc(text, drop_comment), drop_trailing_comma)
 
 
 with open(sys.argv[1], encoding='utf-8') as handle:
