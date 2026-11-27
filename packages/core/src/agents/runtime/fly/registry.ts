@@ -34,11 +34,11 @@ export interface RegistryApi {
     manifest(repository: string, reference: string): Promise<{ digest: string; manifest: ImageManifest }>;
     /** The digest a tag points at, or undefined when the tag does not exist. */
     resolve(repository: string, tag: string): Promise<string | undefined>;
-    blob(repository: string, digest: string): Promise<Buffer>;
-    /** Uploads `content` (bytes, or a file path) unless the repository already has the blob. */
-    upload(repository: string, digest: string, size: number, content: Buffer | string): Promise<void>;
+    blob(repository: string, digest: string, signal?: AbortSignal): Promise<Buffer>;
+    /** Uploads `content` (bytes, or a file path) unless the repository already has the blob. `signal` ends the whole upload. */
+    upload(repository: string, blob: { digest: string; size: number }, content: Buffer | string, signal?: AbortSignal): Promise<void>;
     /** Tags `manifest` and returns its digest. */
-    push(repository: string, tag: string, mediaType: string, manifest: Buffer): Promise<string>;
+    push(repository: string, tag: string, manifest: { mediaType: string; body: Buffer }, signal?: AbortSignal): Promise<string>;
 }
 
 class RegistryHttpError extends Error {
@@ -58,14 +58,15 @@ export class FlyRegistry implements RegistryApi {
     private bearer?: string;
     constructor(private readonly token: string, private readonly fetcher: typeof fetch = fetch) {}
 
-    private async request(method: string, path: string, init: { headers?: Record<string, string>; body?: Buffer; ok?: number[]; follow?: boolean; timeout?: number } = {}) {
+    private async request(method: string, path: string, init: { headers?: Record<string, string>; body?: Buffer; ok?: number[]; follow?: boolean; timeout?: number; signal?: AbortSignal } = {}) {
         const url = path.startsWith('https://') ? path : `https://${FLY_REGISTRY}${path}`;
         if (new URL(url).host !== FLY_REGISTRY) throw new Error('Refusing to send the Fly token outside ' + FLY_REGISTRY);
         for (let attempt = 0; ; attempt++) {
             const authorization = this.bearer ? 'Bearer ' + this.bearer : 'Basic ' + Buffer.from('x:' + this.token).toString('base64');
             // Blob reads may redirect to storage; fetch drops Authorization on a cross-origin redirect.
             const response = await this.fetcher(url, { method, redirect: init.follow ? 'follow' : 'error', body: init.body,
-                headers: { ...init.headers, Authorization: authorization }, signal: AbortSignal.timeout(init.timeout ?? 60_000) });
+                headers: { ...init.headers, Authorization: authorization },
+                signal: AbortSignal.any([AbortSignal.timeout(init.timeout ?? 60_000), ...(init.signal ? [init.signal] : [])]) });
             const challenge = response.headers.get('www-authenticate') ?? '';
             if (response.status === 401 && attempt === 0 && /^Bearer\s/i.test(challenge)) {
                 await response.body?.cancel();
@@ -124,16 +125,16 @@ export class FlyRegistry implements RegistryApi {
         return (await this.getManifest(repository, tag)).digest;
     }
 
-    async blob(repository: string, digest: string) {
-        const bytes = await readLimited(await this.request('GET', `/v2/${repository}/blobs/${digest}`, { follow: true }), MANIFEST_LIMIT);
+    async blob(repository: string, digest: string, signal?: AbortSignal) {
+        const bytes = await readLimited(await this.request('GET', `/v2/${repository}/blobs/${digest}`, { follow: true, signal }), MANIFEST_LIMIT);
         if (sha256(bytes) !== digest) throw new Error('Fly registry blob does not match its digest');
         return bytes;
     }
 
-    async upload(repository: string, digest: string, size: number, content: Buffer | string) {
-        const head = await this.request('HEAD', `/v2/${repository}/blobs/${digest}`, { ok: [404] });
+    async upload(repository: string, { digest, size }: { digest: string; size: number }, content: Buffer | string, signal?: AbortSignal) {
+        const head = await this.request('HEAD', `/v2/${repository}/blobs/${digest}`, { ok: [404], signal });
         if (head.status !== 404) return;
-        let location = this.location(await this.request('POST', `/v2/${repository}/blobs/uploads/`, { headers: { 'Content-Length': '0' } }));
+        let location = this.location(await this.request('POST', `/v2/${repository}/blobs/uploads/`, { headers: { 'Content-Length': '0' }, signal }));
         const file = typeof content === 'string' ? await fs.open(content, 'r') : undefined;
         try {
             // Chunked upload: no file is held in memory whole.
@@ -145,13 +146,13 @@ export class FlyRegistry implements RegistryApi {
                     const { bytesRead } = await file.read(chunk, 0, length, offset);
                     if (bytesRead !== length) throw new Error('Layer file shorter than recorded');
                 } else chunk = (content as Buffer).subarray(offset, offset + length);
-                location = this.location(await this.request('PATCH', location, { body: chunk, timeout: 10 * 60_000, headers: {
+                location = this.location(await this.request('PATCH', location, { body: chunk, timeout: 10 * 60_000, signal, headers: {
                     'Content-Type': 'application/octet-stream', 'Content-Length': String(length), 'Content-Range': `${offset}-${offset + length - 1}` } }));
             }
         } finally { await file?.close(); }
         const url = new URL(location);
         url.searchParams.set('digest', digest);
-        await this.request('PUT', url.toString(), { headers: { 'Content-Length': '0' } });
+        await this.request('PUT', url.toString(), { headers: { 'Content-Length': '0' }, signal });
     }
 
     private location(response: Response) {
@@ -161,9 +162,9 @@ export class FlyRegistry implements RegistryApi {
         return new URL(header, `https://${FLY_REGISTRY}`).toString();
     }
 
-    async push(repository: string, tag: string, mediaType: string, manifest: Buffer) {
-        const response = await this.request('PUT', `/v2/${repository}/manifests/${tag}`, { body: manifest, headers: { 'Content-Type': mediaType } });
+    async push(repository: string, tag: string, { mediaType, body }: { mediaType: string; body: Buffer }, signal?: AbortSignal) {
+        const response = await this.request('PUT', `/v2/${repository}/manifests/${tag}`, { body, headers: { 'Content-Type': mediaType }, signal });
         await response.body?.cancel();
-        return sha256(manifest);
+        return sha256(body);
     }
 }

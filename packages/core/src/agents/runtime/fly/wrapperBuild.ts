@@ -197,6 +197,12 @@ def verify_layer(requested, before_installed, before, after, layer_file, root='/
     listing = dpkg_list or (lambda name: subprocess.run([dpkg_query, '-L', name], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                                          stdin=subprocess.DEVNULL, check=True).stdout.decode('utf8', 'replace').splitlines())
     installed_bytes = 0
+    # Bytes of the packages' regular files in the layer, each inode once (tar
+    # stores a hard link without data). Unlike Installed-Size, this leaves out
+    # what dpkg path-exclude kept from being unpacked (docs, man pages, locales),
+    # so the worker can check the layer against it.
+    layer_bytes = 0
+    counted = set()
     files = 0
     for name in requested:
         package = name if name in installed else next((p for p, (_, provides) in sorted(installed.items()) if name in provides), None)
@@ -220,13 +226,13 @@ def verify_layer(requested, before_installed, before, after, layer_file, root='/
             if path not in members and not (path in before and before[path] == after.get(path)):
                 raise RuntimeError('%s installed %s, but the layer does not contain it' % (package, path))
             files += 1
-    return {'packages': len(requested), 'files': files, 'installedBytes': installed_bytes}
+            st = os.lstat(real)
+            if path in members and stat.S_ISREG(st.st_mode) and (st.st_dev, st.st_ino) not in counted:
+                counted.add((st.st_dev, st.st_ino))
+                layer_bytes += st.st_size
+    return {'packages': len(requested), 'files': files, 'installedBytes': installed_bytes, 'layerBytes': layer_bytes}
 
-def build():
-    # A derived image build Machine: install the packages on the base image and
-    # leave the change as a layer for the worker to push. No credential is here.
-    run.chmod(0o700)
-    status('building')
+def build_layer():
     spec = json.loads((run / 'build.json').read_bytes())
     before = snapshot()
     before_installed = dpkg_installed()
@@ -239,8 +245,25 @@ def build():
             result['layer'] = layer
         except Exception as error:
             result['error'] = type(error).__name__ + ': ' + str(error)[:500]
-    write_json('build-result', result)
-    status('built' if 'layer' in result else 'build-error' if result['code'] == 0 else 'build-failed')
+    return result
+
+def build():
+    # A derived image build Machine: install the packages on the base image and
+    # leave the change as a layer for the worker to push. No credential is here.
+    run.chmod(0o700)
+    status('building')
+    # Any exception (the snapshot, dpkg-query, starting apt) ends the build with
+    # build-error and its message, so the worker stops waiting at once.
+    try:
+        result = build_layer()
+    except Exception as error:
+        result = {'code': None, 'error': type(error).__name__ + ': ' + str(error)[:500]}
+    try:
+        write_json('build-result', result)
+    except Exception:
+        pass
+    failed = 'layer' not in result and result.get('code') not in (0, None)
+    status('built' if 'layer' in result else 'build-failed' if failed else 'build-error')
     os.utime(run, None)
     wait_for_ack(300)
 `;

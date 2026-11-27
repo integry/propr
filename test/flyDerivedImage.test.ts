@@ -14,6 +14,7 @@ import { agentRuntimePackageInstallCommand } from '../packages/core/src/agents/r
 import { MachinesClient, MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
 import { flyConfig } from '../packages/core/src/agents/runtime/fly/config.ts';
 import { flyPackageImageTag, FlyPackageImages, resetFlyPackageImages } from '../packages/core/src/agents/runtime/fly/derivedImage.ts';
+import { builderLifetimeMs, DEFAULT_FLY_PACKAGE_IMAGE_TIMINGS } from '../packages/core/src/agents/runtime/fly/imageBuilder.ts';
 import { MEDIA, parseFlyImage, sha256, type ImageManifest, type RegistryApi } from '../packages/core/src/agents/runtime/fly/registry.ts';
 import { RUN, WRAPPER, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
@@ -60,14 +61,14 @@ class Registry implements RegistryApi {
     }
     async resolve(_repository: string, tag: string) { return this.tags.get(tag); }
     async blob(_repository: string, digest: string) { return this.blobs.get(digest)!; }
-    async upload(_repository: string, digest: string, size: number, content: Buffer | string) {
+    async upload(_repository: string, { digest, size }: { digest: string; size: number }, content: Buffer | string) {
         const bytes = typeof content === 'string' ? fs.readFileSync(content) : content;
         assert.equal(bytes.length, size);
         assert.equal(sha256(bytes), digest);
         this.uploads.push(digest);
         this.blobs.set(digest, bytes);
     }
-    async push(_repository: string, tag: string, mediaType: string, body: Buffer) {
+    async push(_repository: string, tag: string, { mediaType, body }: { mediaType: string; body: Buffer }) {
         const digest = sha256(body);
         this.manifests.set(digest, { mediaType, body });
         this.tags.set(tag, digest);
@@ -103,7 +104,7 @@ class Machines implements MachinesApi {
             assert.equal(args[1], RUN + '/build-result');
             // The wrapper's read-back of the layer against dpkg, for the packages build.json asked it to verify.
             const verify = JSON.parse(this.file(this.launches[Number(id.slice(1))], RUN + '/build.json')!).verify as string[];
-            const verified = this.verified === undefined ? { packages: verify.length, files: 3, installedBytes: 0 } : this.verified;
+            const verified = this.verified === undefined ? { packages: verify.length, files: 3, installedBytes: 0, layerBytes: 0 } : this.verified;
             return { stdout: JSON.stringify({ ...this.buildResult, ...(verified && { verified }) }), exit_code: 0 };
         }
         const [op, file, offset, length] = args.slice(3);
@@ -275,16 +276,28 @@ test('a build whose layer was not verified against dpkg is neither pushed nor ca
     await next.release!();
 });
 
-test('a layer smaller than the installed size apt reports is a failed build', async () => {
+test('a layer smaller than the package files the build Machine read back is a failed build', async () => {
     const api = new Machines();
     const registry = new Registry();
-    // The fixture layer is a few dozen bytes; apt reports figlet as 702 KiB.
-    api.verified = { packages: 1, files: 40, installedBytes: 702 * 1024 };
+    // The fixture layer is a few dozen bytes; the build Machine reports 702 KiB of figlet files in it.
+    api.verified = { packages: 1, files: 40, installedBytes: 702 * 1024, layerBytes: 702 * 1024 };
     const run = runtime(api, registry, 'small-layer', ['figlet']).start(spec());
     assert.equal((await run.wait()).exitCode, 0);
     assert.equal(registry.tags.size, 0);
     assert.deepEqual(registry.uploads, []);
     assert.ok(api.file(api.launches[1], RUN + '/packages.json'), 'the run falls back to the start-time install');
+    await run.release!();
+});
+
+test('a layer smaller than apt\'s Installed-Size is pushed when dpkg path-exclude kept the docs out', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    // Installed-Size counts the docs and locales a slim image never unpacks; the files in the layer fit it.
+    api.verified = { packages: 1, files: 4, installedBytes: 702 * 1024, layerBytes: layerTar.length };
+    const run = runtime(api, registry, 'excluded-docs', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(registry.tags.size, 1, 'the derived image is pushed');
+    assert.equal(api.file(api.launches[1], RUN + '/packages.json'), undefined, 'the agent Machine installs nothing');
     await run.release!();
 });
 
@@ -455,13 +468,13 @@ except RuntimeError as error:
 print(json.dumps({'layer': layer, 'verified': verified}))
 `;
 
-function fakeDpkg(dir: string) {
+function fakeDpkg(dir: string, installedKiB = 17) {
     // dpkg-query -W lists basepkg before the install and fakefig (providing fake-virtual) after it; -L lists their files.
     fs.writeFileSync(path.join(dir, 'dpkg-query'), `#!/bin/sh
 here=$(dirname "$0")
 if [ "$1" = "-W" ]; then
   printf 'basepkg\tinstall ok installed\t4\t\n'
-  [ -f "$here/installed" ] && printf 'fakefig\tinstall ok installed\t17\tfake-virtual\n'
+  [ -f "$here/installed" ] && printf 'fakefig\tinstall ok installed\t${installedKiB}\tfake-virtual\n'
   exit 0
 fi
 case "$2" in
@@ -483,7 +496,8 @@ test('the build layer captures every file a package installs, on an overlay root
         fakeDpkg(bin);
         const out = path.join(bin, 'layer.tar.gz');
         const result = JSON.parse(python(FAKE_INSTALL, root, out, bin));
-        assert.deepEqual(result.verified, { packages: 2, files: 6, installedBytes: 17 * 1024 });
+        // The package's regular files in the layer: the symlink has no data, the base file is not in the layer.
+        assert.deepEqual(result.verified, { packages: 2, files: 6, installedBytes: 17 * 1024, layerBytes: 3000 + 5000 + 9000 });
         const members = python(`
 import tarfile
 with tarfile.open(sys.argv[1]) as tar:
@@ -505,6 +519,72 @@ with tarfile.open(sys.argv[1]) as tar:
         fs.rmSync(root, { recursive: true, force: true });
         fs.rmSync(bin, { recursive: true, force: true });
     }
+});
+
+test('a package whose Installed-Size is mostly docs dpkg path-exclude keeps out has a layer that passes the size check', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-capture-docs-'));
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-dpkg-docs-'));
+    try {
+        for (const dir of ['usr/bin', 'usr/share/doc', 'etc/dpkg/dpkg.cfg.d', 'var/lib/dpkg/info']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+        fs.symlinkSync('usr/bin', path.join(root, 'bin'));
+        fs.writeFileSync(path.join(root, 'usr/bin/base-tool'), 'in the base image');
+        fs.writeFileSync(path.join(root, 'etc/dpkg/dpkg.cfg.d/docker'), 'path-exclude /usr/share/doc/*\n');
+        // apt counts 2 MiB for fakefig: its docs, which the slim image never unpacks.
+        fakeDpkg(bin, 2048);
+        const out = path.join(bin, 'layer.tar.gz');
+        const result = JSON.parse(python(FAKE_INSTALL, root, out, bin));
+        assert.equal(result.verified.installedBytes, 2048 * 1024);
+        const raw = zlib.gunzipSync(fs.readFileSync(out)).length;
+        assert.ok(raw < result.verified.installedBytes, `the layer (${raw} bytes) is smaller than Installed-Size`);
+        assert.equal(result.verified.layerBytes, 3000 + 5000 + 9000);
+        assert.ok(raw >= result.verified.layerBytes, 'the worker\'s size check passes');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(bin, { recursive: true, force: true });
+    }
+});
+
+test('a hard-linked package file counts once toward the layer bytes, as tar stores its data once', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-capture-links-'));
+    try {
+        for (const dir of ['usr/bin', 'out']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+        const result = JSON.parse(python(`
+root = sys.argv[1]
+before = snapshot(root)
+time.sleep(0.05)
+open(os.path.join(root, 'usr/bin/tool'), 'w').write('t' * 4000)
+os.link(os.path.join(root, 'usr/bin/tool'), os.path.join(root, 'usr/bin/tool-alias'))
+after = snapshot(root)
+out = os.path.join(root, 'out', 'layer.tar.gz')
+write_layer(before, after, out, root)
+files = ['/usr/bin/tool', '/usr/bin/tool-alias']
+installed = lambda q='': {'tool': (4096, set())}
+dpkg_installed = installed
+verified = verify_layer(['tool'], {}, before, after, out, root, dpkg_list=lambda name: files)
+raw = len(gzip.open(out).read())
+print(json.dumps({'verified': verified, 'raw': raw}))
+`, root));
+        assert.equal(result.verified.layerBytes, 4000);
+        assert.ok(result.raw >= result.verified.layerBytes);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an exception anywhere in the wrapper build ends it with build-error and the message', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-build-error-'));
+    try {
+        fs.writeFileSync(path.join(dir, 'build.json'), JSON.stringify({ argv: ['true'], path: '/usr/bin:/bin', timeout: 1000, verify: [] }));
+        python(`
+run = Path(sys.argv[1])
+def snapshot(root='/'):
+    raise OSError('snapshot failed: no space left on device')
+wait_for_ack = lambda idle: None
+build()
+`, dir);
+        assert.equal(fs.readFileSync(path.join(dir, 'status'), 'utf8'), 'build-error\n');
+        const result = JSON.parse(fs.readFileSync(path.join(dir, 'build-result'), 'utf8'));
+        assert.equal(result.error, 'OSError: snapshot failed: no space left on device');
+        assert.equal(result.code, null);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 // The production build verifies with the default root '/': real host paths outside the
@@ -536,8 +616,8 @@ try:
 except RuntimeError as error:
     print(json.dumps({'error': str(error)}))
 `, file, out, path.join(bin, 'dpkg-query'), mode], { encoding: 'utf8', env: { ...process.env, ...extra } }));
-        assert.deepEqual(verify('unchanged'), { packages: 1, files: 1, installedBytes: 0 }, 'an unchanged base file passes');
-        assert.deepEqual(verify('captured'), { packages: 1, files: 1, installedBytes: 0 }, 'a file in the layer passes');
+        assert.deepEqual(verify('unchanged'), { packages: 1, files: 1, installedBytes: 0, layerBytes: 0 }, 'an unchanged base file passes');
+        assert.deepEqual(verify('captured'), { packages: 1, files: 1, installedBytes: 0, layerBytes: fs.statSync(file).size }, 'a file in the layer passes');
         assert.equal(verify('omitted').error, `fakepkg installed ${file}, but the layer does not contain it`);
         assert.equal(verify('missing', { MISSING: missing }).error, `fakepkg lists ${missing}, which does not exist after the install`);
     } finally { fs.rmSync(bin, { recursive: true, force: true }); }
@@ -638,6 +718,7 @@ test('the registry client resolves the amd64 manifest, uploads in chunks and kee
         const url = new URL(String(input));
         const headers = new Headers(init.headers);
         const method = init.method ?? 'GET';
+        init.signal?.throwIfAborted();
         if (url.pathname === '/token') {
             tokenRequests++;
             assert.equal(headers.get('authorization'), 'Basic ' + Buffer.from('x:' + TOKEN).toString('base64'));
@@ -664,10 +745,14 @@ test('the registry client resolves the amd64 manifest, uploads in chunks and kee
     const resolved = await registry.manifest('agents', 'agent-1');
     assert.equal(resolved.digest, sha256(amd64));
     assert.equal(tokenRequests, 1);
-    await registry.upload('agents', layer.digest, layer.size, layerGz);
+    await registry.upload('agents', layer, layerGz);
     const put = calls.find(c => c.method === 'PUT')!;
     assert.equal(put.url, '/v2/agents/blobs/uploads/u1?state=1&digest=' + encodeURIComponent(layer.digest));
     assert.ok(calls.slice(1).every(c => c.auth === 'Bearer registry-bearer'));
+    // The push's own bound ends an upload in progress.
+    const pushed = calls.length;
+    await assert.rejects(registry.upload('agents', layer, layerGz, AbortSignal.abort(new Error('push deadline'))), /push deadline/);
+    assert.equal(calls.length, pushed, 'no request is sent once the push deadline passed');
     // An upload location elsewhere never receives the token.
     await assert.rejects((registry as unknown as { request(m: string, p: string): Promise<Response> }).request('PATCH', 'https://example.com/upload'),
         /Refusing to send the Fly token/);
@@ -1219,4 +1304,128 @@ test('a run cancelled while startup reconciliation waits for a slot settles at o
     assert.equal(api.peak, 1);
     await next.release!();
     assert.deepEqual(api.listed, ['propr-build-']);
+});
+
+/** The build Machine reports `building`, then its wrapper dies (an OOM kill): probes fail and auto_destroy removes it. */
+class DyingBuilder extends Machines {
+    probes = 0;
+    goneChecks = 0;
+    override async exec(id: string, args: string[], signal?: AbortSignal) {
+        if (id === 'm0' && !this.live.has(id)) throw new Error('Fly API 404: machine not found');
+        if (id === 'm0' && args.includes('probe') && ++this.probes > 2) { this.live.delete(id); throw new Error('Fly API 502'); }
+        if (id === 'm0' && args.includes('probe')) return { stdout: 'building\n0', exit_code: 0 };
+        return super.exec(id, args, signal);
+    }
+    override async gone(id: string) { if (id === 'm0') this.goneChecks++; return super.gone(id); }
+}
+
+test('a build Machine that dies mid-build fails the build after a few failed probes instead of at the deadline', { timeout: 10_000 }, async () => {
+    const api = new DyingBuilder();
+    const registry = new Registry();
+    const run = runtime(api, registry, 'dying-builder', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(api.goneChecks, 1, 'Fly is asked once three probes in a row failed');
+    assert.equal(registry.tags.size, 0);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'), 'the run falls back to the start-time install');
+    await run.release!();
+});
+
+test('the layer download runs under the build deadline', async () => {
+    const api = new Machines();
+    const signals: Array<AbortSignal | undefined> = [];
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args, signal) => { if (args.includes(RUN + '/layer.tar.gz')) signals.push(signal); return exec(id, args); };
+    const run = runtime(api, new Registry(), 'download-deadline', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.ok(signals.length >= 2 && signals.every(signal => signal instanceof AbortSignal && !signal.aborted), 'size and chunk reads carry the deadline');
+    await run.release!();
+});
+
+test('a push that outlasts its bound fails the build: the run installs at start and nothing is tagged', { timeout: 10_000 }, async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    registry.upload = (_repository, _blob, _content, signal) => new Promise((_resolve, reject) => {
+        signal!.addEventListener('abort', () => reject(signal!.reason));
+    });
+    const run = runtime(api, registry, 'push-timeout', ['figlet'], {}, { ...FAST, pushTimeoutMs: 50 }).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(registry.tags.size, 0);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'));
+    await run.release!();
+});
+
+test('a build that fails the same way backs off exponentially per base manifest and package list, reset by a new base', async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    const api = new Machines();
+    const registry = new Registry();
+    api.buildResult = { ms: 1, code: 0, tail: '', error: 'RuntimeError: figlet lists /usr/bin/figlet, which does not exist after the install' };
+    api.buildState = 'build-error';
+    const fly = runtime(api, registry, 'backoff', ['figlet'], { PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' },
+        { ...FAST, failureBackoffMs: 1000, failureBackoffMaxMs: 3500 });
+    const builds = async (advanceMs: number) => {
+        t.mock.timers.tick(advanceMs);
+        const run = fly.start(spec());
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+        return api.launches.filter(isBuild).length;
+    };
+    assert.equal(await builds(0), 1);
+    assert.equal(await builds(0), 1, 'the first failure backs off for 1s');
+    assert.equal(await builds(1001), 2);
+    assert.equal(await builds(1001), 2, 'the second failure backs off for 2s');
+    assert.equal(await builds(1000), 3);
+    assert.equal(await builds(3000), 3, 'the third failure backs off for the 3.5s cap, not 4s');
+    assert.equal(await builds(501), 4);
+    assert.equal(await builds(3000), 4, 'the backoff stays at the cap');
+    // The base tag moves: a new base manifest builds at once, and its failures start from the first step again.
+    registry.baseTags.set('current', 'sha256:' + 'b'.repeat(64));
+    assert.equal(await builds(0), 5);
+    assert.equal(await builds(1001), 6);
+    api.buildState = 'built';
+    api.buildResult = { ms: 1, code: 0, tail: '', layer };
+    assert.equal(await builds(2001), 7, 'the build succeeds after the second step');
+    assert.equal(registry.tags.size, 1);
+    assert.equal(await builds(0), 7, 'the derived image is reused');
+});
+
+test('a derived tag another worker pushed while this one waited is used without creating a build Machine', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    const published = 'sha256:' + 'c'.repeat(64);
+    let lookups = 0;
+    registry.resolve = async (_repository, tag) => {
+        if (++lookups === 1) return undefined;
+        registry.tags.set(tag, published);
+        return published;
+    };
+    const run = runtime(api, registry, 'published-meanwhile', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(lookups, 2, 'the tag is looked up again once the build slot is held');
+    assert.equal(api.launches.filter(isBuild).length, 0);
+    assert.equal(api.launches[0].config.image, 'registry.fly.io/agents@' + published);
+    await run.release!();
+});
+
+test('a young leftover build Machine that outlives any build is deleted instead of holding its slot for good', { timeout: 10_000 }, async () => {
+    const api = new LeftoverMachines();
+    const timings = { ...DEFAULT_FLY_PACKAGE_IMAGE_TIMINGS, ...FAST, reconcileMs: 20 };
+    // It passes the age of any live build Machine a second after the startup search finds it.
+    api.young.createdAt = Date.now() - builderLifetimeMs(flyConfig(env('aging')), timings) + 1000;
+    api.leftovers.delete('old1');
+    const fly = runtime(api, new Registry(), 'aging', () => [], { PROPR_FLY_MACHINES_MAX: '2' }, timings);
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    assert.ok(!api.events.includes('destroy leftover young1'), 'not deleted while its build may be in progress');
+    for (let i = 0; i < 400 && !api.events.includes('destroy leftover young1'); i++) await delay(10);
+    assert.ok(api.events.includes('destroy leftover young1'), 'deleted once it is older than any build');
+    // Its slot is free again: two runs overlap.
+    api.peak = 0;
+    const slow = new Set<string>();
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => { if (args.includes('probe') && !slow.has(id)) { slow.add(id); await delay(30); } return exec(id, args); };
+    const parallel = ['c', 'd'].map(name => fly.start(spec(name)));
+    await Promise.all(parallel.map(run => run.wait()));
+    assert.equal(api.peak, 2);
+    for (const run of parallel) await run.release!();
 });

@@ -10,7 +10,7 @@ import { createRejected, type MachineLaunch, type MachinesApi } from './api.js';
 import { acquireFlyMachineSlot } from './capacity.js';
 import type { FlyConfig } from './config.js';
 import {
-    activeBuilders, buildDeadlineMs, buildLayer, DEFAULT_FLY_PACKAGE_IMAGE_TIMINGS, FLY_BUILDER_PREFIX, FlyBuilderCleanupError,
+    activeBuilders, builderLifetimeMs, buildLayer, DEFAULT_FLY_PACKAGE_IMAGE_TIMINGS, FLY_BUILDER_PREFIX, FlyBuilderCleanupError,
     FlyPackageImageError, FlyPackageInstallFailure, pushDerived, resolveBuilder,
     type FlyBuilderMachine, type FlyPackageImageTimings, type SelectOptions,
 } from './imageBuilder.js';
@@ -32,7 +32,15 @@ interface CachedImage { pending: Promise<Derived>; checkedAt: number; registry: 
 // Shared by every runtime instance in the worker process: one build per base image and package list.
 const images = new Map<string, CachedImage>();
 const failures = new Map<string, number>();
+/**
+ * Per configured image and package list: the last failed build (not an apt failure) for one base manifest and
+ * package list (`key`), and how long runs install at start before the next build. The delay doubles after each
+ * failed build of the same key, up to `failureBackoffMaxMs`; another key (the base tag moved) or a success resets it.
+ */
+const buildFailures = new Map<string, { key: string; at: number; delayMs: number }>();
 const installFailures = new Map<string, { message: string; at: number }>();
+/** Errors of shared preparations already backed off and logged, so the runs that shared them do not log them again. */
+const preparationFailures = new WeakSet<object>();
 /**
  * Build Machines not yet confirmed deleted, by unique name, with the configured image and package list they
  * were built for (none for a leftover found at startup) and the capacity slot they hold until confirmed gone.
@@ -74,7 +82,8 @@ export class FlyPackageImages {
 
     /**
      * The image to run with `packages` preinstalled, or undefined to install them at Machine start
-     * (an image outside registry.fly.io, or a registry or build failure, retried after ten minutes).
+     * (an image outside registry.fly.io, or a registry or build failure: a registry failure is retried after
+     * ten minutes, a failed build after ten minutes doubling per failure of the same build, up to a day).
      * An apt failure on the build Machine fails the run, and every run for the same base manifest
      * and package list during the backoff, with the same error.
      */
@@ -105,11 +114,15 @@ export class FlyPackageImages {
                 throw new FlyPackageInstallFailure(failed.message);
             }
             installFailures.delete(key);
+            const backoff = buildFailures.get(configured);
+            if (backoff?.key === key && Date.now() - backoff.at < backoff.delayMs) return;
             const cached = await this.cachedImage(options, { key, configured, registry, repository: base.repository, base: resolved ?? base.reference });
             const pending = cached.pending;
             return (await startupStep(signal, () => pending)).image;
         } catch (error) {
             if (signal.aborted || error instanceof FlyPackageImageError || error instanceof AgentRuntimePackageUnavailableError) throw error;
+            // A failed shared preparation was logged and backed off once, by `startPreparation`.
+            if (preparationFailures.has(error as object)) return;
             failures.set(configured, Date.now());
             logger.warn({ ...fields, err: error }, 'Could not prepare the derived Fly Machine image; installing agent runtime packages at Fly Machine start');
             return;
@@ -146,9 +159,13 @@ export class FlyPackageImages {
     private startPreparation(options: SelectOptions, { key, configured, registry, repository, base }: Preparation) {
         const entry: CachedImage = { pending: this.prepare(options, registry, repository, base), checkedAt: Date.now(), registry };
         images.set(key, entry);
-        entry.pending.then(derived => { entry.derived = derived; }, error => {
+        entry.pending.then(derived => {
+            entry.derived = derived;
+            if (buildFailures.get(configured)?.key === key) buildFailures.delete(configured);
+        }, error => {
             if (images.get(key) === entry) images.delete(key);
             if (error instanceof FlyPackageInstallFailure) installFailures.set(key, { message: error.message, at: Date.now() });
+            else if (!(error instanceof FlyPackageImageError || error instanceof AgentRuntimePackageUnavailableError)) this.backOff(options, configured, key, error);
             // In the same callback as the entry removal: no run can start a build in between.
             if (error instanceof FlyBuilderCleanupError) {
                 logger.warn({ run: options.run, machine: error.builder.id ?? null, name: error.builder.name },
@@ -157,6 +174,20 @@ export class FlyPackageImages {
             }
         });
         return entry;
+    }
+
+    /**
+     * Once per failed preparation, however many runs share it: runs for this key install at start until
+     * the delay passes, and the delay doubles for each failure in a row. Logged once per backoff step.
+     */
+    private backOff({ run, packages }: SelectOptions, configured: string, key: string, error: unknown) {
+        if (error && typeof error === 'object') preparationFailures.add(error);
+        const previous = buildFailures.get(configured);
+        const { failureBackoffMs, failureBackoffMaxMs } = this.timings;
+        const delayMs = previous?.key === key ? Math.min(previous.delayMs * 2, failureBackoffMaxMs) : failureBackoffMs;
+        buildFailures.set(configured, { key, at: Date.now(), delayMs });
+        logger.warn({ run, ...agentRuntimePackagesLogFields(packages), err: error, backoffMs: delayMs },
+            'Could not prepare the derived Fly Machine image; installing agent runtime packages at Fly Machine start until the next build');
     }
 
     /**
@@ -213,8 +244,9 @@ export class FlyPackageImages {
     /**
      * Once per app and worker process, before its first build or agent Machine: build Machines an earlier
      * worker process left (found by the `propr-build-` name prefix) hold a capacity slot until Fly confirms
-     * them gone. One older than any build may take is deleted; a younger one may be another worker's build in
-     * progress, so it is only waited out (its build Machine exits and is auto-destroyed). A failed search is
+     * them gone. One older than a live worker's build Machine may exist (`builderLifetimeMs`) is deleted; a
+     * younger one may be another worker's build in progress, so it is waited out (its build Machine exits and is
+     * auto-destroyed), and deleted once it passes that age. A failed search is
      * logged and retried by the next run; it does not fail this one.
      */
     async reconcileLeftovers(api: MachinesApi, config: FlyConfig) {
@@ -224,7 +256,7 @@ export class FlyPackageImages {
         if (!search) {
             search = (async () => {
                 const found = await list(FLY_BUILDER_PREFIX);
-                const maxAge = buildDeadlineMs(config) + this.timings.removalWindowMs;
+                const maxAge = builderLifetimeMs(config, this.timings);
                 for (const machine of found) {
                     if (machine.state === 'destroyed' || unresolvedBuilders.has(machine.name) || activeBuilders.has(machine.name)) continue;
                     const release = await acquireFlyMachineSlot(config.app, config.maxMachines, AbortSignal.any([]), machine.name);
@@ -235,7 +267,7 @@ export class FlyPackageImages {
                     if (stale) {
                         unresolvedBuilders.set(builder.name, builder);
                         this.reconcile(api, builder).catch(() => this.keepUnresolved(builder, api));
-                    } else this.watchUntilGone(api, builder);
+                    } else this.watchUntilGone(api, builder, (machine.createdAt ?? 0) + maxAge);
                 }
             })();
             leftoverSearches.set(config.app, search);
@@ -247,11 +279,20 @@ export class FlyPackageImages {
         await search.catch(() => {});
     }
 
-    /** Holds a younger leftover's slot until Fly reports it gone; it is never deleted, since its build may be in progress. */
-    private watchUntilGone(api: MachinesApi, builder: UnresolvedBuilder) {
+    /**
+     * Holds a younger leftover's slot until Fly reports it gone. It is not deleted while its build may be in
+     * progress; once it is older than any live build Machine (`staleAt`), it is deleted like a stale leftover.
+     */
+    private watchUntilGone(api: MachinesApi, builder: UnresolvedBuilder, staleAt: number) {
         const check = () => {
             builder.timer = setTimeout(async () => {
                 if (await api.gone(builder.id!).catch(() => false)) { builder.release(); return; }
+                if (Date.now() >= staleAt) {
+                    logger.warn({ machine: builder.id, name: builder.name }, 'Deleting a Fly image build Machine of another worker process that outlived any build');
+                    unresolvedBuilders.set(builder.name, builder);
+                    this.reconcile(api, builder).catch(() => this.keepUnresolved(builder, api));
+                    return;
+                }
                 check();
             }, this.timings.reconcileMs);
             builder.timer.unref();
@@ -292,8 +333,16 @@ export class FlyPackageImages {
         const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'propr-fly-image-'));
         try {
             const started = Date.now();
-            const { layer, install, machine, verified, rawBytes } = await buildLayer(options, this.timings, `${FLY_REGISTRY}/${repository}@${digest}`, path.join(directory, 'layer.tar.gz'));
-            const pushed = derived(await pushDerived(registry, { repository, tag, manifest, layer, file: path.join(directory, 'layer.tar.gz'), packages: options.packages }));
+            const built = await buildLayer({ options, timings: this.timings, baseImage: `${FLY_REGISTRY}/${repository}@${digest}`,
+                target: path.join(directory, 'layer.tar.gz'), published: () => registry.resolve(repository, tag) });
+            if ('existing' in built) {
+                logger.info({ run: options.run, image: derived(built.existing).image, ...agentRuntimePackagesLogFields(options.packages) },
+                    'Using the derived Fly Machine image another worker built while this one waited for capacity');
+                return derived(built.existing);
+            }
+            const { layer, install, machine, verified, rawBytes } = built;
+            const pushed = derived(await pushDerived(registry, { repository, tag, manifest, layer, file: path.join(directory, 'layer.tar.gz'),
+                packages: options.packages, signal: AbortSignal.timeout(this.timings.pushTimeoutMs) }));
             logger.info({ run: options.run, machine, image: pushed.image, ...agentRuntimePackagesLogFields(options.packages), installMs: install.ms,
                 layerBytes: layer.size, layerRawBytes: rawBytes, installedBytes: verified.installedBytes, verifiedFiles: verified.files,
                 buildMs: Date.now() - started }, 'Installed agent runtime packages in a derived Fly Machine image');
@@ -383,6 +432,7 @@ export function resetFlyPackageImages() {
     images.clear();
     failures.clear();
     installFailures.clear();
+    buildFailures.clear();
     for (const builder of unresolvedBuilders.values()) clearTimeout(builder.timer);
     unresolvedBuilders.clear();
     leftoverSearches.clear();

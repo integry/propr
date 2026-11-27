@@ -62,16 +62,23 @@ export interface FlyPackageImageTimings {
     pollMs: number;
     /** Background retry interval for a build Machine whose deletion is unconfirmed, while it holds its capacity slot. */
     reconcileMs: number;
+    /** The backoff doubles after each failed build for the same base manifest and package list, up to this. */
+    failureBackoffMaxMs: number;
+    /** Failed build status probes in a row after which the worker asks Fly whether the build Machine still exists. */
+    probeFailuresBeforeGoneCheck: number;
+    /** How long pushing the derived image (layer upload, config and manifest) may take. */
+    pushTimeoutMs: number;
 }
 
 export const DEFAULT_FLY_PACKAGE_IMAGE_TIMINGS: FlyPackageImageTimings = {
     failureBackoffMs: 10 * 60_000, lostCreateWindowMs: 60_000, removalWindowMs: 60_000, recheckAfterMs: 5 * 60_000, pollMs: 2000, reconcileMs: 60_000,
+    failureBackoffMaxMs: 24 * 60 * 60_000, probeFailuresBeforeGoneCheck: 3, pushTimeoutMs: 30 * 60_000,
 };
 
 export interface BuildResult extends FlyPackageInstall {
     layer?: { digest: string; size: number; diffId: string; changed: number; removed: number };
     /** The build Machine read the layer back: every package installed, each file dpkg lists for it in the layer or the base. */
-    verified?: { packages: number; files: number; installedBytes: number };
+    verified?: { packages: number; files: number; installedBytes: number; layerBytes: number };
     error?: string;
 }
 
@@ -85,13 +92,25 @@ export interface SelectOptions {
     checkAvailability?: AgentRuntimePackageAvailabilityCheck;
 }
 
-/** How long a build may take from create: boot, install, snapshot and transfer. */
+/** How long a build may take from create: boot, install, snapshot and the layer download, which the deadline bounds as well. */
 export const buildDeadlineMs = (config: FlyConfig) => config.bootTimeout + AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS + 30 * 60_000;
+
+/**
+ * The longest a build Machine of a live worker may exist: the build deadline (which ends the download too),
+ * then its deletion window, with a margin for the create request and clock skew between Fly and the worker.
+ * The startup search deletes only build Machines older than this.
+ */
+export const builderLifetimeMs = (config: FlyConfig, timings: FlyPackageImageTimings) =>
+    buildDeadlineMs(config) + timings.removalWindowMs + timings.lostCreateWindowMs + 10 * 60_000;
 
 /** Build Machines this worker process is running now, by name, so the startup search never counts them twice. */
 export const activeBuilders = new Set<string>();
 
-export async function buildLayer(options: SelectOptions, timings: FlyPackageImageTimings, baseImage: string, target: string) {
+/**
+ * Builds the layer on a build Machine. `published` looks the derived tag up again once the slot is held, just
+ * before the create: another worker may have pushed it meanwhile, and then no build Machine is created.
+ */
+export async function buildLayer({ options, timings, baseImage, target, published }: LayerBuild) {
     const { config } = options;
     const name = FLY_BUILDER_PREFIX + randomUUID();
     // The build Machine counts against PROPR_FLY_MACHINES_MAX for as long as it may exist. The build is
@@ -101,6 +120,8 @@ export async function buildLayer(options: SelectOptions, timings: FlyPackageImag
     activeBuilders.add(name);
     let held = true;
     try {
+        const existing = await published?.().catch(() => undefined);
+        if (existing) return { existing };
         return await runBuilder({ options, timings, baseImage, target, name });
     } catch (error) {
         // A build Machine that may still exist keeps the slot; the unresolved record frees it once it is gone.
@@ -112,6 +133,8 @@ export async function buildLayer(options: SelectOptions, timings: FlyPackageImag
         if (held) slot.releaseUnused();
     }
 }
+
+interface LayerBuild { options: SelectOptions; timings: FlyPackageImageTimings; baseImage: string; target: string; published?: () => Promise<string | undefined> }
 
 interface BuilderRun { options: SelectOptions; timings: FlyPackageImageTimings; baseImage: string; target: string; name: string }
 
@@ -127,8 +150,10 @@ async function runBuilder({ options, timings, baseImage, target, name }: Builder
     const deadline = Date.now() + buildDeadlineMs(config);
     const id = await api.create(launch).catch(error => settleLostBuilder(api, name, error, timings));
     try {
-        const state = await waitForBuild(api, id, { bootDeadline: Date.now() + config.bootTimeout, deadline, pollMs: timings.pollMs });
-        const read = await api.exec(id, ['/bin/cat', RUN + '/build-result']).catch(() => undefined);
+        const state = await waitForBuild(api, id, { bootDeadline: Date.now() + config.bootTimeout, deadline, timings });
+        // The rest of the build deadline bounds the result read and the layer download: the build Machine and its slot are held meanwhile.
+        const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+        const read = await api.exec(id, ['/bin/cat', RUN + '/build-result'], signal).catch(() => undefined);
         let result: BuildResult | undefined;
         try { result = read?.exit_code === 0 ? JSON.parse(read.stdout) as BuildResult : undefined; } catch { result = undefined; }
         if (state === 'build-failed') throw new FlyPackageInstallFailure(flyPackageInstallError(packages, result).message);
@@ -137,10 +162,11 @@ async function runBuilder({ options, timings, baseImage, target, name }: Builder
             || !Number.isSafeInteger(layer.size) || layer.size <= 0 || layer.size > LAYER_LIMIT)
             throw new Error(`Fly image build Machine ${id} produced no layer (${state ?? 'no status'}${result?.error ? ': ' + result.error : ''})`);
         const verified = verifiedLayer(id, result!, packages);
-        const rawBytes = await download(api, id, layer, target);
-        // Installed-Size rounds each file up to 1 KiB; a tar entry is a 512-byte header plus the data padded to 512 bytes, never less.
-        if (rawBytes < verified.installedBytes)
-            throw new Error(`Fly image build layer holds ${rawBytes} bytes, less than the ${verified.installedBytes} bytes apt reports installed`);
+        const rawBytes = await download(api, id, { layer, target, signal });
+        // The bytes of the packages' regular files in the layer (each inode once, nothing dpkg path-exclude
+        // kept out, unlike apt's Installed-Size); a tar entry holds the data plus a header, never less.
+        if (rawBytes < verified.layerBytes)
+            throw new Error(`Fly image build layer holds ${rawBytes} bytes, less than the ${verified.layerBytes} bytes of package files the build Machine read back`);
         return { layer, install: result!, machine: id, verified, rawBytes };
     } finally {
         void api.exec(id, ['/usr/bin/touch', RUN + '/packages-read']).catch(() => {});
@@ -177,14 +203,26 @@ async function settleLostBuilder(api: MachinesApi, name: string, error: unknown,
     throw new Error(`Fly image build Machine creation failed, and no Machine named ${name} appeared within ${Math.round(timings.lostCreateWindowMs / 1000)}s`, { cause: error });
 }
 
-async function waitForBuild(api: MachinesApi, id: string, { bootDeadline, deadline, pollMs }: { bootDeadline: number; deadline: number; pollMs: number }) {
+/**
+ * Polls the build status until the build ends or its deadline passes. After a few failed probes in a row
+ * it asks Fly whether the Machine still exists: a wrapper that died mid-build (an OOM kill, a host failure)
+ * leaves no status, and auto_destroy removes its Machine, so the build fails at once instead of at the deadline.
+ */
+async function waitForBuild(api: MachinesApi, id: string, { bootDeadline, deadline, timings }: { bootDeadline: number; deadline: number; timings: FlyPackageImageTimings }) {
     let booted = false;
+    let failed = 0;
     while (Date.now() < (booted ? deadline : bootDeadline)) {
         const res = await api.exec(id, [...helper, 'probe']).catch(() => undefined);
         const state = res?.exit_code === 0 ? res.stdout.trim().split('\n')[0] : undefined;
         if (state === 'built' || state === 'build-failed' || state === 'build-error') return state;
         if (state === 'building') booted = true;
-        await delay(pollMs);
+        failed = state ? 0 : failed + 1;
+        if (failed >= timings.probeFailuresBeforeGoneCheck) {
+            failed = 0;
+            if (await api.gone(id).catch(() => false))
+                throw new Error(`Fly image build Machine ${id} is gone before its build finished (${booted ? 'after it started building' : 'while booting'})`);
+        }
+        await delay(timings.pollMs);
     }
 }
 
@@ -195,7 +233,7 @@ async function waitForBuild(api: MachinesApi, id: string, { bootDeadline, deadli
 function verifiedLayer(id: string, result: BuildResult, packages: readonly string[]) {
     const verified = result.verified;
     if (!verified || verified.packages !== packages.length || !Number.isSafeInteger(verified.files) || verified.files < 0
-        || !Number.isSafeInteger(verified.installedBytes) || verified.installedBytes < 0)
+        || !Number.isSafeInteger(verified.installedBytes) || verified.installedBytes < 0 || !Number.isSafeInteger(verified.layerBytes) || verified.layerBytes < 0)
         throw new Error(`Fly image build Machine ${id} did not verify the layer against dpkg`);
     return verified;
 }
@@ -209,12 +247,12 @@ function packageNames(packages: readonly string[]) {
  * Reads the layer into `target`; its compressed digest, size and uncompressed diff ID are checked on the
  * worker. Returns the uncompressed size.
  */
-async function download(api: MachinesApi, id: string, layer: NonNullable<BuildResult['layer']>, target: string) {
+async function download(api: MachinesApi, id: string, { layer, target, signal }: { layer: NonNullable<BuildResult['layer']>; target: string; signal: AbortSignal }) {
     const handle = await fs.open(target, 'wx', 0o600);
     const hash = crypto.createHash('sha256');
     let size: number | null;
     try {
-        size = await scanFile(api, id, RUN + '/layer.tar.gz', { limit: LAYER_LIMIT, consume: async chunk => { hash.update(chunk); await handle.write(chunk); } });
+        size = await scanFile(api, id, RUN + '/layer.tar.gz', { limit: LAYER_LIMIT, signal, consume: async chunk => { hash.update(chunk); await handle.write(chunk); } });
     } finally { await handle.close(); }
     if (size !== layer.size || 'sha256:' + hash.digest('hex') !== layer.digest) throw new Error('Fly image build layer does not match its recorded digest');
     const raw = crypto.createHash('sha256');
@@ -260,11 +298,12 @@ export async function resolveBuilder(api: MachinesApi, builder: FlyBuilderMachin
     await removeBuilder(api, { name: builder.name, id }, timings);
 }
 
-interface DerivedPush { repository: string; tag: string; manifest: ImageManifest; layer: NonNullable<BuildResult['layer']>; file: string; packages: readonly string[] }
+interface DerivedPush { repository: string; tag: string; manifest: ImageManifest; layer: NonNullable<BuildResult['layer']>; file: string; packages: readonly string[]; signal: AbortSignal }
 
-export async function pushDerived(registry: RegistryApi, { repository, tag, manifest, layer, file, packages }: DerivedPush) {
-    await registry.upload(repository, layer.digest, layer.size, file);
-    const config = JSON.parse((await registry.blob(repository, manifest.config.digest)).toString()) as {
+/** Pushes the layer, the derived config and then the tag; `signal` bounds the whole push (`pushTimeoutMs`). */
+export async function pushDerived(registry: RegistryApi, { repository, tag, manifest, layer, file, packages, signal }: DerivedPush) {
+    await registry.upload(repository, layer, file, signal);
+    const config = JSON.parse((await registry.blob(repository, manifest.config.digest, signal)).toString()) as {
         created?: string; rootfs?: { diff_ids?: string[] }; history?: Array<Record<string, unknown>>;
     };
     if (!Array.isArray(config.rootfs?.diff_ids) || config.rootfs.diff_ids.length !== manifest.layers.length) throw new Error('Unsupported Fly base image configuration');
@@ -275,9 +314,10 @@ export async function pushDerived(registry: RegistryApi, { repository, tag, mani
     if (Array.isArray(config.history)) config.history.push({ created, created_by: `propr: apt-get install ${packages.length} agent runtime package(s), digest ${packagesDigest}` });
     const configBytes = Buffer.from(JSON.stringify(config));
     const configDigest = sha256(configBytes);
-    await registry.upload(repository, configDigest, configBytes.length, configBytes);
+    await registry.upload(repository, { digest: configDigest, size: configBytes.length }, configBytes, signal);
     const oci = manifest.mediaType === MEDIA.ociManifest || manifest.config.mediaType.startsWith('application/vnd.oci.');
     const derived: ImageManifest = { ...manifest, config: { ...manifest.config, digest: configDigest, size: configBytes.length },
         layers: [...manifest.layers, { mediaType: oci ? MEDIA.ociLayer : MEDIA.dockerLayer, digest: layer.digest, size: layer.size }] };
-    return registry.push(repository, tag, manifest.mediaType ?? (oci ? MEDIA.ociManifest : MEDIA.dockerManifest), Buffer.from(JSON.stringify(derived)));
+    signal.throwIfAborted();
+    return registry.push(repository, tag, { mediaType: manifest.mediaType ?? (oci ? MEDIA.ociManifest : MEDIA.dockerManifest), body: Buffer.from(JSON.stringify(derived)) }, signal);
 }
