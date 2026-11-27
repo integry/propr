@@ -102,9 +102,10 @@ describe('agent contract vocabulary', () => {
   });
 
   test('propr_mcp support and contract discovery', () => {
-    assert.deepEqual([...AGENT_TYPES_SUPPORTING_PROPR_MCP], ['claude', 'codex']);
+    assert.deepEqual([...AGENT_TYPES_SUPPORTING_PROPR_MCP], ['claude', 'codex', 'vibe']);
     assert.equal(agentTypeSupportsProprMcp('claude'), true);
-    assert.equal(agentTypeSupportsProprMcp('vibe'), false);
+    assert.equal(agentTypeSupportsProprMcp('vibe'), true);
+    assert.equal(agentTypeSupportsProprMcp('opencode'), false);
     assert.equal(AUTOMATION_DEFINITION_CONTRACT.schedule.minIntervalMinutes, MIN_AUTOMATION_SCHEDULE_INTERVAL_MINUTES);
     assert.equal(AUTOMATION_DEFINITION_CONTRACT.schedule.timezone, 'UTC');
   });
@@ -175,6 +176,6 @@ test('deprecated shared exports alias the automation contract while coding-agent
   assert.equal(legacy.AGENT_DEFINITION_CONTRACT, canonical.AUTOMATION_DEFINITION_CONTRACT);
   assert.equal(legacy.validateAgentDefinitionInput, canonical.validateAutomationDefinitionInput);
   assert.equal(legacy.AGENT_RUN_STATES, canonical.AUTOMATION_RUN_STATES);
-  assert.deepEqual(canonical.AUTOMATION_DEFINITION_CONTRACT.proprMcpAgentTypes, ['claude', 'codex']);
+  assert.deepEqual(canonical.AUTOMATION_DEFINITION_CONTRACT.proprMcpAgentTypes, ['claude', 'codex', 'vibe']);
   assert.equal(canonical.validateAutomationDefinitionInput({ name: 'Scan', prompt: 'Report', agentId: 'codex' }), null);
 });

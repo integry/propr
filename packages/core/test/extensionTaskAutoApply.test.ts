@@ -11,7 +11,8 @@ import { ExtensionLibraryStore } from '../src/extensions/extensionProfileStore.j
 import { executeWithExtensions, currentExtensionLaunch, type ExtensionLaunchHooks } from '../src/extensions/extensionLaunch.js';
 import { taskRunExtensionRequest } from '../src/extensions/extensionRunResolution.js';
 import { codexAutoApplyConflict, codexConfigDefinesProviderOrProfile } from '../src/agents/impl/utils/codexExtensionConflict.js';
-import type { AgentConfig, AgentExtensionRequest, AgentTaskOptions } from '../src/agents/types.js';
+import { vibeToolPolicyArgs } from '../src/agents/mcpLaunch/vibeMcpLaunch.js';
+import type { AgentConfig, AgentExtensionRequest, AgentTaskOptions, AgentToolPolicy } from '../src/agents/types.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
@@ -76,6 +77,33 @@ test('a label-started issue task launches with matching read servers and skills;
   const none = await run(issueTask());
   assert.deepEqual(none.launched, { servers: [], skills: false, extensions: false });
   assert.deepEqual(none.event.servers, []);
+});
+
+test('a Vibe run registers its skill bundles natively and reaches gateway servers with a bearer token environment name', async t => {
+  const { database, store, save, bundle, root } = await fixture(t);
+  await save({ servers: [server()], skills: [{ bundleId: bundle.id, enabled: true, repositories: [], agents: [], autoApply: true }] });
+  const policyFor = async (config: AgentConfig) => {
+    const taskId = randomUUID();
+    await database('tasks').insert({ task_id: taskId });
+    let policy: AgentToolPolicy | undefined; let prompt = '';
+    const options: AgentTaskOptions = { extensions: issueTask(), taskId, issueRef: { repoOwner: 'team', repoName: 'repo', number: 1 }, worktreePath: root, prompt: 'Run', githubToken: '' };
+    await executeWithExtensions(config, options, async prepared => { await currentExtensionLaunch()!.beforeLaunch(); policy = prepared.toolPolicy; prompt = prepared.prompt; return result; }, store);
+    return { policy: policy!, prompt };
+  };
+  const vibe = await policyFor({ ...claude, type: 'vibe', alias: 'vibe-main' });
+  assert.deepEqual(vibe.policy.skillNames, ['release-notes']);
+  assert.match(vibe.prompt, /\/opt\/propr\/extensions\/.+\/SKILL\.md for release-notes/, 'the prompt pointer stays');
+  const { env, cliArgs } = vibeToolPolicyArgs(vibe.policy);
+  assert.deepEqual(cliArgs, []);
+  assert.equal(env.VIBE_SKILL_PATHS, '["/opt/propr/extensions"]');
+  assert.equal(env.VIBE_ENABLED_SKILLS, '["release-notes"]');
+  assert.equal(env.PROPR_EXTENSION_EXCLUSIVE_MCP, '1');
+  const [docs] = JSON.parse(env.VIBE_MCP_SERVERS);
+  assert.deepEqual(docs, { name: 'docs', transport: 'streamable-http', url: 'http://api:4000/api/extensions/mcp/docs', auth: { type: 'static', api_key_env: 'PROPR_EXTENSION_MCP_0_TOKEN' } });
+  assert.equal(env.PROPR_EXTENSION_MCP_0_TOKEN, vibe.policy.mcpServers![0].bearerToken);
+  assert.ok(!env.VIBE_MCP_SERVERS.includes(vibe.policy.mcpServers![0].bearerToken), 'the token is referenced by name only');
+  // Prompt-pointer runtimes do not get native registration.
+  assert.equal((await policyFor(claude)).policy.skillNames, undefined);
 });
 
 test('disabled items do not apply, and re-enabling applies them to the next launched run', async t => {

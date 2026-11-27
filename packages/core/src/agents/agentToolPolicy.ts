@@ -12,7 +12,7 @@ export const PROPR_MCP_BEARER_TOKEN_ENV = 'PROPR_MCP_BEARER_TOKEN';
 
 // Per-runtime MCP rendering lives in one builder per agent type (`./mcpLaunch`);
 // these re-exports keep the existing import paths.
-export { CLAUDE_WEB_TOOLS, claudeToolPolicyArgs, codexToolPolicyArgs, mcpLaunchBuilder, MCP_LAUNCH_BUILDERS, type McpLaunchBuilder, type ToolPolicyLaunchArgs } from './mcpLaunch/index.js';
+export { CLAUDE_WEB_TOOLS, claudeToolPolicyArgs, codexToolPolicyArgs, vibeToolPolicyArgs, mcpLaunchBuilder, MCP_LAUNCH_BUILDERS, type McpLaunchBuilder, type ToolPolicyLaunchArgs } from './mcpLaunch/index.js';
 
 /**
  * Tool policies are only applied to task execution. Goal mode launches through

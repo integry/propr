@@ -29,7 +29,7 @@ export interface AgentRuntimeCapabilityEntry extends AgentRuntimeCapabilities {
 const NONE: AgentRuntimeCapabilities = { extensions: false, proprMcp: false, skills: 'prompt' };
 
 /**
- * The runtime capability map. Claude and Codex are supported; each other
+ * The runtime capability map. Claude, Codex and Vibe are supported; each other
  * runtime is turned on by its own change. OpenCode 1.x cannot be supported, so
  * its entry already carries the 2.x predicate.
  */
@@ -38,7 +38,8 @@ export const AGENT_RUNTIME_CAPABILITIES: Readonly<Record<AgentType, Readonly<Age
   codex: { extensions: true, proprMcp: true, skills: 'prompt' },
   antigravity: { ...NONE },
   opencode: { ...NONE, cliVersion: { minMajor: 2 } },
-  vibe: { ...NONE },
+  // Vibe registers staged bundles through its own `skill` tool (VIBE_SKILL_PATHS).
+  vibe: { extensions: true, proprMcp: true, skills: 'native' },
 };
 
 const RUNTIME_LABELS: Record<AgentType, string> = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity', opencode: 'OpenCode', vibe: 'Vibe' };

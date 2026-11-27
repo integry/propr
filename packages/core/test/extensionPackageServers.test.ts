@@ -16,7 +16,7 @@ import { taskRunExtensionRequest } from '../src/extensions/extensionRunResolutio
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
 import { ExtensionPackageCache, type NpmRunner } from '../src/extensions/packageCache.js';
 import { resolveNpmPackage } from '../src/extensions/packageRegistry.js';
-import { claudeToolPolicyArgs, codexToolPolicyArgs } from '../src/agents/agentToolPolicy.js';
+import { claudeToolPolicyArgs, codexToolPolicyArgs, vibeToolPolicyArgs } from '../src/agents/agentToolPolicy.js';
 import type { AgentConfig, AgentExtensionRequest, AgentTaskOptions } from '../src/agents/types.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
@@ -27,6 +27,7 @@ const plainValue = 'plain-greeting-value';
 const result = { success: true, executionTimeMs: 0, modifiedFiles: [], commitMessage: null, logs: '', modelUsed: 'synthetic' };
 const claude = { type: 'claude', alias: 'claude-main', id: randomUUID(), enabled: true, dockerImage: 'synthetic', configPath: '/unused', supportedModels: ['synthetic'] } as AgentConfig;
 const codex = { ...claude, type: 'codex', alias: 'codex-main' } as AgentConfig;
+const vibe = { ...claude, type: 'vibe', alias: 'vibe-main' } as AgentConfig;
 type PackageServerInput = Extract<ExtensionLibraryServerInput, { kind: 'package' }>;
 const packageServer = (extra: Record<string, unknown> = {}): PackageServerInput => ({
   kind: 'package', name: 'local-tools', ecosystem: 'npm', package: 'propr-fixture-mcp', version: '1.0.0', enabled: true, tools: ['echo', 'secret_length'], capability: 'read',
@@ -210,6 +211,25 @@ test('a matching run launches the package through the stdio bridge for Claude an
   assert.deepEqual(second.launched.toolPolicy!.localMcpServers!.map(s => s.name), ['local-tools']);
   assert.equal(installs(), 1);
   assert.ok(codexToolPolicyArgs(second.launched.toolPolicy!).cliArgs.some(arg => arg.includes('env_vars=["PROPR_EXTENSION_STDIO_0_0_SECRET"]')));
+});
+
+test('Vibe gets the package server as a VIBE_MCP_SERVERS stdio entry whose own env is all the bridge needs', async t => {
+  const { save, run, cache, store } = await fixture(t);
+  await save([packageServer({ secretEnv: ['FIXTURE_TOKEN'] })], { 'local-tools/FIXTURE_TOKEN': secret }, ['local-tools']);
+  const { launched } = await run(issueTask(), vibe);
+  const local = launched.toolPolicy!.localMcpServers!;
+  const policy = vibeToolPolicyArgs(launched.toolPolicy!);
+  assert.deepEqual(policy.cliArgs, []);
+  assert.ok(!JSON.stringify(policy).includes(secret), 'no secret in launch arguments or serialized config');
+  assert.deepEqual(Object.keys(policy.env).sort(), ['PROPR_EXTENSION_EXCLUSIVE_MCP', 'VIBE_ENABLE_CONNECTORS', 'VIBE_MCP_SERVERS']);
+  assert.deepEqual(JSON.parse(policy.env.VIBE_MCP_SERVERS), [{ name: 'local-tools', transport: 'stdio', command: '/usr/local/bin/node', args: ['/opt/propr/extension-stdio-bridge.mjs', local[0].bridgeConfig], env: { PROPR_EXTENSION_STDIO_0_0_SECRET: secret } }]);
+  // Vibe hands only the entry's env (plus the MCP SDK's minimal defaults) to the stdio server.
+  const [entry] = JSON.parse(policy.env.VIBE_MCP_SERVERS);
+  const installed = await cache.verify((await store.readLibrary('1')).servers[0] as any);
+  const call = await bridgeSession(t, entry.args[1], { ...entry.env }, installed.localDirectory);
+  assert.equal((await call('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'vibe', version: '3.1.5' } })).result.serverInfo.name, 'local-tools');
+  assert.deepEqual((await call('tools/list')).result.tools.map((tool: { name: string }) => tool.name), ['echo', 'secret_length']);
+  assert.equal((await call('tools/call', { name: 'secret_length', arguments: {} })).result.content[0].text, `${secret.length}:[REDACTED]`, 'the server received the secret; the bridge redacts it');
 });
 
 test('changed installed files refuse the server at launch; the run proceeds without it and records why', async t => {

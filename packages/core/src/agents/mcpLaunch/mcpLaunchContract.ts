@@ -13,6 +13,8 @@ import type { AgentToolPolicy, AgentToolPolicyMcpServer } from '../types.js';
  *   passed only as `PROPR_EXTENSION_STDIO_*` environment names.
  * - `exclusiveMcp`: no ambient servers or skills from the runtime's own
  *   configuration; only the run's servers.
+ * - `skillNames`: the run's skill bundle names, staged at
+ *   {@link EXTENSION_SKILLS_ROOT}, for runtimes with native skills.
  *
  * Tokens and secret values only ever appear in the returned `env` map: the
  * launcher passes them to the container as `-e NAME` with the value supplied
@@ -28,6 +30,8 @@ export type McpLaunchBuilder = (policy: AgentToolPolicy) => ToolPolicyLaunchArgs
 /** Container path of the stdio bridge and the node binary that runs it. */
 export const EXTENSION_STDIO_NODE = '/usr/local/bin/node';
 export const EXTENSION_STDIO_BRIDGE = '/opt/propr/extension-stdio-bridge.mjs';
+/** Read-only container root of the run's staged skill bundles (`<root>/<bundle id>/SKILL.md`). */
+export const EXTENSION_SKILLS_ROOT = '/opt/propr/extensions';
 /** Gateway URL of one extension server, from the gateway base (`…/api/extensions/mcp`). */
 export const extensionMcpServerUrl = (gatewayBase: string, name: string) => `${gatewayBase}/${name}`;
 /** Bearer environment variable of the `index`-th gateway server of a run. */

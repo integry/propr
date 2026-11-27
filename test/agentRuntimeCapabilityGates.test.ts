@@ -102,8 +102,9 @@ describe('runtime capability map drives every gate', () => {
     assert.deepEqual([...EXTENSION_LIBRARY_CONTRACT.runtimes], extensionTypes);
     assert.deepEqual([...AUTOMATION_DEFINITION_CONTRACT.extensions.runtimes], extensionTypes);
     assert.deepEqual([...AUTOMATION_DEFINITION_CONTRACT.proprMcpAgentTypes], AGENT_TYPES.filter(type => map[type].proprMcp));
-    // Claude and Codex stay as before; every other runtime is turned on by its own change.
-    assert.deepEqual(extensionTypes, ['claude', 'codex']);
+    // Claude, Codex and Vibe are on; every other runtime is turned on by its own change.
+    assert.deepEqual(extensionTypes, ['claude', 'codex', 'vibe']);
+    assert.equal(map.vibe.skills, 'native');
     // A runtime that receives MCP servers renders them through its own builder.
     for (const type of AGENT_TYPES) if (map[type].extensions || map[type].proprMcp) assert.equal(typeof MCP_LAUNCH_BUILDERS[type], 'function', type);
   });
@@ -123,7 +124,7 @@ test('a runtime without extension support records its skipped auto-applied items
   const { database, store } = await libraryStore();
   try {
     await database('tasks').insert({ task_id: 'task-1' });
-    const config = agent('vibe');
+    const config = agent('antigravity');
     const options = { taskId: 'task-1', issueRef: { repoOwner: 'acme', repoName: 'app', number: 1 }, prompt: 'Fix it', worktreePath: '/unused', extensions: { autoApply: true, servers: [], skills: [], kind: 'issue' as const, labels: [] } };
     let launched: unknown = 'not launched';
     await executeWithExtensions(config, options as never, async prepared => { launched = prepared.extensions; return { success: true } as never; }, store);
@@ -137,6 +138,6 @@ test('a runtime without extension support records its skipped auto-applied items
     assert.deepEqual(event.skipped, [{ kind: 'server', name: 'docs', reason: 'runtime', source: 'auto' }]);
     // Explicitly added items still refuse on such a runtime.
     await assert.rejects(executeWithExtensions(config, { ...options, extensions: { ...options.extensions, servers: ['docs'] } } as never, async () => ({ success: true }) as never, store),
-      (error: Error & { status?: number }) => error.status === 400 && /Claude or Codex/.test(error.message));
+      (error: Error & { status?: number }) => error.status === 400 && /Claude, Codex or Vibe/.test(error.message));
   } finally { await database.destroy(); }
 });
