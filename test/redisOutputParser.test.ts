@@ -268,3 +268,106 @@ test('parseRedisOutput deduplicates replayed Vibe session transcript events', ()
         'The change has been successfully applied.'
     ]);
 });
+
+const VIBE3_STREAMING_FIXTURE = new URL('./fixtures/vibe/vibe-3.1.5-streaming-tool-task.jsonl', import.meta.url);
+
+test('parseRedisOutput projects real Vibe 3.1.5 streaming effects as tool_use/tool_result pairs', async () => {
+    const { readFileSync } = await import('node:fs');
+    const lines = readFileSync(VIBE3_STREAMING_FIXTURE, 'utf8').split('\n').filter(Boolean);
+    const parsed = parseRedisOutput(lines);
+
+    assert.deepStrictEqual(parsed.events.map(event => event.type), [
+        'tool_use', 'tool_result',
+        'tool_use', 'tool_result',
+        'tool_use', 'tool_result',
+        'tool_use', 'tool_result',
+        'tool_use', 'tool_result',
+        'thought'
+    ]);
+    const toolUses = parsed.events.filter(event => event.type === 'tool_use');
+    assert.deepStrictEqual(toolUses.map(event => [event.toolName, event.id]), [
+        ['file_system.read_file', '7QQfJf2UN'],
+        ['file_system.read_file', 'rmr2zlANF'],
+        ['file_system.edit', '5ioehZlAB'],
+        ['file_system.edit', 'hu7GCZXlS'],
+        ['file_system.bash', 'dNds9G1Z8']
+    ]);
+    assert.deepStrictEqual(toolUses[0].input, { filePath: 'math.js', offset: null, limit: 2000 });
+    assert.strictEqual(toolUses[2].input?.filePath, 'math.js');
+    assert.match(String(toolUses[2].input?.newString), /function subtract\(a, b\)/);
+    assert.deepStrictEqual(toolUses[4].input, { command: 'cd /home/node/workspace && node --test' });
+    assert.strictEqual(toolUses[0].timestamp, new Date(1795777802057).toISOString());
+
+    const toolResults = parsed.events.filter(event => event.type === 'tool_result');
+    assert.deepStrictEqual(toolResults.map(event => event.toolUseId), toolUses.map(event => event.id));
+    assert.deepStrictEqual(toolResults.map(event => event.isError), [false, false, false, false, false]);
+    assert.strictEqual(toolResults[0].result, '<trimmed>');
+    assert.match(String(toolResults[4].result), /^TAP version 13\n# Subtest: add\nok 1 - add/);
+
+    const answer = parsed.events.at(-1);
+    assert.match(String(answer?.content), /^Done\. Added `subtract\(a, b\)` to `math\.js`/);
+    assert.strictEqual(answer?.internalReasoning, undefined);
+    assert.strictEqual(answer?.timestamp, new Date(1795777811190).toISOString());
+    assert.ok(!parsed.events.some(event => String(event.content).startsWith('Add subtract')), 'user prompt is not a thought');
+});
+
+test('parseRedisOutput flags failed Vibe 3 effects and keeps assistant reasoning', () => {
+    const base = { sessionId: 's', turnId: 'turn-1', generationStatus: 'completed', createdAt: 1795777800000 };
+    const parsed = parseRedisOutput([
+        JSON.stringify({ ...base, id: 'r', type: 'reasoning', text: 'Check the file first.' }),
+        JSON.stringify({ ...base, id: 'e1', type: 'effect', toolCallId: 'call-1',
+            detail: { toolName: 'file_system.read_file', input: { filePath: 'missing.js' } },
+            state: { status: 'failed', outputText: '', error: { message: 'File not found: missing.js' } } }),
+        JSON.stringify({ ...base, id: 'e2', type: 'effect', toolCallId: 'call-2',
+            detail: { toolName: 'file_system.bash', input: { command: 'rm -rf /' } },
+            state: { status: 'rejected', outputText: '', decision: 'deny' } }),
+        JSON.stringify({ ...base, id: 'e3', type: 'effect', toolCallId: 'call-3', generationStatus: 'running',
+            detail: { toolName: 'file_system.edit', input: { filePath: 'partial' } }, state: { status: 'running' } }),
+        JSON.stringify({ ...base, id: 'a', type: 'message', role: 'assistant', reasoning_content: 'The file is missing.',
+            content: [{ type: 'reasoning', text: 'I should report it.' }, { type: 'text', text: 'missing.js does not exist.' }] }),
+        JSON.stringify({ ...base, id: 'd', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Draft' }],
+            outcome: { type: 'discarded' } })
+    ]);
+
+    assert.deepStrictEqual(parsed.events.map(event => [event.type, event.toolName ?? event.toolUseId ?? event.content, event.isError ?? event.internalReasoning]), [
+        ['thought', 'Check the file first.', true],
+        ['tool_use', 'file_system.read_file', undefined],
+        ['tool_result', 'call-1', true],
+        ['tool_use', 'file_system.bash', undefined],
+        ['tool_result', 'call-2', true],
+        ['thought', 'The file is missing.\nI should report it.', true],
+        ['thought', 'missing.js does not exist.', undefined]
+    ]);
+    assert.strictEqual(parsed.events[2].result, 'File not found: missing.js');
+    assert.strictEqual(parsed.events[4].result, 'rejected');
+});
+
+test('parseRedisOutput reads Vibe 3 entries from a --output json history array', () => {
+    const base = { sessionId: 's', turnId: 'turn-1', generationStatus: 'completed' };
+    const parsed = parseRedisOutput([JSON.stringify([
+        { ...base, id: 'u', type: 'message', role: 'user', content: [{ type: 'text', text: 'Read it' }] },
+        { ...base, id: 'e', type: 'effect', toolCallId: 'call', detail: { toolName: 'file_system.read_file', input: { filePath: 'a.js' } },
+            state: { status: 'completed', outputText: 'contents' } },
+        { ...base, id: 'a', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Read a.js.' }] }
+    ], null, 2)]);
+
+    assert.deepStrictEqual(parsed.events.map(event => event.type), ['tool_use', 'tool_result', 'thought']);
+    assert.strictEqual(parsed.events[1].result, 'contents');
+});
+
+test('parseRedisOutput keeps Vibe 2 role-based records unchanged', () => {
+    const parsed = parseRedisOutput([
+        '{"role":"system","content":"System prompt"}',
+        '{"role":"user","content":"Fix the greeting"}',
+        '{"role":"assistant","reasoning_content":"I will inspect the current file.","tool_calls":[{"id":"tool-1","function":{"name":"read_file","arguments":"{\\"path\\":\\"vibe_test.py\\"}"}}]}',
+        '{"role":"tool","tool_call_id":"tool-1","content":"<tool_error>missing</tool_error>"}',
+        '{"role":"assistant","content":"Changed the greeting and verified it."}'
+    ], { executionStartTimestamp: '2026-06-03T20:56:52.000Z' });
+
+    assert.deepStrictEqual(parsed.events, [
+        { type: 'thought', content: 'I will inspect the current file.', internalReasoning: true, timestamp: '2026-06-03T20:56:54.000Z' },
+        { type: 'tool_use', toolName: 'read_file', input: { path: 'vibe_test.py' }, id: 'tool-1', timestamp: '2026-06-03T20:56:54.000Z' },
+        { type: 'tool_result', toolUseId: 'tool-1', result: '<tool_error>missing</tool_error>', isError: true, timestamp: '2026-06-03T20:56:55.000Z' },
+        { type: 'thought', content: 'Changed the greeting and verified it.', timestamp: '2026-06-03T20:56:56.000Z' }
+    ]);
+});

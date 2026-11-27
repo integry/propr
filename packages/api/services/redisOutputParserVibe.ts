@@ -1,4 +1,5 @@
 import type { ConversationEvent, TokenUsageInfo } from '@propr/shared';
+import { isVibe3GenerationEntry, vibe3EntryToTranscriptEvents, type Vibe3GenerationEntry } from './redisOutputParserVibe3.js';
 
 interface VibeToolCall {
   id?: string;
@@ -8,7 +9,7 @@ interface VibeToolCall {
   };
 }
 
-interface VibeTranscriptEvent {
+export interface VibeTranscriptEvent {
   role?: string;
   content?: unknown;
   reasoning_content?: unknown;
@@ -189,6 +190,25 @@ function extractCompleteJsonObjectsFromArray(output: string): string[] {
   return objects;
 }
 
+/**
+ * Project a Vibe 3 generation entry (message/effect/reasoning) through the Vibe 2
+ * transcript path. Returns false when the record is not a Vibe 3 entry.
+ */
+export function processVibe3Entry(event: unknown, fallbackTimestamp: string, state: VibeParseState): boolean {
+  if (!isVibe3GenerationEntry(event)) return false;
+  const entry = event as Vibe3GenerationEntry;
+  const timestamp = typeof entry.createdAt === 'number' ? new Date(entry.createdAt).toISOString() : fallbackTimestamp;
+  for (const transcriptEvent of vibe3EntryToTranscriptEvents(entry)) processVibeEvent(transcriptEvent, timestamp, state);
+  return true;
+}
+
+/** Vibe 2 transcript records are keyed by `role`; returns false for anything else. */
+export function processVibeRoleRecord(event: VibeTranscriptEvent, timestamp: string, state: VibeParseState): boolean {
+  if (event.role !== 'assistant' && event.role !== 'tool' && event.role !== 'system' && event.role !== 'user') return false;
+  processVibeEvent(event, timestamp, state);
+  return true;
+}
+
 export function parseVibeTranscriptOutput(output: string, state: VibeParseState): boolean {
   const objects = extractCompleteJsonObjectsFromArray(output);
   if (objects.length === 0) return false;
@@ -197,8 +217,9 @@ export function parseVibeTranscriptOutput(output: string, state: VibeParseState)
   for (const objectText of objects) {
     try {
       const event = JSON.parse(objectText) as VibeTranscriptEvent;
-      if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
-        processVibeEvent(event, getNextSyntheticTimestamp(state), state);
+      if (processVibe3Entry(event, getNextSyntheticTimestamp(state), state)) {
+        handled = true;
+      } else if (processVibeRoleRecord(event, getNextSyntheticTimestamp(state), state)) {
         handled = true;
       }
     } catch {

@@ -17,6 +17,13 @@ interface VibeJsonOutput {
     message_id?: string;
     reasoning_message_id?: string;
     tool_call_id?: string;
+    tool_result_failed?: boolean;
+    id?: string;
+    outcome?: { type?: string };
+    generationStatus?: string;
+    detail?: { toolName?: string; input?: unknown };
+    toolCallId?: string;
+    state?: { status?: string; outputText?: string; output?: unknown; reason?: string; error?: { message?: string } };
     name?: string;
     tool_calls?: VibeToolCall[];
     usage?: {
@@ -73,12 +80,34 @@ export interface VibeConversationLogEntry {
 
 const FINAL_EVENT_TYPES = new Set(['final', 'result', 'completed', 'complete', 'response']);
 
+function jsonEventsFromGenerationEntry(entry: VibeJsonOutput): VibeJsonOutput[] {
+    if (entry.generationStatus !== 'completed' || entry.outcome?.type === 'discarded') return [{ sessionId: entry.sessionId }];
+    const identity = { sessionId: entry.sessionId, message_id: entry.id };
+    if (entry.type === 'reasoning') {
+        return [{ ...identity, role: 'assistant', reasoning_content: entry.text }];
+    }
+    if (entry.type === 'effect' && entry.detail?.toolName) {
+        const id = entry.toolCallId || entry.id;
+        const call = { id, function: { name: entry.detail.toolName, arguments: entry.detail.input } };
+        const state = entry.state;
+        const result = state?.outputText || state?.error?.message || state?.reason || state?.output;
+        return [
+            { ...identity, role: 'assistant', tool_calls: [call] },
+            { sessionId: entry.sessionId, role: 'tool', tool_call_id: id, content: result,
+                tool_result_failed: state?.status === 'failed' }
+        ];
+    }
+    if (entry.type === 'message') return [{ ...entry, ...identity }];
+    return [identity];
+}
+
 function jsonEventsFromValue(value: unknown): VibeJsonOutput[] {
     if (Array.isArray(value)) {
         return value.flatMap(item => jsonEventsFromValue(item));
     }
     if (value && typeof value === 'object') {
-        return [value as VibeJsonOutput];
+        const entry = value as VibeJsonOutput;
+        return entry.generationStatus ? jsonEventsFromGenerationEntry(entry) : [entry];
     }
     return [];
 }
@@ -282,7 +311,7 @@ function buildToolResultConversationEntry(event: VibeJsonOutput, index: number):
                 type: 'tool_result',
                 tool_use_id: event.tool_call_id,
                 content: resultText || event.error,
-                is_error: typeof resultText === 'string' && resultText.includes('<tool_error>')
+                is_error: event.tool_result_failed === true || (typeof resultText === 'string' && resultText.includes('<tool_error>'))
             }],
             usage: event.usage || event.token_usage
         }
@@ -315,6 +344,7 @@ export function parseVibeConversationLog(output: string): VibeConversationLogEnt
 export function parseVibeOutput(output: string): ParsedVibeOutput {
     const jsonObjects = parseJsonObjects(output);
     if (jsonObjects.length === 0) {
+        if (/^\[\s*\]$/.test(output.trim())) return { incomplete: true };
         const summary = output.trim();
         return { summary: summary || undefined };
     }
