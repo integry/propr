@@ -13187,7 +13187,7 @@ components:
       properties:
         qualified:
           type: boolean
-          description: False when the agent's runtime does not use extensions (only Claude and Codex do).
+          description: False when the agent's runtime does not use extensions (only Claude, Codex and Pi do).
         revision:
           type: integer
           description: Current library revision; tasks resolve the library again at launch.

@@ -14,7 +14,7 @@ import {
   isConversationResultEmpty, parseClaudeOutputToConversationResult,
   parseCodexOutputToConversationResult, type ConversationResult
 } from './liveDetailsCodexParser.js';
-import { isAntigravityStreamAwaitingNarration, parseAntigravityOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
+import { isAntigravityStreamAwaitingNarration, parseAntigravityOutputToConversationResult, parsePiOutputToConversationResult, parseVibeOutputToConversationResult } from './liveDetailsOutputParsers.js';
 import { parseOpenCodeOutputToConversationResult } from './liveDetailsOpenCodeParser.js';
 import { completedExecutionDetails, parseExecutionDetailsFromDb } from './liveDetailsCanonical.js';
 import { detectStoredOutputFormat, hasCodexAppServerNotification, type StoredOutputFormat } from './liveDetailsStoredOutputFormat.js';
@@ -395,6 +395,7 @@ function parseStoredOutputForFormat(output: string, format: StoredOutputFormat):
   if (format === 'antigravity') return parseAntigravityOutputToConversationResult(output);
   if (format === 'opencode') return parseOpenCodeOutputToConversationResult(output);
   if (format === 'vibe') return parseVibeOutputToConversationResult(output);
+  if (format === 'pi') return parsePiOutputToConversationResult(output);
   return null;
 }
 function buildRawOutputConversationResult(output: string): ConversationResult | null {

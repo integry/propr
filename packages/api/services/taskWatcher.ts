@@ -132,7 +132,8 @@ export class TaskWatcherManager {
     }
 
     let conversationPath: string;
-    if (agentType === 'codex' || agentType === 'antigravity' || agentType === 'vibe') {
+    // Pi sessions live in each run's disposable agent dir: the host dir has nothing to tail.
+    if (agentType === 'codex' || agentType === 'antigravity' || agentType === 'vibe' || agentType === 'pi') {
       console.log(`[TaskWatcher] ${agentType} task detected (root: ${agentRoot}), using Redis watcher for ${taskId}`);
       await this.startRedisWatcher(taskId);
       return;

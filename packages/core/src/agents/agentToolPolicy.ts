@@ -86,6 +86,40 @@ export function codexToolPolicyArgs(policy: AgentToolPolicy): ToolPolicyLaunchAr
     return launchArgs(policy, cliArgs, servers);
 }
 
+export interface PiToolPolicyLaunchArgs extends ToolPolicyLaunchArgs {
+    /**
+     * `mcp.json` for the disposable Pi agent dir (pi-entrypoint.sh writes it
+     * from `PROPR_PI_MCP_CONFIG`), or undefined when the run has no servers.
+     * It names token variables only; Pi expands `${VAR}` from its environment.
+     */
+    mcpConfig?: string;
+}
+
+/**
+ * Pi: a ProPR-generated `mcp.json` (never the host's or the repository's) and
+ * one `--skill` per staged bundle. Stdio bridges inherit Pi's environment, so
+ * their secrets only need `-e NAME`. An exclusive policy also drops every
+ * discovered or configured skill; `--no-approve`, always set for Pi, keeps a
+ * project `.pi/mcp.json` and project skills out. Pi has no web tool of its
+ * own, so the web restriction stays a prompt notice.
+ */
+export function piToolPolicyArgs(policy: AgentToolPolicy): PiToolPolicyLaunchArgs {
+    const servers = mcpServers(policy);
+    const cliArgs: string[] = [];
+    if (policy.exclusiveMcp) cliArgs.push('--no-skills');
+    for (const skillPath of policy.skillPaths ?? []) cliArgs.push('--skill', skillPath);
+    const launch: PiToolPolicyLaunchArgs = launchArgs(policy, cliArgs, servers);
+    if (servers.length > 0 || policy.localMcpServers?.length) {
+        launch.mcpConfig = JSON.stringify({
+            mcpServers: {
+                ...Object.fromEntries((policy.localMcpServers ?? []).map(s => [s.name, { command: '/usr/local/bin/node', args: ['/opt/propr/extension-stdio-bridge.mjs', s.bridgeConfig] }])),
+                ...Object.fromEntries(servers.map(server => [server.name, { url: server.url, headers: { Authorization: `Bearer \${${server.bearerTokenEnv}}` } }])),
+            },
+        });
+    }
+    return launch;
+}
+
 /**
  * Tool policies are only applied to task execution. Goal mode launches through
  * separate builders that do not apply them, so a goal run would silently drop

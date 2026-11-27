@@ -1,7 +1,8 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
+import { executeWithExtensions } from '../../extensions/extensionLaunch.js';
+import { assertToolPolicySupported, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
 import type { Agent, AgentConfig, AgentCredentialCheckResult, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
@@ -49,7 +50,12 @@ export class PiAgent implements Agent {
         this.timeoutMs = parseInt(process.env.PI_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
     }
 
+    /** Extension library items reach Pi through the generated `mcp.json` and `--skill` paths. */
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        return executeWithExtensions(this.config, options, prepared => this.executeTaskWithoutExtensions(prepared));
+    }
+
+    private async executeTaskWithoutExtensions(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
@@ -63,17 +69,18 @@ export class PiAgent implements Agent {
         let logsPersisted = false;
         try {
             if (!effectiveModel) throw new NoDefaultModelConfiguredError();
+            assertToolPolicySupported(options);
             // Pi has no native web switch: the restriction is best effort through the prompt.
             prompt = buildPromptWithRetryContext(withPromptOnlyToolPolicy(customPrompt, options.toolPolicy), isRetry, retryReason);
             const thinkingLevel = await this.resolveThinkingLevel(options.reasoningLevel, effectiveModel);
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
-            const invocation = this.buildDockerArgs({ worktreePath, gitMountArgs, modelName: effectiveModel, thinkingLevel, issueNumber: issueRef.number, taskId }, githubToken);
+            const invocation = this.buildDockerArgs({ worktreePath, gitMountArgs, modelName: effectiveModel, thinkingLevel, issueNumber: issueRef.number, taskId, toolPolicy: options.toolPolicy }, githubToken);
             const { result, usageMetrics } = await executeWithUsageTracking('pi', async () => executeDockerCommand('docker', invocation.args, {
-                agentAlias: this.config.alias, diagnostics: this.diagnosticContext(invocation),
+                agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: this.diagnosticContext(invocation),
                 timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, taskId,
-                stdinData: prompt, extraEnvVars: invocation.secretEnv,
+                stdinData: prompt, extraEnvVars: { ...invocation.configEnv, ...invocation.secretEnv },
                 streamToRedis: true, streamStderrToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
             }));
 
@@ -141,12 +148,12 @@ export class PiAgent implements Agent {
             const gitAccess = await prepareAnalysisGitAccess(options, analysisWorkspace);
             const invocation = this.buildDockerArgs({
                 worktreePath: analysisWorkspace, gitMountArgs: gitAccess.gitMountArgs, modelName: effectiveModel, thinkingLevel,
-                issueNumber: 0, taskId, executionType, mode: 'analysis', readOnlyTools: !!readOnlyWorkspacePath && allowReadOnlyCommands,
+                issueNumber: 0, taskId, executionType, mode: 'analysis', repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands,
             }, gitAccess.githubToken);
             const { result, usageMetrics } = await executeWithUsageTracking('pi', async () => executeDockerCommand('docker', invocation.args, {
                 agentAlias: this.config.alias, diagnostics: this.diagnosticContext(invocation),
                 timeout: timeoutMs ?? parseInt(process.env.PI_ANALYSIS_TIMEOUT_MS || String(DEFAULT_PI_ANALYSIS_TIMEOUT_MS), 10),
-                stdinData: analysisPrompt, extraEnvVars: invocation.secretEnv, taskId, model: effectiveModel,
+                stdinData: analysisPrompt, extraEnvVars: { ...invocation.configEnv, ...invocation.secretEnv }, taskId, model: effectiveModel,
             }), { alias: this.config.alias, skipUsageTracking: options?.skipUsageTracking });
             return await this.finishAnalysis({ result, usageMetrics, effectiveModel, thinkingLevel, startTime, suppressLlmLog, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata });
         } catch (error) {
@@ -255,7 +262,11 @@ export class PiAgent implements Agent {
 
     buildDockerArgs(params: Omit<PiDockerArgsParams, 'config' | 'configPath'>, githubToken: string): PiDockerInvocation {
         const invocation = buildPiDockerArgs({ ...params, config: this.config, configPath: this.resolveOptionalConfigPath() }, githubToken);
-        logger.info({ issueNumber: params.issueNumber, agentAlias: this.config.alias, mode: params.mode ?? 'execute', dockerImage: this.config.dockerImage, thinkingLevel: params.thinkingLevel ?? null, forwardedEnv: Object.keys(invocation.secretEnv) }, 'Docker args built for Pi agent');
+        logger.info({
+            issueNumber: params.issueNumber, agentAlias: this.config.alias, mode: params.mode ?? 'execute', repositoryInspection: !!params.repositoryInspection,
+            dockerImage: this.config.dockerImage, thinkingLevel: params.thinkingLevel ?? null, forwardedEnv: Object.keys(invocation.secretEnv),
+            mcpServers: params.toolPolicy ? [...(params.toolPolicy.localMcpServers ?? []), ...(params.toolPolicy.mcpServers ?? [])].map(server => server.name) : [],
+        }, 'Docker args built for Pi agent');
         return invocation;
     }
 }

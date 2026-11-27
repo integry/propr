@@ -51,7 +51,8 @@ export interface AgentToolPolicyMcpServer {
 
 /**
  * Per-run tool restrictions enforced with the runtime's native CLI switches
- * (Claude, Codex); other runtimes apply the web restriction through the prompt only.
+ * (Claude, Codex) or generated configuration (Pi `mcp.json`); runtimes without
+ * a native web switch apply the web restriction through the prompt only.
  */
 export interface AgentToolPolicy {
     /** Profiles replace inherited MCP catalogs rather than merging ambient endpoints. */
@@ -65,6 +66,11 @@ export interface AgentToolPolicy {
     dockerNetwork?: string;
     /** Internal operator-resolved stdio descriptors; never customer API input. */
     localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
+    /**
+     * Container paths of the run's staged skill bundles, for runtimes that load
+     * skills by path (Pi `--skill`). Internal; set by the extension launcher.
+     */
+    skillPaths?: string[];
 }
 
 export interface AgentExtensionRequest {

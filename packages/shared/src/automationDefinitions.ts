@@ -1,4 +1,4 @@
-import { automationExtensionsSchema, type AutomationExtensions } from './extensionLibrary.js';
+import { automationExtensionsSchema, EXTENSION_RUNTIMES, type AutomationExtensions } from './extensionLibrary.js';
 /**
  * Authoritative automation definition contract shared by the REST API, MCP, web UI,
  * CLI, worker and daemon scheduler. An automation is a saved, reusable definition
@@ -112,7 +112,7 @@ export const TERMINAL_AUTOMATION_RUN_STATES = ['completed', 'failed', 'skipped',
 export type TerminalAutomationRunState = typeof TERMINAL_AUTOMATION_RUN_STATES[number];
 
 /** Agent types that can receive an MCP server config at launch (v1). */
-export const AGENT_TYPES_SUPPORTING_PROPR_MCP = ['claude', 'codex'] as const satisfies readonly AgentType[];
+export const AGENT_TYPES_SUPPORTING_PROPR_MCP = ['claude', 'codex', 'pi'] as const satisfies readonly AgentType[];
 
 export const DEFAULT_AUTOMATION_CAPABILITIES: readonly AutomationCapability[] = ['repository_read'];
 export const DEFAULT_AUTOMATION_AUTONOMY_MODE: AutomationAutonomyMode = 'dry_run';
@@ -234,7 +234,7 @@ export const AUTOMATION_DEFINITION_CONTRACT = {
     servers: 'extension library server names',
     skills: 'extension library skill bundle ids',
     permission: 'instance.manage_settings',
-    runtimes: ['claude', 'codex'],
+    runtimes: EXTENSION_RUNTIMES,
   },
   runTriggers: AUTOMATION_RUN_TRIGGERS,
   runStates: AUTOMATION_RUN_STATES,

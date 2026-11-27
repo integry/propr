@@ -3,6 +3,7 @@ import {
   filterAntigravityAnalysisEvents,
   getAntigravityAnalysisText,
   parseAntigravityJsonl,
+  parsePiConversationLog,
   parseVibeConversationLog,
   splitAntigravityInvocations,
   type AntigravityOutputEvent,
@@ -106,7 +107,21 @@ export function parseAntigravityOutputToConversationResult(output: string): Conv
 }
 
 export function parseVibeOutputToConversationResult(output: string): ConversationResult | null {
-  const conversationLog = parseVibeConversationLog(output);
+  return claudeShapedLogToConversationResult(parseVibeConversationLog(output));
+}
+
+/**
+ * Pi `--mode json` output (tasks stream it as it runs). The core parser
+ * already names MCP tools `<server>/<tool>` and lists the calls a `codemode`
+ * script makes as their own tool events.
+ */
+export function parsePiOutputToConversationResult(output: string): ConversationResult | null {
+  return claudeShapedLogToConversationResult(parsePiConversationLog(output));
+}
+
+type ClaudeShapedLogEntry = { type: string; timestamp: string; message: { content: unknown; usage?: { input_tokens?: number; output_tokens?: number } } };
+
+function claudeShapedLogToConversationResult(conversationLog: ClaudeShapedLogEntry[]): ConversationResult | null {
   if (!conversationLog.length) return null;
 
   const events: Array<Record<string, unknown>> = [];

@@ -214,8 +214,9 @@ describe('Pi Docker args', () => {
         assert.ok(args.includes('--no-session') && args.includes('--no-tools') && args.includes('--no-approve'));
         assert.equal(args.includes('--session-dir'), false);
         assert.ok(args.includes('PROPR_REPO_SETUP=0'));
-        const inspected = buildPiDockerArgs({ config: piConfig(), worktreePath: '/tmp/a', modelName: MODEL, issueNumber: 0, mode: 'analysis', readOnlyTools: true, gitMountArgs: [] }, '').args;
-        assert.equal(valueAfter(inspected, '--tools'), 'read,grep,find,ls');
+        // The scout alone gets tools: only the repository MCP server's (test/piScoutAndExtensions.test.ts).
+        const inspected = buildPiDockerArgs({ config: piConfig(), worktreePath: '/tmp/a', modelName: MODEL, issueNumber: 0, mode: 'analysis', repositoryInspection: true, gitMountArgs: [] }, '').args;
+        assert.equal(valueAfter(inspected, '--tools')?.split(',').every(tool => tool.startsWith('mcp__propr_repository__')), true);
     });
 
     test('forwards only safe, non-reserved agent env vars', () => {

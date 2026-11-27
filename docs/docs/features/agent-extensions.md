@@ -1,7 +1,7 @@
 ---
 sidebar_label: "Instance agent extensions"
 title: "Configure agent skills and MCP extensions"
-description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, applied automatically to Claude and Codex issue tasks, pull request follow-ups and automation runs."
+description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, applied automatically to Claude, Codex and Pi issue tasks, pull request follow-ups and automation runs."
 ---
 # Instance agent extensions
 
@@ -18,7 +18,7 @@ administrator in Access first.
 **Skills & MCP servers** opens with two flat lists, **MCP servers** and
 **Skills**. The Settings inspector beside them summarises how items apply: each
 item applies automatically in the repositories it is limited to, unticking it
-switches it off, and only Claude and Codex runs use extensions. Items with
+switches it off, and only Claude, Codex and Pi runs use extensions. Items with
 **Apply automatically** turned off reach only the automations that add them, write
 servers need the run's [write authorization](#mcp-policy), and the
 [opt-out labels](#opt-out-labels) remove items from one issue or pull request.
@@ -121,7 +121,7 @@ as omitted.
 
 Resolution happens when the task's container is created, not when it is
 queued. Editing the library never invalidates a queued task: it launches with the
-library as it is at that moment. Claude and Codex task execution are the qualified
+library as it is at that moment. Claude, Codex and Pi task execution are the qualified
 targets. Other runtimes, and goal runs, launch without extensions as before
 (goal execution refuses explicitly added items). Review runs and Ultrafix review
 steps do not use the library.
@@ -257,7 +257,7 @@ An administrator connects the server once from Settings, in their own browser.
 Core stores the tokens encrypted, refreshes them, and the MCP gateway adds a
 current access token to each upstream call, exactly as it adds a Bearer token.
 Agent containers never see a token and never take part in a login flow, for
-Claude and Codex alike. ProPR always identifies itself as ProPR: it never presents
+Claude, Codex and Pi alike. ProPR always identifies itself as ProPR: it never presents
 another product's client id, client metadata, redirect URI or user agent.
 
 ### Adding and connecting a server
@@ -471,7 +471,7 @@ scripts, so such a package would not work.
 - The run mounts the install read-only at `/opt/propr/packages/<n>` and starts
   it with the image's Node through the same stdio bridge
   (`/opt/propr/extension-stdio-bridge.mjs`) as an operator catalog stdio entry,
-  for Claude and Codex alike. The bridge enforces the selected tools, bounds the
+  for Claude, Codex and Pi alike. The bridge enforces the selected tools, bounds the
   JSON protocol, drops the server's stderr and redacts the configured secrets.
 - The server process has the run's own network policy and nothing more. It is
   never reachable through Core's HTTPS gateway.
@@ -533,7 +533,7 @@ the agent image.
 
 An operator supplies a bounded JSON array through `PROPR_EXTENSION_CATALOG_FILE` on Core and workers. Install it outside task/repository mounts, owned by the operator with no group/other write permissions. The file contains configuration and secret **references**, never secret values. No API accepts catalog installation or command configuration. Restart/update the operator service configuration through its existing secret-management mechanism; never put credentials in library/UI input.
 
-A stdio entry contains `id`, `kind: "stdio"`, an absolute `executable` under `/usr/local/bin`, `/usr/bin` or `/opt/propr` already installed in the qualified task image, a fixed `args` array, `secretEnv` mapping child environment field names to operator-managed service environment references, and allowed `tools` and required `capability`. There is no shell interpolation, customer argument substitution, host path/socket access or additional bind mount. Both Claude and Codex launch the installed `/opt/propr/extension-stdio-bridge.mjs` adapter in the existing isolated task container. It enforces the selected tools and bounded JSON protocol, drops child stderr and redacts configured secrets and encodings. Secret values travel through inherited environment names only, stay out of launch args/config JSON, and the launcher does not write them to the repository or provider home. Stdio catalog credentials are disclosed to the task container, including the agent CLI, shell tools and repository setup hooks. Those processes can read, persist or transmit them; output redaction does not prevent that access. Use only credentials appropriate for that trust boundary. Deployments must rebuild the qualified task image to include the adapter; no runtime package installation is attempted.
+A stdio entry contains `id`, `kind: "stdio"`, an absolute `executable` under `/usr/local/bin`, `/usr/bin` or `/opt/propr` already installed in the qualified task image, a fixed `args` array, `secretEnv` mapping child environment field names to operator-managed service environment references, and allowed `tools` and required `capability`. There is no shell interpolation, customer argument substitution, host path/socket access or additional bind mount. Claude, Codex and Pi all launch the installed `/opt/propr/extension-stdio-bridge.mjs` adapter in the existing isolated task container. It enforces the selected tools and bounded JSON protocol, drops child stderr and redacts configured secrets and encodings. Secret values travel through inherited environment names only, stay out of launch args/config JSON, and the launcher does not write them to the repository or provider home. Stdio catalog credentials are disclosed to the task container, including the agent CLI, shell tools and repository setup hooks. Those processes can read, persist or transmit them; output redaction does not prevent that access. Use only credentials appropriate for that trust boundary. Deployments must rebuild the qualified task image to include the adapter; no runtime package installation is attempted.
 
 An HTTPS catalog entry instead contains `kind: "https"`, one credential-free fixed `url`, explicit pinned IP `addresses`, optional operator `bearerSecretRef`, and allowed `tools` and required `capability`. TLS identity and every resolved address must match; redirects remain refused. Restricted runs additionally need the hostname in their effective allowlist and private IP literals in the instance-owned address allowlist. Merely installing an internal catalog entry grants no network exception to a run.
 
