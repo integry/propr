@@ -259,20 +259,24 @@ describe('pi-credentials.py', () => {
             run.writeRuntime({ ...hostAuth(), anthropic: oauth('2') });
             const lock = `${fs.realpathSync(run.host)}.lock`;
             fs.mkdirSync(lock);
-            // A host Pi holds the lock, refreshes the same entry, and releases it.
+            // A host Pi holds the lock, refreshes the same entry, and releases it
+            // while the sync it started runs. Both are plain argv processes, so no
+            // shell sees the paths.
             const holder = `
-import json, os, sys, time
+import json, os, subprocess, sys, time
+credentials, host, lock, runtime, snapshot = sys.argv[1:6]
+sync = subprocess.Popen([sys.executable, "-I", "-B", credentials, "sync", host, runtime, snapshot])
 time.sleep(0.5)
-host, lock = sys.argv[1], sys.argv[2]
 auth = json.load(open(host))
 auth["anthropic"] = {"type": "oauth", "access": "access-host", "refresh": "refresh-host", "expires": 5}
 open(host, "w").write(json.dumps(auth))
 os.rmdir(lock)
+sys.exit(sync.wait())
 `;
             const script = path.join(run.dir, 'holder.py');
             fs.writeFileSync(script, holder);
-            const result = spawnSync('bash', ['-c', `python3 -I -B "$1" "$2" "$3" & python3 -I -B "$4" sync "$2" "$5" "$6"; wait`, 'sync',
-                script, run.host, lock, credentialsScript, run.runtime, run.snapshot], { encoding: 'utf8' });
+            const result = spawnSync('python3', ['-I', '-B', script, credentialsScript, run.host, lock, run.runtime, run.snapshot],
+                { encoding: 'utf8' });
             assert.equal(result.status, 0, result.stderr);
             assert.equal(run.readHost().anthropic.refresh, 'refresh-host');
             assert.equal(fs.existsSync(lock), false);
