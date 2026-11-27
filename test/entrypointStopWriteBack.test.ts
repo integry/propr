@@ -146,6 +146,44 @@ describe('opencode-entrypoint.sh stop handling', () => {
         });
     }
 
+    // Production topology: the entrypoint runs the opencode-run wrapper, which
+    // reads the prompt from stdin and runs `opencode run` as its own child. The
+    // signal must reach that child, and the write-back must wait for it to exit.
+    for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+        test(`forwards ${signal} through opencode-run to OpenCode before writing back`, async () => {
+            await withOpenCode(async ({ entrypoint, env, hostDb, ready, helperLog }) => {
+                const bin = env.PATH!.split(':')[0];
+                fs.copyFileSync(path.join(process.cwd(), 'scripts/opencode-run.sh'), path.join(bin, 'opencode-run'));
+                fs.chmodSync(path.join(bin, 'opencode-run'), 0o755);
+                const stub = path.join(bin, 'opencode');
+                const realStub = fs.readFileSync(stub, 'utf8').replace('#!/bin/bash\n', '');
+                // `opencode run`: check the attached prompt, refresh the token, then work
+                // until stopped; logging its exit (after a delay) orders it against sync.
+                fs.writeFileSync(stub, [
+                    '#!/bin/bash',
+                    'if [ "$1" = "run" ]; then',
+                    '    prompt=""; while [ $# -gt 0 ]; do if [ "$1" = "--file" ]; then prompt="$2"; fi; shift; done',
+                    '    [ "$(cat "$prompt")" = "prompt" ] || exit 9',
+                    `    python3 -I -B -c 'import sqlite3, sys\nwith sqlite3.connect(sys.argv[1]) as db: db.execute("UPDATE credential SET value=?, time_updated=2 WHERE id=?", (sys.argv[2], "cred-openai"))' "$XDG_DATA_HOME/opencode/opencode.db" ${JSON.stringify(oauth('refresh-2'))}`,
+                    `    stop() { kill "$worker" 2>/dev/null; sleep 0.3; echo agent-stopped >> ${JSON.stringify(helperLog)}; exit "$1"; }`,
+                    "    trap 'stop 143' TERM; trap 'stop 130' INT",
+                    '    sleep 60 & worker=$!',
+                    '    echo $$ > "$PROPR_TEST_HANG"',
+                    '    wait "$worker"; exit 0',
+                    'fi',
+                    realStub,
+                ].join('\n'), { mode: 0o755 });
+                const tmp = path.join(path.dirname(ready), 'tmp');
+                fs.mkdirSync(tmp);
+                const result = await runEntrypoint(entrypoint, ['opencode-run', '--format', 'json'], { ...env, PROPR_TEST_HANG: ready, TMPDIR: tmp }, ready, signal);
+                assertStopped(result, signal);
+                assert.equal(hostValue(hostDb), oauth('refresh-2'));
+                assert.deepEqual(fs.readFileSync(helperLog, 'utf8').trim().split('\n'), ['seed', 'agent-stopped', 'sync'], result.stderr);
+                assert.deepEqual(fs.readdirSync(tmp), [], 'opencode-run still removes the prompt file');
+            });
+        });
+    }
+
     test('a stalled write-back is bounded and reported instead of outliving the stop timeout', async () => {
         await withOpenCode(async ({ entrypoint, env, ready }) => {
             const stalled = path.join(path.dirname(ready), 'stalled-helper.py');
