@@ -15,7 +15,7 @@ on:
       fly_machines_max:
         description: >-
           Also check PROPR_FLY_MACHINES_MAX (needs agent_runtime=fly-machines): deploy with PROPR_FLY_MACHINES_MAX=1
-          and WORKER_CONCURRENCY=2, label two issues, and require the second run to queue, then succeed without an HTTP 422.
+          and WORKER_CONCURRENCY=2, label two issues, and require the second run to queue, then succeed (an HTTP 422 retried within 3 retries and 60 s is a warning).
         type: boolean
         default: false
       mcp:
@@ -163,7 +163,8 @@ jobs:
             {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
           ]' | flyctl tokens attenuate)
           [[ -n $agent_token ]]
-          echo "::add-mask::$agent_token"
+          source .github/fly-e2e/mask-fly-token.sh
+          mask_fly_token "$agent_token"
           {
             echo "PROPR_FLY_APP=$AGENT_APP"
             echo "PROPR_FLY_IMAGE=$image"
@@ -182,6 +183,7 @@ jobs:
           OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET }}
           OWNER_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
         run: |
+          set -o pipefail
           umask 077
           echo "::add-mask::$OAUTH_CLIENT_SECRET"
           printf '%s\n' "$APP_ENV" > "$ENV_FILE"
@@ -208,6 +210,10 @@ jobs:
             [[ $AGENT_RUNTIME != sprites ]] || echo "PROPR_SPRITES_MAX=1"
             echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
           } >> "$ENV_FILE"
+          # PROPR_FLY_API_TOKEN is "FlyV1 fm2_…", unquoted and with a space. That's safe here: the CLI
+          # parses this file with dotenv (the rest of the line after the first "=" is the value, inner
+          # spaces kept) and passes it to `flyctl secrets import` as NAME=VALUE lines, which also take
+          # the rest of the line. Nothing evaluates it as shell; never `source` either env file.
           [[ $AGENT_RUNTIME != fly-machines ]] || cat "$OUT/agent-runtime.env" >> "$ENV_FILE"
           if [[ $CAPACITY == true ]]; then
             sed -i -E '/^PROPR_FLY_MACHINES_MAX=/d' "$ENV_FILE"
@@ -239,12 +245,15 @@ jobs:
             {type: "Apps", body: {apps: {($id): "rwC"}}},
             {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
           ]' | flyctl tokens attenuate)
-          echo "::add-mask::$stop_token"
+          [[ -n $stop_token ]]
+          source .github/fly-e2e/mask-fly-token.sh
+          mask_fly_token "$stop_token"
           flyctl auth docker
           docker push "$IMAGE"
           propr deploy fly --app "$APP" --org "$ORG" --region "$REGION" --image "$IMAGE" \
             --backend flyctl --agent-runtime "$AGENT_RUNTIME" --idle-shutdown "$IDLE_AFTER" \
-            --machine-stop-token "$stop_token" --env-file "$ENV_FILE" --no-relay --out "$OUT/propr-fly"
+            --machine-stop-token "$stop_token" --env-file "$ENV_FILE" --no-relay --out "$OUT/propr-fly" 2>&1 |
+            redact_fly_tokens
           status=$(curl --fail --retry 8 --retry-all-errors -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/health")
           [[ $status == 200 ]]
 
@@ -285,7 +294,7 @@ jobs:
           flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'" |
             tee "$OUT/runtime-packages.log"
           applied=$(sed -n 's/^PROPR_RUNTIME_PACKAGES //p' "$OUT/runtime-packages.log" | tr -d '\r' | tail -n 1)
-          expected=$([[ $AGENT_RUNTIME == sprites ]] && echo 'when Sprites are provisioned' || echo 'at every Fly Machine start')
+          expected=$([[ $AGENT_RUNTIME == sprites ]] && echo 'when Sprites are provisioned' || echo 'in a derived Fly Machine image')
           jq -e --argjson pkgs "$packages" --arg expected "$expected" \
             '.status == "ready" and .packages == $pkgs and .accepted == $pkgs and (.appliedBy | contains($expected))' <<< "$applied" > /dev/null || {
             echo "::error::Runtime packages $packages were not applied for $AGENT_RUNTIME: $applied"
@@ -484,10 +493,9 @@ jobs:
           wait_state stopped
           # Anything the runtime installs after this point ran for the post-wake run.
           echo "STOPPED_AT_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
-          if [[ $MCP == true || $CAPACITY == true ]]; then
-            # Keep the worker log from the wake on: `flyctl logs --no-tail` only returns the latest lines.
-            nohup flyctl logs --app "$APP" --json > "$OUT/app-logs.jsonl" 2> "$OUT/app-logs.err" &
-          fi
+          # Keep the worker log from the wake on: `flyctl logs --no-tail` only returns the latest lines (about a
+          # minute of them while two runs are busy), so a record from the start of a run can be gone by its end.
+          nohup flyctl logs --app "$APP" --json > "$OUT/app-logs.jsonl" 2> "$OUT/app-logs.err" &
           gh issue edit "$ISSUE" --repo "$REPO" --add-label AI
           wait_state started
           # Labeled after the first, so with PROPR_FLY_MACHINES_MAX=1 this run queues behind it.
@@ -577,17 +585,37 @@ jobs:
             echo "::error::Line 2 of $APP.txt is not the $RUNTIME_PACKAGE version banner, so the runtime package was not installed for the run"
             exit 1
           fi
-          # Evidence: the runtime installed the configured list after the idle stop (Sprite provisioning or Fly Machine start).
+          # Evidence: the runtime installed the configured list after the idle stop (Sprite provisioning, or the
+          # derived Fly Machine image built by the first run; a fallback install at Machine start does not count).
+          # Read from the log streamed since the idle stop, not only the short --no-tail buffer: with
+          # PROPR_FLY_MACHINES_MAX=1 the build happens minutes before this run's PR, and the queued run's
+          # records push it out of the buffer.
+          worker_logs=$({ cat "$OUT/app-logs.jsonl" 2> /dev/null; flyctl logs --app "$APP" --no-tail --json; } |
+            jq -sc --argjson since "$STOPPED_AT_MS" '[.[] | .message? | strings | fromjson? | objects
+              | select((.time // 0) >= $since)] | unique | sort_by(.time)')
           expected_log=$([[ $AGENT_RUNTIME == sprites ]] && echo 'Installed agent runtime packages on Sprite' ||
-            echo 'Installed agent runtime packages at Fly Machine start')
-          install=$(flyctl logs --app "$APP" --no-tail --json |
-            jq -sc --argjson since "$STOPPED_AT_MS" --arg msg "$expected_log" '[.[] | .message | fromjson?
-              | select((.msg // "") == $msg and (.time // 0) >= $since)] | last // empty')
+            echo 'Installed agent runtime packages in a derived Fly Machine image')
+          install=$(jq -c --arg msg "$expected_log" '[.[] | select(.msg == $msg)] | last // empty' <<< "$worker_logs")
           [[ -n $install ]] || { echo "::error::Missing '$expected_log' log after the idle stop"; exit 1; }
           jq -r '"\(.msg): packagesDigest=\(.packagesDigest) packageCount=\(.packageCount) installMs=\(.installMs)"' <<< "$install"
           jq -e --arg digest "$RUNTIME_PACKAGES_DIGEST" --argjson count "$RUNTIME_PACKAGE_COUNT" \
             '.packagesDigest == $digest and .packageCount == $count and (.installMs | numbers) >= 0' \
             <<< "$install" > /dev/null || { echo "::error::Runtime package install log does not match packagesDigest $RUNTIME_PACKAGES_DIGEST"; exit 1; }
+          if [[ $AGENT_RUNTIME == fly-machines ]]; then
+            # The first run built the derived image: the build log names the digest every later run launches.
+            derived=$(jq -er --arg app "$AGENT_APP" '.image | strings | select(startswith("registry.fly.io/" + $app + "@sha256:"))' <<< "$install") ||
+              { echo "::error::The derived image build log names no registry.fly.io/$AGENT_APP digest"; exit 1; }
+            echo "DERIVED_IMAGE=$derived" >> "$GITHUB_ENV"
+            echo "Derived Fly Machine image: $derived (layerBytes=$(jq -r .layerBytes <<< "$install"), verifiedFiles=$(jq -r .verifiedFiles <<< "$install"))"
+            # The build is shared, so its record may name the other cap-mode run. Tie this issue's run to the image
+            # by its run name (<agent>-issue-<number>-<task id>), whatever the timing.
+            launch=$(jq -ce --arg issue "$ISSUE" '[.[] | select(.msg == "Launched the agent Fly Machine from the derived image"
+              and ((.run // "") | test("(^|-)issue-" + $issue + "-")))] | first | objects' <<< "$worker_logs") ||
+              { echo "::error::No 'Launched the agent Fly Machine from the derived image' record for the run of $REPO#$ISSUE"; exit 1; }
+            [[ $(jq -r .image <<< "$launch") == "$derived" ]] ||
+              { echo "::error::The run of $REPO#$ISSUE launched $(jq -r .image <<< "$launch"), not the derived image $derived"; exit 1; }
+            echo "Run $(jq -r .run <<< "$launch") launched Machine $(jq -r .machine <<< "$launch") from $derived (build record run: $(jq -r .run <<< "$install"))"
+          fi
           if [[ $EXTENSIONS == true ]]; then
             expected=("SKILL-OK-$RUN_TOKEN" "Echo: MCP-OK-$RUN_TOKEN")
             for i in 0 1; do
@@ -647,15 +675,32 @@ jobs:
             [[ -z $pr ]] || break
             sleep 15
           done
-          [[ $pr =~ ^[0-9]+$ ]] || { echo "::error::No unique linked PR for the queued run $REPO#$ISSUE2"; exit 1; }
           logs=$({ cat "$OUT/app-logs.jsonl"; flyctl logs --app "$APP" --no-tail --json; } |
             jq -sc '[.[] | .message? | strings | fromjson? | objects] | unique')
-          queued=$(jq -ce '[.[] | select(.msg == "Fly Machines at PROPR_FLY_MACHINES_MAX; run queued" and .max == 1)] | first | objects' <<< "$logs") ||
-            { echo "::error::No run waited for a PROPR_FLY_MACHINES_MAX slot"; exit 1; }
-          if jq -e '[.[] | tostring | select(test("machine limit"; "i"))] | length > 0' <<< "$logs" > /dev/null; then
-            echo "::error::A run hit Fly's organization machine limit (HTTP 422) despite PROPR_FLY_MACHINES_MAX=1"
+          printf '%s' "$logs" > "$OUT/worker-logs.json"
+          if [[ ! $pr =~ ^[0-9]+$ ]]; then
+            # A run that failed with the machine limit opens no PR: show what Fly counted before failing.
+            MAX_RETRIES=3 MAX_WAIT_MS=60000 bash .github/fly-e2e/machine-limit-report.sh "$OUT/worker-logs.json" || true
+            echo "::error::No unique linked PR for the queued run $REPO#$ISSUE2"
             exit 1
           fi
+          queued=$(jq -ce '[.[] | select(.msg == "Fly Machines at PROPR_FLY_MACHINES_MAX; run queued" and .max == 1)] | first | objects' <<< "$logs") ||
+            { echo "::error::No run waited for a PROPR_FLY_MACHINES_MAX slot"; exit 1; }
+          # PROPR_FLY_MACHINES_MAX=1 holds 2 Machines at most (the control plane and one slot), so a 422 means Fly still
+          # counted a Machine the worker had freed. A create retried within the bound is a warning with the Machine
+          # list Fly answered; a create given up, a run failed with the 422, or retries past the bound fail the step.
+          MAX_RETRIES=3 MAX_WAIT_MS=60000 bash .github/fly-e2e/machine-limit-report.sh "$OUT/worker-logs.json"
+          # The queued run launches from the digest the first build pushed, with no second build Machine.
+          : "${DERIVED_IMAGE:?The first run did not report a derived image}"
+          since=$(jq -cr --argjson since "$STOPPED_AT_MS" '[.[] | select((.time // 0) >= $since)]' <<< "$logs")
+          launch2=$(jq -ce --arg issue "$ISSUE2" '[.[] | select(.msg == "Launched the agent Fly Machine from the derived image"
+            and ((.run // "") | test("(^|-)issue-" + $issue + "-")))] | first | objects' <<< "$since") ||
+            { echo "::error::No 'Launched the agent Fly Machine from the derived image' record for the queued run of $REPO#$ISSUE2"; exit 1; }
+          image2=$(jq -r .image <<< "$launch2")
+          [[ $image2 == "$DERIVED_IMAGE" ]] ||
+            { echo "::error::The queued run launched $image2, not the first run's derived image $DERIVED_IMAGE"; exit 1; }
+          builds=$(jq '[.[] | select(.msg == "Installed agent runtime packages in a derived Fly Machine image")] | length' <<< "$since")
+          [[ $builds == 1 ]] || { echo "::error::Expected exactly 1 derived image build after the idle stop, found $builds"; exit 1; }
           # Both issues must have a successful Fly Machines execution.
           check=$(base64 -w0 <<JS
           const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
@@ -671,7 +716,8 @@ jobs:
               {
                 echo "### PROPR_FLY_MACHINES_MAX=1"
                 echo "- Queued run: \`$(jq -r .run <<< "$queued")\` (active=$(jq -r .active <<< "$queued"), queued=$(jq -r .queued <<< "$queued"))"
-                echo "- Both issues ($REPO#$ISSUE, $REPO#$ISSUE2, PR #$pr) succeeded on Fly Machines with no machine-limit error"
+                echo "- $REPO#$ISSUE2 run \`$(jq -r .run <<< "$launch2")\` launched Machine \`$(jq -r .machine <<< "$launch2")\` from \`$image2\`, the first run's derived image; $builds build Machine after the idle stop"
+                echo "- Both issues ($REPO#$ISSUE, $REPO#$ISSUE2, PR #$pr) succeeded on Fly Machines; machine-limit refusals are reported above"
               } | tee -a "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
@@ -679,6 +725,80 @@ jobs:
           done
           echo "::error::Missing successful fly-machines executions for both $REPO#$ISSUE and $REPO#$ISSUE2"
           exit 1
+
+      - name: Verify derived Fly Machine image reuse, rebuild and teardown
+        # The default Fly Machines run only; the PROPR_FLY_MACHINES_MAX mode checks queueing instead.
+        if: env.AGENT_RUNTIME == 'fly-machines' && env.CAPACITY != 'true'
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          : "${DERIVED_IMAGE:?The first run did not report a derived image}"
+          source .github/fly-e2e/mask-fly-token.sh
+          # A fresh process, like another worker or a restart: only the registry tag is shared.
+          # Same list -> the first run's digest with no build Machine; a changed list -> one build and a new digest.
+          # The script reads agent-runtime.env itself as KEY=value data (the token has a space, so the
+          # shell must never evaluate it), and its output goes through redact_fly_tokens.
+          # It runs from a file, not stdin with --input-type: the imported modules start pino's transport
+          # worker, which inherits execArgv, and Node refuses --input-type for a worker's file entry.
+          # Its imports therefore resolve against the checkout (the working directory), not the file.
+          script="$RUNNER_TEMP/derived-image-check.mts"
+          cat > "$script" <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { setTimeout as delay } from 'node:timers/promises';
+          import { pathToFileURL } from 'node:url';
+          const checkout = pathToFileURL(process.cwd() + '/');
+          const fly = (file: string) => import(new URL('packages/core/src/agents/runtime/fly/' + file, checkout).href);
+          const { MachinesClient } = await fly('api.ts');
+          const { flyConfig } = await fly('config.ts');
+          const { FlyPackageImages } = await fly('derivedImage.ts');
+          const fail = message => { console.log('::error::' + message); process.exit(1); };
+          // Only these keys, each exactly KEY=value; anything else is refused without echoing it.
+          const allowed = new Set(['PROPR_FLY_APP', 'PROPR_FLY_IMAGE', 'PROPR_FLY_REGION', 'PROPR_FLY_API_TOKEN']);
+          const runtimeEnv = {};
+          for (const [index, line] of readFileSync(process.env.AGENT_RUNTIME_ENV, 'utf8').split('\n').entries()) {
+            if (!line) continue;
+            const match = /^([A-Z][A-Z0-9_]*)=(.+)$/.exec(line);
+            if (!match || !allowed.has(match[1]) || match[1] in runtimeEnv) fail(`agent-runtime.env line ${index + 1} is not an expected KEY=value`);
+            runtimeEnv[match[1]] = match[2];
+          }
+          if (allowed.size !== Object.keys(runtimeEnv).length) fail('agent-runtime.env is missing a key');
+          const config = flyConfig({ ...process.env, ...runtimeEnv });
+          const api = new MachinesClient(config, [config.token]);
+          const builds = [];
+          const create = api.create.bind(api);
+          api.create = (launch, onBootStart) => {
+            if (launch.config.processes[0].cmd[0] === 'build') builds.push(launch.name);
+            return create(launch, onBootStart);
+          };
+          const images = new FlyPackageImages();
+          const select = packages => images.select({ api, config, packages, signal: AbortSignal.timeout(40 * 60_000), run: 'fly-e2e-derived-check' });
+          const reused = await select(JSON.parse(process.env.RUNTIME_PACKAGES));
+          console.log('Same list: ' + reused + ', build Machines: ' + builds.length);
+          if (reused !== process.env.DERIVED_IMAGE) fail(`The same list selected ${reused}, not the first run's ${process.env.DERIVED_IMAGE}`);
+          if (builds.length) fail('The same list created a build Machine');
+          const changed = await select(JSON.parse(process.env.CHANGED_PACKAGES));
+          console.log('Changed list: ' + changed + ', build Machines: ' + builds.length);
+          if (!changed || !changed.startsWith(`registry.fly.io/${config.app}@sha256:`)) fail('The changed list did not build a derived image');
+          if (changed === reused) fail('The changed list reused the old digest');
+          if (builds.length !== 1) fail(`The changed list created ${builds.length} build Machines, not 1`);
+          // Teardown: every agent and build Machine is gone (auto_destroy may take a moment after exit).
+          let left = [];
+          for (let attempt = 0; attempt < 24; attempt++) {
+            left = (await api.list('')).filter(machine => machine.state !== 'destroyed');
+            if (!left.length) break;
+            await delay(5000);
+          }
+          if (left.length) fail('Machines left in the agent app: ' + left.map(m => `${m.name} (${m.state})`).join(', '));
+          console.log('No Machines left in ' + config.app);
+          JS
+          AGENT_RUNTIME_ENV="$OUT/agent-runtime.env" \
+            RUNTIME_PACKAGES="[\"$RUNTIME_PACKAGE\"]" CHANGED_PACKAGES="[\"$RUNTIME_PACKAGE\",\"cowsay\"]" \
+            node --import tsx "$script" 2>&1 | redact_fly_tokens
+          {
+            echo "### Derived Fly Machine image"
+            echo "- first run built \`$DERIVED_IMAGE\`; the same list reused it with no build Machine"
+            echo "- a changed list built a new digest; no Machines were left in \`$AGENT_APP\`"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Verify the ProPR MCP automation over the SSH reverse forward
         if: env.MCP == 'true'
@@ -762,6 +882,33 @@ jobs:
         run: |
           source .github/fly-e2e/propr-api.sh
           timeout 60s flyctl logs --app "$APP" --no-tail 2>&1 | propr_redact | tail -n 200 || true
+
+      - name: Redact the worker log for upload
+        id: worker-log
+        if: always()
+        run: |
+          set -euo pipefail
+          [[ -s ${OUT:-}/app-logs.jsonl ]] || { echo "No worker log was recorded"; exit 0; }
+          source .github/fly-e2e/mask-fly-token.sh
+          dir="$RUNNER_TEMP/worker-log"
+          mkdir -p "$dir"
+          # redact_fly_tokens replaces every fm2_ fragment and exits 3 if it found one; GitHub tokens are replaced too.
+          # Only the redacted copy is uploaded, and a fragment found fails this step after the copy is written.
+          status=0
+          redact_fly_tokens < "$OUT/app-logs.jsonl" |
+            sed -E '/^::error::/d; s/(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/[redacted GitHub token]/g' > "$dir/app-logs.jsonl" ||
+            status=$?
+          echo "path=$dir/app-logs.jsonl" >> "$GITHUB_OUTPUT"
+          echo "Redacted $(wc -l < "$dir/app-logs.jsonl") worker log lines"
+          (( status == 0 )) || { echo "::error::The worker log held a Fly token fragment (redacted in the uploaded copy)"; exit 1; }
+      - name: Upload the redacted worker log
+        if: always() && steps.worker-log.outputs.path != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: fly-e2e-worker-log-${{ github.run_attempt }}
+          path: ${{ steps.worker-log.outputs.path }}
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Destroy test app, Machines and volume
         if: always() && steps.app.outcome == 'success'

@@ -57,7 +57,7 @@ function remoteOnlyRoutes(queued: unknown[], overrides: Parameters<typeof create
         services: {
             loadState: async () => state,
             loadBaseImages: async () => ['propr/agent:bundle-test'],
-            remoteInstall: async () => 'Installed at every Fly Machine start; no Docker image is built',
+            remoteInstall: async () => 'Installed in a derived Fly Machine image; no Docker image is built',
             requestBuild: async (packages, baseImages) => {
                 state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-index' };
                 return { buildId: 'build-index', packages: packages as string[], baseImages };
@@ -153,7 +153,7 @@ test('each runtime in use is checked against its own apt sources, and errors nam
     setAgentImagePackageIndexLoader(async (_signal, base) => base?.key === DEFAULT_SPRITE_PACKAGE_BASE.key ? spriteIndex() : packageIndex());
     const queued: unknown[] = [];
     const routes = remoteOnlyRoutes(queued, {
-        remoteInstall: async () => 'Installed when Sprites are provisioned and at every Fly Machine start; no Docker image is built',
+        remoteInstall: async () => 'Installed when Sprites are provisioned and in a derived Fly Machine image; no Docker image is built',
         remoteTargets: async () => [{ runtimes: ['Fly Machines'], base: AGENT_IMAGE_PACKAGE_BASE }, { runtimes: ['Sprites'], base: DEFAULT_SPRITE_PACKAGE_BASE }],
     });
     const put = responseRecorder();

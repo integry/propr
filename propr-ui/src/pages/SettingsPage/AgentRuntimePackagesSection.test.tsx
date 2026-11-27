@@ -84,7 +84,7 @@ describe('AgentRuntimePackagesSection', () => {
       activePackages: ['jq'],
       status: 'pending',
       images: {},
-      appliedBy: 'Installed at every Fly Machine start; no Docker image is built',
+      appliedBy: 'Installed in a derived Fly Machine image; no Docker image is built',
       updatedAt: 'now',
       warnings: [warning]
     });
@@ -108,12 +108,12 @@ describe('AgentRuntimePackagesSection', () => {
       activePackages: ['postgresql-client'],
       status: 'ready',
       images: {},
-      appliedBy: 'Installed at every Fly Machine start; no Docker image is built',
+      appliedBy: 'Installed in a derived Fly Machine image; no Docker image is built',
       updatedAt: 'now'
     });
     render(<AgentRuntimePackagesSection />);
 
-    expect(await screen.findByText('1 active · Installed at every Fly Machine start; no Docker image is built')).toBeInTheDocument();
+    expect(await screen.findByText('1 active · Installed in a derived Fly Machine image; no Docker image is built')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('ready');
     expect(screen.queryByText(/active across/)).not.toBeInTheDocument();
   });

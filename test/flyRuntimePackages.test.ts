@@ -82,6 +82,7 @@ test('without configured packages a Fly Machine gets no install step', async () 
     assert.equal(result.computeUsage?.runtime, 'fly-machines');
     assert.ok(result.computeUsage!.wallTimeMs >= result.computeUsage!.provisioningMs!);
     assert.equal(result.computeUsage?.packageInstallMs, undefined);
+    assert.equal(result.computeUsage?.imageWaitMs, undefined);
     await run.release!();
 });
 
@@ -100,8 +101,9 @@ test('a Fly Machine installs the packages as root before the agent starts and re
     const start = api.commands.findIndex(args => args[0] === '/usr/bin/touch' && args[1] === RUN + '/start');
     assert.ok(cat >= 0 && cat < start, 'the install record is read before the agent starts');
     assert.equal(result.computeUsage?.packageInstallMs, 42_000);
-    // Provisioning is measured by the worker (dispatch to agent start); the install is its own field.
+    // Provisioning is measured by the worker (dispatch to agent start); the install and image wait are their own fields.
     assert.equal(typeof result.computeUsage?.provisioningMs, 'number');
+    assert.equal(typeof result.computeUsage?.imageWaitMs, 'number');
     assert.equal(normalizeComputeUsage(JSON.parse(JSON.stringify(result.computeUsage)))?.packageInstallMs, 42_000);
     assert.match(formatComputeUsage(result.computeUsage!), /42s installing packages/);
     await run.release!();

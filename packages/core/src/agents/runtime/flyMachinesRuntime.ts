@@ -12,80 +12,20 @@ import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
 import { extensionLaunchRefusal } from './extensionCapabilities.js';
 import { MAX_PROVIDER_OUTPUT_BYTES } from '../impl/utils/boundedProviderOutput.js';
 import { LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
-import { MachinesClient, pollBackoff, type MachinesApi } from './fly/api.js';
+import { MachinesClient, type MachinesApi } from './fly/api.js';
 import { FlyMachineSlot } from './fly/capacity.js';
 import { flyConfig } from './fly/config.js';
+import { FlyPackageImages } from './fly/derivedImage.js';
+import { createFlyAgentMachine, dispatchFlyRun, flyDispatchUsage } from './fly/dispatch.js';
 import { applyOutputDiagnostics, OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
-import { helper, prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
+import { prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
 import { RUN } from './fly/wrapper.js';
-import { afterInstall, FlyStartInstalls, lastProbeOutcome, POLL_FAILURE_TOLERANCE } from './fly/startInstalls.js';
-import { checkAgentRuntimePackagesBeforeInstall, type AgentRuntimePackageLoader } from './agentRuntimePackageIndex.js';
+import { probe, waitForExit } from './fly/exitPoll.js';
+import { FlyStartInstalls, POLL_FAILURE_TOLERANCE } from './fly/startInstalls.js';
+import type { AgentRuntimePackageLoader } from './agentRuntimePackageIndex.js';
 import { remoteRuntimePackageSource } from './agentRuntimeRemotePackages.js';
 import { startRunPipeline } from './runPipeline.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
-
-interface ExitPollCallbacks {
-    bootDeadline: number;
-    /** The start gate's window after an install: the wrapper opens a fresh one when it reports ready. */
-    bootTimeout: number;
-    /** Latest time the start-time installs (runtime packages, then package MCP servers) may still be running; the boot deadline without either. */
-    installDeadline: number;
-    start(machine: string): Promise<boolean>;
-    activity(): void;
-    readUsage(id: string): Promise<boolean>;
-}
-
-async function probe(api: MachinesApi, id: string, signal: AbortSignal) {
-    const res = await api.exec(id, [...helper, 'probe'], signal).catch(() => undefined);
-    return res?.exit_code === 0 && /^(ready|running|installing|install-failed|exited (\d{1,3}))\n(\d+)$/.exec(res.stdout.trim());
-}
-
-const probeState = (status: Awaited<ReturnType<typeof probe>>) => status ? status[1] : undefined;
-
-/** Poll the atomic status and consume new usage when a cap is active.
- * Changing byte counts are activity for the stall watchdog. */
-async function waitForExit(api: MachinesApi, id: string, forced: AbortSignal, { bootDeadline, bootTimeout, installDeadline, start, activity, readUsage }: ExitPollCallbacks) {
-    let deadline = bootDeadline;
-    let installed = false;
-    let failures = 0;
-    let retryUsage = false;
-    let previousSize = -1;
-    while (!forced.aborted) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) return;
-        const status = await probe(api, id, AbortSignal.any([forced, AbortSignal.timeout(remaining)]));
-        let retry = !status;
-        const state = probeState(status);
-        if (state === 'install-failed') return state;
-        if (state === 'installing') {
-            // The wrapper bounds the install itself; keep polling while it reports progress.
-            installed = true;
-            deadline = Math.max(deadline, Math.min(Date.now() + POLL_FAILURE_TOLERANCE, installDeadline));
-        } else if (state === 'ready') {
-            // Not just the few seconds left past the last install probe.
-            deadline = afterInstall(deadline, installed, bootTimeout);
-            installed = false;
-            if (Date.now() >= deadline) return;
-            retry = !await start(id);
-        } else if (status) {
-            if (status[2] !== undefined) return Number(status[2]);
-            const bytes = Number(status[3]);
-            const changed = bytes !== previousSize;
-            if (changed) activity();
-            previousSize = bytes;
-            if ((changed || retryUsage) && !forced.aborted) retryUsage = !await readUsage(id);
-            retry = retryUsage;
-            deadline = Date.now() + POLL_FAILURE_TOLERANCE;
-        } else if (!forced.aborted && Date.now() >= deadline) return;
-        if (!retry) failures = 0;
-        const interval = retry ? pollBackoff(failures++) : 500;
-        await delay(Math.min(interval, Math.max(0, deadline - Date.now())), undefined, { signal: forced }).catch(() => {});
-    }
-    // The grace period may expire between polls, after the clone transport
-    // has finished publishing its bundle. Check before forcing deletion.
-    const last = await probe(api, id, AbortSignal.timeout(1500));
-    return lastProbeOutcome(last);
-}
 
 // Operator catalog executables are not part of the Fly image contract: those servers stay refused (explicit) or dropped (auto-applied).
 const FLY_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false });
@@ -93,16 +33,19 @@ const FLY_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true
 export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, ExecutionResult> {
     readonly kind = 'fly-machines';
     // Skill bundles travel as Machine files and URL MCP servers through the extension gateway.
-    // Runtime packages and package servers are installed by root at Machine start, before the agent.
+    // Runtime packages run from a derived image (or are installed at Machine start); package servers are installed by root at Machine start, before the agent.
     static readonly capabilities = { extensions: FLY_EXTENSION_CAPABILITIES, supportsRuntimePackages: true, supportsBindMounts: false, supportsRestrictedNetwork: false,
         supportsMcpPrivateNetwork: false, supportsMcpReachableUrl: true, reattach: false, workspaceTransports: ['clone'] as const };
     readonly capabilities = FlyMachinesRuntime.capabilities;
     readonly unsupportedMount = unsupportedFlyMount;
 
     constructor(private readonly client?: MachinesApi, private readonly environment = process.env,
-        // Fly Machines are ephemeral: the list Fly Machines accepted is installed at every Machine start,
-        // so it is re-checked against the agent image's package index before each such Machine.
-        private readonly loadPackages: AgentRuntimePackageLoader = remoteRuntimePackageSource('fly-machines')) {}
+        // The list Fly Machines accepted. It is re-checked against the agent image's package index before
+        // a Machine is created to install it (a build or a start-time install), not when a derived image already has it.
+        private readonly loadPackages: AgentRuntimePackageLoader = remoteRuntimePackageSource('fly-machines'),
+        // Configured runtime packages run from a derived image built once per base image and list. A
+        // custom Machines client comes without the registry, so its runs install them at Machine start.
+        private readonly images: FlyPackageImages | undefined = client ? undefined : new FlyPackageImages()) {}
 
     unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec) {
         if (!['claude', 'codex'].includes(spec.profile.agentType)) return 'Fly Machines supports Claude Code and Codex';
@@ -161,7 +104,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             const machine = id;
             if (machine && workspaceSafeToDestroy && !credentialsPending)
                 // The capacity slot is freed by the deletion that succeeds, including a background
-                // retry after the run settled, so a Machine still awaiting deletion keeps counting.
+                // retry after the run settled, so a Machine still awaiting deletion keeps counting. Fly
+                // confirming the Machine gone after a failed deletion also frees it and ends the retries.
                 return destroyed ??= retryCleanup(machine, 'destroy', () => slot.destroy(machine));
         };
         let mayHaveStarted = false;
@@ -184,17 +128,13 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             if (stopping) throw new Error('Fly run stopped before creation');
             const signal = AbortSignal.any([external, forced.signal]);
             const beforeCreation = (error: unknown): never => { external.throwIfAborted(); throw stopping ? new Error('Fly run stopped before creation') : error; };
-            // Read for every run, so a Settings change applies to the next Machine. An unreadable
-            // or invalid list fails the run rather than starting it without its packages.
-            const packages = await this.loadPackages().catch(beforeCreation);
-            // Every Machine start installs the list, so it is checked against the package index each time
-            // (cached); a name the archive lacks fails the run before any Machine is created. Then, over
-            // PROPR_FLY_MACHINES_MAX, the run queues; the slot is held until its agent Machine is destroyed or gone.
-            await checkAgentRuntimePackagesBeforeInstall(this.loadPackages, packages, signal).then(() => slot.acquire(signal)).catch(beforeCreation);
-            prepared.installPackages(packages);
-            // Compute time is measured from here, after the package check and any queueing for a slot.
+            // Compute time for every Fly run is measured from here: waiting for a derived image (or a
+            // shared build that then failed) and for a capacity slot are part of the run, each its own field.
             const dispatchedAt = Date.now();
+            const dispatch = await dispatchFlyRun({ images: this.images, loadPackages: this.loadPackages, api, config, prepared, signal, run: spec.name, slot })
+                .catch(beforeCreation);
             let agentStartedAt: number | undefined;
+            let installs = new FlyStartInstalls(spec.name, dispatch.image.selection.install, prepared.packageServers);
             external.throwIfAborted();
             if (stopping) throw new Error('Fly run stopped before creation');
             const failures: string[] = [];
@@ -298,13 +238,17 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
                 }
                 missing.push('status');
             };
-            const installs = new FlyStartInstalls(spec.name, packages, prepared.packageServers);
             let exitCode = -1;
             try {
                 // The physical launch boundary: revalidates the library items and activates the run's gateway grant.
                 await extension?.beforeLaunch();
                 let bootStart = Date.now();
-                id = await slot.create(() => api.create(prepared.launch, timestamp => { bootStart = Math.min(bootStart, timestamp); }));
+                id = await createFlyAgentMachine({ api, images: this.images, prepared, dispatch,
+                    // Each create attempt starts its own boot window; its provider timestamps can only move it earlier.
+                    mayRetry: () => !stopping && !external.aborted, onAttempt: () => { bootStart = Date.now(); },
+                    onBootStart: timestamp => { bootStart = Math.min(bootStart, timestamp); } });
+                // A retry after a refused derived image may have selected the start-time install instead.
+                installs = new FlyStartInstalls(spec.name, dispatch.image.selection.install, prepared.packageServers);
                 void api.logs(id, display, logs.signal).catch(() => {});
                 let usageFailureSince: number | undefined;
                 const bootDeadline = bootStart + config.bootTimeout;
@@ -375,9 +319,11 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             if (callbackError) throw callbackError;
             const result: ExecutionResult = pipeline.result(exitCode);
             // Every Fly run on the same basis: wall time from dispatch, provisioning up to the agent start,
-            // with each start-time install (runtime packages, package MCP servers) as its own field.
+            // with the derived-image wait, the capacity queue and each start-time install (runtime packages,
+            // package MCP servers) as their own fields.
             result.computeUsage = { runtime: this.kind, wallTimeMs: Date.now() - dispatchedAt,
                 ...(agentStartedAt !== undefined && { provisioningMs: agentStartedAt - dispatchedAt }),
+                ...flyDispatchUsage(dispatch, config),
                 ...installs.usage(),
                 cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null, costUsd: null, costSource: null };
             applyOutputDiagnostics(result, truncated, missing, failures);

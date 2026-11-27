@@ -378,7 +378,7 @@ describe('agent runtime package routes', () => {
             services: {
                 loadState: async () => state,
                 loadBaseImages: async () => ['propr/agent:bundle-test'],
-                remoteInstall: async () => 'Installed at every Fly Machine start; no Docker image is built',
+                remoteInstall: async () => 'Installed in a derived Fly Machine image; no Docker image is built',
                 requestBuild: async (packages, baseImages) => {
                     state = { ...state, packages: packages as string[], status: 'pending', buildId: 'build-remote' };
                     return { buildId: 'build-remote', packages: packages as string[], baseImages };
