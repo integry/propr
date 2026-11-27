@@ -1,4 +1,5 @@
 import { isOpenCodeJsonlEvent, parseAntigravityJsonl } from '@propr/core';
+import { isPiJsonLine } from '../services/redisOutputParserPi.js';
 
 interface StoredExecutionOutputLine {
   type?: string;
@@ -45,6 +46,8 @@ const ANTIGRAVITY_TRANSCRIPT_SOURCES = new Set(['MODEL', 'USER_EXPLICIT', 'SYSTE
 
 export function detectStoredOutputFormat(output: string): StoredOutputFormat {
   if (hasValidatedAntigravityStreamEnvelope(output)) return 'antigravity';
+  // Pi JSONL keys on `type` alone; its assistant messages would otherwise read as OpenCode.
+  if (output.split('\n').some(isPiJsonLine)) return 'pi';
 
   const wholeDocumentFormat = detectWholeDocumentStoredOutputFormat(output.trim());
   if (wholeDocumentFormat !== 'unknown') return wholeDocumentFormat;

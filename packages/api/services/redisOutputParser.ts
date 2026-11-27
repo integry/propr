@@ -7,6 +7,7 @@ import {
 } from '@propr/core';
 import { extractOpenCodeAssistantSegments } from '../routes/liveDetailsOpenCodeParser.js';
 import { parseVibeTranscriptOutput, processVibe3Entry, processVibeRoleRecord } from './redisOutputParserVibe.js';
+import { createPiStreamState, isPiJsonLine, processPiRecord, type PiStreamState } from './redisOutputParserPi.js';
 
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
@@ -52,6 +53,7 @@ interface ParseState {
    * so later events of the record keep their IDs once that earlier record is trimmed.
    */
   skippedSlots: number[];
+  pi: PiStreamState;
 }
 
 interface OpenCodeRedisEventUsage {
@@ -807,6 +809,10 @@ function parseLine(line: string, state: ParseState): void {
     // Vibe 3 entries key on type/turnId, not role; effects carry no role at all.
     if (processVibe3Entry(event, timestamp, state)) return;
 
+    // Pi records key on `type` alone, and its assistant `message_end` would
+    // otherwise pass for an OpenCode message.
+    if (processPiRecord(event, timestamp, state)) return;
+
     if (processCodexAppServerEvent(event, timestamp, state)) return;
 
     // Session-qualified OpenCode events overlap with Antigravity's tool
@@ -844,7 +850,7 @@ function shouldProcessOpenCodeBeforeCodex(event: OpenCodeRedisEvent): boolean {
 }
 
 /**
- * Parse Redis output (Codex, Antigravity, OpenCode, or Vibe JSONL format)
+ * Parse Redis output (Codex, Antigravity, OpenCode, Vibe, or Pi JSONL format)
  */
 function createParseState(options: RedisOutputParseOptions): ParseState {
   const executionStartMs = options.executionStartTimestamp ? new Date(options.executionStartTimestamp).getTime() : NaN;
@@ -869,6 +875,7 @@ function createParseState(options: RedisOutputParseOptions): ParseState {
     pendingAssistantKey: null,
     eventKeys: new WeakMap(),
     skippedSlots: [],
+    pi: createPiStreamState(),
   };
 }
 
@@ -973,7 +980,8 @@ export function parseVibeTranscript(output: string, options: RedisOutputParseOpt
 }
 
 export function parseRedisOutput(lines: string[], options: RedisOutputParseOptions = {}): ParsedRedisOutput {
-  const vibe = parseVibeTranscript(lines.join('\n'), options);
+  // Pi's `agent_end.messages` holds role-keyed messages a Vibe transcript scan would claim.
+  const vibe = lines.some(isPiJsonLine) ? null : parseVibeTranscript(lines.join('\n'), options);
   if (vibe) return vibe;
   const projection = createRedisOutputProjection(options);
   lines.forEach((line, index) => projection.feed(line, String(index)));

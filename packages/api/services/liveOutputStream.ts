@@ -10,6 +10,7 @@ import {
   type NativeGoalProjection,
   type ParsedRedisOutput,
 } from './redisOutputParser.js';
+import { isPiJsonLine } from './redisOutputParserPi.js';
 import { claudeNativeGoalRecord, projectClaudeNativeGoalRecord, type ClaudeNativeGoalRecord } from './agentStreamProjection.js';
 
 /**
@@ -142,7 +143,9 @@ export class LiveOutputProjector {
     // Their events are numbered by index, so only an untrimmed read from the
     // execution's first byte may number them: a bounded tail would reuse the
     // indexes of the messages it no longer holds.
-    if (!this.projection && this.preamble.length === 0 && from === this.start && this.retained.offset <= this.start) {
+    // Pi JSONL is never a transcript, though its `agent_end` holds role-keyed messages.
+    if (!this.projection && this.preamble.length === 0 && from === this.start && this.retained.offset <= this.start
+      && !text.split('\n').some(isPiJsonLine)) {
       const transcript = parseVibeTranscript(text, { executionStartTimestamp: this.executionStartTimestamp });
       if (transcript) {
         this.projection = this.wholeOutputProjection(transcript);
