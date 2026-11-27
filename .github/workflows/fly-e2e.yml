@@ -1287,10 +1287,18 @@ jobs:
           fi
           for image in "${images[@]}"; do
             container=$(docker create "$image")
-            found=0
-            docker export "$container" | grep -aqF -f "$OUT/credential-values" && found=1
+            # grep -c reads the whole export (grep -q would stop at the first match and could hide a failed
+            # export behind SIGPIPE); each side's status is checked on its own.
+            set +e
+            docker export "$container" | grep -acF -f "$OUT/credential-values" > "$RUNNER_TEMP/leak-count"
+            status=("${PIPESTATUS[@]}")
+            set -e
             docker rm "$container" > /dev/null
-            (( found == 0 )) || { echo "::error::$image contains a $AGENT credential value"; exit 1; }
+            (( status[0] == 0 )) || { echo "::error::Exporting $image failed (docker export exited ${status[0]}), so it was not searched"; exit 1; }
+            (( status[1] <= 1 )) || { echo "::error::Searching the export of $image failed (grep exited ${status[1]})"; exit 1; }
+            count=$(< "$RUNNER_TEMP/leak-count")
+            [[ $count =~ ^[0-9]+$ ]] || { echo "::error::Searching the export of $image gave no match count"; exit 1; }
+            (( count == 0 )) || { echo "::error::$image contains a $AGENT credential value ($count matching lines)"; exit 1; }
             echo "- No $AGENT credential value in \`$image\`" >> "$GITHUB_STEP_SUMMARY"
           done
 

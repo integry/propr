@@ -211,7 +211,9 @@ command -v gosu >/dev/null 2>&1 || ln -sf "$(command -v su-exec)" /usr/local/bin
 # --- pinned CLIs ---------------------------------------------------------
 pin_npm_cli @anthropic-ai/claude-code "$CLAUDE_CLI_VERSION" claude
 pin_npm_cli @openai/codex "$CODEX_CLI_VERSION" codex
-pin_npm_cli opencode-ai "$OPENCODE_CLI_VERSION" opencode
+# Dockerfile.agent's package choice: series 1 pins are opencode-ai, later ones @opencode/cli.
+case "$OPENCODE_CLI_VERSION" in 1.*) opencode_package=opencode-ai ;; *) opencode_package=@opencode/cli ;; esac
+pin_npm_cli "$opencode_package" "$OPENCODE_CLI_VERSION" opencode
 pin_uv "$UV_VERSION"
 pin_vibe "$VIBE_CLI_VERSION" "$VIBE_PYTHON_VERSION"
 

@@ -3,6 +3,7 @@ import { PROPR_MCP_BEARER_TOKEN_ENV } from '../../agentToolPolicy.js';
 import { extensionSkillPath, resolveRunEnvironment } from '../sprites/spritesRun.js';
 import { EXTENSION_SKILLS_ROOT, type ExtensionSkillFile } from '../../../extensions/extensionLaunchContext.js';
 import path from 'node:path';
+import { parseJsonc } from '../../../utils/jsonUtils.js';
 import { randomUUID } from 'node:crypto';
 import { CLAUDE_BACKUPS_CONTAINER_PATH, CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
 import { WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_RESULT_DIR,
@@ -109,7 +110,8 @@ function stageCredentials(store: CredentialStoreBundle, storePath: string, stage
         owned.push(target);
         directories.add(path.dirname(target));
         // Protect credential strings even when the CLI prints only one field.
-        try { JSON.parse(file.content.toString(), (key, value) => {
+        // JSONC too: OpenCode's opencode.jsonc may carry comments and trailing commas around a provider apiKey.
+        try { parseJsonc(file.content.toString(), (key, value) => {
             if (typeof value === 'string' && CREDENTIAL_KEY.test(key)) secrets.push(value);
             return value;
         }); } catch { if (file.refresh) secrets.push(file.content.toString().trim()); }

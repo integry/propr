@@ -75,13 +75,14 @@ function vibeSpec(t: { after(fn: () => void): void }) {
 }
 
 /** OpenCode's task spec as OpenCodeAgent builds it: the agent configuration's config store and its data store of logins. */
-function openCodeSpec(t: { after(fn: () => void): void }, model = 'openrouter/anthropic/claude-sonnet-4.5') {
+function openCodeSpec(t: { after(fn: () => void): void }, model = 'openrouter/anthropic/claude-sonnet-4.5',
+    configFile: [string, string] = ['opencode.json', '{"$schema":"https://opencode.ai/config.json"}']) {
     const root = scratch(t, 'remote-opencode-');
     const configPath = path.join(root, 'config');
     const dataPath = path.join(root, 'data');
     fs.mkdirSync(configPath);
     fs.mkdirSync(dataPath);
-    fs.writeFileSync(path.join(configPath, 'opencode.json'), '{"$schema":"https://opencode.ai/config.json"}');
+    fs.writeFileSync(path.join(configPath, configFile[0]), configFile[1]);
     fs.writeFileSync(path.join(dataPath, 'auth.json'), JSON.stringify({ openrouter: { type: 'api', key: openRouterKey } }));
     fs.writeFileSync(path.join(dataPath, 'storage.db'), 'private');
     const spec = buildOpenCodeRunSpec({ config: agentConfig('opencode', configPath), configPath, dataPath, worktreePath: root, githubToken: 'synthetic-github-token',
@@ -119,7 +120,16 @@ test('Sprites run the Dockerfile.agent pins of OpenCode and Vibe and refuse any 
 
 test('Sprite setup installs and verifies the pinned OpenCode and Vibe CLIs and their entrypoints before the clean checkpoint', () => {
     const setup = fs.readFileSync('scripts/sprites-agent-setup.sh', 'utf8');
-    assert.match(setup, /pin_npm_cli opencode-ai "\$OPENCODE_CLI_VERSION" opencode/);
+    assert.match(setup, /pin_npm_cli "\$opencode_package" "\$OPENCODE_CLI_VERSION" opencode/);
+    // The same OpenCode package as Dockerfile.agent, for the pin and for a series 1 version.
+    const dockerfile = fs.readFileSync('Dockerfile.agent', 'utf8');
+    const choice = (text: string) => text.match(/case "\$OPENCODE_CLI_VERSION" in 1\.\*\).*?esac/)![0];
+    const pick = (text: string, variable: string, version: string) => spawnSync('bash', ['-c', `${choice(text)}; echo "$${variable}"`],
+        { encoding: 'utf8', env: { ...process.env, OPENCODE_CLI_VERSION: version } }).stdout.trim();
+    for (const version of [readSpritesCliPins().OPENCODE_CLI_VERSION, '1.14.0']) {
+        assert.ok(pick(setup, 'opencode_package', version), version);
+        assert.equal(pick(setup, 'opencode_package', version), pick(dockerfile, 'package', version), version);
+    }
     assert.match(setup, /pin_uv "\$UV_VERSION"\npin_vibe "\$VIBE_CLI_VERSION" "\$VIBE_PYTHON_VERSION"/);
     assert.match(setup, /uv" tool install --force --python "\$python" "mistral-vibe==\$version"/);
     assert.match(setup, /installed_version su-exec node "\$bin_dir\/vibe" \| grep -qF "\$version"/);
@@ -187,8 +197,8 @@ test('Fly: an OpenCode run gets both configured stores, redacts the provider key
     assert.equal(fs.readFileSync(path.join(dataPath, 'auth.json'), 'utf8'), rotated);
 });
 
-test('Fly: a full OpenCode run keeps the stored provider key out of the captured output', async t => {
-    const { spec } = openCodeSpec(t);
+/** A full Fly run of `spec` whose agent prints `key`: the captured output must carry only the redaction. */
+async function assertFullFlyRunRedacts(spec: AgentRunSpec, key: string) {
     let launch: MachineLaunch | undefined;
     let started = false;
     const api: MachinesApi = {
@@ -201,7 +211,7 @@ test('Fly: a full OpenCode run keeps the stored provider key out of the captured
             const [op, file, offset, length] = args.slice(3);
             if (op === 'probe') return { stdout: started ? 'exited 0\n0\n' : 'ready\n0', exit_code: 0 };
             const files: Record<string, Buffer> = {
-                [RUN + '/stdout']: Buffer.from(`{"type":"text","part":{"text":"used ${openRouterKey}"}}\n`), [RUN + '/stderr']: Buffer.alloc(0),
+                [RUN + '/stdout']: Buffer.from(`{"type":"text","part":{"text":"used ${key}"}}\n`), [RUN + '/stderr']: Buffer.alloc(0),
                 [RUN + '/workspace/status']: Buffer.from('bundle test'), [RUN + '/workspace/result.bundle']: Buffer.from([1]),
             };
             const data = files[file];
@@ -213,10 +223,33 @@ test('Fly: a full OpenCode run keeps the stored provider key out of the captured
     const run = new FlyMachinesRuntime(api, flyEnv, noPackages).start(spec, { stdinData: 'Fix the issue' });
     const result = await run.wait();
     assert.equal(result.exitCode, 0);
-    assert.ok(!result.stdout.includes(openRouterKey));
+    assert.ok(!result.stdout.includes(key));
     assert.match(result.stdout, /\[REDACTED\]/);
-    assert.ok(!JSON.stringify(launch!.config.env ?? {}).includes(openRouterKey), 'the key travels only as a credential file, not in the Machine env');
+    assert.ok(!JSON.stringify(launch!.config.env ?? {}).includes(key), 'the key travels only as a credential file, not in the Machine env');
     await run.release!();
+}
+
+test('Fly: a full OpenCode run keeps the stored provider key out of the captured output', async t => {
+    await assertFullFlyRunRedacts(openCodeSpec(t).spec, openRouterKey);
+});
+
+test('Fly: a provider key in a commented opencode.jsonc is redacted from the captured output', async t => {
+    const jsoncKey = 'sk-synthetic-jsonc-0123456789abcdef';
+    const jsonc = `// OpenCode config with comments and trailing commas
+{
+  "$schema": "https://opencode.ai/config.json", /* the schema URL keeps its // */
+  "provider": {
+    "openrouter": {
+      "options": {
+        "apiKey": "${jsoncKey}", // synthetic
+      },
+    },
+  },
+}
+`;
+    const { spec } = openCodeSpec(t, undefined, ['opencode.jsonc', jsonc]);
+    assert.ok(prepareLaunch(spec, { stdinData: 'Fix the issue' }, flyConfig(flyEnv)).secrets.includes(jsoncKey));
+    await assertFullFlyRunRedacts(spec, jsoncKey);
 });
 
 test('Sprites: Vibe and OpenCode runs upload every configured store, the prompt file and collect the usage export', async t => {

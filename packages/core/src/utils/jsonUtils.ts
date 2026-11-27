@@ -198,3 +198,42 @@ export function extractJsonCandidates(text: string): string[] {
   }
   return candidates;
 }
+
+/** Copies `text`, replacing each run outside strings that `drop` gives a length for with one space. */
+function rewriteOutsideStrings(text: string, drop: (index: number) => number): string {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      out += char;
+      if (char === '\\') out += text[++i] ?? '';
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { inString = true; out += char; continue; }
+    const skip = drop(i);
+    if (skip > 0) { out += ' '; i += skip - 1; continue; }
+    out += char;
+  }
+  return out;
+}
+
+/**
+ * Parses JSON with comments (`//` and block comments) and trailing commas, as in a JSONC config
+ * file such as `opencode.jsonc`. Throws like JSON.parse when what remains is not JSON.
+ */
+export function parseJsonc(text: string, reviver?: (this: unknown, key: string, value: unknown) => unknown): unknown {
+  const uncommented = rewriteOutsideStrings(text, i => {
+    if (text.startsWith('//', i)) { const end = text.indexOf('\n', i); return (end === -1 ? text.length : end) - i; }
+    if (text.startsWith('/*', i)) { const end = text.indexOf('*/', i + 2); if (end === -1) throw new SyntaxError('Unterminated comment in JSONC'); return end + 2 - i; }
+    return 0;
+  });
+  const json = rewriteOutsideStrings(uncommented, i => {
+    if (uncommented[i] !== ',') return 0;
+    let next = i + 1;
+    while (/\s/.test(uncommented[next] ?? '')) next++;
+    return uncommented[next] === '}' || uncommented[next] === ']' ? 1 : 0;
+  });
+  return JSON.parse(json, reviver);
+}

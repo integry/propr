@@ -112,7 +112,7 @@ Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an
 
 ### OpenCode and Mistral Vibe on remote runtimes
 
-Both agents run on Sprites and Fly Machines through the same run spec as on Docker, and end in a PR the same way. Fly Machines run the CLIs in `PROPR_FLY_IMAGE` (`Dockerfile.agent` installs both). A Sprite installs them while it is provisioned, before its clean checkpoint, so warm Sprites reuse them: `opencode-ai` at `OPENCODE_CLI_VERSION`, `uv` at `UV_VERSION` from its release archive (checked against the published SHA-256) and `mistral-vibe` at `VIBE_CLI_VERSION` on uv-managed Python `VIBE_PYTHON_VERSION`, each read from `Dockerfile.agent` and checked with `--version`. An agent that selects another CLI version is refused on both runtimes.
+Both agents run on Sprites and Fly Machines through the same run spec as on Docker, and end in a PR the same way. Fly Machines run the CLIs in `PROPR_FLY_IMAGE` (`Dockerfile.agent` installs both). A Sprite installs them while it is provisioned, before its clean checkpoint, so warm Sprites reuse them: OpenCode at `OPENCODE_CLI_VERSION` (the same package `Dockerfile.agent` picks: `opencode-ai` for a 1.x pin, otherwise `@opencode/cli`), `uv` at `UV_VERSION` from its release archive (checked against the published SHA-256) and `mistral-vibe` at `VIBE_CLI_VERSION` on uv-managed Python `VIBE_PYTHON_VERSION`, each read from `Dockerfile.agent` and checked with `--version`. An agent that selects another CLI version is refused on both runtimes.
 
 Credentials come from the agent configuration, as for the other agents: the per-run copy of each credential store the provider manifest lists, sent with the run and never part of an image or checkpoint.
 
