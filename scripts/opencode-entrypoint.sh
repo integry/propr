@@ -81,7 +81,9 @@ if [ $# -gt 0 ]; then
         source_db="$opencode_source_data/opencode.db"
         runtime_db="$opencode_data_dir/opencode.db"
         sync_database=0
-        if [ -n "$opencode_source_data" ] && [ -f "$source_db" ] && [[ "$(opencode --version)" == "opencode v2."* ]]; then
+        # Probe as node: OpenCode opens its log file even for --version, and a
+        # root-owned log/ under the node-owned data dir breaks every later run.
+        if [ -n "$opencode_source_data" ] && [ -f "$source_db" ] && [[ "$(su-exec node env HOME=/home/node opencode --version)" == "opencode v2."* ]]; then
             # Initialize the disposable schema (including v1 JSON migration)
             # before importing credentials. Keep the host session DB out of it.
             su-exec node env HOME=/home/node opencode auth list --standalone >/dev/null

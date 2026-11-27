@@ -361,6 +361,34 @@ for entrypoint in claude codex antigravity opencode vibe; do
 done
 echo "✓ agent entrypoints can execute GitHub CLI through the wrapper"
 
+# ProPR starts OpenCode task containers as root (--user 0:0) with disposable
+# state and a mounted host data directory. Everything the entrypoint runs
+# before dropping to node (version probe, schema init, credential seeding) must
+# leave the disposable data dir node-owned, or OpenCode cannot open its log.
+opencode_root_owned="$(docker run --rm --user 0:0 \
+  -e XDG_DATA_HOME=/tmp/propr-opencode-data \
+  -e PROPR_EPHEMERAL_STATE=1 \
+  -e PROPR_OPENCODE_SOURCE_DATA=/tmp/propr-opencode-source \
+  --entrypoint sh "$AGENT_TAG" -c '
+    set -eu
+    mkdir -p /tmp/propr-opencode-source
+    python3 -c "import sqlite3; sqlite3.connect(\"/tmp/propr-opencode-source/opencode.db\").close()"
+    chown -R node:node /tmp/propr-opencode-source
+    exec /home/node/opencode-entrypoint.sh \
+      sh -c "test \"\$(id -u)\" = 1000 && find /tmp/propr-opencode-data ! -user node -print"
+  ' 2>"$DATA_DIR/opencode-entrypoint.log")" || {
+  echo "✗ OpenCode entrypoint failed when started as root with disposable state"
+  cat "$DATA_DIR/opencode-entrypoint.log"
+  exit 1
+}
+if [ -n "$opencode_root_owned" ]; then
+  echo "✗ OpenCode entrypoint left files not owned by node in the disposable data dir:"
+  echo "$opencode_root_owned"
+  cat "$DATA_DIR/opencode-entrypoint.log"
+  exit 1
+fi
+echo "✓ OpenCode entrypoint keeps disposable state node-owned when started as root"
+
 docker run --rm --entrypoint node \
   -e "EXPECTED_VERSION=$EXPECTED_VERSION" \
   "$LAUNCHER_TAG" --input-type=module -e '

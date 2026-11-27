@@ -523,6 +523,15 @@ describe('OpenCodeAgent Docker args', () => {
         assert.match(script, /could not sync refreshed OpenCode credential file/);
     });
 
+    test('entrypoint never runs OpenCode as root once disposable state is node-owned', () => {
+        const script = fs.readFileSync(path.join(process.cwd(), 'scripts/opencode-entrypoint.sh'), 'utf8');
+        const invocations = script.split('\n').filter((line) => /(^|[\s($])opencode\s/.test(line) && !line.trim().startsWith('#'));
+
+        // OpenCode creates log/ (and repos/) under XDG_DATA_HOME even for --version.
+        assert.ok(invocations.length > 0);
+        for (const line of invocations) assert.match(line, /su-exec node env HOME=\/home\/node opencode /, line);
+    });
+
     test('auto-approves permissions for isolated non-interactive runs, like the other agents', () => {
         const taskArgs = buildOpenCodeDockerArgs({
             config: createAgent().config,
