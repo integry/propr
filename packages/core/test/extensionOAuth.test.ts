@@ -665,3 +665,43 @@ test('during Disconnect revocation no refresh starts and a sign-in callback cann
     assert.equal((await f.oauth.audit('1'))[0].action, 'disconnect');
   }
 });
+
+test('a stateful OAuth server keeps its upstream session across token refreshes and an upstream 401', async t => {
+  const { ExtensionUpstreamSessions } = await import('../src/extensions/mcpUpstreamSessions.js');
+  const { extensionTokenHash } = await import('../src/extensions/extensionProfileStore.js');
+  // Core refreshes a token within a minute of its expiry, so a 120 s token is used for its first minute.
+  const f = await fixture(t, { advertise: { dynamic: true }, accessTtl: 120 });
+  await f.save([oauthServer()]);
+  await f.connect();
+  const { token } = await f.launch();
+  const sessions = new ExtensionUpstreamSessions();
+  t.after(() => sessions.closeAll('test'));
+  // The synthetic provider's MCP server, made stateful: initialize assigns a session every later request must carry.
+  const seen: { method: string; sessionId?: string }[] = []; const deleted: string[] = [];
+  const send = async (endpoint: string, body: unknown, bearer?: string, _policy?: unknown, exchange: { sessionId?: string; assignedSessionId?: string; method?: string } = {}) => {
+    if (exchange.method === 'DELETE') { deleted.push(exchange.sessionId!); return null; }
+    const rpc = body as { id?: number; method: string };
+    seen.push({ method: rpc.method, sessionId: exchange.sessionId });
+    const reply = await f.synthetic.send(endpoint, body, bearer);
+    if (rpc.method === 'initialize') exchange.assignedSessionId = 'oauth-session-1';
+    else assert.equal(exchange.sessionId, 'oauth-session-1');
+    return rpc.id === undefined ? null : reply;
+  };
+  const call = (id: number) => extensionGatewayCall(f.store, token, 'docs', { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'lookup', arguments: {} } }, send, sessions);
+  assert.match(JSON.stringify(await call(1)), /Found the document/);
+  // Past the refresh margin: Core refreshes before use, the session stays.
+  f.tick(61 * 1000);
+  assert.match(JSON.stringify(await call(2)), /Found the document/);
+  assert.equal(f.synthetic.state.tokenRequests.refresh_token, 1);
+  // The provider invalidates the token early: the 401 refreshes once and retries once, in the same session.
+  f.synthetic.expireAccessTokens();
+  const result = await call(3);
+  assert.match(JSON.stringify(result), /Found the document/);
+  assert.ok(!JSON.stringify(result).includes('SYNTHETIC_ACCESS_TOKEN'), 'the refreshed token is redacted too');
+  assert.equal(f.synthetic.state.tokenRequests.refresh_token, 2);
+  assert.deepEqual(seen.map(s => s.method), ['initialize', 'notifications/initialized', 'tools/call', 'tools/call', 'tools/call', 'tools/call']);
+  const entry = sessions.peek(extensionTokenHash(token), 'docs')!;
+  assert.deepEqual([entry.state?.mode, entry.authentication, entry.refreshes, entry.reinitialized], ['stateful', 'oauth', 2, 0]);
+  await sessions.closeGrant(extensionTokenHash(token), 'grant_ended');
+  assert.deepEqual(deleted, ['oauth-session-1']);
+});

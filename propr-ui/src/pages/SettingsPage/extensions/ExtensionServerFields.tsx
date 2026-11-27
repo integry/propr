@@ -88,7 +88,8 @@ export function ServerToolsField({ server, catalog, knownTools, urlValid = true,
     void discoverExtensionTools(url).then(result => {
       if (!active) return;
       setDiscovered({ url, tools: result.tools });
-      setStatus(result.tools.length ? 'Tools found. Tick the ones the agent may call.' : 'The server listed no tools.');
+      const session = result.session === 'stateful' ? ' Stateful server: ProPR keeps its session for each run.' : result.session === 'stateless' ? ' Stateless server: no session is needed.' : '';
+      setStatus((result.tools.length ? 'Tools found. Tick the ones the agent may call.' : 'The server listed no tools.') + session);
     }).catch(() => { if (active) setStatus('Could not list tools. Type the tool names below.'); });
     return () => { active = false; };
   }, [probe, url]);

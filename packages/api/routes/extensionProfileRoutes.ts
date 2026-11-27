@@ -5,7 +5,7 @@ import { EXTENSION_LIBRARY_CONTRACT, EXTENSION_LIMITS, type ExtensionSkillBundle
 import { ExtensionError, ExtensionLibraryStore, type ExtensionLibraryItemRef } from '../../core/src/extensions/extensionProfileStore.js';
 import { extensionLibraryUsage } from '../../core/src/extensions/extensionLibraryUsage.js';
 import { extensionGatewayCall } from '../../core/src/extensions/mcpGateway.js';
-import { requestExtensionMcp } from '../../core/src/extensions/endpointPolicy.js';
+import { probeExtensionMcp } from '../../core/src/extensions/mcpUpstreamSessions.js';
 import { readSkillArchive, skillPath, type SkillFile } from '../../core/src/extensions/skillBundles.js';
 import { resolveGitHubMetadataToken, verifyGitHubRepositoryAccess } from '../githubMetadataAuth.js';
 import { isDemoViewer } from '../demoMode.js';
@@ -55,16 +55,16 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
       const library = { instanceId: await store.instanceId() };
       const results = [];
       for (const server of servers) {
-        let reachable = false;
         // Catalog and package servers run inside the task container; nothing is started here.
         if (server.kind !== 'https') { results.push({ name: server.name, reachable: null, status: 'not_validated' }); continue; }
+        // Session mode comes from the upstream's answer; authentication from the server's setting.
+        let probe: { reachable: boolean; session: 'stateful' | 'stateless' | null } = { reachable: false, session: null };
         try {
           // An OAuth server is validated with its current access token; its library secret is a client secret, never sent upstream.
           const credential = server.authentication === 'oauth' ? await extensionOAuth(store).accessToken(library.instanceId, server) : secrets[server.name];
-          const response = await requestExtensionMcp(server.url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'propr-validation', version: '1' } } }, credential) as { result?: unknown };
-          reachable = Boolean(response?.result);
+          probe = await probeExtensionMcp(server.url, credential);
         } catch { /* No response content or error from upstream is disclosed. */ }
-        results.push({ name: server.name, reachable, status: reachable ? 'reachable' : 'unavailable' });
+        results.push({ name: server.name, reachable: probe.reachable, status: probe.reachable ? 'reachable' : 'unavailable', session: probe.reachable ? probe.session : null, authentication: server.authentication });
       }
       await store.authorize(actor); return { results };
     }),
@@ -73,14 +73,16 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
       if (typeof req.body.url !== 'string') throw new ExtensionError(400, 'HTTPS endpoint required');
       // Discovery never reads saved credentials or accepts a customer token.
       let response: unknown;
-      try { response = await requestExtensionMcp(req.body.url, { jsonrpc: '2.0', id: 1, method: 'tools/list' }); }
+      // The same handshake as the gateway, so stateful servers list their tools inside a session that is then ended.
+      let session: 'stateful' | 'stateless' | null = null;
+      try { const probe = await probeExtensionMcp(req.body.url, undefined, { listTools: true }); response = probe.tools; session = probe.session; }
       catch { throw new ExtensionError(502, 'MCP tool discovery unavailable'); }
       const rpc = response as { jsonrpc?: unknown; id?: unknown; error?: unknown; result?: { tools?: unknown } } | null;
       const tools = rpc?.result?.tools;
-      if (rpc?.jsonrpc !== '2.0' || rpc.id !== 1 || rpc.error || !Array.isArray(tools) || tools.length > EXTENSION_LIMITS.tools) throw new ExtensionError(502, 'MCP tool discovery unavailable');
+      if (rpc?.jsonrpc !== '2.0' || rpc.id !== 2 || rpc.error || !Array.isArray(tools) || tools.length > EXTENSION_LIMITS.tools) throw new ExtensionError(502, 'MCP tool discovery unavailable');
       const names = tools.flatMap(tool => tool && typeof tool === 'object' && typeof tool.name === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(tool.name) ? [tool.name] : []);
       await store.authorize(actor);
-      return { tools: [...new Set(names)] };
+      return { tools: [...new Set(names)], session };
     }),
     /** "Check" for a package server: registry lookup only. Nothing is downloaded, installed or executed. */
     resolvePackage: handle(async (req, actor) => {

@@ -2,6 +2,7 @@ import { compileEgressAllowlist, normalizeEgressHost } from '../network/egressAl
 import type { ExtensionGrantNetwork } from './extensionProfileStore.js';
 import dns from 'node:dns/promises';
 import https from 'node:https';
+import { StringDecoder } from 'node:string_decoder';
 import { isIP, BlockList, type LookupFunction } from 'node:net';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { isNonPublicAddress } from '../network/egressProxy.js';
@@ -19,6 +20,8 @@ additional.addSubnet('2001::', 32, 'ipv6');
 additional.addAddress('168.63.129.16', 'ipv4');
 /** The upstream MCP server refused the credential (HTTP 401); an OAuth server may refresh and retry once. */
 export class ExtensionUpstreamUnauthorizedError extends Error { constructor() { super('MCP credential refused'); } }
+/** The upstream no longer knows the session the gateway sent (HTTP 404 with `Mcp-Session-Id`). */
+export class ExtensionUpstreamSessionNotFoundError extends Error { constructor() { super('MCP session not found'); } }
 export function extensionPublicAddress(address: string): boolean {
   return !isNonPublicAddress(address) && !additional.check(address, isIP(address) === 6 ? 'ipv6' : 'ipv4');
 }
@@ -72,35 +75,145 @@ export async function resolveExtensionEndpoint(value: string, lookup: ExtensionL
   if (!permitted) throw new Error('MCP endpoint must resolve exclusively to public addresses or authorized pinned catalog addresses');
   return { url, ...addresses[0] };
 }
+/** An upstream session's keep-alive connection, pinned to the address vetted when the session opened. */
+export interface ExtensionPinnedConnection { address: string; family: number; agent: https.Agent }
+/** How long an idle pinned socket stays open; the upstream may close it sooner. */
+const PINNED_SOCKET_IDLE_MS = 60_000;
+export function extensionPinnedConnection(address: string, family: number): ExtensionPinnedConnection {
+  // One socket: servers with sticky sessions lose the session on a new connection.
+  return { address, family, agent: new https.Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1, timeout: PINNED_SOCKET_IDLE_MS, lookup: pinnedLookup(address, family) }) };
+}
+/**
+ * Gateway-side session state for one upstream request. Nothing here reaches
+ * the agent: the session id stays in Core and upstream response headers are
+ * read only for `Mcp-Session-Id`.
+ */
+export interface ExtensionMcpExchange {
+  sessionId?: string;
+  /** The `MCP-Protocol-Version` header; the legacy 2025-03-26 when omitted. */
+  protocolVersion?: string;
+  /** Additional MCP request headers (the 2026-07-28 revision's `Mcp-Method` and `Mcp-Name`). */
+  headers?: Record<string, string>;
+  /** Dial through this session's pinned connection instead of a fresh one. */
+  connection?: ExtensionPinnedConnection;
+  /** Open a pinned connection for a session being established; the transport sets `connection`. */
+  pin?: boolean;
+  /** `DELETE` ends the upstream session: no body, any status. */
+  method?: 'POST' | 'DELETE';
+  /** Set by the transport: the `Mcp-Session-Id` the upstream assigned. */
+  assignedSessionId?: string;
+  /** A server-to-client request arrived on the response stream. It is never relayed to the agent. */
+  onServerRequest?: (id: string | number) => void;
+}
+// eslint-disable-next-line max-params -- the transport signature: endpoint, body, credential, policy and session exchange
+export type ExtensionMcpSend = (endpoint: string, body: unknown, token?: string, policy?: ExtensionEndpointPolicy, exchange?: ExtensionMcpExchange) => Promise<unknown>;
+/** Visible ASCII only, bounded: a session id is a header value the gateway sends back. */
+const SESSION_ID = /^[\x21-\x7e]{1,1024}$/;
+
+/** Feeds `text/event-stream` bytes and returns the JSON-RPC messages of each complete event. */
+function eventStreamParser() {
+  const decoder = new StringDecoder('utf8');
+  let buffer = ''; let data: string[] = [];
+  const messages: unknown[] = [];
+  const line = (text: string) => {
+    if (text === '') {
+      if (data.length) { try { messages.push(JSON.parse(data.join('\n'))); } catch { /* not JSON-RPC: ignored */ } }
+      data = []; return;
+    }
+    if (text.startsWith('data:')) data.push(text.slice(5).replace(/^ /, ''));
+    // `event:`, `id:`, `retry:` and comments carry nothing the gateway uses.
+  };
+  return {
+    push(chunk: Buffer): unknown[] {
+      buffer += decoder.write(chunk);
+      const lines = buffer.split(/\r\n|\r|\n/); buffer = lines.pop() ?? '';
+      for (const text of lines) line(text);
+      return messages.splice(0);
+    },
+    end(): unknown[] { buffer += decoder.end(); if (buffer) line(buffer); line(''); return messages.splice(0); },
+  };
+}
+
 /** Resolve on every request, dial only the checked address, keep original TLS
  * identity. No redirect, proxy environment, cookies, content decompression or
- * upstream response headers cross this boundary. */
-export async function requestExtensionMcp(endpoint: string, body: unknown, token?: string, policy: ExtensionEndpointPolicy = {}): Promise<unknown> {
+ * upstream response headers other than `Mcp-Session-Id` cross this boundary.
+ * Responses may be `application/json` or `text/event-stream`; on a stream,
+ * notifications are dropped and server-to-client requests are reported to
+ * `exchange.onServerRequest`, never returned. */
+// eslint-disable-next-line max-params -- one transport boundary for JSON, event streams, sessions and DELETE
+export async function requestExtensionMcp(endpoint: string, body: unknown, token?: string, policy: ExtensionEndpointPolicy = {}, exchange: ExtensionMcpExchange = {}): Promise<unknown> {
   const { url, address, family } = await resolveExtensionEndpoint(endpoint, undefined, policy);
   const host = url.hostname.replace(/^\[|\]$/g, '');
+  // A session keeps dialing the address vetted when it opened; the policy check above still runs on every request.
+  if (exchange.pin && !exchange.connection) exchange.connection = extensionPinnedConnection(address, family);
+  const dial = exchange.connection ?? { address, family };
   // Construct the transport destination solely from the vetted address. The
   // original endpoint supplies only the path, HTTP Host and TLS identity.
-  const destination = new URL(`https://${family === 6 ? `[${address}]` : address}`);
+  const destination = new URL(`https://${dial.family === 6 ? `[${dial.address}]` : dial.address}`);
   destination.pathname = url.pathname;
-  const payload = JSON.stringify(body);
+  const remove = exchange.method === 'DELETE';
+  const payload = remove ? '' : JSON.stringify(body);
   if (Buffer.byteLength(payload) > 64 * 1024) throw new Error('MCP request too large');
+  const requestId = !remove && body && typeof body === 'object' ? (body as { id?: unknown }).id : undefined;
   return new Promise((resolve, reject) => {
-    const unavailable = () => reject(new Error('MCP connection failed'));
+    let settled = false;
+    const finish = (value: unknown) => { if (!settled) { settled = true; resolve(value); } };
+    const fail = (error: Error) => { if (!settled) { settled = true; reject(error); } };
+    const unavailable = () => fail(new Error('MCP connection failed'));
     const request = https.request(destination, {
-      method: 'POST', agent: false,
+      method: remove ? 'DELETE' : 'POST', agent: exchange.connection?.agent ?? false,
       servername: isIP(host) ? undefined : host,
-      lookup: pinnedLookup(address, family),
-      headers: { Host: url.host, 'Content-Type': 'application/json', Accept: 'application/json', 'MCP-Protocol-Version': '2025-03-26', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      lookup: pinnedLookup(dial.address, dial.family),
+      headers: {
+        Host: url.host, ...(remove ? {} : { 'Content-Type': 'application/json' }), Accept: 'application/json, text/event-stream',
+        'MCP-Protocol-Version': exchange.protocolVersion ?? '2025-03-26', ...exchange.headers,
+        ...(exchange.sessionId ? { 'Mcp-Session-Id': exchange.sessionId } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
     }, response => {
-      if (response.statusCode === 202 || response.statusCode === 204) { response.destroy(); resolve(null); return; }
-      if (response.statusCode === 401 && token) { response.destroy(); reject(new ExtensionUpstreamUnauthorizedError()); return; }
-      if (response.statusCode !== 200 || !response.headers['content-type']?.startsWith('application/json')) { response.destroy(); unavailable(); return; }
-      const chunks: Buffer[] = []; let bytes = 0;
-      response.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > EXTENSION_LIMITS.responseBytes) { response.destroy(); unavailable(); } else chunks.push(chunk); });
+      // Drain instead of destroying on a pinned connection, so the socket (and a sticky session) survives.
+      const discard = () => { if (exchange.connection) response.resume(); else response.destroy(); };
+      if (remove) { discard(); finish(null); return; }
+      if (response.statusCode === 401 && token) { discard(); fail(new ExtensionUpstreamUnauthorizedError()); return; }
+      if (response.statusCode === 404 && exchange.sessionId) { discard(); fail(new ExtensionUpstreamSessionNotFoundError()); return; }
+      const assigned = response.headers?.['mcp-session-id'];
+      if (typeof assigned === 'string' && SESSION_ID.test(assigned)) exchange.assignedSessionId = assigned;
+      if (response.statusCode === 202 || response.statusCode === 204) { discard(); finish(null); return; }
+      const type = response.headers?.['content-type'] ?? '';
+      const stream = type.startsWith('text/event-stream');
+      if (response.statusCode !== 200 || !(stream || type.startsWith('application/json'))) { discard(); unavailable(); return; }
+      const chunks: Buffer[] = []; let bytes = 0; let reply: object | undefined;
+      const events = stream ? eventStreamParser() : undefined;
+      const accept = (messages: unknown[]) => {
+        for (const message of messages) {
+          if (!message || typeof message !== 'object' || Array.isArray(message)) continue;
+          const rpc = message as Record<string, unknown>;
+          if (typeof rpc.method === 'string') {
+            // Sampling, elicitation and roots stay unsupported; notifications are dropped.
+            if (typeof rpc.id === 'string' || typeof rpc.id === 'number') exchange.onServerRequest?.(rpc.id);
+            continue;
+          }
+          if (reply === undefined && rpc.id === requestId) reply = rpc;
+        }
+        // The call's own response ends the exchange, even if the stream stays open.
+        if (reply && !settled) { responseWireBytes.set(reply, bytes); finish(reply); if (!exchange.connection) response.destroy(); }
+      };
+      response.on('data', (chunk: Buffer) => {
+        bytes += chunk.length;
+        if (bytes > EXTENSION_LIMITS.responseBytes) { response.destroy(); unavailable(); return; }
+        if (events) accept(events.push(chunk)); else chunks.push(chunk);
+      });
       response.on('error', unavailable);
-      response.on('end', () => { try { const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (parsed !== null && typeof parsed === 'object') responseWireBytes.set(parsed, bytes); resolve(parsed); } catch { unavailable(); } });
+      response.on('end', () => {
+        if (events) {
+          accept(events.end());
+          if (!reply) unavailable();
+          return;
+        }
+        try { const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (parsed !== null && typeof parsed === 'object') responseWireBytes.set(parsed, bytes); finish(parsed); } catch { unavailable(); }
+      });
     });
     const timer = setTimeout(() => { request.destroy(); unavailable(); }, EXTENSION_LIMITS.timeoutMs);
-    request.on('close', () => clearTimeout(timer)); request.on('error', unavailable); request.end(payload);
+    request.on('close', () => { clearTimeout(timer); unavailable(); }); request.on('error', unavailable); request.end(payload);
   });
 }

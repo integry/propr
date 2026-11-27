@@ -366,10 +366,13 @@ test('synthetic HTTPS MCP enforces TLS, pins the vetted address, refuses redirec
   const { database, store } = await fixture(t);
   extensionTestResources(t).defer(() => t.mock.restoreAll());
   await save(store, input(), { docs: secret }); const token = await launch(store, 'https-selected');
+  const { extensionUpstreamSessions } = await import('../src/extensions/mcpUpstreamSessions.js');
+  extensionTestResources(t).defer(() => extensionUpstreamSessions.closeGrant(extensionTokenHash(token), 'test'));
   const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'lookup' } };
-  const output = await extensionGatewayCall(store, token, 'docs', body); assert.ok(!JSON.stringify(output).includes(secret)); assert.equal(authorizations, 1);
-  await assert.rejects(extensionGatewayCall(store, 'x'.repeat(43), 'docs', body), /expired/); assert.equal(authorizations, 1);
-  redirect = true; await assert.rejects(requestExtensionMcp('https://8.8.8.8/mcp', body, secret), /connection failed/); assert.equal(authorizations, 2);
+  // The first call opens the upstream session: initialize, the initialized notification, then the call.
+  const output = await extensionGatewayCall(store, token, 'docs', body); assert.ok(!JSON.stringify(output).includes(secret)); assert.equal(authorizations, 3);
+  await assert.rejects(extensionGatewayCall(store, 'x'.repeat(43), 'docs', body), /expired/); assert.equal(authorizations, 3);
+  redirect = true; await assert.rejects(requestExtensionMcp('https://8.8.8.8/mcp', body, secret), /connection failed/); assert.equal(authorizations, 4);
   redirect = false; oversized = true; await assert.rejects(requestExtensionMcp('https://8.8.8.8/mcp', body, secret), /connection failed/);
   oversized = false;
   const before = (await database('extension_run_grants').first()).bytes;

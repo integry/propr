@@ -1,7 +1,7 @@
 import { formatDateTime, formatRelativeTime, toDateTimeAttribute } from '../../utils/dateFormat';
 import { useState } from 'react';
 import type { ExtensionLibraryRevision } from '@propr/shared';
-import { extensionLibraryHistory, validateExtensionLibrary } from '../../api/extensionProfilesApi';
+import { extensionLibraryHistory, validateExtensionLibrary, type ExtensionValidationResult } from '../../api/extensionProfilesApi';
 import { SettingsSection } from './SettingsLayout';
 import { AgentExtensionsDescription } from './AgentExtensionsGuide';
 import { ExtensionServersList } from './extensions/ExtensionServersList';
@@ -9,9 +9,15 @@ import { ExtensionSkillsList } from './extensions/ExtensionSkillsList';
 import { buttonClass } from './extensions/extensionUi';
 import { useExtensionLibrary, type ExtensionLibraryState } from './extensions/useExtensionLibrary';
 
-const describeValidation = (results: Awaited<ReturnType<typeof validateExtensionLibrary>>['results']) =>
-  results.map(r => `${r.name}: ${r.status === 'not_validated' || r.reachable === null ? 'not tested' : r.reachable ? 'reachable' : 'not reachable'}`)
-    .join(' · ') || 'No enabled MCP servers.';
+const AUTHENTICATION_LABELS = { none: 'no authentication', bearer: 'Bearer token', oauth: 'OAuth' } as const;
+/** One server's check result: reachability, then for a reached URL server its session mode and authentication. */
+const describeValidationResult = (r: ExtensionValidationResult) => {
+  if (r.status === 'not_validated' || r.reachable === null) return `${r.name}: not tested`;
+  const details = [r.reachable && r.session ? `${r.session} session` : null, r.authentication ? AUTHENTICATION_LABELS[r.authentication] : null].filter(Boolean);
+  return `${r.name}: ${r.reachable ? 'reachable' : 'not reachable'}${details.length ? ` (${details.join(', ')})` : ''}`;
+};
+const describeValidation = (results: ExtensionValidationResult[]) =>
+  results.map(describeValidationResult).join(' · ') || 'No enabled MCP servers.';
 
 /** Placeholder rows while the library loads. */
 const LibrarySkeleton = () => (

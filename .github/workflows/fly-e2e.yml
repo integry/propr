@@ -9,7 +9,9 @@ on:
         options: [sprites, fly-machines]
         default: sprites
       extensions:
-        description: Also verify Extension Library items (a skill bundle and a pinned npm MCP server) on the remote runtime
+        description: >-
+          Also verify Extension Library items on the remote runtime: a skill bundle, a pinned npm MCP server and four
+          URL MCP servers (stateful, stateless, Bearer and a disposable OAuth server on a Sprite)
         type: boolean
         default: false
       mcp:
@@ -38,6 +40,7 @@ jobs:
       - id: check
         env:
           AGENT_RUNTIME: ${{ inputs.agent_runtime || 'sprites' }}
+          EXTENSIONS: ${{ (github.event_name == 'workflow_dispatch' && inputs.extensions) || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_EXTENSIONS == 'true') }}
           FLY_E2E_TOKEN: ${{ secrets.FLY_E2E_TOKEN != '' }}
           FLY_E2E_SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN != '' }}
           FLY_E2E_APP_ENV: ${{ secrets.FLY_E2E_APP_ENV != '' }}
@@ -47,7 +50,8 @@ jobs:
         run: |
           missing=()
           required=(FLY_E2E_TOKEN FLY_E2E_APP_ENV FLY_E2E_GITHUB_TOKEN FLY_E2E_GH_OAUTH_CLIENT_ID FLY_E2E_GH_OAUTH_CLIENT_SECRET)
-          [[ $AGENT_RUNTIME != sprites ]] || required+=(FLY_E2E_SPRITES_TOKEN)
+          # The extensions mode hosts its OAuth fixture on a Sprite, whatever the agent runtime.
+          [[ $AGENT_RUNTIME != sprites && $EXTENSIONS != true ]] || required+=(FLY_E2E_SPRITES_TOKEN)
           for name in "${required[@]}"; do
             [[ ${!name} == true ]] || missing+=("$name")
           done
@@ -91,6 +95,17 @@ jobs:
       EXT_PACKAGE: '@modelcontextprotocol/server-everything'
       EXT_PACKAGE_VERSION: 2.3.1
       EXT_PACKAGE_INTEGRITY: sha512-fOONra8VnAjlVp5xO+dWWoKGkZYg8sBEg52txVoLT0N43B3F5nX3UmsgHch79DM0L+nVCi/w5d/WV6UfhBH7kA==
+      # URL MCP servers. mcptest.io's echo fixture is stateful (2025 sessions) and takes `message`;
+      # DeepWiki answers without a session; the Bearer fixture publishes its token in its 401 reply.
+      URL_STATEFUL: https://mcptest.io/fixtures/echo/mcp
+      URL_STATELESS: https://mcp.deepwiki.com/mcp
+      URL_STATELESS_TOOL: read_wiki_structure
+      URL_BEARER: https://mcptest.io/fixtures/auth-bearer/mcp
+      URL_BEARER_TOKEN: mcptest-public-token
+      # The OAuth fixture: a disposable Sprite with a public URL, so it takes none of the org's three Machines.
+      OAUTH_SPRITE: propr-e2e-oauth-${{ github.run_id }}-${{ github.run_attempt }}
+      # Core refreshes one minute before expiry, so a 90 s token forces refreshes during the run.
+      OAUTH_ACCESS_TTL: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -287,6 +302,44 @@ jobs:
           test -s "$OUT/claude-settings.sh"
           bash -eu "$OUT/claude-settings.sh"
 
+      - name: Start the OAuth MCP fixture on a disposable Sprite
+        if: env.EXTENSIONS == 'true'
+        timeout-minutes: 8
+        env:
+          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Marker first: teardown deletes the Sprite even if creation's response is lost.
+          touch "$OUT/delete-oauth-sprite"
+          node --input-type=module <<'JS'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { SpritesClient } from '@fly/sprites';
+          const client = new SpritesClient(process.env.SPRITES_TOKEN);
+          const name = process.env.OAUTH_SPRITE;
+          // A public URL: ProPR's gateway and OAuth client reach it like any provider, over HTTPS on 443.
+          await client.createSprite(name, { urlSettings: { auth: 'public' } });
+          const sprite = await client.getSprite(name);
+          if (!sprite.url?.startsWith('https://')) throw new Error(`Sprite ${name} has no public HTTPS URL`);
+          const origin = new URL(sprite.url).origin;
+          const home = (await sprite.exec('sh -c "mkdir -p ~/oauth-fixture && cd ~/oauth-fixture && pwd"')).stdout.toString().trim();
+          await sprite.filesystem().writeFile(`${home}/fixture.mjs`, readFileSync('.github/fly-e2e/oauth-mcp-fixture.mjs'), { mode: 0o755 });
+          // Sprites ship Node through a login-shell shim; a service survives the Sprite sleeping and waking.
+          const started = await sprite.createService('oauth-mcp', {
+            cmd: 'bash', args: ['-lc', `exec node ${home}/fixture.mjs`], dir: home, httpPort: 8080,
+            env: { PUBLIC_URL: origin, PORT: '8080', ACCESS_TTL: process.env.OAUTH_ACCESS_TTL, STATE_FILE: `${home}/state.json` },
+          });
+          started.close();
+          for (let attempt = 0; ; attempt++) {
+            try { const health = await fetch(`${origin}/health`); if (health.ok) break; } catch { /* not up yet */ }
+            if (attempt >= 60) throw new Error('The OAuth fixture did not answer /health');
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+          const metadata = await (await fetch(`${origin}/.well-known/oauth-protected-resource/mcp`)).json();
+          if (metadata.resource !== `${origin}/mcp`) throw new Error('The OAuth fixture names another resource');
+          appendFileSync(process.env.GITHUB_ENV, `OAUTH_FIXTURE_ORIGIN=${origin}\n`);
+          console.log(`OAuth MCP fixture at ${origin}/mcp (access tokens ${process.env.OAUTH_ACCESS_TTL} s)`);
+          JS
+
       - name: Add Extension Library items before idle shutdown
         if: env.EXTENSIONS == 'true'
         env:
@@ -303,7 +356,7 @@ jobs:
           }
           # Only reads retry; a repeated save would fail on the expected library revision.
           get() { api "$1" --retry 4 --retry-all-errors; }
-          post() { api "$1" -X POST -H 'Content-Type: application/json' -H 'X-ProPR-Extensions: 1' --data-binary @-; }
+          post() { api "$1" -X POST -H 'Content-Type: application/json' -H 'X-ProPR-Extensions: 1' --data-binary @- "${@:2}"; }
           # Wake the Machine if the proxy stopped it, then store the bootstrap administrator role.
           get /health > /dev/null
           echo '{}' | api /api/admin/members/claim -X POST -H 'Content-Type: application/json' --data-binary @- |
@@ -332,28 +385,84 @@ jobs:
             { echo "::error::$EXT_PACKAGE@$EXT_PACKAGE_VERSION no longer resolves to the pinned integrity"; exit 1; }
 
           current=$(get /api/instance/extensions/v1)
+          # The OAuth sign-in needs the instance's public callback URL.
+          jq -e '.oauth.redirectUri | strings | startswith("https://")' <<< "$current" > /dev/null ||
+            { echo "::error::The deployment has no public base URL, so OAuth sign-in is unavailable"; exit 1; }
+          # The Bearer server is saved with a wrong token first: Test connections must refuse it promptly.
           jq -n --argjson current "$current" --arg bundle "$bundle" --arg repo "$REPO" \
-            --arg package "$EXT_PACKAGE" --arg version "$EXT_PACKAGE_VERSION" '{
+            --arg package "$EXT_PACKAGE" --arg version "$EXT_PACKAGE_VERSION" \
+            --arg stateful "$URL_STATEFUL" --arg stateless "$URL_STATELESS" --arg statelessTool "$URL_STATELESS_TOOL" \
+            --arg bearer "$URL_BEARER" --arg oauth "$OAUTH_FIXTURE_ORIGIN/mcp" --arg wrong "wrong-token-$RUN_TOKEN" '
+            def url($name; $url; $tool; $auth): {kind: "https", name: $name, url: $url, enabled: true, tools: [$tool], capability: "read",
+              authentication: $auth, repositories: [$repo], agents: [], autoApply: true};
+            {
               expectedRevision: $current.library.revision,
+              secrets: {"url-bearer": $wrong},
               input: {
                 version: $current.contract.version,
                 servers: ($current.library.servers + [{
                   kind: "package", name: "fixture-echo", enabled: true, tools: ["echo"], capability: "read",
                   ecosystem: "npm", package: $package, version: $version, bin: "mcp-server-everything", args: ["stdio"],
                   env: [], secretEnv: [], repositories: [$repo], agents: [], autoApply: true
-                }]),
+                },
+                  url("url-stateful"; $stateful; "echo"; "none"),
+                  url("url-stateless"; $stateless; $statelessTool; "none"),
+                  url("url-bearer"; $bearer; "echo"; "bearer"),
+                  url("url-oauth"; $oauth; "echo"; "oauth")
+                ]),
                 skills: ($current.library.skills + [{bundleId: $bundle, enabled: true, repositories: [$repo], agents: [], autoApply: true}])
               }
             }' | post /api/instance/extensions/v1/library > "$OUT/library.json"
           jq -e --arg bundle "$bundle" --arg integrity "$EXT_PACKAGE_INTEGRITY" '
             (.library.skills | any(.bundleId == $bundle and .enabled and .autoApply)) and
-            (.library.servers | any(.name == "fixture-echo" and .enabled and .autoApply and .integrity == $integrity))
+            (.library.servers | any(.name == "fixture-echo" and .enabled and .autoApply and .integrity == $integrity)) and
+            ([.library.servers[] | select(.kind == "https" and .enabled and .autoApply) | .name] | sort == ["url-bearer", "url-oauth", "url-stateful", "url-stateless"])
           ' "$OUT/library.json" > /dev/null
+
+          # Test connections with the wrong Bearer token: a clean, prompt "not reachable", not a hang.
+          started=$(date +%s)
+          echo '{}' | post /api/instance/extensions/v1/validate > "$OUT/validate-wrong.json"
+          elapsed=$(( $(date +%s) - started ))
+          jq -e '.results[] | select(.name == "url-bearer") | .reachable == false and .status == "unavailable" and .authentication == "bearer"' "$OUT/validate-wrong.json" > /dev/null ||
+            { echo "::error::A wrong Bearer token was not refused: $(jq -c '.results[] | select(.name == "url-bearer")' "$OUT/validate-wrong.json")"; exit 1; }
+          (( elapsed < 60 )) || { echo "::error::Test connections took ${elapsed}s with a wrong Bearer token"; exit 1; }
+          echo "Wrong Bearer token refused in ${elapsed}s"
+          revision=$(jq -r .library.revision "$OUT/library.json")
+          jq -n --arg secret "$URL_BEARER_TOKEN" --argjson revision "$revision" '{name: "url-bearer", secret: $secret, expectedRevision: $revision}' |
+            post /api/instance/extensions/v1/secrets > "$OUT/library.json"
+
+          # OAuth sign-in through the Settings API, no browser: Check, Connect, the provider's consent
+          # (the fixture approves at once) and ProPR's callback, in one cookie session as a browser would.
+          jq -n --arg url "$OAUTH_FIXTURE_ORIGIN/mcp" '{url: $url}' | post /api/instance/extensions/v1/oauth/check > "$OUT/oauth-check.json"
+          jq -e --arg issuer "$OAUTH_FIXTURE_ORIGIN" '.check.authorizationRequired and .check.registration == "dynamic" and .check.issuer == $issuer' "$OUT/oauth-check.json" > /dev/null ||
+            { echo "::error::OAuth discovery of the fixture failed: $(jq -c .check "$OUT/oauth-check.json")"; exit 1; }
+          jar="$OUT/oauth-cookies"
+          authorization=$(echo '{"name":"url-oauth"}' | post /api/instance/extensions/v1/oauth/start -c "$jar" -b "$jar" | jq -er '.authorizationUrl | strings')
+          [[ $authorization == "$OAUTH_FIXTURE_ORIGIN/authorize?"* ]]
+          callback=$(curl --silent --show-error -o /dev/null -w '%{redirect_url}' "$authorization")
+          [[ $callback == "$base/api/instance/extensions/v1/oauth/callback?"* ]] ||
+            { echo "::error::The fixture's consent did not redirect to ProPR's callback"; exit 1; }
+          api "${callback#"$base"}" -c "$jar" -b "$jar" > "$OUT/oauth-callback.html"
+          grep -q 'is connected' "$OUT/oauth-callback.html" || { echo "::error::The OAuth callback did not connect url-oauth"; exit 1; }
+          rm -f "$jar"
+          get /api/instance/extensions/v1 | jq -e '.oauth.connections["url-oauth"].state == "connected"' > /dev/null
+
+          # Test connections again: every URL server is reached and reports its session mode and authentication.
+          echo '{}' | post /api/instance/extensions/v1/validate > "$OUT/validate.json"
+          jq -e '[.results[] | select(.name | startswith("url-")) | {key: .name, value: [.reachable, .session, .authentication]}] | from_entries == {
+              "url-stateful": [true, "stateful", "none"], "url-stateless": [true, "stateless", "none"],
+              "url-bearer": [true, "stateful", "bearer"], "url-oauth": [true, "stateful", "oauth"]
+            }' "$OUT/validate.json" > /dev/null ||
+            { echo "::error::Test connections: $(jq -c '[.results[] | select(.name | startswith("url-"))]' "$OUT/validate.json")"; exit 1; }
           {
             echo "### Extension Library (revision $(jq -r .library.revision "$OUT/library.json"))"
             echo "- Skill bundle \`fixture-token\` ($bundle), auto-applied to $REPO"
             echo "- Package MCP server \`fixture-echo\`: \`$EXT_PACKAGE@$EXT_PACKAGE_VERSION\` ($EXT_PACKAGE_INTEGRITY), auto-applied to $REPO"
-            echo "- URL MCP server: skipped. The fixture has no reachable URL MCP server of its own, and the gateway's reverse-forward route (#3817) is not merged yet."
+            echo "- URL MCP servers after Test connections (a wrong Bearer token was refused in ${elapsed}s first):"
+            jq -r --arg stateful "$URL_STATEFUL" --arg stateless "$URL_STATELESS" --arg bearer "$URL_BEARER" --arg oauth "$OAUTH_FIXTURE_ORIGIN/mcp" '
+              {"url-stateful": $stateful, "url-stateless": $stateless, "url-bearer": $bearer, "url-oauth": $oauth} as $urls
+              | .results[] | select(.name | startswith("url-"))
+              | "  - `\(.name)` \($urls[.name]): \(.session), auth \(.authentication)"' "$OUT/validate.json"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configure the signed App webhook and create the agent-labeled issue
@@ -404,11 +513,15 @@ jobs:
 
           body="Create $APP.txt with exactly two lines. The first line is exactly $APP. The second line is the output of running \`$RUNTIME_PACKAGE_COMMAND\` in your shell, copied verbatim; do not install anything or edit that output. Open a PR resolving this issue."
           if [[ $EXTENSIONS == true ]]; then
-            body="Create $APP.txt containing exactly four lines and nothing else:
+            body="Create $APP.txt containing exactly eight lines and nothing else:
           1. \`$APP\`
           2. the output of running \`$RUNTIME_PACKAGE_COMMAND\` in your shell, copied verbatim; do not install anything or edit that output
           3. the fixture skill token (the \`fixture-token\` skill tells you what it is)
           4. the exact text returned by the \`echo\` tool of the \`fixture-echo\` MCP server when called with message \`MCP-OK-$RUN_TOKEN\`
+          5. the exact text returned by the \`echo\` tool of the \`url-stateful\` MCP server when called with message \`URL-STATEFUL-OK-$RUN_TOKEN\`
+          6. \`URL-STATELESS-OK-$RUN_TOKEN\` if the \`$URL_STATELESS_TOOL\` tool of the \`url-stateless\` MCP server, called with repoName \`modelcontextprotocol/modelcontextprotocol\`, returned a non-empty result; otherwise \`URL-STATELESS-FAILED\`
+          7. the exact text returned by the \`echo\` tool of the \`url-bearer\` MCP server when called with message \`URL-BEARER-OK-$RUN_TOKEN\`
+          8. the exact text returned by the \`echo\` tool of the \`url-oauth\` MCP server when called with message \`URL-OAUTH-OK-$RUN_TOKEN\`
 
           Open a PR resolving this issue."
           fi
@@ -530,7 +643,7 @@ jobs:
           echo "::add-mask::$token"
           GH_TOKEN="$token" gh api "repos/$REPO/contents/$APP.txt?ref=$sha" --jq .content | base64 -d > "$OUT/fixture.txt"
           mapfile -t lines < <(tr -d '\r' < "$OUT/fixture.txt")
-          expected_lines=$([[ $EXTENSIONS == true ]] && echo 4 || echo 2)
+          expected_lines=$([[ $EXTENSIONS == true ]] && echo 8 || echo 2)
           for i in $(seq 0 $((expected_lines - 1))); do printf 'Fixture file line %s: %s\n' $((i + 1)) "${lines[i]-}"; done
           [[ ${#lines[@]} == "$expected_lines" && ${lines[0]} == "$APP" ]] ||
             { echo "::error::$APP.txt must have exactly $expected_lines lines, the first being $APP"; exit 1; }
@@ -550,8 +663,9 @@ jobs:
             '.packagesDigest == $digest and .packageCount == $count and (.installMs | numbers) >= 0' \
             <<< "$install" > /dev/null || { echo "::error::Runtime package install log does not match packagesDigest $RUNTIME_PACKAGES_DIGEST"; exit 1; }
           if [[ $EXTENSIONS == true ]]; then
-            expected=("SKILL-OK-$RUN_TOKEN" "Echo: MCP-OK-$RUN_TOKEN")
-            for i in 0 1; do
+            expected=("SKILL-OK-$RUN_TOKEN" "Echo: MCP-OK-$RUN_TOKEN" "URL-STATEFUL-OK-$RUN_TOKEN"
+              "URL-STATELESS-OK-$RUN_TOKEN" "URL-BEARER-OK-$RUN_TOKEN" "URL-OAUTH-OK-$RUN_TOKEN")
+            for i in "${!expected[@]}"; do
               [[ ${lines[i + 2]:-} == "${expected[i]}" ]] ||
                 { echo "::error::$APP.txt line $((i + 3)) is '${lines[i + 2]:-}', expected '${expected[i]}'"; exit 1; }
             done
@@ -559,8 +673,8 @@ jobs:
             logs=$({ cat "$OUT/app-logs.json"; flyctl logs --app "$APP" --no-tail --json; } |
               jq -sc '[.[] | .message? | strings | fromjson? | objects] | unique')
             applied=$(jq -ce --arg runtime "$AGENT_RUNTIME" '[.[] | select(.msg == "Extension Library items applied to this run"
-              and .runtime == $runtime and .skills >= 1 and .packageServers >= 1)] | max_by(.time) | objects' <<< "$logs") ||
-              { echo "::error::No 'Extension Library items applied to this run' record for $AGENT_RUNTIME with skills>=1 and packageServers>=1"; exit 1; }
+              and .runtime == $runtime and .skills >= 1 and .packageServers >= 1 and .urlServers == 4)] | max_by(.time) | objects' <<< "$logs") ||
+              { echo "::error::No 'Extension Library items applied to this run' record for $AGENT_RUNTIME with skills>=1, packageServers>=1 and urlServers=4"; exit 1; }
             installed=$(jq -ce --arg digest "$(jq -r .packageServersDigest <<< "$applied")" '[.[] | select(
               (.msg == "Installed package MCP servers on Sprite" or .msg == "Installed package MCP servers at Fly Machine start")
               and .packageServersDigest == $digest)] | max_by(.time) | objects' <<< "$logs") ||
@@ -571,6 +685,39 @@ jobs:
               echo "- packageServersDigest: \`$(jq -r .packageServersDigest <<< "$applied")\`"
               echo "- skills=$(jq -r .skills <<< "$applied"), packageServers=$(jq -r .packageServers <<< "$applied"), urlServers=$(jq -r .urlServers <<< "$applied")"
               echo "- $(jq -r .msg <<< "$installed"): installMs=$(jq -r .installMs <<< "$installed")"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            # The gateway's upstream sessions for this run: opened while the agent ran, closed (with a DELETE
+            # for stateful ones) once the grant ended. The API sweeps ended grants every 15 s.
+            task=$(jq -r .taskId <<< "$applied")
+            servers='["url-bearer","url-oauth","url-stateful","url-stateless"]'
+            for _ in {1..12}; do
+              logs=$({ cat "$OUT/app-logs.json"; timeout 60s flyctl logs --app "$APP" --no-tail --json; } |
+                jq -sc '[.[] | .message? | strings | fromjson? | objects] | unique')
+              closed=$(jq -c --arg task "$task" '[.[] | select(.msg == "Closed extension URL MCP upstream session" and .taskId == $task)]
+                | group_by(.server) | map(max_by(.time))' <<< "$logs")
+              jq -e --argjson servers "$servers" '[.[].server] | sort == $servers' <<< "$closed" > /dev/null && break
+              sleep 10
+            done
+            opened=$(jq -c --arg task "$task" '[.[] | select(.msg == "Opened extension URL MCP upstream session" and .taskId == $task)]' <<< "$logs")
+            jq -e --argjson servers "$servers" '[.[].server] | unique == $servers' <<< "$opened" > /dev/null ||
+              { echo "::error::Missing 'Opened extension URL MCP upstream session' records: $(jq -c '[.[] | {server, sessionMode}]' <<< "$opened")"; exit 1; }
+            jq -e '[.[] | {key: .server, value: [.sessionMode, .authentication]}] | from_entries == {
+                "url-stateful": ["stateful", "none"], "url-stateless": ["stateless", "none"],
+                "url-bearer": ["stateful", "bearer"], "url-oauth": ["stateful", "oauth"]
+              }' <<< "$opened" > /dev/null ||
+              { echo "::error::Unexpected session or auth modes: $(jq -c '[.[] | {server, sessionMode, authentication}]' <<< "$opened")"; exit 1; }
+            jq -e --argjson servers "$servers" '([.[].server] | sort == $servers) and all(.toolCalls >= 1)
+              and all(if .sessionMode == "stateful" then .deleted else true end)' <<< "$closed" > /dev/null ||
+              { echo "::error::The run's URL MCP sessions were not all used and closed: $(jq -c '[.[] | {server, toolCalls, deleted, reason}]' <<< "$closed")"; exit 1; }
+            stats=$(curl --fail --silent --show-error --retry 4 --retry-all-errors "$OAUTH_FIXTURE_ORIGIN/stats")
+            jq -e --arg token "URL-OAUTH-OK-$RUN_TOKEN" '.refreshes >= 1 and (.echoes | index($token)) != null and .sessionsDeleted >= 1' <<< "$stats" > /dev/null ||
+              { echo "::error::The OAuth fixture saw no refresh, echo or DELETE: $(jq -c '{refreshes, sessionsOpened, sessionsDeleted, sessionNotFound, unauthorized}' <<< "$stats")"; exit 1; }
+            {
+              echo "### URL MCP servers through the gateway ($AGENT_RUNTIME)"
+              echo "| Server | Session | Auth | Tool calls | Token refreshes | Re-initialized | Closed |"
+              echo "| --- | --- | --- | --- | --- | --- | --- |"
+              jq -r '.[] | "| `\(.server)` | \(.sessionMode) | \(.authentication) | \(.toolCalls) | \(.refreshes) | \(.reinitialized) | \(.reason)\(if .deleted then ", DELETE sent" else "" end) |"' <<< "$closed"
+              echo "- OAuth fixture (access tokens ${OAUTH_ACCESS_TTL}s): $(jq -r '"\(.refreshes) refreshes, \(.sessionsOpened) sessions opened, \(.sessionsDeleted) deleted, \(.sessionNotFound) session-not-found replies"' <<< "$stats")"
             } | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           # Read the worker's measurement for this issue AND PR, after wake was observed.
@@ -702,6 +849,22 @@ jobs:
           for (const sprite of await client.listAllSprites(prefix)) {
             if (sprite.name.startsWith(prefix)) await client.deleteSprite(sprite.name);
           }
+          JS
+      - name: Delete the OAuth fixture Sprite
+        # Keyed only on the marker written before the Sprite is created, so it runs whatever failed.
+        if: always() && env.EXTENSIONS == 'true'
+        env:
+          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+        run: |
+          [[ -f $OUT/delete-oauth-sprite ]] || exit 0
+          node --input-type=module <<'JS'
+          import { SpritesClient } from '@fly/sprites';
+          const client = new SpritesClient(process.env.SPRITES_TOKEN);
+          const name = process.env.OAUTH_SPRITE;
+          const remaining = await client.listAllSprites(name);
+          for (const sprite of remaining) if (sprite.name === name) await client.deleteSprite(name);
+          if ((await client.listAllSprites(name)).some(sprite => sprite.name === name)) throw new Error(`Sprite ${name} is still listed`);
+          console.log(`Deleted the OAuth fixture Sprite ${name}`);
           JS
       - name: Close fixture work
         if: always() && env.ISSUE != ''

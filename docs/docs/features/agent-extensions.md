@@ -71,7 +71,10 @@ branch or tag, or verified against the repository.
 A warning above a list appears when more than 8 enabled servers or 8 enabled
 skills could apply to one repository and agent combination: only 8 are used per
 run. **Test connections** checks the saved HTTPS servers and reports each as
-reachable, not reachable or not tested, and **Revision history** lists every
+reachable, not reachable or not tested; a reached URL server also shows whether
+it is stateful or stateless (see [Upstream sessions](#upstream-sessions)) and
+which authentication it uses. **Discover tools** opens and ends a session the
+same way, so stateful servers list their tools too. **Revision history** lists every
 library revision with its time and administrator. Bearer tokens are never shown; the form only says whether one is
 configured.
 
@@ -193,14 +196,53 @@ temporary skill directory, including when execution fails.
 
 ## MCP policy
 
-V1 supports stateless HTTPS MCP endpoints with JSON responses. Each server has a
+HTTPS MCP endpoints may be stateless or stateful and may answer with
+`application/json` or `text/event-stream`. Each server has a
 stable name, an explicit list of allowed tool names, a read/write capability and
 optional write-only bearer authentication or [OAuth sign-in](#oauth-servers). A write server also requires the run's
 explicit write authorization. Runs without that authorization, including automation report phases, launch with write servers excluded. Automation action phases expose them under their explicit phase policy, and so does the initial task of a New Task submission with the write opt-in. Label-started tasks, retries, replacement attempts and pull request follow-ups never receive write servers. Omission is false. `initialize`, `ping`, the initialized
 notification, `tools/list` and explicitly listed `tools/call` are the only gateway
-methods. Resource APIs, prompts, server-initiated requests, response cookies,
-upstream session headers, SSE and stateful transports are unavailable. Connectivity
-validation returns only server names and reachable booleans.
+methods. Resource APIs, prompts and response cookies are unavailable. Connectivity
+validation returns only server names, reachable booleans, the session mode the
+upstream chose and the configured authentication.
+
+### Upstream sessions
+
+The gateway, not the agent, owns each URL server's upstream MCP session:
+
+- **Handshake.** On a run's first call to a server, Core sends `initialize`
+  (asking for the newest 2025 revision) and the initialized notification itself.
+  When the upstream answers with an `Mcp-Session-Id`, the server is *stateful*:
+  Core keeps the id, keyed by the run's grant and the server, and sends it with
+  every later call together with the negotiated `MCP-Protocol-Version`. Without
+  an id the server is *stateless*. If the upstream refuses `initialize`, Core
+  tries the stateless 2026-07-28 revision (`server/discover`, then every request
+  carries its `_meta` and `Mcp-Method` headers). The mode comes only from the
+  upstream's answers, never from configuration. The agent's own `initialize` and
+  initialized notification are answered by the gateway with the same fixed
+  projection as before.
+- **Nothing upstream reaches the agent.** The session id never leaves Core, and
+  it is redacted from tool output like a credential. Server-to-client requests
+  (sampling, elicitation, roots) are not supported: Core answers each one
+  upstream with a JSON-RPC `-32601` error and never relays it. Notifications on
+  a call's event stream are dropped. The per-tool allowlist, read/write
+  capability, egress policy, byte accounting and credential redaction apply to
+  every request, including the handshake.
+- **Pinned connection.** Each session keeps one keep-alive connection to the
+  address vetted when it opened, because some servers lose a session when a
+  request arrives on a new connection. DNS and policy are still checked on
+  every request.
+- **Lost sessions.** When the upstream answers `404` to a request with the
+  session id, Core re-initializes once and replays the call for `read` servers.
+  A `write` server's call is never replayed: it fails with a tool error.
+- **End of run.** When the grant is revoked or expires, Core sends `DELETE` with
+  each session id (best effort), closes the connection and forgets the session;
+  the API process checks its sessions every 15 seconds. Sessions are also
+  capped (8 per run, 256 per API process, least recently used closed first) and
+  expire after 10 idle minutes. A closed session is reopened on the next call.
+
+Sessions live in the API process that serves the gateway: restarting it ends
+them, and the next call opens a new one.
 
 Endpoints must use port 443 and have no credentials, query parameters or fragments.
 Core resolves and checks all DNS answers on every connection, then dials only a
@@ -357,6 +399,10 @@ per item: a second caller waits for the first result, across API processes too,
 and a rotated refresh token is stored atomically with the new access token, so
 concurrent runs never invalidate each other's token. A refresh carries the same
 `resource` as the sign-in. Access tokens are on the gateway's redaction list.
+A refresh does not end the upstream session: a stateful OAuth server keeps its
+session id and the retry after a `401` is sent in the same session. This works
+the same for runs on Docker, Sprites (whose gateway calls arrive over the SSH
+reverse forward) and Fly Machines, since the token never leaves Core.
 
 When the authorization server refuses a refresh (`invalid_grant` and similar),
 the item moves to **Needs sign-in** and administrators receive one Inbox
@@ -662,7 +708,15 @@ challenge and the well-known fallback, all three registration methods, PKCE,
 `state` and `iss` refusals, single-flight refresh with rotation, the
 one-refresh-one-retry path, Needs sign-in with its single notification, endpoint
 policy refusals and token sentinels; a browser test drives **Connect** through
-the provider's page and the callback.
+the provider's page and the callback. Upstream-session tests
+(`packages/core/test/extensionUpstreamSessions.test.ts`) cover a session's
+creation, reuse, re-initialization after a `404`, `DELETE` at grant end, caps and
+idle expiry, both protocol eras, write calls that are never replayed, event
+streams and server-to-client requests over a real TLS connection, and an OAuth
+server keeping its session through refreshes and a `401`. The
+[Fly smoke](../tutorials/setup-fly.md) extensions mode calls four live URL
+servers from Sprites and Fly Machines: a stateful one, a stateless one, one
+with a Bearer token and a disposable OAuth server whose tokens expire mid-run.
 
 Skill-bearing runs require a Linux worker with `/proc/self/fd` available for secure directory-handle staging. Non-Linux workers reject skill staging with an explicit error; Runs with only MCP servers do not require these staging primitives.
 
