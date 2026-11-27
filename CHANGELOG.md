@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Upgraded bundled Mistral Vibe from 2.25.8 to 3.1.5. Tasks use native prompt files and stream Vibe’s structured responses. Vibe runs no longer exit before starting when `~/.vibe/config.toml` sets an absolute host `session_logging.save_dir`: session logs now always go to the container runtime home. [PyPI release](https://pypi.org/project/mistral-vibe/3.1.5/)
+- Upgraded bundled Mistral Vibe from 2.25.8 to 3.1.5. Tasks use native prompt files and stream Vibe’s structured responses. Vibe runs no longer exit before starting when `~/.vibe/config.toml` sets an absolute host `session_logging.save_dir`: session logs now always go to the container runtime home. The live task view shows Vibe 3 tool calls and their results again. [PyPI release](https://pypi.org/project/mistral-vibe/3.1.5/)
 
 - **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)
   - npm reported Claude Code 2.1.330 as `latest` and 2.1.323 as `stable`.

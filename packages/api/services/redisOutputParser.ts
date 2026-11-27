@@ -6,7 +6,7 @@ import {
   normalizeOpenCodeUsage,
 } from '@propr/core';
 import { extractOpenCodeAssistantSegments } from '../routes/liveDetailsOpenCodeParser.js';
-import { parseVibeTranscriptOutput, processVibeEvent } from './redisOutputParserVibe.js';
+import { parseVibeTranscriptOutput, processVibe3Entry, processVibeRoleRecord } from './redisOutputParserVibe.js';
 
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
@@ -804,6 +804,9 @@ function parseLine(line: string, state: ParseState): void {
       ? normalizeOpenCodeTimestamp(rawTimestamp)
       : rawTimestamp || getNextSyntheticTimestamp(state);
 
+    // Vibe 3 entries key on type/turnId, not role; effects carry no role at all.
+    if (processVibe3Entry(event, timestamp, state)) return;
+
     if (processCodexAppServerEvent(event, timestamp, state)) return;
 
     // Session-qualified OpenCode events overlap with Antigravity's tool
@@ -828,10 +831,7 @@ function parseLine(line: string, state: ParseState): void {
       // Try OpenCode
       if (processOpenCodeEvent(event, timestamp, state)) return;
       // Try Vibe transcript events
-      if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
-        processVibeEvent(event, timestamp, state);
-        return;
-      }
+      if (processVibeRoleRecord(event, timestamp, state)) return;
       // Fall back to Antigravity stream event processing
       processAntigravityEvent(event, timestamp, state);
     }
