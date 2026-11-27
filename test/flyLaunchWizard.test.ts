@@ -16,6 +16,7 @@ import { applyLaunchEnv, GITHUB_APP_KEY_FILE, readLaunchConfig, setupRequired, t
 import { createLaunchStore, type LaunchStore } from '../src/flyLaunch/launchStore.ts';
 import { createSetupAccess, SETUP_ACCESS_FILE, SETUP_CLAIM_COOKIE } from '../src/flyLaunch/setupAccess.ts';
 import { createSetupWizard, type SetupWizard } from '../src/flyLaunch/setupWizard.ts';
+import type { RuntimeValidators } from '../src/flyLaunch/runtimeValidation.ts';
 
 const PUBLIC_URL = 'https://propr-test.fly.dev';
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -59,7 +60,7 @@ interface Harness {
     request(path: string, options?: { method?: string; form?: Record<string, string>; cookie?: string; origin?: string }): Promise<Response>;
 }
 
-async function startWizard(): Promise<Harness> {
+async function startWizard(overrides: { validators?: Partial<RuntimeValidators> } = {}): Promise<Harness> {
     const root = mkdtempSync(join(tmpdir(), 'fly-launch-wizard-'));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     const store = createLaunchStore(join(root, 'fly-launch'));
@@ -72,6 +73,7 @@ async function startWizard(): Promise<Harness> {
         validators: {
             sprites: async token => { if (token !== 'good-sprites') throw new Error('401'); },
             flyApp: async (app, token) => (app === 'propr-agents' && token === 'FlyV1 agent' ? 200 : 403),
+            ...overrides.validators,
         },
     });
     const server: Server = createServer((req, res) => { void wizard.handle(req, res); });
@@ -234,6 +236,49 @@ test('the full wizard: manifest flow, install, administrator, runtime, finish; t
     for (const secret of ['hook-secret', 'client-secret', 'good-sprites', 'FlyV1 agent', 'gho_user', 'ghs_installation', h.code]) {
         assert.ok(!logged.includes(secret), `logs must not contain ${secret}`);
     }
+});
+
+/** Claim, create and install the App, and sign the administrator in: the wizard is at the runtime step. */
+async function throughAdministrator(h: Harness): Promise<string> {
+    const cookie = await claim(h);
+    const start = await (await h.request('/setup/github/start', { method: 'POST', cookie, form: { org: '' } })).text();
+    assert.equal((await h.request(`/setup/github/created?code=manifest-code&state=${stateIn(start)}`, { cookie })).status, 303);
+    const install = await h.request('/setup/github/install', { cookie });
+    assert.equal((await h.request(`/setup/github/installed?installation_id=7&state=${stateIn(install.headers.get('location')!)}`, { cookie })).status, 303);
+    const signin = new URL((await h.request('/setup/github/signin', { cookie })).headers.get('location')!);
+    assert.equal((await h.request(`/setup/github/admin?code=oauth-code&state=${signin.searchParams.get('state')}`, { cookie })).status, 303);
+    return cookie;
+}
+
+test('a runtime save still checking when Finish completes is refused with 409 and does not undo the finish', async () => {
+    let checking!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { checking = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const h = await startWizard({ validators: { sprites: async () => { checking(); await held; } } });
+    const cookie = await throughAdministrator(h);
+    assert.equal((await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'none' } })).status, 303);
+
+    // A second runtime choice is still being checked when Finish is sent.
+    const pendingSave = h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'sprites', spritesToken: 'late-sprites' } });
+    await started;
+    const done = await h.request('/setup/finish', { method: 'POST', cookie, form: {} });
+    assert.equal(done.status, 200);
+    const final = await h.wizard.completed;
+    assert.ok(final.completedAt);
+
+    release();
+    const late = await pendingSave;
+    assert.equal(late.status, 409);
+    assert.match(await late.text(), /Setup already completed/);
+    assert.match(h.logs.join('\n'), /its result was not saved/);
+
+    const stored = readLaunchConfig(h.store);
+    assert.equal(stored.completedAt, final.completedAt, 'the late save keeps completedAt');
+    assert.deepEqual(stored, final, 'nothing of the late save is stored');
+    assert.equal(stored.runtime, 'none');
+    assert.equal(stored.env.SPRITES_TOKEN, undefined);
+    assert.equal(setupRequired(readLaunchConfig(h.store), {}), false, 'the wizard does not start again on restart');
 });
 
 test('storing manifest credentials: key file 0600, App env for direct webhooks, earlier install and admin cleared', () => {

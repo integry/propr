@@ -191,3 +191,13 @@ export function startingPage(): string {
 <p>Then sign in with GitHub and add a model provider in <strong>Settings → Agents</strong>. Label an issue <code>AI</code> to get a pull request.</p>`,
     });
 }
+
+/** A setup step that finished after Finish: nothing of it was saved. */
+export function setupCompletedPage(): string {
+    return renderPage({
+        title: 'Setup already completed',
+        refreshSeconds: 20,
+        body: `<p>Setup was finished while this step was still running, so its result was not saved. The settings chosen before Finish are kept.</p>
+<p>To change a stored value now, set a Fly secret with the same name (or use the dashboard's Secrets page); it wins on the next boot.</p>`,
+    });
+}

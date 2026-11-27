@@ -12,6 +12,13 @@
  * Steps, in order; each is resumable because its result is on the volume:
  *   claim → GitHub App (manifest flow) → install → administrator sign-in →
  *   agent runtime → finish (idle shutdown opt-in).
+ *
+ * Writes: every step's handler awaits GitHub or a runtime check before it
+ * saves, so two of them can overlap (a slow runtime check and Finish). All
+ * writes go through one queue (`commitConfig`): each re-reads the stored
+ * config inside the queue, builds its change on that, and is refused with
+ * 409 once `completedAt` is set, so a late write never replaces the finished
+ * config with a stale snapshot and restarts the wizard.
  */
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
@@ -25,7 +32,7 @@ import {
 } from './githubSetup.js';
 import { RUNTIME_ENV_KEYS, validateRuntimeChoice, type RuntimeValidators } from './runtimeValidation.js';
 import {
-    adminPage, claimedElsewherePage, claimPage, finishPage, githubAppPage, installPage, manifestRedirectPage, runtimePage, startingPage,
+    adminPage, claimedElsewherePage, claimPage, finishPage, githubAppPage, installPage, manifestRedirectPage, runtimePage, setupCompletedPage, startingPage,
     type SetupStep,
 } from './setupPages.js';
 
@@ -57,6 +64,11 @@ export interface SetupWizard {
 }
 
 type StateKind = 'manifest' | 'install' | 'admin';
+
+/** A setup write that arrived after Finish saved `completedAt`; answered with 409. */
+export class SetupCompletedError extends Error {
+    constructor() { super('setup already completed'); }
+}
 
 /** Which step the stored config is at. */
 export function currentSetupStep(config: LaunchConfig, keyExists: boolean): Exclude<SetupStep, 'claim'> {
@@ -97,6 +109,19 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
     let finish!: (config: LaunchConfig) => void;
     const completed = new Promise<LaunchConfig>(resolve => { finish = resolve; });
     let done = false;
+    // The write queue: one setup write at a time, each on the config as stored when its turn comes.
+    let writes: Promise<unknown> = Promise.resolve();
+    const commitConfig = (update: (latest: LaunchConfig) => LaunchConfig): Promise<LaunchConfig> => {
+        const write = writes.then(() => {
+            const latest = readLaunchConfig(store);
+            if (latest.completedAt) throw new SetupCompletedError();
+            const next = update(latest);
+            writeLaunchConfig(store, next);
+            return next;
+        });
+        writes = write.catch(() => undefined);
+        return write;
+    };
 
     const keyExists = (): boolean => existsSync(store.path(GITHUB_APP_KEY_FILE));
     const issueState = (kind: StateKind): string => {
@@ -154,10 +179,11 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         send(response, 200, manifestRedirectPage(action, manifest, nonce), nonce);
     };
 
-    const manifestCreated: Route = async ({ response, url, config }) => {
+    const manifestCreated: Route = async ({ response, url }) => {
         if (!takeState(url.searchParams.get('state'), 'manifest')) throw new GithubSetupError('This GitHub App link is not from this setup session. Start the step again.');
         const credentials = await convertManifestCode(url.searchParams.get('code') ?? '', options.fetcher);
-        writeLaunchConfig(store, storeManifestCredentials(store, config, credentials));
+        // The key file is written inside the queue too: it must not change once setup is complete.
+        await commitConfig(latest => storeManifestCredentials(store, latest, credentials));
         log(`fly-launch: created GitHub App ${credentials.slug} (id ${credentials.id}); credentials stored on the volume`);
         redirect(response, githubAppInstallUrl(credentials.slug, issueState('install')));
     };
@@ -175,10 +201,14 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         const pem = readFileSync(store.path(GITHUB_APP_KEY_FILE), 'utf8');
         const installationId = url.searchParams.get('installation_id') ?? '';
         const { repositories } = await verifyInstallation(config.github.appId, pem, installationId, options.fetcher);
-        const env: Record<string, string> = { ...config.env, GH_INSTALLATION_ID: installationId };
-        if (repositories.length) env.GITHUB_REPOS_TO_MONITOR = repositories.join(',');
-        else delete env.GITHUB_REPOS_TO_MONITOR;
-        writeLaunchConfig(store, { ...config, env });
+        const appId = config.github.appId;
+        await commitConfig(latest => {
+            if (latest.github?.appId !== appId) throw new GithubSetupError('The GitHub App changed while the installation was checked. Install again.');
+            const env: Record<string, string> = { ...latest.env, GH_INSTALLATION_ID: installationId };
+            if (repositories.length) env.GITHUB_REPOS_TO_MONITOR = repositories.join(',');
+            else delete env.GITHUB_REPOS_TO_MONITOR;
+            return { ...latest, env };
+        });
         log(`fly-launch: GitHub App installed (installation ${installationId}, ${repositories.length} repositories)`);
         redirect(response, '/setup');
     };
@@ -193,7 +223,10 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         const { GH_OAUTH_CLIENT_ID: clientId, GH_OAUTH_CLIENT_SECRET: clientSecret } = config.env;
         if (!clientId || !clientSecret) throw new GithubSetupError('Create the GitHub App first.');
         const admin = await signInAdministrator({ clientId, clientSecret }, url.searchParams.get('code') ?? '', publicUrl, options.fetcher);
-        writeLaunchConfig(store, { ...config, admin, env: { ...config.env, PROPR_ADMIN_USERS: admin.login } });
+        await commitConfig(latest => {
+            if (latest.env.GH_OAUTH_CLIENT_ID !== clientId) throw new GithubSetupError('The GitHub App changed during the sign-in. Sign in again.');
+            return { ...latest, admin, env: { ...latest.env, PROPR_ADMIN_USERS: admin.login } };
+        });
         log(`fly-launch: first administrator is ${admin.login}`);
         redirect(response, '/setup');
     };
@@ -211,23 +244,29 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
             const kept = { runtime, flyApp: field('flyApp'), flyImage: field('flyImage'), flyMachinesMax: field('flyMachinesMax') };
             return send(response, 400, runtimePage(config.admin?.login ?? '', options.controlPlaneApp ?? '', result.error, kept));
         }
-        const env = { ...config.env };
-        for (const key of RUNTIME_ENV_KEYS) delete env[key];
-        writeLaunchConfig(store, { ...config, runtime, env: { ...env, ...result.env } });
+        await commitConfig(latest => {
+            const latestStep = currentSetupStep(latest, keyExists());
+            if (latestStep !== 'runtime' && latestStep !== 'finish') throw new GithubSetupError('An earlier setup step changed while the runtime was checked. Continue from here.');
+            const env = { ...latest.env };
+            for (const key of RUNTIME_ENV_KEYS) delete env[key];
+            return { ...latest, runtime, env: { ...env, ...result.env } };
+        });
         log(`fly-launch: agent runtime ${runtime} checked and saved`);
         redirect(response, '/setup');
     };
 
-    const finishSetup: Route = async ({ request, response, config, step }) => {
+    const finishSetup: Route = async ({ request, response, step }) => {
         if (step !== 'finish') return redirect(response, '/setup');
         const form = await readForm(request);
-        const env = { ...config.env };
-        delete env.PROPR_IDLE_SHUTDOWN;
-        delete env.PROPR_IDLE_SHUTDOWN_AFTER;
         const idle = form.get('idleShutdown') === 'on';
-        if (idle) Object.assign(env, { PROPR_IDLE_SHUTDOWN: 'on', PROPR_IDLE_SHUTDOWN_AFTER: FLY_LAUNCH_IDLE_SHUTDOWN_AFTER });
-        const final: LaunchConfig = { ...config, env, completedAt: new Date().toISOString() };
-        writeLaunchConfig(store, final);
+        const final = await commitConfig(latest => {
+            if (currentSetupStep(latest, keyExists()) !== 'finish') throw new GithubSetupError('An earlier setup step changed. Check it and finish again.');
+            const env = { ...latest.env };
+            delete env.PROPR_IDLE_SHUTDOWN;
+            delete env.PROPR_IDLE_SHUTDOWN_AFTER;
+            if (idle) Object.assign(env, { PROPR_IDLE_SHUTDOWN: 'on', PROPR_IDLE_SHUTDOWN_AFTER: FLY_LAUNCH_IDLE_SHUTDOWN_AFTER });
+            return { ...latest, env, completedAt: new Date().toISOString() };
+        });
         access.close();
         done = true;
         log(`fly-launch: setup complete (idle shutdown ${idle ? 'on' : 'off'}); starting ProPR`);
@@ -254,6 +293,10 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         try {
             await route({ request, response, url, config, step: currentSetupStep(config, keyExists()) });
         } catch (error) {
+            if (error instanceof SetupCompletedError) {
+                log('fly-launch: a setup step finished after setup was completed; its result was not saved');
+                return send(response, 409, setupCompletedPage());
+            }
             const message = error instanceof GithubSetupError ? error.message : 'Something went wrong. Try again.';
             if (!(error instanceof GithubSetupError)) log(`fly-launch: setup step failed: ${(error as Error)?.message ?? 'unknown error'}`);
             send(response, 400, stepPage(readLaunchConfig(store), message));
