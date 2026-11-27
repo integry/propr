@@ -48,6 +48,9 @@ const { recordLLMMetrics } = await import('../packages/core/src/utils/llmMetrics
 const { parseCodexStreamOutput } = await import('../packages/core/src/codex/codexHelpers.js');
 const { sumAntigravityStepUsage } = await import('../packages/core/src/agents/impl/antigravityGoalStream.js');
 const { sumAntigravitySegmentUsage } = await import('../packages/core/src/agents/impl/antigravityNativeGoal.js');
+const { parseAntigravityJsonl } = await import('../packages/core/src/agents/impl/utils/antigravityOutputParser.js');
+const { buildAntigravityConversationLog } = await import('../packages/core/src/agents/impl/utils/antigravityConversationLog.js');
+const { readFileSync } = await import('node:fs');
 
 beforeEach(() => { persisted.length = 0; redisWrites.length = 0; errors.length = 0; queueConstructions = 0; pricing = null; costInputs.length = 0; });
 
@@ -214,4 +217,28 @@ test('compute usage is stored on the execution row beside the token cost, and le
     await recordLLMMetrics({ model: 'test-model', success: true, sessionId: 'session-no-compute', executionTime: 1000, conversationLog: [] },
         { repoOwner: 'integry', repoName: 'propr', number: 3762 }, { taskId: 'task-3762', correlationId: 'correlation-no-compute' });
     assert.equal(Object.keys(persisted[0].value as Record<string, unknown>).some(key => key.startsWith('compute_')), false);
+});
+
+test('an Antigravity implementation trace persists every transcript step, tool calls included', async () => {
+    const transcript = readFileSync(new URL('./fixtures/antigravity/agy-1.5-transcript-tools.jsonl', import.meta.url), 'utf8');
+    const conversationLog = buildAntigravityConversationLog(parseAntigravityJsonl(transcript).conversationLog) as never[];
+    await recordLLMMetrics({
+        model: 'antigravity-gemini-3.8-flash', success: true, sessionId: 'agy-conversation', executionTime: 1000,
+        tokenUsage: { input_tokens: 100, output_tokens: 10 }, conversationLog,
+    }, { repoOwner: 'integry', repoName: 'propr', number: 3830 }, { taskId: 'task-3830', correlationId: 'correlation-3830' });
+    assert.deepEqual(errors, []);
+    const details = persisted.find(entry => entry.table === 'llm_execution_details')?.value as Array<Record<string, unknown>>;
+    assert.ok(details);
+    const toolUses = details.filter(detail => detail.tool_name);
+    assert.deepEqual(toolUses.map(detail => detail.tool_name), ['RUN_COMMAND', 'RUN_COMMAND', 'GENERIC', 'LIST_DIRECTORY', 'RUN_COMMAND']);
+    assert.equal(toolUses[0].tool_input, JSON.stringify({ command: 'node --test' }));
+    const results = details.filter(detail => String(detail.content).includes('"tool_result"'));
+    // The RUNNING step keeps its call but gets no fabricated result.
+    assert.equal(results.length, toolUses.length - 1);
+    assert.ok(!results.some(detail => String(detail.content).includes('antigravity-step-23')));
+    assert.deepEqual(results.map(detail => detail.is_error), [false, false, true, false]);
+    // The model-request error step is persisted as an error, not dropped.
+    assert.ok(details.some(detail => detail.event_type === 'error' && detail.is_error === true && String(detail.content).includes('redacted error')));
+    // Persisting the steps must not double count the run's reported usage.
+    assert.equal((persisted[0].value as Record<string, unknown>).input_tokens, 100);
 });

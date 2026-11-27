@@ -84,7 +84,10 @@ export function createDefaultAgentSetupActions(configManager?: ConfigManager, op
       return rows.map((row) => ({
         type: row.type,
         status: row.image.status === "ok" ? "ok" as const : row.image.status === "fail" ? "failed" as const : "skipped" as const,
-        detail: row.image.detail,
+        // An unreadable agy keyring login is fixed on the host, not by retrying.
+        detail: row.type === "antigravity" && row.image.status === "fail" && row.image.fix
+          ? `${row.image.detail}. ${row.image.fix}`
+          : row.image.detail,
       }));
     },
   };

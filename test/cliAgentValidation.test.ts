@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 
+import { ANTIGRAVITY_TOKEN_FILE } from "@propr/shared";
+
 import { planAgentLogin, validateAgentFilter, validateAgents } from "../packages/cli/src/commands/agentValidation.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../packages/cli/src/orchestrator/index.js";
 
@@ -145,7 +147,8 @@ test("validateAgents starts validation containers as root so entrypoints can dro
 test("Antigravity image validation leaves the prompt on stdin", async () => {
   const logFile = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-docker-log-")), "docker.log");
   const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "antigravity");
-  mkdirSync(hostDir);
+  mkdirSync(dirname(join(hostDir, ANTIGRAVITY_TOKEN_FILE)), { recursive: true });
+  writeFileSync(join(hostDir, ANTIGRAVITY_TOKEN_FILE), "token");
   const restore = installFakeDocker(logFile);
   try {
     await validateAgents(fakeOrchestrator(), fakeConfig({ hostAntigravityDir: hostDir }), { agents: ["antigravity"] });
@@ -153,6 +156,39 @@ test("Antigravity image validation leaves the prompt on stdin", async () => {
     assert.match(logged, /exec agy --dangerously-skip-permissions/);
     assert.doesNotMatch(logged, /--print -/);
   } finally {
+    restore();
+  }
+});
+
+test("Antigravity image validation skips the container run when the file token is missing", async () => {
+  const logFile = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-docker-log-")), "docker.log");
+  const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "antigravity");
+  mkdirSync(hostDir);
+  const restore = installFakeDocker(logFile);
+  try {
+    const rows = await validateAgents(fakeOrchestrator(), fakeConfig({ hostAntigravityDir: hostDir }), { agents: ["antigravity"] });
+    assert.equal(rows[0].image.status, "fail");
+    assert.match(rows[0].image.detail ?? "", /antigravity-oauth-token not found/);
+    assert.doesNotMatch(readFileSync(logFile, "utf8"), /exec agy --dangerously-skip-permissions/);
+  } finally {
+    restore();
+  }
+});
+
+test("Antigravity image validation still runs the container when the file token cannot be inspected", { skip: process.getuid?.() === 0 && "root bypasses directory permissions" }, async () => {
+  const logFile = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-docker-log-")), "docker.log");
+  const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "antigravity");
+  const tokenDir = dirname(join(hostDir, ANTIGRAVITY_TOKEN_FILE));
+  mkdirSync(tokenDir, { recursive: true });
+  writeFileSync(join(hostDir, ANTIGRAVITY_TOKEN_FILE), "token");
+  chmodSync(tokenDir, 0o000); // e.g. owned by root with mode 0700; the container starts as root
+  const restore = installFakeDocker(logFile);
+  try {
+    const rows = await validateAgents(fakeOrchestrator(), fakeConfig({ hostAntigravityDir: hostDir }), { agents: ["antigravity"] });
+    assert.doesNotMatch(rows[0].image.detail ?? "", /not found/);
+    assert.match(readFileSync(logFile, "utf8"), /exec agy --dangerously-skip-permissions/);
+  } finally {
+    chmodSync(tokenDir, 0o755);
     restore();
   }
 });

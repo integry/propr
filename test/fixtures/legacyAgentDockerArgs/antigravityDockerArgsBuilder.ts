@@ -9,6 +9,7 @@ import {
     buildAntigravityRepositoryScoutPermissions,
     REPOSITORY_SCOUT_CONTAINER_ROOT,
 } from '../../../packages/core/src/agents/impl/utils/repositoryScoutMcpServer.js';
+import { buildAntigravityTranscriptArgs } from '../../../packages/core/src/agents/impl/utils/antigravityTranscriptPaths.js';
 
 const ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH = '/home/node/.gemini-source';
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -113,7 +114,7 @@ export function buildAntigravityDockerArgs(params: AntigravityDockerArgsParams):
         ...(executionMode === 'task' ? ['-e', 'PROPR_EPHEMERAL_STATE=1'] : []),
         '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${configMountTarget}`,
         ...buildRepositoryInspectionArgs(repositoryInspection),
-        ...(transcriptPath ? ['-e', `PROPR_ANTIGRAVITY_TRANSCRIPT_PATH=${transcriptPath}`] : []),
+        ...buildAntigravityTranscriptArgs(transcriptPath),
         ...envVars, ...buildAgentGitCredentialArgs(), '-w', '/home/node/workspace',
         dockerImage, '/bin/bash', '-lc', shellCommand, 'propr-antigravity',
     ];

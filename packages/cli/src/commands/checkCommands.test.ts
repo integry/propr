@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { AgentTankUsage, AgentValidationRow } from "./agentValidation.js";
 import {
+  antigravityLoginCheck,
   claudeConfigCheck,
   configurationErrorCheck,
   createCheckCommand,
@@ -204,4 +205,43 @@ test("propr check reports whether the Claude config file is present and mounted"
   const badOverride = claudeConfigCheck({ hostClaudeDir: claudeDir, hostClaudeJson: join(home, "nope.json"), hostClaudeJsonExplicit: true });
   assert.equal(badOverride?.status, "fail");
   assert.match(badOverride?.fix ?? "", /HOST_CLAUDE_JSON/);
+});
+
+test("propr check reports an Antigravity login without a file token as not ready with the keyring fix", () => {
+  const home = mkdtempSync(join(tmpdir(), "propr-check-agy-"));
+  const gemini = join(home, ".gemini");
+  assert.equal(antigravityLoginCheck({}, home), undefined, "no row when Antigravity is not configured");
+  assert.equal(antigravityLoginCheck({ hostAntigravityDir: gemini }, home), undefined, "missing dirs are reported by the creds row");
+
+  mkdirSync(join(gemini, "antigravity-cli"), { recursive: true });
+  const missing = antigravityLoginCheck({ hostAntigravityDir: gemini }, home);
+  assert.equal(missing?.status, "warn");
+  assert.equal(missing?.group, "Agents");
+  assert.match(missing?.detail ?? "", /antigravity-oauth-token not found/);
+  assert.match(missing?.fix ?? "", /^agy stores its login in the OS keyring.*AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy.*managed login/);
+
+  mkdirSync(join(home, ".config", "antigravity"), { recursive: true });
+  writeFileSync(join(home, ".config", "antigravity", "credential-user-scope"), "user");
+  assert.match(antigravityLoginCheck({ hostAntigravityDir: gemini }, home)?.fix ?? "", /^Found ~\/\.config\/antigravity\/credential-user-scope/);
+
+  writeFileSync(join(gemini, "antigravity-cli", "antigravity-oauth-token"), "file-token");
+  assert.equal(antigravityLoginCheck({ hostAntigravityDir: gemini }, home)?.status, "ok");
+});
+
+test("propr check does not report an Antigravity file token it cannot inspect as missing", { skip: process.getuid?.() === 0 && "root bypasses directory permissions" }, () => {
+  const home = mkdtempSync(join(tmpdir(), "propr-check-agy-eacces-"));
+  const gemini = join(home, ".gemini");
+  const tokenDir = join(gemini, "antigravity-cli");
+  mkdirSync(tokenDir, { recursive: true });
+  writeFileSync(join(tokenDir, "antigravity-oauth-token"), "file-token");
+  chmodSync(tokenDir, 0o000); // e.g. owned by root with mode 0700
+  try {
+    const row = antigravityLoginCheck({ hostAntigravityDir: gemini }, home);
+    assert.equal(row?.status, "warn");
+    assert.match(row?.detail ?? "", /could not be inspected/);
+    assert.doesNotMatch(`${row?.detail} ${row?.fix}`, /not found|OS keyring|AGY_CLI_FORCE_FILE_TOKEN_STORAGE/);
+    assert.match(row?.fix ?? "", /propr check agents --agents antigravity/);
+  } finally {
+    chmodSync(tokenDir, 0o755);
+  }
 });

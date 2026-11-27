@@ -93,6 +93,7 @@ if [ -d "$antigravity_config_dir" ]; then
     else
         echo "Warning: no obvious Antigravity authentication files found under /home/node/.gemini" >&2
         echo "Ensure the Antigravity config directory is properly mounted and initialized" >&2
+        echo "agy stores its login in the OS keyring on desktops, which ProPR containers can't read. Sign in once with \`AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy\`, or use ProPR's managed login." >&2
     fi
 fi
 
@@ -148,11 +149,21 @@ if [ $# -gt 0 ]; then
             done
         fi
 
+        # The worker mounts a private read-write directory for the transcript;
+        # export it before --rm discards the disposable runtime home.
         if [ -n "${PROPR_ANTIGRAVITY_TRANSCRIPT_PATH:-}" ]; then
             transcript_source=$(find "$antigravity_config_dir/antigravity-cli/brain" -type f -path '*/.system_generated/logs/transcript.jsonl' -print -quit 2>/dev/null || true)
             if [ -n "$transcript_source" ]; then
-                mkdir -p "$(dirname "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH")"
-                cp "$transcript_source" "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH" || echo "Warning: could not export transient Antigravity transcript" >&2
+                # Replace rather than write through anything the agent left at the destination.
+                if mkdir -p "$(dirname "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH")" \
+                    && rm -f "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH" \
+                    && cp "$transcript_source" "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH"; then
+                    chmod 0644 "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH" 2>/dev/null || true
+                else
+                    echo "Warning: could not export transient Antigravity transcript" >&2
+                fi
+            else
+                echo "Warning: no Antigravity transcript found to export" >&2
             fi
         fi
 

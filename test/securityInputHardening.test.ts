@@ -22,13 +22,18 @@ test('agent transcript and epic branch suffixes use cryptographic unbiased rando
     new URL('../packages/core/src/agents/impl/AntigravityAgent.ts', import.meta.url),
     'utf8',
   );
+  const antigravityTranscriptPaths = readFileSync(
+    new URL('../packages/core/src/agents/impl/utils/antigravityTranscriptPaths.ts', import.meta.url),
+    'utf8',
+  );
   const epicService = readFileSync(
     new URL('../packages/core/src/services/epicPRService.ts', import.meta.url),
     'utf8',
   );
 
   assert.doesNotMatch(antigravityAgent, /Math\.random/);
-  assert.match(antigravityAgent, /randomBytes\(8\)/);
+  assert.doesNotMatch(antigravityTranscriptPaths, /Math\.random/);
+  assert.match(antigravityTranscriptPaths, /randomBytes\(8\)/);
   assert.match(epicService, /crypto\.randomInt\(chars\.length\)/);
   assert.doesNotMatch(epicService, /randomBytes\[i\]\s*%\s*chars\.length/);
 });
