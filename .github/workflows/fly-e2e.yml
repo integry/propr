@@ -740,8 +740,15 @@ jobs:
             expected=("SKILL-OK-$RUN_TOKEN" "Echo: MCP-OK-$RUN_TOKEN" "URL-STATEFUL-OK-$RUN_TOKEN"
               "URL-STATELESS-OK-$RUN_TOKEN" "URL-BEARER-OK-$RUN_TOKEN" "URL-OAUTH-OK-$RUN_TOKEN")
             for i in "${!expected[@]}"; do
-              [[ ${lines[i + 2]:-} == "${expected[i]}" ]] ||
-                { echo "::error::$APP.txt line $((i + 3)) is '${lines[i + 2]:-}', expected '${expected[i]}'"; exit 1; }
+              [[ ${lines[i + 2]:-} == "${expected[i]}" ]] && continue
+              echo "::error::$APP.txt line $((i + 3)) is '${lines[i + 2]:-}', expected '${expected[i]}'"
+              # Lines 5-8 are the URL servers, reached through ProPR's gateway: on Fly Machines print the gateway
+              # URL the run used and whether an agent-app Machine reaches it, so the failure explains itself.
+              if (( i >= 2 )) && [[ $AGENT_RUNTIME == fly-machines ]]; then
+                kill "$log_stream" 2> /dev/null || true
+                bash .github/fly-e2e/fly-gateway-diagnostics.sh "$OUT/app-logs.json"
+              fi
+              exit 1
             done
             kill "$log_stream" 2> /dev/null || true
             logs=$({ cat "$OUT/app-logs.json"; flyctl logs --app "$APP" --no-tail --json; } |

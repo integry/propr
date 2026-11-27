@@ -9,7 +9,8 @@
  *
  * Layout (one Machine, multi-container):
  *   app      propr/app running `node dist/src/allInOne.js` (daemon + worker +
- *            API + same-origin UI). Listens on 0.0.0.0:4000 for the Fly proxy.
+ *            API + same-origin UI). Listens on [::]:4000 (dual-stack) for the Fly
+ *            proxy (IPv4) and agent Machines on the private network (6PN, IPv6).
  *   redis    redis:7-alpine bound to 127.0.0.1, AOF on the volume.
  *   tunnel   optional cloudflared sidecar when ProPR Connect is enrolled.
  *   docker   optional legacy Docker daemon (see flyLegacyDocker.ts).
@@ -154,6 +155,10 @@ export function buildAppEnv(plan: FlyDeployPlan): Record<string, string> {
     PROPR_SERVE_UI: "1",
     PROPR_SERVED_UI_API_URL: "",
     DASHBOARD_API_PORT: String(FLY_API_PORT),
+    // Dual-stack: the Fly proxy connects over IPv4, but Fly Machines agents reach
+    // MCP and the extension gateway over the org's IPv6 private network (6PN).
+    // The container default 0.0.0.0 accepts IPv4 only.
+    DASHBOARD_API_HOST: "::",
     REDIS_HOST: "127.0.0.1",
     REDIS_PORT: String(FLY_REDIS_PORT),
     SESSION_REDIS_HOST: "127.0.0.1",
@@ -222,7 +227,7 @@ function generatedAppEnvKeys(): string[] {
 export const FLY_MANAGED_ENV_KEYS: ReadonlySet<string> = new Set([
   ...generatedAppEnvKeys(),
   // Host/stack-only settings the Machine does not use or derives itself.
-  "PROPR_UI_DIST_DIR", "DASHBOARD_API_HOST", "API_PORT", "UI_PORT", "DOCS_PORT", "REDIS_EXTERNAL_PORT",
+  "PROPR_UI_DIST_DIR", "API_PORT", "UI_PORT", "DOCS_PORT", "REDIS_EXTERNAL_PORT",
   "PROPR_DATA_DIR", "PROPR_DATA_MOUNT", "PROPR_LOGS_DIR", "PROPR_REPOS_DIR", "PROPR_ENV_FILE", "PROPR_ROOT",
   "PROPR_STACK", "PROPR_CLOUDFLARED_IMAGE", "STAGING_ENV_FILE",
   // Created for this app by the deploy (or given with --machine-stop-token), never copied from a stack .env.

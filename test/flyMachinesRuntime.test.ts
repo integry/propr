@@ -259,7 +259,11 @@ test('Fly selection skips Docker preparation, admits extensions, refuses restric
     builder.spec.network.policy = { mode: 'restricted', allow: [], privateAddressAllow: [] };
     assert.throws(() => runtime.start(builder.build()), /open networking/);
     const plan = (env: NodeJS.ProcessEnv) => agentRunMcpTransportFor({ runtime: runtime.kind }, env);
-    assert.match(JSON.stringify(plan({ FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1' })), /api\.process\.control\.internal:4000/);
+    // `propr deploy fly` puts the API in the worker's own Machine, in the `app` process group (never `api`).
+    assert.match(JSON.stringify(plan({ FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1', FLY_MACHINE_ID: '148e21' })), /"url":"http:\/\/148e21\.vm\.control\.internal:4000\/api\/mcp"/);
+    assert.match(JSON.stringify(plan({ FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1' })), /"url":"http:\/\/app\.process\.control\.internal:4000\/api\/mcp"/);
+    assert.match(JSON.stringify(plan({ FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1', FLY_PROCESS_GROUP: 'web', DASHBOARD_API_PORT: '4100' })), /web\.process\.control\.internal:4100/);
+    assert.doesNotMatch(JSON.stringify(plan({ FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1', FLY_MACHINE_ID: '148e21' })), /api\.process/);
     assert.match(JSON.stringify(plan({ PROPR_FLY_MCP_URL: 'https://fly-mcp.example/api/mcp', FLY_APP_NAME: 'control', FLY_PRIVATE_IP: 'fd00::1' })), /fly-mcp\.example/);
     assert.match(JSON.stringify(plan({ API_PUBLIC_URL: 'https://mcp.example' })), /https:\/\/mcp.example\/api\/mcp/);
 });
