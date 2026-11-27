@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { closeConnection } from '../packages/core/src/db/connection.js';
 import { AntigravityAgent } from '../packages/core/src/agents/impl/AntigravityAgent.js';
+import { buildAntigravityConversationLog } from '../packages/core/src/agents/impl/utils/antigravityConversationLog.js';
+import type { AntigravityOutputEvent } from '../packages/core/src/agents/impl/utils/antigravityOutputParser.js';
 import { ANTIGRAVITY_CONTAINER_TRANSCRIPT_DIR } from '../packages/core/src/agents/impl/utils/antigravityTranscriptPaths.js';
 import type { AgentConfig, AgentExecutionResult } from '../packages/core/src/agents/types.js';
 
@@ -196,17 +198,49 @@ describe('Antigravity task result processing', () => {
             const toolResults = blocks.filter(({ block }) => block.type === 'tool_result');
             assert.deepEqual(toolUses.map(({ block }) => block.name), ['RUN_COMMAND', 'RUN_COMMAND', 'GENERIC', 'LIST_DIRECTORY', 'RUN_COMMAND']);
             assert.deepEqual(toolUses[0].block.input, { command: 'node --test' });
-            assert.deepEqual(toolResults.map(({ block }) => block.tool_use_id), toolUses.map(({ block }) => block.id));
+            // Step 23 is still RUNNING: its call is kept, but no result is invented for it.
+            assert.deepEqual(toolResults.map(({ block }) => block.tool_use_id), toolUses.filter((_, index) => index !== 1).map(({ block }) => block.id));
+            assert.equal(toolUses[1].block.id, 'antigravity-step-23');
             assert.equal(toolResults[0].block.content, '# pass 2\n# fail 0');
-            assert.deepEqual(toolResults.map(({ block }) => block.is_error), [false, false, false, true, false]);
-            assert.equal(toolResults[3].entry.isError, true);
-            assert.match(String(toolResults[3].block.content), /directory not found/);
+            assert.deepEqual(toolResults.map(({ block }) => block.is_error), [false, false, true, false]);
+            assert.equal(toolResults[2].entry.isError, true);
+            assert.match(String(toolResults[2].block.content), /directory not found/);
             assert.ok(blocks.some(({ block }) => block.type === 'thinking'));
             assert.equal(log.filter(entry => entry.type === 'user' && entry.message.content[0].type === 'text').length, 2);
             assert.ok(log.some(entry => entry.type === 'error' && entry.isError));
             assert.equal(persisted?.conversationLog, result.conversationLog);
             assert.equal(fs.existsSync(transcriptPath), false, 'the transcript is removed once read');
         });
+    });
+
+    test('a stream-only run keeps unfinished tool steps as calls without results', () => {
+        const update = (step_index: number, state: string, step_type = 'RUN_COMMAND', text_delta?: string) => ({ event: 'step_update', step_update: { conversation_id: 'agy-stream', step_index, state, step_type, ...(text_delta ? { text_delta } : {}) } });
+        const events = [
+            update(1, 'RUNNING'), update(1, 'DONE', 'RUN_COMMAND', 'ok'),
+            update(2, 'RUNNING'),
+            update(3, 'RUNNING', 'VIEW_FILE'), update(3, 'CANCELED', 'VIEW_FILE'),
+            update(4, 'FAILED'),
+        ] as unknown as AntigravityOutputEvent[];
+        const log = buildAntigravityConversationLog(events) as Array<{ isError?: boolean; message: { content: Array<Record<string, unknown>> } }>;
+        const blocks = log.flatMap(entry => entry.message.content);
+        assert.deepEqual(blocks.filter(block => block.type === 'tool_use').map(block => block.id), [1, 2, 3, 4].map(index => `antigravity-step-agy-stream-${index}`));
+        const results = blocks.filter(block => block.type === 'tool_result');
+        assert.deepEqual(results.map(block => block.tool_use_id), [1, 3, 4].map(index => `antigravity-step-agy-stream-${index}`));
+        assert.deepEqual(results.map(block => block.is_error), [false, true, true]);
+    });
+
+    test('a transcript step without a terminal status has no result, unless it reported an error', () => {
+        const step = (step_index: number, status: string | undefined, content: string) => ({ source: 'MODEL', type: 'RUN_COMMAND', step_index, ...(status ? { status } : {}), content });
+        const log = buildAntigravityConversationLog([
+            step(1, 'RUNNING', 'Created At: x\n\nnpm test'),
+            step(2, undefined, 'Created At: x\n\nnpm test'),
+            step(3, 'RUNNING', 'Created At: x\nEncountered error in step execution: boom'),
+            step(4, 'CANCELLED', 'Created At: x\n\nnpm test'),
+        ] as AntigravityOutputEvent[]) as Array<{ message: { content: Array<Record<string, unknown>> } }>;
+        const blocks = log.flatMap(entry => entry.message.content);
+        assert.equal(blocks.filter(block => block.type === 'tool_use').length, 4);
+        const results = blocks.filter(block => block.type === 'tool_result');
+        assert.deepEqual(results.map(block => [block.tool_use_id, block.is_error]), [['antigravity-step-3', true], ['antigravity-step-4', true]]);
     });
 
     test('a run whose transcript never arrived keeps its plain summary and still gets one session', async () => {

@@ -17,6 +17,8 @@ import {
 const STEP_HEADER = /^(?:Created|Completed) At:/;
 const STEP_ERROR_PREFIX = 'Encountered error in step execution:';
 const AGENT_RESPONSE = 'AGENT_RESPONSE';
+/** Step states that end a tool call; `DONE` is the only successful one. Mirrors the live projector. */
+const TERMINAL_STEP_STATES = new Set(['DONE', 'ERROR', 'FAILED', 'CANCELED', 'CANCELLED']);
 
 export interface AntigravityToolStepContent {
     input: Record<string, unknown>;
@@ -82,9 +84,13 @@ function transcriptStepToClaudeEvents(event: AntigravityTranscriptEvent, positio
     if (source === 'SYSTEM') return [textMessage('system', event, content)];
     const id = `antigravity-step-${event.step_index ?? `position-${position}`}`;
     const parsed = parseAntigravityToolStepContent(event.type, content);
-    const isError = normalize(event.status) === 'ERROR' || parsed.error !== undefined;
+    const status = normalize(event.status);
+    const toolUse = { type: 'assistant', timestamp: event.created_at, message: { role: 'assistant', content: [{ type: 'tool_use', id, name: event.type, input: parsed.input }] }, ...stepMetadata(event) };
+    // An unfinished step (e.g. RUNNING when the run timed out) has no result yet; a step error ends it.
+    if (!TERMINAL_STEP_STATES.has(status) && parsed.error === undefined) return [toolUse];
+    const isError = status !== 'DONE' || parsed.error !== undefined;
     return [
-        { type: 'assistant', timestamp: event.created_at, message: { role: 'assistant', content: [{ type: 'tool_use', id, name: event.type, input: parsed.input }] }, ...stepMetadata(event) },
+        toolUse,
         { type: 'user', timestamp: event.created_at, isError, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: parsed.output, is_error: isError }] }, ...stepMetadata(event) },
     ];
 }
@@ -100,9 +106,13 @@ function streamStepToClaudeEvents(update: AntigravityStreamStepUpdateEvent['step
         return update.text_delta ? [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: update.text_delta }] }, ...meta }] : [];
     }
     const id = `antigravity-step-${update.conversation_id}-${update.step_index}`;
-    const isError = normalize(update.state) === 'ERROR';
+    const state = normalize(update.state);
+    const toolUse = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: update.step_type, input: {} }] }, ...meta };
+    // A step whose latest update is not terminal never reported completion: keep the call, not a result.
+    if (!TERMINAL_STEP_STATES.has(state)) return [toolUse];
+    const isError = state !== 'DONE';
     return [
-        { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: update.step_type, input: {} }] }, ...meta },
+        toolUse,
         { type: 'user', isError, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: update.text_delta ?? '', is_error: isError }] }, ...meta },
     ];
 }

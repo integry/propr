@@ -213,8 +213,10 @@ test('an Antigravity implementation trace persists every transcript step, tool c
     assert.deepEqual(toolUses.map(detail => detail.tool_name), ['RUN_COMMAND', 'RUN_COMMAND', 'GENERIC', 'LIST_DIRECTORY', 'RUN_COMMAND']);
     assert.equal(toolUses[0].tool_input, JSON.stringify({ command: 'node --test' }));
     const results = details.filter(detail => String(detail.content).includes('"tool_result"'));
-    assert.equal(results.length, toolUses.length);
-    assert.deepEqual(results.map(detail => detail.is_error), [false, false, false, true, false]);
+    // The RUNNING step keeps its call but gets no fabricated result.
+    assert.equal(results.length, toolUses.length - 1);
+    assert.ok(!results.some(detail => String(detail.content).includes('antigravity-step-23')));
+    assert.deepEqual(results.map(detail => detail.is_error), [false, false, true, false]);
     // The model-request error step is persisted as an error, not dropped.
     assert.ok(details.some(detail => detail.event_type === 'error' && detail.is_error === true && String(detail.content).includes('redacted error')));
     // Persisting the steps must not double count the run's reported usage.
