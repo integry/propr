@@ -1,4 +1,4 @@
-import type { Agent, AgentConfig } from '@propr/core';
+import type { Agent, AgentConfig, AgentCredentialCheckResult } from '@propr/core';
 import { effectiveAgentBaseImage, redactSecrets } from '@propr/core';
 import { AGENT_MODELS } from '@propr/shared';
 
@@ -34,6 +34,15 @@ function healthErrorCode(error: unknown): NonNullable<AgentHealthResult['errorCo
   if (/\b429\b|rate[\s_-]*limit|resource[\s_-]*exhausted|too many requests|quota|usage limit/i.test(text)) return 'rate_limit';
   if (/\b401\b|unauthenticated|unauthorized|authentication|not logged in|log[ -]?in|sign[ -]?in|session.{0,30}expired|expired.{0,30}(?:session|token|credentials)/i.test(text)) return 'auth_required';
   return 'unknown';
+}
+
+function credentialCheckResult(agentId: string, model: string, credentials: AgentCredentialCheckResult): AgentHealthResult {
+  if (credentials.status === 'ready') return { agentId, model, status: 'ready' };
+  return {
+    agentId, model, status: 'error',
+    errorCode: credentials.reason === 'provider_not_found' ? 'unknown' : 'auth_required',
+    error: redactSecrets(credentials.message || `Credentials are ${credentials.status === 'invalid' ? 'invalid' : 'not configured'}.`).slice(0, 2000),
+  };
 }
 
 export function createAgentHealthCheck(dependencies: {
@@ -139,13 +148,7 @@ export function createAgentHealthCheck(dependencies: {
         if (agent.checkCredentials) {
           // A credential check (Pi: `pi auth check --no-refresh`) answers
           // without spending tokens or refreshing a login.
-          const credentials = await agent.checkCredentials(model);
-          if (credentials.status === 'ready') return { agentId, model, status: 'ready' };
-          return {
-            agentId, model, status: 'error',
-            errorCode: credentials.reason === 'provider_not_found' ? 'unknown' : 'auth_required',
-            error: redactSecrets(credentials.message || `Credentials are ${credentials.status === 'invalid' ? 'invalid' : 'not configured'}.`).slice(0, 2000),
-          };
+          return credentialCheckResult(agentId, model, await agent.checkCredentials(model));
         }
         const result = await agent.analyze('Reply with only OK. Do not use tools.', {
           model,
