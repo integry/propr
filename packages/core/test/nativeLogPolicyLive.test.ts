@@ -10,7 +10,7 @@ import { inspectNativeLogRoot } from '../src/diagnostics/nativeLogPolicy.js';
 
 // Explicit opt-in: exercises only a newly-created private localhost process,
 // never a customer provider or credentials. No model request is made.
-test('installed OpenCode 1.19.6 retains real active native descriptors and serves UI requests during inventory', {
+test('installed OpenCode 2.4.2 retains real active native descriptors and serves UI requests during inventory', {
     skip: process.env.PROPR_NATIVE_LOG_LIVE !== '1', timeout: 20_000,
 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-opencode-live-'));
@@ -22,7 +22,7 @@ test('installed OpenCode 1.19.6 retains real active native descriptors and serve
     for (const key of ['HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME']) fs.mkdirSync(env[key]!);
     const executable = process.env.PROPR_NATIVE_OPENCODE_BINARY || 'opencode';
     const version = spawnSync(executable, ['--version'], { env, encoding: 'utf8', timeout: 5000 });
-    assert.equal(version.status, 0); assert.equal(version.stdout.trim(), '1.19.6');
+    assert.equal(version.status, 0); assert.equal(version.stdout.trim(), 'opencode v2.4.2');
     const socket = net.createServer();
     await new Promise<void>(resolve => socket.listen(0, '127.0.0.1', resolve));
     const port = (socket.address() as net.AddressInfo).port;
@@ -59,12 +59,12 @@ test('installed OpenCode 1.19.6 retains real active native descriptors and serve
             assert.ok(inventory.bytes.diagnostic >= stat.size);
             assert.deepEqual(descriptors(), before);
             assert.equal(fs.statSync(original).ino, stat.ino);
-            const response = await fetch(`http://127.0.0.1:${port}/global/health`, {
+            const response = await fetch(`http://127.0.0.1:${port}/api/model`, {
                 headers: { authorization: `Basic ${Buffer.from('opencode:fixture-private-password').toString('base64')}` },
                 signal: AbortSignal.timeout(2000),
             });
             assert.equal(response.status, 200);
-            assert.equal((await response.json() as { version: string }).version, '1.19.6');
+            assert.ok(Array.isArray((await response.json() as { data: unknown[] }).data));
         }
         assert.match(stderr, /level=INFO/);
         assert.equal(fs.readFileSync(path.join(home, 'preserved-session.jsonl'), 'utf8'), 'RESUME-CANARY');
