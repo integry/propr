@@ -78,6 +78,21 @@ if [ $# -gt 0 ]; then
     if [ "$(id -u)" = "0" ] && [ "$opencode_ephemeral" = "1" ]; then
         echo "Switching to node user with disposable OpenCode state..." >&2
         cd /home/node/workspace
+        source_db="$opencode_source_data/opencode.db"
+        runtime_db="$opencode_data_dir/opencode.db"
+        sync_database=0
+        # Probe as node: OpenCode opens its log file even for --version, and a
+        # root-owned log/ under the node-owned data dir breaks every later run.
+        if [ -n "$opencode_source_data" ] && { [ -f "$source_db" ] || [ -f "$opencode_source_data/auth.json" ]; } && [[ "$(su-exec node env HOME=/home/node opencode --version)" == "opencode v2."* ]]; then
+            # Initialize the disposable schema (including v1 JSON migration)
+            # before importing credentials. Keep the host session DB out of it.
+            # seed classifies the host by schema: a 2.x DB is authoritative even
+            # when empty; a 1.x host (only auth.json, no credential table, or a
+            # 1.x schema) gets refreshes written back to auth.json by sync.
+            su-exec node env HOME=/home/node opencode auth list --standalone >/dev/null
+            su-exec node python3 /opt/propr/opencode-credentials.py seed "$source_db" "$runtime_db"
+            sync_database=1
+        fi
         set +e
         su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
         command_status=$?
@@ -87,6 +102,11 @@ if [ $# -gt 0 ]; then
             for credential_file in "${opencode_credential_files[@]}"; do
                 runtime_path="$opencode_data_dir/$credential_file"
                 source_path="$opencode_source_data/$credential_file"
+                # OpenCode 2 never updates auth.json; sync owns write-backs, and
+                # copying the seeded file back would undo a host login.
+                if [ "$sync_database" = "1" ] && [ "$credential_file" = "auth.json" ]; then
+                    continue
+                fi
                 if [ -f "$runtime_path" ]; then
                     temporary_path="${source_path}.propr-tmp-$$"
                     if cp -p "$runtime_path" "$temporary_path" && mv "$temporary_path" "$source_path"; then
@@ -99,6 +119,9 @@ if [ $# -gt 0 ]; then
             done
         fi
 
+        if [ "$sync_database" = "1" ]; then
+            su-exec node python3 /opt/propr/opencode-credentials.py sync "$source_db" "$runtime_db"
+        fi
         exit "$command_status"
     elif [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2

@@ -355,8 +355,8 @@ The entrypoint sets `OPENCODE_CONFIG_DIR=/home/node/.config/opencode` and prepar
 Install OpenCode on the host and initialize the directories ProPR can mount:
 
 ```bash
-curl -fsSL https://opencode.ai/install | bash
-# or: npm install -g opencode-ai
+curl -fsSL https://opencode.ai/v2/install | bash
+# or: npm install -g @opencode/cli
 
 mkdir -p ~/.config/opencode ~/.local/share/opencode
 opencode --version
@@ -367,18 +367,9 @@ OpenCode's config location is `~/.config/opencode`; configure OpenCode agents wi
 
 #### Auth Data
 
-OpenCode stores provider auth in `~/.local/share/opencode/auth.json`. When `HOST_OPENCODE_DATA_DIR` is set in the worker environment, ProPR mounts that host directory into OpenCode agent containers at `/home/node/.local/share/opencode`, read-write so the CLI can refresh auth metadata. When it is unset, ProPR infers the matching host data path for default config paths like `/home/your-user/.config/opencode` and mounts it when the directory exists.
+OpenCode 2 stores credentials in `~/.local/share/opencode/opencode.db`. Set `HOST_OPENCODE_DATA_DIR` to the host data directory when it differs from the sibling of the configured `~/.config/opencode` directory. Managed accounts use their own data directory.
 
-Without either data mount, make credentials available another way:
-
-- Pass provider API keys as agent `envVars`.
-- Copy `auth.json` under the mounted config tree and point `XDG_DATA_HOME` at it in the agent `envVars` (`XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`). Re-sync the file after changing providers or refreshing OpenCode auth:
-
-```bash
-mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
-```
-
-By default the container receives `XDG_CONFIG_HOME=/home/node/.config` and `XDG_DATA_HOME=/home/node/.local/share`; the `envVars` override applies only for copied file-based auth. Authentication failures usually mean the configured config path does not point at the host's initialized OpenCode directory, `HOST_OPENCODE_DATA_DIR`/`XDG_DATA_HOME` does not point at mounted auth data, or the selected provider API key is missing or expired.
+Task and analysis containers import credential rows into a disposable database. Changes to refreshed credentials are written back only when the stored value still matches the original. ProPR tells the store formats apart by the database schema, not by how many credentials it holds. A host database with a `credential` table and series 2 tables (such as `session_v2`) is the host store, even when it is empty: OpenCode 2 `auth logout` never edits `auth.json`, so ProPR drops anything the disposable database imported from a leftover `auth.json` and never writes to that file. Otherwise the host is on series 1: it has only `auth.json`, an `opencode.db` without a `credential` table, or a series 1 database whose `credential` table series 1 never reads. In that case the run uses the credentials OpenCode imports from `auth.json`, and ProPR leaves the host database unchanged and never creates one. OAuth refreshes are written back to `auth.json` instead, in the series 1 format and keeping the file mode. An entry is only updated if the host still holds the value the run started with. Provider API keys can be supplied through agent environment variables.
 
 #### Model-ID Translation
 

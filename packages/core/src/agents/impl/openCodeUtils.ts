@@ -108,13 +108,12 @@ export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRun
     const workspaceMode = (readOnlyWorkspace ?? issueNumber === 0) ? 'ro' : 'rw';
     // Single execution path for every OpenCode run (task and analysis alike):
     // the prompt always arrives over stdin and is attached via the opencode-run
-    // wrapper. Normal runs skip permissions inside the task container. Scout
+    // wrapper. Normal runs auto-approve prompts inside the task container. Scout
     // runs instead use an inline, highest-precedence deny-first policy and auto
     // mode, which still enforces explicit denies.
     const title = issueNumber === 0 ? 'ProPR analysis' : 'ProPR task';
-    const commandArgs = repositoryInspection
-        ? ['opencode-run', '--format', 'json', '--title', title, '--pure', '--auto']
-        : ['opencode-run', '--format', 'json', '--title', title, '--dangerously-skip-permissions'];
+    const legacyCli = isLegacyOpenCodeCli(config);
+    const commandArgs = ['opencode-run', '--format', 'json', '--title', title, ...buildOpenCodePermissionFlags(legacyCli, repositoryInspection)];
     const builder = new AgentRunSpecBuilder({
         agentType: 'opencode', image: config.dockerImage, alias: config.alias, name: containerName, stdin: true, user: '0:0',
         network: agentRunNetwork('bridge'), security: { capAdd: ['CHOWN'] },
@@ -127,12 +126,13 @@ export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRun
     if (!repositoryInspection) builder.dockerOptions(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, workspaceMode === 'ro'), 'git');
     builder.credentialBind(configPath, CONTAINER_CONFIG_PATH, false, { provider: 'opencode', store: 'config', perRun: true });
     if (!repositoryInspection) builder.env('GH_TOKEN', githubToken).env('GITHUB_TOKEN', githubToken);
-    builder.env('OPENCODE_CONFIG_DIR', '/home/node/.config/opencode');
-    if (repositoryInspection) builder.env('OPENCODE_CONFIG_CONTENT', buildOpenCodeRepositoryScoutConfig());
+    // User env vars precede the ProPR-managed OpenCode config vars so the
+    // managed values (scout isolation in particular) win on duplicates.
+    addEnvVars(builder, config);
+    addOpenCodeConfigEnv(builder, legacyCli, repositoryInspection);
     if (readOnlyWorkspace) builder.env('PROPR_REPO_SETUP', '0');
     builder.env('XDG_CONFIG_HOME', '/home/node/.config').env('XDG_DATA_HOME', CONTAINER_RUNTIME_DATA_HOME).env('PROPR_EPHEMERAL_STATE', '1');
     if (managedCredentials) builder.env('PROPR_MANAGED_CREDENTIALS', '1');
-    addEnvVars(builder, config);
     builder.dockerOptions(buildAgentGitCredentialArgs(), 'credential');
     if (dataMount) {
         builder
@@ -153,6 +153,25 @@ export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRun
 
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
     return renderDockerRunArgs(buildOpenCodeRunSpec(params));
+}
+
+function isLegacyOpenCodeCli(config: AgentConfig): boolean {
+    return (config.cliVersionResolved ?? config.cliVersion)?.startsWith('1.') ?? false;
+}
+
+function buildOpenCodePermissionFlags(legacyCli: boolean, repositoryInspection: boolean): string[] {
+    if (!legacyCli) return ['--auto'];
+    return repositoryInspection ? ['--pure', '--auto'] : ['--dangerously-skip-permissions'];
+}
+
+function addOpenCodeConfigEnv(builder: AgentRunSpecBuilder, legacyCli: boolean, repositoryInspection: boolean): void {
+    if (!repositoryInspection || legacyCli) builder.env('OPENCODE_CONFIG_DIR', CONTAINER_CONFIG_PATH);
+    else {
+        builder
+            .env('OPENCODE_CONFIG_DIR', '/tmp/propr-opencode-scout-config')
+            .env('OPENCODE_CONFIG_PROJECT_DISABLE', '1').env('OPENCODE_DISABLE_CLAUDE_CODE', '1').env('OPENCODE_CONFIG', '');
+    }
+    if (repositoryInspection) builder.env('OPENCODE_CONFIG_CONTENT', buildOpenCodeRepositoryScoutConfig(legacyCli));
 }
 
 function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyWorkspace: boolean | undefined): void {
