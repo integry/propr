@@ -2,7 +2,8 @@ import https from 'node:https';
 import { isIP } from 'node:net';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { extensionEndpoint, extensionRequestFailureReason, pinnedLookup, resolveExtensionEndpoint, type ExtensionLookup } from './endpointPolicy.js';
-import { ExtensionConnectError, ExtensionDialAgent } from './happyEyeballs.js';
+import type net from 'node:net';
+import { ExtensionConnectError, ExtensionDialAgent, requestStageDetail } from './happyEyeballs.js';
 
 /**
  * Outbound HTTPS for OAuth discovery, registration, token and revocation
@@ -39,11 +40,13 @@ export function createOAuthHttpsTransport(options: { lookup?: ExtensionLookup } 
     destination.pathname = url.pathname;
     return new Promise<OAuthHttpResponse>((resolve, reject) => {
       const unavailable = (reason?: string) => reject(new OAuthNetworkError('OAuth request failed', reason));
+      let assignedSocket: net.Socket | undefined; let responded = false;
       const outgoing = https.request(destination, {
         method: request.method, agent: new ExtensionDialAgent(() => addresses, Math.max(deadline - Date.now(), 0)), servername: isIP(host) ? undefined : host,
         lookup: pinnedLookup(addresses),
         headers: { ...request.headers, Host: url.host, 'User-Agent': OAUTH_USER_AGENT, ...(request.body === undefined ? {} : { 'Content-Length': String(Buffer.byteLength(request.body)) }) },
       }, response => {
+        responded = true;
         const chunks: Buffer[] = []; let bytes = 0;
         response.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > OAUTH_RESPONSE_LIMIT) { response.destroy(); unavailable('response too large'); } else chunks.push(chunk); });
         response.on('error', () => unavailable('response interrupted'));
@@ -52,7 +55,8 @@ export function createOAuthHttpsTransport(options: { lookup?: ExtensionLookup } 
           resolve({ status: response.statusCode ?? 0, headers: { 'www-authenticate': header('www-authenticate'), 'content-type': header('content-type') }, body: Buffer.concat(chunks).toString('utf8') });
         });
       });
-      const timer = setTimeout(() => { unavailable(`timeout after ${EXTENSION_LIMITS.timeoutMs / 1000} s`); outgoing.destroy(); }, Math.max(deadline - Date.now(), 0));
+      const timer = setTimeout(() => { unavailable(`timeout after ${EXTENSION_LIMITS.timeoutMs / 1000} s (${requestStageDetail(assignedSocket, responded)})`); outgoing.destroy(); }, Math.max(deadline - Date.now(), 0));
+      outgoing.once('socket', socket => { assignedSocket = socket; });
       outgoing.on('close', () => clearTimeout(timer));
       outgoing.on('error', (error: NodeJS.ErrnoException) => unavailable(error instanceof ExtensionConnectError ? error.reason
         : typeof error.code === 'string' && /^[A-Z0-9_]{2,40}$/.test(error.code) ? `connection failed (${error.code})` : 'connection failed'));

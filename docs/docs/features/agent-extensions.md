@@ -268,7 +268,9 @@ each address gets 3 seconds, within the 10-second request limit, and the first
 connection wins. A server with a broken IPv6 path is therefore reached over
 IPv4. If no address connects, Test connections and OAuth **Check** say which
 were tried and how each failed, for example `connect timeout (IPv6 2a09:…,
-then IPv4 169.155.…)`. Redirects, private,
+then IPv4 169.155.…)`. A request that connected but got no answer within 10
+seconds says how far it got, for example `timeout after 10 s (connected over
+IPv6 2a09:…, TLS done, no response)`. Redirects, private,
 loopback, link-local, metadata and reserved destinations are refused. The fake-IP
 DNS range `198.18.0.0/15` remains reachable, matching the existing egress proxy;
 TLS still verifies the original endpoint hostname. Operator-installed catalog entries can qualify local stdio and fixed internal HTTPS exceptions, and [local package servers](#local-package-servers) run a pinned npm package through the same stdio bridge, as described below. Customer commands, host paths, Docker sockets and bind

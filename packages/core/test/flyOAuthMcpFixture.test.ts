@@ -122,4 +122,18 @@ test('the Fly smoke OAuth fixture signs in, refreshes mid-session and ends its s
   assert.deepEqual(await testExtensionConnections(store, '1', send), oauthResult({ reachable: true, status: 'reachable', session: 'stateful' }));
   const after = await stats();
   assert.deepEqual([after.sessionsOpened, after.sessionsDeleted, after.sessionNotFound], [3, 3, 0]);
+
+  // The request log the smoke dumps on failure: every request once on arrival and once at its end, with the proxy's
+  // client address headers, and nothing of a query, header or body (no client id, code or token: all are `fixture_…`).
+  await fetch(local(`${ORIGIN}/health?probe=fixture_secret`), { headers: { 'fly-client-ip': '2a09:8280:1::1', 'x-forwarded-for': '203.0.113.7, <script>' } });
+  const raw = await fs.readFile(path.join(root, 'state.json.requests.jsonl'), 'utf8');
+  assert.doesNotMatch(raw, /fixture_|Bearer|\?/);
+  const log = raw.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
+  const starts = log.filter(entry => entry.event === 'start'); const ends = log.filter(entry => entry.event === 'end');
+  assert.equal(starts.length, ends.length);
+  assert.ok(['/authorize', '/token', '/register', '/mcp', '/.well-known/oauth-authorization-server'].every(p => starts.some(entry => entry.path === p)));
+  const health = ends.at(-1)!;
+  assert.deepEqual([health.method, health.path, health.status, health.completed, health.flyClientIp, health.forwardedFor], ['GET', '/health', 200, true, '2a09:8280:1::1', '203.0.113.7, **c*****']);
+  assert.equal(typeof health.remote, 'string'); assert.equal(typeof health.durationMs, 'number'); assert.match(String(health.time), /^\d{4}-\d\d-\d\dT/);
+  assert.deepEqual(ends.filter(entry => entry.path === '/mcp' && entry.method === 'DELETE').map(entry => entry.status), [204, 204, 204]);
 });

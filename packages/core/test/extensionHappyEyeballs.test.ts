@@ -10,12 +10,15 @@ import { execFileSync } from 'node:child_process';
 import { ExtensionConnectError, connectHappyEyeballs, interleaveAddressFamilies, type ExtensionDialAddress } from '../src/extensions/happyEyeballs.js';
 import { extensionRequestFailureReason, requestExtensionMcp, type ExtensionMcpExchange } from '../src/extensions/endpointPolicy.js';
 import { OAuthNetworkError, createOAuthHttpsTransport, oauthRequest } from '../src/extensions/extensionOAuthHttp.js';
+import { EXTENSION_LIMITS } from '@propr/shared';
 
 // The *.sprites.app shape that hung Fly Machines runs: an AAAA answer first, then an A answer. The IPv6 path is
 // black-holed (a SYN that is never answered); the IPv4 path works.
 const IPV6 = { address: '2606:4700:4700::1111', family: 6 };
 const IPV4 = { address: '8.8.8.8', family: 4 };
 const HOST = 'mcp.synthetic.example';
+// Captured before any test mocks it: a test that mocks net.connect twice may not get the original back on restore.
+const realConnect = net.connect;
 
 async function tlsFixture(t: TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'extension-happy-eyeballs-'));
@@ -46,7 +49,7 @@ async function dialPlan(t: TestContext, plan: { port?: number; blackholed?: stri
   const closed = net.createServer(); await new Promise<void>(resolve => closed.listen(0, '127.0.0.1', resolve));
   const closedPort = (closed.address() as AddressInfo).port; await new Promise<void>(resolve => closed.close(() => resolve()));
   const dialed: string[] = []; const stalled: net.Socket[] = [];
-  const connect = net.connect;
+  const connect = realConnect;
   t.mock.method(net, 'connect', (options: net.TcpNetConnectOpts) => {
     dialed.push(String(options.host));
     if (plan.blackholed?.includes(String(options.host))) { const socket = new net.Socket(); stalled.push(socket); return socket; }
@@ -168,4 +171,52 @@ test('OAuth requests fall back from a black-holed IPv6 path and report the famil
   assert.equal(error.message, 'OAuth request failed');
   assert.equal(error.reason, `connect timeout (IPv6 ${IPV6.address}, then IPv4 1.1.1.1)`);
   assert.deepEqual(plan.dialed, [IPV6.address, '1.1.1.1']);
+});
+
+/** Shorten the request timeout for a test; the reason names the configured limit. */
+function shortTimeout(t: TestContext, ms: number) {
+  const limits = EXTENSION_LIMITS as { timeoutMs: number };
+  const original = limits.timeoutMs; limits.timeoutMs = ms;
+  t.after(() => { limits.timeoutMs = original; });
+}
+
+test('a request timeout on a connection whose TLS handshake never finished says so, with the address it connected to', async t => {
+  shortTimeout(t, 400);
+  // TCP accepts and never speaks: the TLS handshake never finishes.
+  const mute = net.createServer(() => { /* never answers */ }); await new Promise<void>(resolve => mute.listen(0, '127.0.0.1', resolve));
+  const muted: net.Socket[] = []; mute.on('connection', socket => muted.push(socket));
+  t.after(() => new Promise<void>(resolve => { muted.forEach(socket => socket.destroy()); mute.close(() => resolve()); }));
+  await dialPlan(t, { port: (mute.address() as AddressInfo).port });
+  t.mock.method(dns, 'lookup', async () => [IPV6, IPV4]);
+  const reason = async () => extensionRequestFailureReason(await requestExtensionMcp(`https://${HOST}/mcp`, { jsonrpc: '2.0', id: 1, method: 'tools/list' }).then(() => undefined, (failed: unknown) => failed));
+  assert.equal(await reason(), `timeout after 0.4 s (connected over IPv6 ${IPV6.address}, TLS not done, no response)`);
+  const transport = createOAuthHttpsTransport({ lookup: async () => [IPV4] });
+  const oauth = await oauthRequest(transport, { method: 'GET', url: `https://${HOST}/.well-known/oauth-authorization-server` }).then(() => undefined, (failed: unknown) => failed);
+  assert.ok(oauth instanceof OAuthNetworkError);
+  assert.equal(oauth.reason, `timeout after 0.4 s (connected over IPv4 ${IPV4.address}, TLS not done, no response)`);
+});
+
+test('a request timeout after the TLS handshake says whether response headers arrived', async t => {
+  shortTimeout(t, 400);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'extension-stage-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(root, 'key.pem'), '-out', path.join(root, 'cert.pem'), '-days', '1', '-subj', `/CN=${HOST}`, '-addext', `subjectAltName=DNS:${HOST}`], { stdio: 'ignore' });
+  const cert = await fs.readFile(path.join(root, 'cert.pem'));
+  // `/headers` sends its headers and never ends the body; anything else is never answered.
+  const server = https.createServer({ key: await fs.readFile(path.join(root, 'key.pem')), cert }, (req, res) => {
+    if (req.url?.startsWith('/headers')) { res.writeHead(200, { 'content-type': 'application/json' }); res.write('{'); }
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+  const original = https.request;
+  t.mock.method(https, 'request', (url: URL, options: https.RequestOptions, callback: Parameters<typeof https.request>[2]) => original(url, { ...options, ca: cert }, callback));
+  await dialPlan(t, { port: (server.address() as AddressInfo).port, blackholed: [IPV6.address] });
+  t.mock.method(dns, 'lookup', async () => [IPV6, IPV4]);
+  const failure = async (pathname: string) => extensionRequestFailureReason(await requestExtensionMcp(`https://${HOST}${pathname}`, { jsonrpc: '2.0', id: 1, method: 'tools/list' }).then(() => undefined, (failed: unknown) => failed));
+  assert.equal(await failure('/mcp'), `timeout after 0.4 s (connected over IPv4 ${IPV4.address}, TLS done, no response)`);
+  assert.equal(await failure('/headers'), `timeout after 0.4 s (connected over IPv4 ${IPV4.address}, TLS done, response headers received, body incomplete)`);
+  const transport = createOAuthHttpsTransport({ lookup: async () => [IPV4] });
+  const oauth = await oauthRequest(transport, { method: 'GET', url: `https://${HOST}/.well-known/oauth-authorization-server` }).then(() => undefined, (failed: unknown) => failed);
+  assert.ok(oauth instanceof OAuthNetworkError);
+  assert.equal(oauth.reason, `timeout after 0.4 s (connected over IPv4 ${IPV4.address}, TLS done, no response)`);
 });

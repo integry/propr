@@ -17,16 +17,22 @@
 // and restarts keeps registrations and tokens. The Fly Machine host never
 // auto-stops, so its in-memory state lasts the run. MCP sessions are kept too.
 //
-// Env: PUBLIC_URL (https origin, required), PORT (8080), ACCESS_TTL (90), STATE_FILE.
+// Every request is logged to REQUEST_LOG (JSON lines), once when it arrives and once when its response finishes or
+// its connection closes: time, method, path (never the query), remote address, Fly-Client-IP / X-Forwarded-For,
+// status and duration. Nothing else of the request is logged, so the log carries no tokens or codes. The smoke dumps
+// it on failure to show whether a request reached the fixture.
+//
+// Env: PUBLIC_URL (https origin, required), PORT (8080), ACCESS_TTL (90), STATE_FILE, REQUEST_LOG (STATE_FILE.requests.jsonl).
 import { createServer } from 'node:http';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 
 const origin = (process.env.PUBLIC_URL ?? '').replace(/\/+$/, '');
 if (!/^https:\/\/[^/]+$/.test(origin)) { console.error('PUBLIC_URL must be an https origin'); process.exit(2); }
 const port = Number(process.env.PORT ?? 8080);
 const accessTtl = Number(process.env.ACCESS_TTL ?? 90);
 const stateFile = process.env.STATE_FILE ?? `${process.env.HOME ?? '/tmp'}/oauth-mcp-fixture.json`;
+const requestLog = process.env.REQUEST_LOG ?? `${stateFile}.requests.jsonl`;
 const resource = `${origin}/mcp`;
 const random = prefix => `${prefix}_${randomBytes(24).toString('base64url')}`;
 
@@ -115,7 +121,27 @@ async function token(req, res) {
   return send(res, 400, { error: 'unsupported_grant_type' });
 }
 
+/** IP-shaped header values only (proxies may append several), bounded: nothing a client sends verbatim beyond that. */
+const addresses = value => typeof value === 'string' ? value.slice(0, 200).replace(/[^0-9A-Fa-f.:, ]/g, '*') : undefined;
+let requestSeq = 0;
+function logRequest(req, res) {
+  const started = Date.now(); const seq = ++requestSeq;
+  const base = {
+    seq, method: req.method, path: (req.url ?? '/').split('?')[0].slice(0, 200), remote: req.socket.remoteAddress,
+    flyClientIp: addresses(req.headers['fly-client-ip']), forwardedFor: addresses(req.headers['x-forwarded-for']),
+  };
+  const write = entry => { try { appendFileSync(requestLog, `${JSON.stringify(entry)}\n`, { mode: 0o600 }); } catch { /* logging never fails a request */ } };
+  write({ event: 'start', time: new Date(started).toISOString(), ...base });
+  let logged = false;
+  const end = () => {
+    if (logged) return; logged = true;
+    write({ event: 'end', time: new Date().toISOString(), ...base, status: res.headersSent ? res.statusCode : null, completed: res.writableFinished, durationMs: Date.now() - started });
+  };
+  res.once('finish', end); res.once('close', end);
+}
+
 const server = createServer(async (req, res) => {
+  logRequest(req, res);
   try {
     const url = new URL(req.url ?? '/', origin);
     if (url.pathname === '/health') return send(res, 200, { ok: true });

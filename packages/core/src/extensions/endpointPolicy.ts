@@ -3,10 +3,10 @@ import type { ExtensionGrantNetwork } from './extensionProfileStore.js';
 import dns from 'node:dns/promises';
 import https from 'node:https';
 import { StringDecoder } from 'node:string_decoder';
-import { isIP, BlockList, type LookupFunction } from 'node:net';
+import { isIP, BlockList, type LookupFunction, type Socket } from 'node:net';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { isNonPublicAddress } from '../network/egressProxy.js';
-import { ExtensionConnectError, ExtensionDialAgent, takeConnectStart, type ExtensionDialAddress } from './happyEyeballs.js';
+import { ExtensionConnectError, ExtensionDialAgent, requestStageDetail, takeConnectStart, type ExtensionDialAddress } from './happyEyeballs.js';
 
 const responseWireBytes = new WeakMap<object, number>();
 /** Internal accounting metadata; never serialized with an MCP response. */
@@ -225,6 +225,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
     const fail = (error: Error) => { if (!settled) { settled = true; reject(error); } };
     const unavailable = (reason: string) => fail(new ExtensionUpstreamRequestError(reason));
     let timer: NodeJS.Timeout | undefined;
+    let assignedSocket: Socket | undefined; let responded = false;
     const request = https.request(destination, {
       method: remove ? 'DELETE' : 'POST', agent: exchange.connection?.agent ?? new ExtensionDialAgent(() => addresses, EXTENSION_LIMITS.timeoutMs),
       servername: isIP(host) ? undefined : host,
@@ -236,6 +237,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     }, response => {
+      responded = true;
       const limit = Math.min(EXTENSION_LIMITS.responseBytes, exchange.maxBytes ?? EXTENSION_LIMITS.responseBytes);
       let bytes = 0;
       /** Charge a chunk read from the upstream; past this exchange's limit or the shared reservation, the response is ended. */
@@ -312,10 +314,10 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
     const queued = setTimeout(() => { request.destroy(); fail(new ExtensionUpstreamSessionBusyError()); }, PINNED_QUEUE_WAIT_MS);
     // A connection opened for this request already spent part of the budget connecting; the rest is the request's.
     request.once('socket', socket => {
-      clearTimeout(queued);
+      clearTimeout(queued); assignedSocket = socket;
       const connecting = takeConnectStart(socket);
       const budget = connecting === undefined ? EXTENSION_LIMITS.timeoutMs : Math.max(EXTENSION_LIMITS.timeoutMs - (Date.now() - connecting), 0);
-      if (!settled) timer = setTimeout(() => { unavailable(`timeout after ${EXTENSION_LIMITS.timeoutMs / 1000} s`); request.destroy(); }, budget);
+      if (!settled) timer = setTimeout(() => { unavailable(`timeout after ${EXTENSION_LIMITS.timeoutMs / 1000} s (${requestStageDetail(assignedSocket, responded)})`); request.destroy(); }, budget);
     });
     request.on('close', () => { clearTimeout(queued); clearTimeout(timer); unavailable('connection closed'); });
     request.on('error', (error: NodeJS.ErrnoException) => error instanceof ExtensionConnectError ? unavailable(error.reason) : unavailable(typeof error.code === 'string' && /^[A-Z0-9_]{2,40}$/.test(error.code) ? `connection failed (${error.code})` : 'connection failed'));

@@ -102,6 +102,20 @@ export function takeConnectStart(socket: net.Socket): number | undefined {
   const started = connectStarts.get(socket); connectStarts.delete(socket); return started;
 }
 
+/** Which address a connection dialled and whether its TLS handshake finished, for timeout reasons. Kept for the socket's life. */
+const connectionTraces = new WeakMap<net.Socket, { address: ExtensionDialAddress; tlsDone: boolean }>();
+
+/**
+ * Where a timed-out request stopped, e.g. `connected over IPv6 2001:db8::1, TLS done, no response`. Secret-free: the
+ * address is one the endpoint policy vetted, and nothing of the request or response is included. `socket` is the one
+ * the request was assigned (undefined: it never got one); `response` says whether response headers arrived.
+ */
+export function requestStageDetail(socket: net.Socket | undefined, response: boolean): string {
+  const trace = socket ? connectionTraces.get(socket) : undefined;
+  if (!trace) return socket ? 'connecting' : 'not connected';
+  return `connected over ${familyName(trace.address.family)} ${trace.address.address}, ${trace.tlsDone ? 'TLS done' : 'TLS not done'}, ${response ? 'response headers received, body incomplete' : 'no response'}`;
+}
+
 /**
  * An HTTPS agent that dials only vetted addresses, Happy Eyeballs style, then runs TLS over the connected socket with
  * the request's TLS identity (`servername`). `targets` is read for every new connection: a session's agent narrows it
@@ -120,6 +134,9 @@ export class ExtensionDialAgent extends https.Agent {
       // With `socket` given, TLS runs over the connected socket; `host` stays only for certificate checks of IP endpoints.
       const secure = tls.connect({ ...(options as tls.ConnectionOptions), port: undefined, socket });
       connectStarts.set(secure, started);
+      const trace = { address, tlsDone: false };
+      connectionTraces.set(secure, trace);
+      secure.once('secureConnect', () => { trace.tlsDone = true; });
       callback?.(null, secure);
     });
     return undefined;

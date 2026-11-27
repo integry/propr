@@ -354,7 +354,7 @@ jobs:
           // Sprites ship Node through a login-shell shim; a service survives the Sprite sleeping and waking.
           const started = await sprite.createService('oauth-mcp', {
             cmd: 'bash', args: ['-lc', `exec node ${home}/fixture.mjs`], dir: home, httpPort: 8080,
-            env: { PUBLIC_URL: origin, PORT: '8080', ACCESS_TTL: process.env.OAUTH_ACCESS_TTL, STATE_FILE: `${home}/state.json` },
+            env: { PUBLIC_URL: origin, PORT: '8080', ACCESS_TTL: process.env.OAUTH_ACCESS_TTL, STATE_FILE: `${home}/state.json`, REQUEST_LOG: `${home}/requests.jsonl` },
           });
           started.close();
           for (let attempt = 0; ; attempt++) {
@@ -364,7 +364,7 @@ jobs:
           }
           const metadata = await (await fetch(`${origin}/.well-known/oauth-protected-resource/mcp`)).json();
           if (metadata.resource !== `${origin}/mcp`) throw new Error('The OAuth fixture names another resource');
-          appendFileSync(process.env.GITHUB_ENV, `OAUTH_FIXTURE_ORIGIN=${origin}\n`);
+          appendFileSync(process.env.GITHUB_ENV, `OAUTH_FIXTURE_ORIGIN=${origin}\nOAUTH_FIXTURE_LOG=${home}/requests.jsonl\n`);
           console.log(`OAuth MCP fixture at ${origin}/mcp on a Sprite (access tokens ${process.env.OAUTH_ACCESS_TTL} s)`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- OAuth MCP fixture host: Sprite \`${name}\` (${origin}/mcp)\n`);
           JS
@@ -397,6 +397,7 @@ jobs:
             PORT = "8080"
             ACCESS_TTL = "$OAUTH_ACCESS_TTL"
             STATE_FILE = "/tmp/oauth-mcp-fixture.json"
+            REQUEST_LOG = "/tmp/oauth-mcp-fixture.requests.jsonl"
 
           [processes]
             app = "node /oauth-fixture/fixture.mjs"
@@ -434,7 +435,7 @@ jobs:
           curl --fail --silent --show-error "$origin/.well-known/oauth-protected-resource/mcp" |
             jq -e --arg resource "$origin/mcp" '.resource == $resource' > /dev/null ||
             { echo "::error::The OAuth fixture names another resource"; exit 1; }
-          echo "OAUTH_FIXTURE_ORIGIN=$origin" >> "$GITHUB_ENV"
+          { echo "OAUTH_FIXTURE_ORIGIN=$origin"; echo "OAUTH_FIXTURE_LOG=/tmp/oauth-mcp-fixture.requests.jsonl"; } >> "$GITHUB_ENV"
           echo "OAuth MCP fixture at $origin/mcp on a Fly Machine (access tokens $OAUTH_ACCESS_TTL s)"
           echo "- OAuth MCP fixture host: Fly Machine in the disposable app \`$OAUTH_FIXTURE_NAME\` ($origin/mcp)" >> "$GITHUB_STEP_SUMMARY"
 
@@ -1130,6 +1131,60 @@ jobs:
         run: |
           source .github/fly-e2e/propr-api.sh
           timeout 60s flyctl logs --app "$APP" --no-tail 2>&1 | propr_redact | tail -n 200 || true
+
+      - name: Probe the OAuth fixture path and dump its request log on failure
+        # Secret-free: /health timings from the runner and from ProPR's Machine over each address family, and the
+        # fixture's request log (method, path without query, addresses, status, duration). Runs before teardown.
+        if: failure() && env.EXTENSIONS == 'true' && env.OAUTH_FIXTURE_ORIGIN != ''
+        timeout-minutes: 8
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          SPRITES_TOKEN: ${{ env.OAUTH_FIXTURE_HOST == 'sprite' && secrets.FLY_E2E_SPRITES_TOKEN || '' }}
+          PROPR_APP_UP: ${{ steps.app.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          # Three /health requests per address family; curl prints its timings even when it times out. $1 is the origin.
+          probe=$(cat <<'SH'
+          host=$(echo "$1" | sed -E 's|^https://||; s|/.*||')
+          echo "resolved: $(node -e 'require("dns").lookup(process.argv[1], { all: true }, (e, a) => console.log(e ? e.code : a.map(x => x.address).join(" ")))' "$host" 2>&1)"
+          for family in 4 6; do
+            for attempt in 1 2 3; do
+              curl -$family -sS -o /dev/null --max-time 20 \
+                -w "IPv$family #$attempt: %{remote_ip} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} code=%{http_code}" \
+                "$1/health" 2>/tmp/oauth-probe.err
+              status=$?
+              if [ "$status" -eq 0 ]; then echo " exit=0"; else echo " exit=$status ($(head -c 200 /tmp/oauth-probe.err | tr '\n' ' '))"; fi
+            done
+          done
+          SH
+          )
+          echo "::group::OAuth fixture /health from the runner"
+          sh -c "$probe" probe "$OAUTH_FIXTURE_ORIGIN"
+          echo "::endgroup::"
+          echo "::group::OAuth fixture /health from ProPR's Machine ($APP)"
+          if [[ $PROPR_APP_UP == true ]]; then
+            encoded=$(base64 -w0 <<< "$probe")
+            timeout 180s flyctl ssh console --app "$APP" --container app -C "sh -c 'echo $encoded | base64 -d | sh -s $OAUTH_FIXTURE_ORIGIN'" ||
+              echo "flyctl ssh console to $APP failed (exit $?): the Machine may be stopped"
+          else
+            echo "ProPR's app was not deployed"
+          fi
+          echo "::endgroup::"
+          echo "::group::OAuth fixture request log (last 300 entries)"
+          if [[ $OAUTH_FIXTURE_HOST == sprite ]]; then
+            timeout 120s node --input-type=module <<'JS' || echo "Reading the request log from the Sprite failed"
+          import { SpritesClient } from '@fly/sprites';
+          const sprite = await new SpritesClient(process.env.SPRITES_TOKEN).getSprite(process.env.OAUTH_FIXTURE_NAME);
+          const result = await sprite.execFile('tail', ['-n', '300', process.env.OAUTH_FIXTURE_LOG]);
+          process.stdout.write(result.stdout.toString());
+          JS
+          else
+            timeout 120s flyctl ssh console --app "$OAUTH_FIXTURE_NAME" -C "tail -n 300 $OAUTH_FIXTURE_LOG" ||
+              echo "Reading the request log from the fixture's Fly Machine failed"
+          fi
+          echo "::endgroup::"
+          echo "OAuth fixture counters: $(curl --silent --show-error --max-time 20 "$OAUTH_FIXTURE_ORIGIN/stats" | jq -c 'del(.echoes)' 2>/dev/null || echo unavailable)"
+          exit 0
 
       - name: Redact the worker log for upload
         id: worker-log
