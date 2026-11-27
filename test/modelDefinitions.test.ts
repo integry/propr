@@ -417,8 +417,8 @@ test('Vibe GLM models share defaults, names, labels, limits, and runtime version
         assert.strictEqual(MODEL_INFO_MAP[id].minAgentVersion, '2.25.8');
     }
     assert.strictEqual(AGENT_DEFAULTS.vibe.defaultModels[0], 'mistral-medium-3.5');
-    assert.strictEqual(AGENT_DEFAULTS.vibe.defaultCliVersion, '2.25.8');
-    assert.strictEqual(AGENT_DEFAULT_VERSIONS.vibe, '2.25.8');
+    assert.strictEqual(AGENT_DEFAULTS.vibe.defaultCliVersion, '3.1.5');
+    assert.strictEqual(AGENT_DEFAULT_VERSIONS.vibe, '3.1.5');
 });
 
 test('Antigravity offers one model entry with separate supported reasoning choices', () => {

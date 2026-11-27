@@ -435,7 +435,7 @@ test('retired Vibe defaults migrate to Medium even when it was already enabled',
             cliVersionType: 'default', cliVersionResolved: '2.25.4' });
         assert.equal(migrateAgentConfig(agent), true);
         assert.equal(agent.defaultModel, 'mistral-medium-3.5');
-        assert.equal(agent.cliVersionResolved, '2.25.8');
+        assert.equal(agent.cliVersionResolved, '3.1.5');
         assert.ok(!agent.supportedModels.includes(retired));
         assert.ok(agent.supportedModels.includes('zai-glm-5-3'));
         assert.equal(migrateAgentConfig(agent), false);
