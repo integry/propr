@@ -16,6 +16,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
 import {
+  ANTIGRAVITY_KEYRING_MARKER_FILE,
+  ANTIGRAVITY_TOKEN_FILE,
+  antigravityMissingLoginReason,
   DEFAULT_PROPR_GH_RELAY_URL,
   resolveGithubAuthMode,
   resolveGithubEventIntakeMode,
@@ -29,7 +32,7 @@ import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
-import { localImagePresent, validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
+import { localImagePresent, validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, probeAntigravityToken, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
@@ -114,6 +117,40 @@ export function claudeConfigCheck(
     detail: `${expected} not found — not mounted; Claude runs start from a minimal config`,
     group: "Agents",
     fix: `Run \`claude\` once on this host to create ${expected}, or set HOST_CLAUDE_JSON to its path in .env, then restart ProPR.`,
+  };
+}
+
+/**
+ * agy 1.5.x keeps desktop logins in the OS keyring, which agent containers
+ * cannot read. A mounted ~/.gemini needs the file token. Checks file presence
+ * only; token and keyring contents are never read.
+ */
+export function antigravityLoginCheck(
+  cfg: Pick<OrchestratorConfig, "hostAntigravityDir">,
+  home: string = homedir(),
+): CheckResult | undefined {
+  const dir = cfg.hostAntigravityDir;
+  if (!dir || !existsSync(dir)) return undefined;
+  const name = "Agent login: antigravity (file token)";
+  const tokenFile = join(dir, ANTIGRAVITY_TOKEN_FILE);
+  const token = probeAntigravityToken(dir);
+  if (token === "present") return { name, status: "ok", detail: `${tokenFile} found`, group: "Agents" };
+  if (token === "inaccessible") {
+    return {
+      name,
+      status: "warn",
+      detail: `${tokenFile} could not be inspected by this user (permission denied); the agent container may still read it`,
+      group: "Agents",
+      fix: "Run `propr check agents --agents antigravity` to verify the login inside the container.",
+    };
+  }
+  const keyringMarkerDetected = existsSync(join(home, ANTIGRAVITY_KEYRING_MARKER_FILE));
+  return {
+    name,
+    status: "warn",
+    detail: `${tokenFile} not found — Antigravity tasks will fail with "authentication required"`,
+    group: "Agents",
+    fix: antigravityMissingLoginReason({ keyringMarkerDetected }),
   };
 }
 
@@ -514,6 +551,8 @@ export async function runChecks(options: RunChecksOptions = {}): Promise<ChecksO
 
   const claudeConfig = claudeConfigCheck(cfg);
   if (claudeConfig) emit(claudeConfig);
+  const antigravityLogin = antigravityLoginCheck(cfg);
+  if (antigravityLogin) emit(antigravityLogin);
 
   // 6b. Agent Tank (optional subscription-usage monitor). Presence only — the
   // actual usage refresh (slow PTY /usage calls) runs in `propr check agents`.

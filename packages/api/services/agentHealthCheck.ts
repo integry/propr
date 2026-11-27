@@ -38,7 +38,7 @@ function healthErrorCode(error: unknown): NonNullable<AgentHealthResult['errorCo
 
 export function createAgentHealthCheck(dependencies: {
   loadAgents: () => Promise<AgentConfig[]>;
-  createAgent: (config: AgentConfig) => Pick<Agent, 'analyze' | 'checkCredentials'>;
+  createAgent: (config: AgentConfig) => Pick<Agent, 'analyze' | 'checkCredentials' | 'credentialProblem'>;
   imageExists?: (image: string) => Promise<boolean>;
   prepareImage?: (image: string) => Promise<void>;
 
@@ -132,6 +132,10 @@ export function createAgentHealthCheck(dependencies: {
           return preparationResult ?? { agentId, model, status: 'error', errorCode: 'unknown', error: redactSecrets(resolved.error || 'Agent image is unavailable.').slice(0, 2000) };
         }
         const agent = dependencies.createAgent({ ...config, dockerImage: resolved.image });
+        // A login the container cannot read fails every run: name the fix
+        // from a local file check instead of spending a provider call.
+        const credentialProblem = agent.credentialProblem?.();
+        if (credentialProblem) return { agentId, model, status: 'error', errorCode: 'auth_required', error: redactSecrets(credentialProblem).slice(0, 2000) };
         if (agent.checkCredentials) {
           // A credential check (Pi: `pi auth check --no-refresh`) answers
           // without spending tokens or refreshing a login.

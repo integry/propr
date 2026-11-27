@@ -13,7 +13,7 @@ import { existsSync, chmodSync, mkdirSync, readFileSync, realpathSync } from "no
 import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { validateSessionSecret } from "@propr/shared";
+import { ANTIGRAVITY_EXISTING_LOGIN_HINT, validateSessionSecret } from "@propr/shared";
 import { createConfigManager } from "../config/index.js";
 import {
   ensurePrivateDirectory,
@@ -300,6 +300,10 @@ function displayResult(result: InitStackResult): void {
     console.log("Detected agent credentials on this host:");
     for (const c of result.detected) {
       console.log(`  ${c.envKey}=${c.path}`);
+    }
+    if (result.detected.some((c) => c.envKey === "HOST_ANTIGRAVITY_DIR")) {
+      console.log("");
+      console.log(`Antigravity: ${ANTIGRAVITY_EXISTING_LOGIN_HINT}`);
     }
     if (!result.credentialsAppended && result.pendingCredentials.length > 0) {
       console.log("");

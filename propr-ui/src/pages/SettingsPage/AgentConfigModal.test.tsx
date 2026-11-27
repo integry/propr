@@ -102,6 +102,17 @@ describe('AgentConfigModal', () => {
     );
   });
 
+  it('explains keyring-only agy logins for an existing Antigravity config and the file token of the managed login', () => {
+    render(<AgentConfigModal agent={null} existingAliases={[]} onClose={vi.fn()} onSave={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Antigravity' }));
+    expect(screen.getByText(/runs agy inside a container with no OS keyring, so it always saves a file token/)).toBeInTheDocument();
+    expect(screen.queryByTestId('antigravity-keyring-hint')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use existing config' }));
+    expect(screen.getByTestId('antigravity-keyring-hint')).toHaveTextContent('AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy');
+    expect(screen.getByTestId('antigravity-keyring-hint')).toHaveTextContent('~/.gemini/antigravity-cli/antigravity-oauth-token');
+  });
+
   it('adds discovered OpenCode provider models to the supported model selector', async () => {
     render(
       <AgentConfigModal

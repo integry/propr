@@ -45,7 +45,7 @@ describe('OpenCode API routes', () => {
             const [agent] = params.processedAgents ?? [];
             assert.equal(agent?.type, 'opencode');
             assert.equal(agent?.cliVersionType, 'default');
-            assert.equal(agent?.cliVersionResolved, '1.19.6');
+            assert.equal(agent?.cliVersionResolved, '2.4.2');
             return { status: 200, body: { success: true, agents: params.processedAgents } };
         });
         const routes = createAgentsRoutes({
@@ -122,10 +122,10 @@ describe('OpenCode API routes', () => {
         const routes = createAgentVersionRoutes({
             getAvailableVersions: async agentType => ({
                 agentType,
-                packageName: 'opencode-ai',
-                defaultVersion: '1.17.10',
-                availableTags: [{ tag: 'latest', version: '1.17.10' }],
-                recentVersions: [{ version: '1.17.10', publishedAt: '2026-06-25T00:00:00.000Z' }]
+                packageName: '@opencode/cli',
+                defaultVersion: '2.4.2',
+                availableTags: [{ tag: 'latest', version: '2.4.2' }],
+                recentVersions: [{ version: '2.4.2', publishedAt: '2026-06-25T00:00:00.000Z' }]
             })
         });
         const res = createMockResponse();
@@ -135,15 +135,15 @@ describe('OpenCode API routes', () => {
         assert.equal(res.statusCode, 200);
         assert.deepEqual(res.body, {
             agentType: 'opencode',
-            packageName: 'opencode-ai',
-            defaultVersion: '1.17.10',
-            availableTags: [{ tag: 'latest', version: '1.17.10' }],
-            recentVersions: [{ version: '1.17.10', publishedAt: '2026-06-25T00:00:00.000Z' }]
+            packageName: '@opencode/cli',
+            defaultVersion: '2.4.2',
+            availableTags: [{ tag: 'latest', version: '2.4.2' }],
+            recentVersions: [{ version: '2.4.2', publishedAt: '2026-06-25T00:00:00.000Z' }]
         });
     });
 
     test('GET /api/agents/opencode/images uses the unified image name', async () => {
-        const listAgentImages = mock.fn(async () => ['1.17.10-abc123']);
+        const listAgentImages = mock.fn(async () => ['2.4.2-abc123']);
         const routes = createAgentVersionRoutes({
             listAgentImages
         });
@@ -157,8 +157,8 @@ describe('OpenCode API routes', () => {
         assert.deepEqual(res.body, {
             agentType: 'opencode',
             images: [{
-                tag: '1.17.10-abc123',
-                fullName: 'propr/agent:1.17.10-abc123'
+                tag: '2.4.2-abc123',
+                fullName: 'propr/agent:2.4.2-abc123'
             }]
         });
     });

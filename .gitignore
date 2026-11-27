@@ -51,3 +51,7 @@ docs/docs-manifest.json
 
 # Runtime scratch storage for uploaded attachments (multer uploadDir).
 temp_uploads/
+
+# Python bytecode
+__pycache__/
+*.pyc

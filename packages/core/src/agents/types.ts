@@ -433,6 +433,13 @@ export interface Agent {
     healthCheck(): Promise<boolean>;
 
     /**
+     * Actionable reason the configured credentials cannot work in the agent
+     * container, from a cheap local check (no provider call). `undefined`
+     * when no problem is visible.
+     */
+    credentialProblem?(): string | undefined;
+
+    /**
      * Checks the provider credentials a model would use without running a
      * prompt or refreshing tokens. Agents whose CLI has no such check omit it,
      * and health checks fall back to a short analysis.

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { after, test } from 'node:test';
-import { closeConnection, shutdownQueue, type AgentConfig, type AnalysisResult } from '@propr/core';
+import { AntigravityAgent, closeConnection, shutdownQueue, type AgentConfig, type AnalysisResult } from '@propr/core';
 import { agentHealthModel, createAgentHealthCheck } from '../services/agentHealthCheck.js';
 
 const config: AgentConfig = {
@@ -206,4 +209,50 @@ test('agents with a credential check answer from it without running a prompt', a
   assert.match(invalid?.error ?? '', /invalid/);
   assert.equal((await check('pi', true))?.errorCode, 'unknown', 'an unknown provider is not a login problem');
   assert.deepEqual(checkedModels, Array(4).fill('pi-anthropic/claude-sonnet-5-5'), 'the probe model picks the provider');
+});
+
+test('an unreadable login is not ready with its actionable reason, without a provider call', async () => {
+  const reason = "agy stores its login in the OS keyring on desktops, which ProPR containers can't read. Sign in once with `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy`, or use ProPR's managed login.";
+  const antigravity: AgentConfig = { ...config, id: 'agy', type: 'antigravity', alias: 'antigravity', configPath: '~/.gemini', supportedModels: ['antigravity-gemini-3.8-flash'], defaultModel: 'antigravity-gemini-3.8-flash' };
+  let analyses = 0;
+  let problem: string | undefined = reason;
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [antigravity],
+    createAgent: () => ({
+      credentialProblem: () => problem,
+      analyze: async () => { analyses++; return { success: true, response: 'OK' }; },
+    }),
+  });
+  assert.deepEqual(await check('agy'), { agentId: 'agy', model: 'antigravity-gemini-3.8-flash', status: 'error', errorCode: 'auth_required', error: reason });
+  assert.equal(analyses, 0);
+  problem = undefined;
+  assert.equal((await check('agy', true))?.status, 'ready');
+  assert.equal(analyses, 1);
+});
+
+test('an API-key Antigravity agent without an OAuth file token reaches the provider probe', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-agy-apikey-'));
+  const gemini = path.join(home, '.gemini');
+  fs.mkdirSync(path.join(gemini, 'antigravity-cli'), { recursive: true });
+  const previousConfigPath = process.env.ANTIGRAVITY_CONFIG_PATH;
+  delete process.env.ANTIGRAVITY_CONFIG_PATH;
+  try {
+    const base: AgentConfig = { ...config, id: 'agy', type: 'antigravity', alias: 'antigravity', configPath: gemini, supportedModels: ['antigravity-gemini-3.8-flash'], defaultModel: 'antigravity-gemini-3.8-flash' };
+    let analyses = 0;
+    const checkWith = (agentConfig: AgentConfig) => createAgentHealthCheck({
+      loadAgents: async () => [agentConfig],
+      createAgent: resolved => {
+        const real = new AntigravityAgent(resolved);
+        return { credentialProblem: () => real.credentialProblem(), analyze: async () => { analyses++; return { success: true, response: 'OK' }; } };
+      },
+    });
+    assert.equal((await checkWith(base)('agy'))?.errorCode, 'auth_required');
+    assert.equal(analyses, 0);
+    assert.equal((await checkWith({ ...base, envVars: { GEMINI_API_KEY: 'key' } })('agy', true))?.status, 'ready');
+    assert.equal(analyses, 1);
+  } finally {
+    if (previousConfigPath === undefined) delete process.env.ANTIGRAVITY_CONFIG_PATH;
+    else process.env.ANTIGRAVITY_CONFIG_PATH = previousConfigPath;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

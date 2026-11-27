@@ -92,6 +92,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Antigravity explains keyring-only `agy` logins** (#3837)
+  - On macOS and Linux desktops with gnome-keyring or KWallet, `agy` 1.5.x
+    keeps its sign-in in the OS keyring, which agent containers can't read.
+    Tasks then failed with "Run 'agy' to log in" although the host was signed in.
+  - The Settings agent card, `propr check`, `propr check agents` and the MCP
+    `get_agent_configuration` tool (`credentialStates`) now report such an agent
+    as not ready, and failed tasks carry the fix: sign in once with
+    `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy`, or use ProPR's managed login.
+    Raw CLI output stays in the task logs. Only file presence is checked; the
+    token and keyring are never read.
+  - Settings, `propr init stack`, local setup and the desktop wizard mention
+    the variable when they reuse an existing `~/.gemini`.
+
 - **Release Rollout runtime images**: a Release Rollout run that publishes the
   app, UI or managed agent image itself now passes the image references on to
   the desktop builds and the preview CLI bundle. Before, GitHub Actions dropped

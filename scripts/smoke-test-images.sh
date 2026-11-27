@@ -48,6 +48,8 @@ STACK_CONTAINERS=(
   "$STACK-ui"
   "$STACK-docs"
   "$STACK-redis"
+  "$STACK-opencode-stop"
+  "$STACK-antigravity-stop"
 )
 
 remove_stack_resources() {
@@ -405,6 +407,148 @@ if [ -n "$pi_root_owned" ]; then
   exit 1
 fi
 echo "✓ Pi entrypoint keeps disposable state node-owned when started as root"
+
+# ProPR starts OpenCode task containers as root (--user 0:0) with disposable
+# state and a mounted host data directory. Everything the entrypoint runs
+# before dropping to node (version probe, schema init, credential seeding) must
+# leave the disposable data dir node-owned, or OpenCode cannot open its log.
+opencode_root_owned="$(docker run --rm --user 0:0 \
+  -e XDG_DATA_HOME=/tmp/propr-opencode-data \
+  -e PROPR_EPHEMERAL_STATE=1 \
+  -e PROPR_OPENCODE_SOURCE_DATA=/tmp/propr-opencode-source \
+  --entrypoint sh "$AGENT_TAG" -c '
+    set -eu
+    mkdir -p /tmp/propr-opencode-source
+    python3 -c "import sqlite3; sqlite3.connect(\"/tmp/propr-opencode-source/opencode.db\").close()"
+    chown -R node:node /tmp/propr-opencode-source
+    exec /home/node/opencode-entrypoint.sh \
+      sh -c "test \"\$(id -u)\" = 1000 && find /tmp/propr-opencode-data ! -user node -print"
+  ' 2>"$DATA_DIR/opencode-entrypoint.log")" || {
+  echo "✗ OpenCode entrypoint failed when started as root with disposable state"
+  cat "$DATA_DIR/opencode-entrypoint.log"
+  exit 1
+}
+if [ -n "$opencode_root_owned" ]; then
+  echo "✗ OpenCode entrypoint left files not owned by node in the disposable data dir:"
+  echo "$opencode_root_owned"
+  cat "$DATA_DIR/opencode-entrypoint.log"
+  exit 1
+fi
+echo "✓ OpenCode entrypoint keeps disposable state node-owned when started as root"
+
+# ProPR stops task containers with `docker stop` (cancel, cost cap, watchdog,
+# deadline), and --init signals only the entrypoint shell. A run that already
+# rotated its OAuth token must still write it back to the mounted host store,
+# forward the stop to the agent and exit promptly with 143.
+#   stop_after_refresh <name> <label> <docker run args...>
+# The command must create /tmp/propr-refreshed once it has refreshed.
+stop_after_refresh() {
+  local name="$1" label="$2" started stopped exit_code
+  shift 2
+  docker run -d --name "$name" --label "$STACK_LABEL_KEY=$STACK" --init --user 0:0 "$@" >/dev/null
+  for _ in $(seq 1 60); do
+    if docker exec "$name" test -e /tmp/propr-refreshed 2>/dev/null; then break; fi
+    if [ "$(docker inspect --format '{{.State.Running}}' "$name")" != "true" ]; then break; fi
+    sleep 0.5
+  done
+  if ! docker exec "$name" test -e /tmp/propr-refreshed 2>/dev/null; then
+    echo "✗ $label task never simulated its credential refresh"
+    docker logs "$name" || true
+    exit 1
+  fi
+  started=$(date +%s)
+  docker stop "$name" >/dev/null
+  stopped=$(date +%s)
+  exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$name")
+  docker logs "$name" >"$DATA_DIR/$label-stop.log" 2>&1 || true
+  docker rm "$name" >/dev/null
+  if [ "$exit_code" != "143" ]; then
+    echo "✗ $label entrypoint exited $exit_code after docker stop (expected 143)"
+    cat "$DATA_DIR/$label-stop.log"
+    exit 1
+  fi
+  if (( stopped - started > 5 )); then
+    echo "✗ $label container took $((stopped - started))s to stop (SIGKILLed after the stop timeout?)"
+    cat "$DATA_DIR/$label-stop.log"
+    exit 1
+  fi
+}
+
+# The host stores are prepared and read back inside the image, as root, so the
+# node-owned files work whatever the runner's UID is.
+opencode_stop_source="$DATA_DIR/opencode-stop-source"
+mkdir -p "$opencode_stop_source"
+docker run --rm --user 0:0 -v "$opencode_stop_source:/source" --entrypoint python3 "$AGENT_TAG" -c '
+import json, os, sqlite3
+db = sqlite3.connect("/source/opencode.db")
+db.executescript("""
+CREATE TABLE migration (id TEXT PRIMARY KEY);
+CREATE TABLE session_v2 (id TEXT PRIMARY KEY);
+CREATE TABLE machine (id TEXT PRIMARY KEY);
+CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT, label TEXT, value TEXT, connector_id TEXT,
+    method_id TEXT, active INTEGER, time_created INTEGER, time_updated INTEGER);
+""")
+value = json.dumps({"type": "oauth", "methodID": "oauth", "refresh": "refresh-1", "access": "access-1", "expires": 1})
+db.execute("INSERT INTO credential VALUES (?, ?, ?, ?, NULL, ?, 1, 1, 1)", ("cred-openai", "openai", "ChatGPT", value, "oauth"))
+db.commit()
+db.close()
+os.chown("/source", 1000, 1000)
+os.chown("/source/opencode.db", 1000, 1000)
+'
+# OpenCode rotates the ChatGPT token in the disposable database, then keeps working.
+stop_after_refresh "$STACK-opencode-stop" opencode \
+  -e XDG_DATA_HOME=/tmp/propr-opencode-data \
+  -e PROPR_EPHEMERAL_STATE=1 \
+  -e PROPR_OPENCODE_SOURCE_DATA=/home/node/.local/share/opencode-source \
+  -v "$opencode_stop_source:/home/node/.local/share/opencode-source:rw" \
+  --entrypoint /home/node/opencode-entrypoint.sh \
+  "$AGENT_TAG" python3 -c '
+import json, os, sqlite3, time
+db = sqlite3.connect("/tmp/propr-opencode-data/opencode/opencode.db")
+value = json.dumps({"type": "oauth", "methodID": "oauth", "refresh": "refresh-2", "access": "access-2", "expires": 2})
+assert db.execute("UPDATE credential SET value=?, time_updated=2 WHERE id=?", (value, "cred-openai")).rowcount == 1
+db.commit()
+open("/tmp/propr-refreshed", "w").close()
+time.sleep(120)
+'
+opencode_host_refresh="$(docker run --rm --user 0:0 -v "$opencode_stop_source:/source" --entrypoint python3 "$AGENT_TAG" -c '
+import json, sqlite3
+print(json.loads(sqlite3.connect("/source/opencode.db").execute("SELECT value FROM credential WHERE id=?", ("cred-openai",)).fetchone()[0])["refresh"])
+')"
+if [ "$opencode_host_refresh" != "refresh-2" ]; then
+  echo "✗ OpenCode did not write the refreshed token back to the host store after docker stop (host has $opencode_host_refresh)"
+  cat "$DATA_DIR/opencode-stop.log"
+  exit 1
+fi
+echo "✓ OpenCode entrypoint forwards docker stop and still writes the refreshed token back"
+
+antigravity_stop_source="$DATA_DIR/antigravity-stop-source"
+mkdir -p "$antigravity_stop_source"
+docker run --rm --user 0:0 -v "$antigravity_stop_source:/source" --entrypoint sh "$AGENT_TAG" -c '
+  set -eu
+  mkdir -p /source/antigravity-cli
+  printf token-1 > /source/antigravity-cli/antigravity-oauth-token
+  chmod 600 /source/antigravity-cli/antigravity-oauth-token
+  chown -R node:node /source
+'
+# agy rotates its Google token in the disposable HOME, then keeps working.
+stop_after_refresh "$STACK-antigravity-stop" antigravity \
+  -e PROPR_EPHEMERAL_STATE=1 \
+  -e PROPR_ANTIGRAVITY_SOURCE_CONFIG=/home/node/.gemini-source \
+  -v "$antigravity_stop_source:/home/node/.gemini-source:rw" \
+  --entrypoint /home/node/antigravity-entrypoint.sh \
+  "$AGENT_TAG" /bin/bash -lc '
+    printf token-2 > "$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+    : > /tmp/propr-refreshed
+    exec sleep 120
+  ' propr-antigravity
+antigravity_host_token="$(docker run --rm --user 0:0 -v "$antigravity_stop_source:/source:ro" --entrypoint cat "$AGENT_TAG" /source/antigravity-cli/antigravity-oauth-token)"
+if [ "$antigravity_host_token" != "token-2" ]; then
+  echo "✗ Antigravity did not write the refreshed token back to the host store after docker stop (host has $antigravity_host_token)"
+  cat "$DATA_DIR/antigravity-stop.log"
+  exit 1
+fi
+echo "✓ Antigravity entrypoint forwards docker stop and still writes the refreshed token back"
 
 docker run --rm --entrypoint node \
   -e "EXPECTED_VERSION=$EXPECTED_VERSION" \

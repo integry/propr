@@ -202,7 +202,10 @@ export async function resolveVersion(
             if (!versionSpec) {
                 throw new Error('Version spec required');
             }
-            // For specific/custom, try to resolve (validates it exists)
+            // OpenCode publishes its series 1 releases under the original npm name.
+            if (agentType === 'opencode' && versionSpec.startsWith('1.')) {
+                return resolveVersionSpec('opencode-ai', versionSpec);
+            }
             return resolveVersionSpec(packageName, versionSpec);
 
         default:
