@@ -76,6 +76,16 @@ export class ExtensionUpstreamHandshakeUnauthorizedError extends ExtensionUpstre
 }
 
 /**
+ * The upstream assigned a session but did not accept the initialized
+ * notification (an error status, a timeout, a dropped connection). The session
+ * is not initialized, so it is never kept: the caller closes the session that
+ * travels with the error, and the next call opens a new one.
+ */
+export class ExtensionUpstreamHandshakeIncompleteError extends Error {
+  constructor(readonly pending: HandshakeOutcome & { state: UpstreamSessionState }) { super('MCP session initialization incomplete'); }
+}
+
+/**
  * Open an upstream session: `initialize` (2025 era; stateful when the upstream
  * assigns an `Mcp-Session-Id`), otherwise `server/discover` (2026-07-28, stateless).
  * A refused credential propagates so an OAuth server can refresh and retry;
@@ -85,16 +95,26 @@ export class ExtensionUpstreamHandshakeUnauthorizedError extends ExtensionUpstre
  */
 export async function openUpstreamSession(post: Post, initializeId: string | number = 'propr-gateway-initialize', resume?: HandshakeOutcome & { state: UpstreamSessionState }): Promise<HandshakeOutcome> {
   let requestBytes = 0;
-  const send = async (body: unknown, exchange: ExtensionMcpExchange) => {
+  const charged = (body: unknown, exchange: ExtensionMcpExchange) => {
     requestBytes += Buffer.byteLength(JSON.stringify(body));
-    try { return await post(body, exchange); }
+    return post(body, exchange);
+  };
+  /** Protocol discovery: any failure but a refused credential only means this era is unavailable. */
+  const send = async (body: unknown, exchange: ExtensionMcpExchange) => {
+    try { return await charged(body, exchange); }
     catch (error) { if (isUnauthorized(error)) throw error; return undefined; }
   };
-  /** Send the initialized notification in `state`; a refused credential hands the session back with the error. */
+  /**
+   * Send the initialized notification in `state`. Only an accepted notification completes the handshake: a refused
+   * credential hands the session back for a resume, and any other failure hands it back to be closed.
+   */
   const notify = async (state: UpstreamSessionState, reply: unknown): Promise<HandshakeOutcome> => {
     const notification = sessionRequest(state, { jsonrpc: '2.0', method: 'notifications/initialized' });
-    try { await send(notification.body, notification.exchange); }
-    catch (error) { throw isUnauthorized(error) ? new ExtensionUpstreamHandshakeUnauthorizedError({ state, reply, requestBytes }) : error; }
+    try { await charged(notification.body, notification.exchange); }
+    catch (error) {
+      const pending = { state, reply, requestBytes };
+      throw isUnauthorized(error) ? new ExtensionUpstreamHandshakeUnauthorizedError(pending) : new ExtensionUpstreamHandshakeIncompleteError(pending);
+    }
     return { state, reply, requestBytes };
   };
   if (resume) return notify(resume.state, resume.reply);
@@ -180,6 +200,7 @@ export class ExtensionUpstreamSessions {
    * The open session, or a new one. Concurrent callers share one handshake; a
    * failed handshake is not kept, except a session the upstream assigned before
    * refusing the credential: the entry keeps it and the next handshake resumes it.
+   * A session whose initialized notification failed otherwise is closed.
    */
   async open(entry: UpstreamSessionEntry, handshake: (resume?: HandshakeOutcome & { state: UpstreamSessionState }) => Promise<HandshakeOutcome>): Promise<HandshakeOutcome & { own: boolean }> {
     if (entry.state) return { state: entry.state, requestBytes: 0, own: false };
@@ -199,7 +220,8 @@ export class ExtensionUpstreamSessions {
       if (error instanceof ExtensionUpstreamHandshakeUnauthorizedError) {
         if (current()) entry.pending = error.pending;
         else await closeUpstreamSession(error.pending.state, entry.remove);
-      } else if (resume) await closeUpstreamSession(resume.state, entry.remove);
+      } else if (error instanceof ExtensionUpstreamHandshakeIncompleteError) await closeUpstreamSession(error.pending.state, entry.remove);
+      else if (resume) await closeUpstreamSession(resume.state, entry.remove);
       throw error;
     } finally { entry.opening = undefined; }
   }
@@ -283,8 +305,8 @@ export async function probeExtensionMcp(endpoint: string, credential: string | u
   let outcome: HandshakeOutcome;
   try { outcome = await openUpstreamSession(post, 1); }
   catch (error) {
-    // No refresh here: end a session the upstream assigned before refusing the credential.
-    if (error instanceof ExtensionUpstreamHandshakeUnauthorizedError) await closeUpstreamSession(error.pending.state, exchange => send(endpoint, null, credential, {}, exchange));
+    // No refresh here: end a session the upstream assigned before refusing the credential or the notification.
+    if (error instanceof ExtensionUpstreamHandshakeUnauthorizedError || error instanceof ExtensionUpstreamHandshakeIncompleteError) await closeUpstreamSession(error.pending.state, exchange => send(endpoint, null, credential, {}, exchange));
     throw error;
   }
   const { state } = outcome;

@@ -218,7 +218,10 @@ The gateway, not the agent, owns each URL server's upstream MCP session:
   an id the server is *stateless*. If the upstream refuses `initialize`, Core
   tries the stateless 2026-07-28 revision (`server/discover`, then every request
   carries its `_meta` and `Mcp-Method` headers). The mode comes only from the
-  upstream's answers, never from configuration. The agent's own `initialize` and
+  upstream's answers, never from configuration. A session counts as open only
+  once the upstream accepts the initialized notification; if it does not, Core
+  ends the session it was assigned, the call fails, and the next call starts a
+  new handshake. The agent's own `initialize` and
   initialized notification are answered by the gateway with the same fixed
   projection as before.
 - **Nothing upstream reaches the agent.** The session id never leaves Core, and
@@ -255,7 +258,9 @@ mounts are rejected by the shared strict contract.
 Core bounds each request to 64 KiB, each response to 1 MiB, four simultaneous
 connections, 256 requests and 16 MiB of response traffic per run, with a ten-second
 connection/response deadline. A run reserves a full response budget during each
-request and refunds unused bytes after successful responses. Failed and oversized
+request and refunds unused bytes after successful responses. Handshake responses
+on a URL server (including a new handshake after a lost session) share that one
+reservation with the call's own response and are charged with it. Failed and oversized
 responses consume the full reservation. Grants expire after twelve hours.
 The existing task network policy is preserved; restricted runs additionally
 capture the effective allowlist and instance-only private-address permissions in the immutable grant. Every gateway request and its DNS re-resolution must pass that captured policy. Catalog identity never overrides a restricted run’s hostname or private-address rules. Core retains per-run request/response accounting, connection reservations and resolution/denial telemetry as a `network.extensions` task event after deactivating the grant and before deleting its row. Telemetry and cleanup failures are logged without replacing the run outcome. The Core API gateway derives its container-reachable address from the existing

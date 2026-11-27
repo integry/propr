@@ -1,7 +1,7 @@
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { ExtensionError, ExtensionLibraryStore, extensionTokenHash } from './extensionProfileStore.js';
 import { ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, requestExtensionMcp, extensionResponseWireBytes, resolveExtensionEndpoint, type ExtensionMcpExchange, type ExtensionMcpSend } from './endpointPolicy.js';
-import { ExtensionUpstreamHandshakeUnauthorizedError, closeUpstreamSession, extensionUpstreamSessions, openUpstreamSession, sessionRequest, type ExtensionUpstreamSessions, type HandshakeOutcome, type UpstreamSessionState } from './mcpUpstreamSessions.js';
+import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, closeUpstreamSession, extensionUpstreamSessions, openUpstreamSession, sessionRequest, type ExtensionUpstreamSessions, type HandshakeOutcome, type UpstreamSessionState } from './mcpUpstreamSessions.js';
 import { extensionOAuth } from './extensionOAuthStore.js';
 import { redactExtensionOutput } from './extensionOutput.js';
 export { redactExtensionOutput } from './extensionOutput.js';
@@ -99,7 +99,10 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     alive: () => extensionGrantAlive(store, grant),
   });
   session.calls++;
-  let handshakeBytes = 0;
+  // Every upstream response of this call (handshakes, recovery handshakes, the call itself) shares the call's one
+  // response reservation: each exchange may read only what the earlier ones left, and the call is charged the sum.
+  let inbound = 0;
+  const remaining = () => Math.max(0, EXTENSION_LIMITS.responseBytes - inbound);
   // Server-to-client requests (sampling, elicitation, roots) are answered upstream with an error and never relayed.
   // The answer uses its own connection: the pinned one is busy with the stream that waits for it.
   const answering = (used: string | undefined, exchange: ExtensionMcpExchange): ExtensionMcpExchange => {
@@ -112,13 +115,18 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     return exchange;
   };
   const post = (used: string | undefined) => async (message: unknown, exchange: ExtensionMcpExchange) => {
+    // The same exchange object: the transport reports the assigned session and pinned connection on it.
+    exchange.maxBytes = remaining();
     const reply = await send(endpoint, message, used, policy, answering(used, exchange));
-    handshakeBytes += extensionResponseWireBytes(reply) ?? 0;
+    inbound += extensionResponseWireBytes(reply) ?? 0;
     return reply;
   };
-  const call = (state: UpstreamSessionState | undefined, used: string | undefined) => {
+  const call = async (state: UpstreamSessionState | undefined, used: string | undefined) => {
     const request = sessionRequest(state, forwarded);
-    return send(endpoint, request.body, used, policy, answering(used, request.exchange));
+    const reply = await send(endpoint, request.body, used, policy, answering(used, { ...request.exchange, maxBytes: remaining() }));
+    // A reply without transport accounting (an injected transport) is charged the full reservation, as before.
+    inbound += reply === null ? 0 : extensionResponseWireBytes(reply) ?? EXTENSION_LIMITS.responseBytes;
+    return reply;
   };
   const attempt = async (used: string | undefined): Promise<unknown> => {
     latest = used; sessions.credentialUsed(session, used);
@@ -128,7 +136,7 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
       try { outcome = await openUpstreamSession(post(used), rpc.method === 'initialize' ? rpc.id as string | number : undefined, resume); }
       catch (error) {
         // The refused handshake's bytes were sent; its session stays with the entry for the retry.
-        if (error instanceof ExtensionUpstreamHandshakeUnauthorizedError) await charge(error.pending.requestBytes).catch(() => undefined);
+        if (error instanceof ExtensionUpstreamHandshakeUnauthorizedError || error instanceof ExtensionUpstreamHandshakeIncompleteError) await charge(error.pending.requestBytes).catch(() => undefined);
         throw error;
       }
       try { await charge(outcome.requestBytes); }
@@ -167,13 +175,14 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     catch (retryError) { if (retryError instanceof ExtensionError) throw retryError; throw new ExtensionError(502, 'MCP connection failed'); }
   }
   if (session.state?.id) sessionIds.push(session.state.id);
+  const received = Math.min(EXTENSION_LIMITS.responseBytes, inbound);
   if (upstream === LOCAL_INITIALIZE) {
-    responseBytes = Math.min(EXTENSION_LIMITS.responseBytes, handshakeBytes);
+    responseBytes = received;
     return { jsonrpc: '2.0', id: rpc.id, result: initializeProjection(server.name) };
   }
-  if (upstream === null && rpc.id === undefined) { responseBytes = 0; return null; }
+  if (upstream === null && rpc.id === undefined) { responseBytes = received; return null; }
   if (!upstream || typeof upstream !== 'object' || Array.isArray(upstream)) throw new ExtensionError(502, 'MCP protocol unavailable');
-  responseBytes = extensionResponseWireBytes(upstream) ?? EXTENSION_LIMITS.responseBytes;
+  responseBytes = received;
   const result = upstream as Record<string, unknown>;
   if (result.jsonrpc !== '2.0' || result.id !== rpc.id) throw new ExtensionError(502, 'MCP request failed');
   if (Object.hasOwn(result, 'error')) {

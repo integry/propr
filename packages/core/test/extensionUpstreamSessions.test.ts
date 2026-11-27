@@ -10,7 +10,7 @@ import { ExtensionLibraryStore, extensionTokenHash, type ExtensionLaunchContext 
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, type ExtensionMcpExchange, type ExtensionMcpSend } from '../src/extensions/endpointPolicy.js';
-import { ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessions, MCP_2026_REVISION, openUpstreamSession, probeExtensionMcp } from '../src/extensions/mcpUpstreamSessions.js';
+import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessions, MCP_2026_REVISION, openUpstreamSession, probeExtensionMcp } from '../src/extensions/mcpUpstreamSessions.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
@@ -429,4 +429,145 @@ test('the real transport frees the pinned connection after an event-stream respo
   await new Promise(resolve => setTimeout(resolve, 1_200));
   assert.equal(abandoned, 3, 'each open stream was ended by the gateway');
   assert.equal((await f.database('extension_run_grants').first()).connections, 0);
+});
+
+test('a session whose initialized notification is not accepted is closed, never cached; the next call opens a new one', async t => {
+  const f = await fixture(t);
+  const token = await f.launch('unaccepted-notification-run');
+  const upstream = statefulUpstream();
+  // The upstream answers the notification with a 503 (the transport's failure) or a refused credential, per call.
+  const failures: Array<() => Error> = [];
+  const send: typeof upstream.send = async (endpoint, body, bearer, policy, exchange = {}) => {
+    if ((body as { method?: string })?.method === 'notifications/initialized' && failures.length) {
+      await upstream.send(endpoint, body, bearer, policy, exchange);
+      throw failures.shift()!();
+    }
+    return upstream.send(endpoint, body, bearer, policy, exchange);
+  };
+  const call = (id: number, message: string) => extensionGatewayCall(f.store, token, 'echo', callEcho(id, message), send, f.sessions);
+  const unavailable = () => new Error('MCP connection failed');
+  failures.push(unavailable);
+  await assert.rejects(call(1, 'x'), /connection failed/);
+  const entry = f.sessions.peek(extensionTokenHash(token), 'echo')!;
+  assert.equal(entry.state, undefined, 'an uninitialized session is not kept');
+  assert.equal(entry.pending, undefined);
+  assert.deepEqual(upstream.state.deleted, ['upstream-session-1'], 'the assigned session is ended upstream');
+  assert.equal(upstream.state.requests.filter(r => r.method === 'tools/call').length, 0, 'no call reaches an uninitialized session');
+  assert.match(JSON.stringify(await call(2, 'fresh')), /fresh session=\[REDACTED\]/);
+  assert.equal(entry.state?.id, 'upstream-session-2', 'the next call initialized a new session');
+  await f.sessions.closeGrant(extensionTokenHash(token), 'grant_ended');
+
+  // A resumed handshake (after a refused credential) whose notification then fails is closed as well.
+  const second = await f.launch('unaccepted-resume-run');
+  failures.push(() => new ExtensionUpstreamUnauthorizedError(), unavailable);
+  const resumed = (id: number) => extensionGatewayCall(f.store, second, 'echo', callEcho(id, 'r'), send, f.sessions);
+  await assert.rejects(resumed(1), /connection failed/);
+  const pending = f.sessions.peek(extensionTokenHash(second), 'echo')!;
+  assert.equal(pending.pending?.state.id, 'upstream-session-3');
+  await assert.rejects(resumed(2), /connection failed/);
+  assert.equal(pending.pending, undefined); assert.equal(pending.state, undefined);
+  assert.deepEqual(upstream.state.deleted, ['upstream-session-1', 'upstream-session-2', 'upstream-session-3']);
+  assert.match(JSON.stringify(await resumed(3)), /r session=\[REDACTED\]/);
+  assert.equal(pending.state?.id, 'upstream-session-4');
+
+  // Settings' check reports the server unavailable and ends the session.
+  const deleted: string[] = [];
+  const probeSend: ExtensionMcpSend = async (_endpoint, body, _token, _policy, exchange = {}) => {
+    if (exchange.method === 'DELETE') { deleted.push(exchange.sessionId!); return null; }
+    const rpc = body as { id?: number; method: string };
+    if (rpc.method === 'notifications/initialized') throw unavailable();
+    exchange.assignedSessionId = 'probe-session';
+    return { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18', capabilities: {} } };
+  };
+  await assert.rejects(probeExtensionMcp('https://8.8.8.8/mcp', secret, {}, probeSend), ExtensionUpstreamHandshakeIncompleteError);
+  assert.deepEqual(deleted, ['probe-session']);
+});
+
+/** A synthetic TLS upstream reached through the real transport (requests to 8.8.8.8 are redirected to it). */
+async function tlsUpstream(t: TestContext, handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, body: string) => void | Promise<void>) {
+  const https = (await import('node:https')).default;
+  const { execFileSync } = await import('node:child_process');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'extension-tls-upstream-'));
+  extensionTestResources(t).defer(() => fs.rm(root, { recursive: true, force: true }));
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(root, 'key.pem'), '-out', path.join(root, 'cert.pem'), '-days', '1', '-subj', '/CN=mcp.synthetic.example', '-addext', 'subjectAltName=DNS:mcp.synthetic.example'], { stdio: 'ignore' });
+  const cert = await fs.readFile(path.join(root, 'cert.pem'));
+  const upstream = https.createServer({ key: await fs.readFile(path.join(root, 'key.pem')), cert }, async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk as Buffer);
+    await handler(req, res, Buffer.concat(chunks).toString());
+  });
+  extensionTestResources(t).defer(() => new Promise<void>(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()); }));
+  await new Promise<void>(r => upstream.listen(0, '127.0.0.1', r));
+  const { port } = upstream.address() as import('node:net').AddressInfo;
+  const original = https.request;
+  t.mock.method(https, 'request', (_url: URL, options: import('node:https').RequestOptions, callback: Parameters<typeof https.request>[2]) =>
+    original(`https://127.0.0.1:${port}/mcp`, { ...options, lookup: undefined, ca: cert, servername: 'mcp.synthetic.example' }, callback));
+  extensionTestResources(t).defer(() => t.mock.restoreAll());
+}
+
+test('an event stream whose CRLF is split across network chunks keeps each multi-line event whole', async t => {
+  await tlsUpstream(t, async (_req, res, body) => {
+    const rpc = JSON.parse(body);
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const flush = () => new Promise(resolve => setTimeout(resolve, 30));
+    // One JSON message over three data lines; every chunk boundary falls between a CR and its LF.
+    for (const chunk of ['data: {"jsonrpc":"2.0",\r', `\ndata: "id":${JSON.stringify(rpc.id)},\r`, '\ndata: "result":{"text":"whole"}}\r', '\n\r', '\n']) { res.write(chunk); await flush(); }
+    res.end();
+  });
+  const { requestExtensionMcp } = await import('../src/extensions/endpointPolicy.js');
+  assert.deepEqual(await requestExtensionMcp('https://8.8.8.8/mcp', { jsonrpc: '2.0', id: 7, method: 'ping' }), { jsonrpc: '2.0', id: 7, result: { text: 'whole' } });
+});
+
+test('handshake responses share the call\'s response reservation and are charged on first, recovery and initialize calls', async t => {
+  let initializePadding = 0; let callPadding = 0; let next = 0; let forget = false;
+  const sessions = new Set<string>();
+  const wire = { initialize: 0, call: 0 };
+  await tlsUpstream(t, (req, res, body) => {
+    const id = req.headers['mcp-session-id'] as string | undefined;
+    if (req.method === 'DELETE') { sessions.delete(id!); res.writeHead(204).end(); return; }
+    const rpc = JSON.parse(body);
+    if (rpc.method === 'initialize') {
+      const session = `budget-${++next}`; sessions.add(session);
+      const text = JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18', capabilities: {}, instructions: 'i'.repeat(initializePadding) } });
+      wire.initialize = Buffer.byteLength(text);
+      res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': session }).end(text);
+      return;
+    }
+    if (forget) { forget = false; sessions.clear(); }
+    if (!id || !sessions.has(id)) { res.writeHead(404).end(); return; }
+    if (rpc.id === undefined) { res.writeHead(202).end(); return; }
+    const text = JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: `ok${'c'.repeat(callPadding)}` }] } });
+    wire.call = Buffer.byteLength(text);
+    res.writeHead(200, { 'content-type': 'application/json' }).end(text);
+  });
+  const f = await fixture(t);
+  const token = await f.launch('handshake-budget-run');
+  const grant = extensionTokenHash(token);
+  const bytes = async () => Number((await f.database('extension_run_grants').where({ token_hash: grant }).first()).bytes);
+  const call = (body: unknown) => extensionGatewayCall(f.store, token, 'echo', body, undefined, f.sessions);
+
+  // A first tools/call after a near-limit initialize response is charged both responses.
+  initializePadding = 900 * 1024;
+  await call(callEcho(1, 'first'));
+  assert.equal(await bytes(), wire.initialize + wire.call);
+  // A call in the open session is charged its own response only.
+  let before = await bytes();
+  await call(callEcho(2, 'reuse'));
+  assert.equal(await bytes() - before, wire.call);
+  // Recovery after a lost session: the new handshake's response is charged with the replayed call.
+  forget = true; before = await bytes();
+  await call(callEcho(3, 'recovered'));
+  assert.equal(f.sessions.peek(grant, 'echo')!.reinitialized, 1);
+  assert.equal(await bytes() - before, wire.initialize + wire.call);
+  // The handshake and the call share one reservation: a response that would overrun what the handshake left fails,
+  // and the call is charged the whole reservation.
+  await f.sessions.closeGrant(grant, 'test');
+  callPadding = 200 * 1024; before = await bytes();
+  await assert.rejects(call(callEcho(4, 'overrun')), /connection failed/);
+  assert.equal(await bytes() - before, EXTENSION_LIMITS.responseBytes);
+  // An agent initialize that opens the session is charged its handshake.
+  await f.sessions.closeGrant(grant, 'test');
+  before = await bytes();
+  await call({ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'agent', version: '1' } } });
+  assert.equal(await bytes() - before, wire.initialize);
+  assert.equal((await f.database('extension_run_grants').where({ token_hash: grant }).first()).connections, 0);
 });

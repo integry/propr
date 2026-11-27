@@ -102,6 +102,8 @@ export interface ExtensionMcpExchange {
   pin?: boolean;
   /** `DELETE` ends the upstream session: no body, any status. */
   method?: 'POST' | 'DELETE';
+  /** Response bytes this exchange may read, at most `EXTENSION_LIMITS.responseBytes`: a gateway call's exchanges share one reservation. */
+  maxBytes?: number;
   /** Set by the transport: the `Mcp-Session-Id` the upstream assigned. */
   assignedSessionId?: string;
   /** A server-to-client request arrived on the response stream. It is never relayed to the agent. */
@@ -116,6 +118,8 @@ const SESSION_ID = /^[\x21-\x7e]{1,1024}$/;
 function eventStreamParser() {
   const decoder = new StringDecoder('utf8');
   let buffer = ''; let data: string[] = [];
+  /** The last chunk ended with a CR: a leading LF in the next one completes that CRLF, not an empty line. */
+  let carriageReturn = false;
   const messages: unknown[] = [];
   const line = (text: string) => {
     if (text === '') {
@@ -127,7 +131,10 @@ function eventStreamParser() {
   };
   return {
     push(chunk: Buffer): unknown[] {
-      buffer += decoder.write(chunk);
+      let text = decoder.write(chunk);
+      if (carriageReturn && text) { carriageReturn = false; if (text.startsWith('\n')) text = text.slice(1); }
+      buffer += text;
+      if (buffer.endsWith('\r')) carriageReturn = true;
       const lines = buffer.split(/\r\n|\r|\n/); buffer = lines.pop() ?? '';
       for (const text of lines) line(text);
       return messages.splice(0);
@@ -196,6 +203,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
       const stream = type.startsWith('text/event-stream');
       if (response.statusCode !== 200 || !(stream || type.startsWith('application/json'))) { discard(); unavailable(); return; }
       const chunks: Buffer[] = []; let bytes = 0; let reply: object | undefined;
+      const limit = Math.min(EXTENSION_LIMITS.responseBytes, exchange.maxBytes ?? EXTENSION_LIMITS.responseBytes);
       const events = stream ? eventStreamParser() : undefined;
       const accept = (messages: unknown[]) => {
         for (const message of messages) {
@@ -213,7 +221,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
       };
       response.on('data', (chunk: Buffer) => {
         bytes += chunk.length;
-        if (bytes > EXTENSION_LIMITS.responseBytes) { response.destroy(); unavailable(); return; }
+        if (bytes > limit) { response.destroy(); unavailable(); return; }
         if (events) accept(events.push(chunk)); else chunks.push(chunk);
       });
       response.on('error', unavailable);
