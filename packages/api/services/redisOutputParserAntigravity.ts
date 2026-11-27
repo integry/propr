@@ -3,11 +3,12 @@
  * (`event: init | step_update | result`), which task runs and native goals
  * stream to Redis.
  *
- * AGENT_RESPONSE text deltas buffer into one narration thought per step; every
- * other step type is tool activity at step granularity (a tool_use when the
- * step first appears, a tool_result once it reaches a terminal state); the
- * terminal result contributes its response when it adds to the streamed
- * narration, and its usage.
+ * AGENT_RESPONSE text deltas buffer into one narration thought per step.
+ * Only `tool` steps are tool activity, keyed by step index: a tool_use named
+ * by `tool_name` with `tool_info.parameters` when the step first appears, and
+ * a tool_result with `tool_info.output` once it reaches a terminal state.
+ * USER_INPUT and other step types are not tools. The terminal result
+ * contributes its response only when no narration streamed, and its usage.
  */
 import type { ConversationEvent } from '@propr/shared';
 
@@ -40,13 +41,14 @@ interface StreamEnvelope {
   event?: unknown;
   conversation_id?: unknown;
   init?: { model?: unknown };
-  step_update?: { conversation_id?: unknown; step_index?: unknown; state?: unknown; step_type?: unknown; text_delta?: unknown; usage?: StreamUsage };
+  step_update?: { conversation_id?: unknown; step_index?: unknown; state?: unknown; step_type?: unknown; text_delta?: unknown; usage?: StreamUsage; tool_name?: unknown; tool_info?: unknown };
   result?: { conversation_id?: unknown; status?: unknown; response?: unknown; usage?: StreamUsage };
 }
 
 const TERMINAL_STEP_STATES = new Set(['DONE', 'ERROR', 'FAILED', 'CANCELED', 'CANCELLED']);
 const MAX_CONTENT_LENGTH = 2000;
 const USAGE_KEYS = ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'] as const;
+const COMMAND_EXIT_CODE = /Command exited with code (-?\d+)/;
 
 export function createAntigravityStreamProjectionState(): AntigravityStreamProjectionState {
   return {
@@ -106,6 +108,19 @@ function applyUsage(state: AntigravityStreamParseState): void {
   }
 }
 
+/** A tool step failed when agy says so, or when its command reported a non-zero exit code. */
+function isToolStepError(stepState: string, output: string): boolean {
+  if (stepState !== 'DONE') return true;
+  const exit = COMMAND_EXIT_CODE.exec(output);
+  return exit !== null && Number(exit[1]) !== 0;
+}
+
+function toolStepDetails(update: NonNullable<StreamEnvelope['step_update']>): { name: string; input: Record<string, unknown>; output: string } {
+  const info = isRecord(update.tool_info) ? update.tool_info : {};
+  const name = typeof update.tool_name === 'string' && update.tool_name ? update.tool_name : typeof info.name === 'string' && info.name ? info.name : 'tool';
+  return { name, input: isRecord(info.parameters) ? info.parameters : {}, output: typeof info.output === 'string' ? info.output : '' };
+}
+
 function flushNarration(state: AntigravityStreamParseState, timestamp: string, flush: (timestamp: string) => void): void {
   state.antigravityStream.pendingStep = null;
   flush(timestamp);
@@ -128,16 +143,19 @@ function processStepUpdate(update: NonNullable<StreamEnvelope['step_update']>, t
     stream.streamedText.set(conversationId, (stream.streamedText.get(conversationId) ?? '') + text);
     return;
   }
+  if (stepType.toUpperCase() !== 'TOOL') return;
   const id = `antigravity-step-${key}`;
+  const tool = toolStepDetails(update);
   if (!stream.toolSteps.has(key)) {
     flushNarration(state, timestamp, flush);
     stream.toolSteps.add(key);
-    state.events.push({ type: 'tool_use', toolName: stepType, input: {}, id, timestamp });
+    state.events.push({ type: 'tool_use', toolName: tool.name, input: tool.input, id, timestamp });
   }
   if (TERMINAL_STEP_STATES.has(stepState) && !stream.finishedToolSteps.has(key)) {
     flushNarration(state, timestamp, flush);
     stream.finishedToolSteps.add(key);
-    state.events.push({ type: 'tool_result', toolUseId: id, result: truncate(text || stepState.toLowerCase()), isError: stepState !== 'DONE', timestamp });
+    const output = tool.output || text;
+    state.events.push({ type: 'tool_result', toolUseId: id, result: truncate(output || stepState.toLowerCase()), isError: isToolStepError(stepState, output), timestamp });
   }
 }
 
@@ -146,7 +164,8 @@ function processResult(result: NonNullable<StreamEnvelope['result']>, timestamp:
   flushNarration(state, timestamp, flush);
   const conversationId = result.conversation_id as string;
   const response = typeof result.response === 'string' ? result.response : '';
-  if (response.trim() && response !== stream.streamedText.get(conversationId)) {
+  // Streamed narration already shows the answer; the response stands in only when none streamed.
+  if (response.trim() && !stream.streamedText.get(conversationId)?.trim()) {
     state.events.push({ type: 'thought', content: truncate(response), timestamp });
   }
   stream.streamedText.set(conversationId, '');

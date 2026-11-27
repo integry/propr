@@ -14,6 +14,7 @@ import type { AgentConfig, AgentExecutionResult } from '../packages/core/src/age
 process.env.NODE_ENV = 'test';
 
 const FIXTURE = fs.readFileSync(new URL('./fixtures/antigravity/agy-1.5-transcript-tools.jsonl', import.meta.url), 'utf8');
+const STREAM_FIXTURE = fs.readFileSync(new URL('./fixtures/antigravity/agy-1.5-stream-tools.jsonl', import.meta.url), 'utf8');
 const ENTRYPOINT = '/home/node/antigravity-entrypoint.sh';
 
 after(async () => {
@@ -214,11 +215,11 @@ describe('Antigravity task result processing', () => {
     });
 
     test('a stream-only run keeps unfinished tool steps as calls without results', () => {
-        const update = (step_index: number, state: string, step_type = 'RUN_COMMAND', text_delta?: string) => ({ event: 'step_update', step_update: { conversation_id: 'agy-stream', step_index, state, step_type, ...(text_delta ? { text_delta } : {}) } });
+        const update = (step_index: number, state: string, output?: string) => ({ event: 'step_update', step_update: { conversation_id: 'agy-stream', step_index, state, step_type: 'tool', tool_name: 'run_command', tool_info: { parameters: {}, ...(output ? { output } : {}) } } });
         const events = [
-            update(1, 'RUNNING'), update(1, 'DONE', 'RUN_COMMAND', 'ok'),
-            update(2, 'RUNNING'),
-            update(3, 'RUNNING', 'VIEW_FILE'), update(3, 'CANCELED', 'VIEW_FILE'),
+            update(1, 'ACTIVE'), update(1, 'DONE', 'ok'),
+            update(2, 'ACTIVE'),
+            update(3, 'ACTIVE'), update(3, 'CANCELED'),
             update(4, 'FAILED'),
         ] as unknown as AntigravityOutputEvent[];
         const log = buildAntigravityConversationLog(events) as Array<{ isError?: boolean; message: { content: Array<Record<string, unknown>> } }>;
@@ -227,6 +228,52 @@ describe('Antigravity task result processing', () => {
         const results = blocks.filter(block => block.type === 'tool_result');
         assert.deepEqual(results.map(block => block.tool_use_id), [1, 3, 4].map(index => `antigravity-step-agy-stream-${index}`));
         assert.deepEqual(results.map(block => block.is_error), [false, true, true]);
+    });
+
+    test('an agy 1.5 stream with tool steps is persisted from the stream, not the GENERIC transcript', async () => {
+        await withTranscriptRoot(async (_root, sandbox) => {
+            const agent = createAgent(path.join(sandbox, 'config'));
+            const transcriptPath = agent.createTransientTranscriptPath('probe-3');
+            fs.writeFileSync(transcriptPath, FIXTURE);
+            agent.persistImplementationLog = async () => undefined;
+            const result = await agent.processExecutionResult({
+                result: { stdout: STREAM_FIXTURE, stderr: '', exitCode: 0 }, executionTime: 10,
+                issueRef: { number: 3830, repoOwner: 'integry', repoName: 'propr' },
+                effectiveModel: 'antigravity-gemini-3.8-flash', requestedCliModel: 'gemini-3.8-flash-medium',
+                prompt: 'List files', worktreePath: sandbox, worktreeGitContent: null, transcriptPath,
+            });
+            assert.equal(result.success, true, result.error);
+            assert.equal(result.sessionId, '32c6d960-6ab9-4122-ad6d-30730d00518e');
+            const log = result.conversationLog as Array<{ type: string; isError?: boolean; message: { content: Array<Record<string, unknown>> } }>;
+            const blocks = log.flatMap(entry => entry.message.content.map(block => ({ entry, block })));
+            const toolUses = blocks.filter(({ block }) => block.type === 'tool_use').map(({ block }) => block);
+            assert.deepEqual(toolUses.map(block => [block.name, block.input]), [
+                ['run_command', { CommandLine: 'ls -la' }],
+                ['write_file', { Path: '/home/node/workspace/notes.txt' }],
+                ['run_command', { CommandLine: 'cat missing.txt' }],
+            ]);
+            assert.ok(!toolUses.some(block => block.name === 'GENERIC' || block.name === 'user_input'), 'transcript steps and user input are not tools');
+            const toolResults = blocks.filter(({ block }) => block.type === 'tool_result');
+            assert.deepEqual(toolResults.map(({ block }) => block.tool_use_id), toolUses.map(block => block.id));
+            assert.match(String(toolResults[0].block.content), /Command exited with code 0\.[\s\S]*math\.test\.js/);
+            assert.equal(toolResults[1].block.content, '');
+            assert.match(String(toolResults[2].block.content), /cat: missing\.txt: No such file or directory/);
+            // Exit code 1 is an error although agy marks the step DONE.
+            assert.deepEqual(toolResults.map(({ block }) => block.is_error), [false, false, true]);
+            assert.equal(toolResults[2].entry.isError, true);
+            const texts = blocks.filter(({ block }) => block.type === 'text').map(({ block }) => String(block.text));
+            assert.equal(texts.length, 1, 'the narration is kept once; the truncated terminal response is not repeated');
+            assert.match(texts[0], /return code 1/);
+        });
+    });
+
+    test('a non-zero command exit code marks a transcript tool step as an error', () => {
+        const log = buildAntigravityConversationLog([
+            { source: 'MODEL', type: 'RUN_COMMAND', step_index: 1, status: 'DONE', content: 'Created At: x\nCommand exited with code 128.\n\nfatal: not a git repository' },
+            { source: 'MODEL', type: 'RUN_COMMAND', step_index: 2, status: 'DONE', content: 'Created At: x\nCommand exited with code 0.\n\nok' },
+        ] as AntigravityOutputEvent[]) as Array<{ message: { content: Array<Record<string, unknown>> } }>;
+        const results = log.flatMap(entry => entry.message.content).filter(block => block.type === 'tool_result');
+        assert.deepEqual(results.map(block => block.is_error), [true, false]);
     });
 
     test('a transcript step without a terminal status has no result, unless it reported an error', () => {

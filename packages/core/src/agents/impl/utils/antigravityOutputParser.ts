@@ -32,6 +32,9 @@ export interface AntigravityStreamStepUpdateEvent {
         step_type: string;
         text_delta?: string;
         usage?: AntigravityStreamUsage;
+        /** agy 1.5+: `tool` steps name the tool and carry its parameters, plus its output once DONE. */
+        tool_name?: string;
+        tool_info?: { name?: string; parameters?: Record<string, unknown>; output?: string };
     };
 }
 export interface AntigravityStreamResultEvent {

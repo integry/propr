@@ -88,7 +88,7 @@ function transcriptStepToClaudeEvents(event: AntigravityTranscriptEvent, positio
     const toolUse = { type: 'assistant', timestamp: event.created_at, message: { role: 'assistant', content: [{ type: 'tool_use', id, name: event.type, input: parsed.input }] }, ...stepMetadata(event) };
     // An unfinished step (e.g. RUNNING when the run timed out) has no result yet; a step error ends it.
     if (!TERMINAL_STEP_STATES.has(status) && parsed.error === undefined) return [toolUse];
-    const isError = status !== 'DONE' || parsed.error !== undefined;
+    const isError = parsed.error !== undefined || isAntigravityToolStepError(status, content);
     return [
         toolUse,
         { type: 'user', timestamp: event.created_at, isError, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: parsed.output, is_error: isError }] }, ...stepMetadata(event) },
@@ -99,37 +99,83 @@ function stepKey(update: AntigravityStreamStepUpdateEvent['step_update']): strin
     return `${update.conversation_id}:${update.step_index}`;
 }
 
-/** A streamed step converts at step granularity: its latest state stands for all its updates. */
-function streamStepToClaudeEvents(update: AntigravityStreamStepUpdateEvent['step_update']): unknown[] {
+type StreamStepUpdate = AntigravityStreamStepUpdateEvent['step_update'];
+const STREAM_TOOL_STEP = 'TOOL';
+const COMMAND_EXIT_CODE = /Command exited with code (-?\d+)/;
+
+function isStreamToolStep(update: StreamStepUpdate): boolean {
+    return normalize(update.step_type) === STREAM_TOOL_STEP;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The tool's output text: agy 1.5 reports it in `tool_info.output` once the step is DONE. */
+export function antigravityStreamToolOutput(update: StreamStepUpdate): string {
+    const output = isRecord(update.tool_info) ? update.tool_info.output : undefined;
+    return typeof output === 'string' ? output : update.text_delta ?? '';
+}
+
+/** A tool step failed when agy says so, or when its command reported a non-zero exit code. */
+export function isAntigravityToolStepError(state: string, output: string): boolean {
+    if (normalize(state) !== 'DONE') return true;
+    const exit = COMMAND_EXIT_CODE.exec(output);
+    return exit !== null && Number(exit[1]) !== 0;
+}
+
+/** Whether the stream reports any agy 1.5 `tool` step; only then does it replace the transcript's tool steps. */
+export function hasAntigravityStreamToolSteps(events: AntigravityOutputEvent[]): boolean {
+    return events.some(event => isAntigravityStreamEvent(event) && event.event === 'step_update' && isStreamToolStep(event.step_update));
+}
+
+/** Folds every update of one tool step: the latest state wins, and name, parameters and output survive later updates that omit them. */
+function mergeToolUpdate(previous: StreamStepUpdate | undefined, update: StreamStepUpdate): StreamStepUpdate {
+    if (!previous) return update;
+    const previousInfo = isRecord(previous.tool_info) ? previous.tool_info : {};
+    const info = isRecord(update.tool_info) ? update.tool_info : {};
+    return { ...previous, ...update, tool_name: update.tool_name ?? previous.tool_name, tool_info: { ...previousInfo, ...info } };
+}
+
+/** A streamed tool step converts at step granularity: its merged updates stand for all of them. */
+function streamToolStepToClaudeEvents(update: StreamStepUpdate): unknown[] {
     const meta = { session_id: update.conversation_id, conversation_id: update.conversation_id, antigravity: { type: update.step_type, status: update.state, step_index: update.step_index } };
-    if (normalize(update.step_type) === AGENT_RESPONSE) {
-        return update.text_delta ? [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: update.text_delta }] }, ...meta }] : [];
-    }
+    const info = isRecord(update.tool_info) ? update.tool_info : {};
+    const name = update.tool_name || (typeof info.name === 'string' && info.name) || update.step_type;
+    const input = isRecord(info.parameters) ? info.parameters : {};
     const id = `antigravity-step-${update.conversation_id}-${update.step_index}`;
-    const state = normalize(update.state);
-    const toolUse = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: update.step_type, input: {} }] }, ...meta };
+    const toolUse = { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] }, ...meta };
     // A step whose latest update is not terminal never reported completion: keep the call, not a result.
-    if (!TERMINAL_STEP_STATES.has(state)) return [toolUse];
-    const isError = state !== 'DONE';
+    if (!TERMINAL_STEP_STATES.has(normalize(update.state))) return [toolUse];
+    const output = antigravityStreamToolOutput(update);
+    const isError = isAntigravityToolStepError(update.state, output);
     return [
         toolUse,
-        { type: 'user', isError, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: update.text_delta ?? '', is_error: isError }] }, ...meta },
+        { type: 'user', isError, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: output, is_error: isError }] }, ...meta },
     ];
+}
+
+function streamNarrationToClaudeEvents(update: StreamStepUpdate): unknown[] {
+    const meta = { session_id: update.conversation_id, conversation_id: update.conversation_id, antigravity: { type: update.step_type, status: update.state, step_index: update.step_index } };
+    return update.text_delta ? [{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: update.text_delta }] }, ...meta }] : [];
 }
 
 /**
  * The persisted trace of one implementation run. Usage stays on the run's
  * token totals: stream usage is cumulative, so it is not repeated per step.
+ * Stream `tool` steps become tool calls; `user_input` and other non-tool steps
+ * carry no content of their own and are skipped. The terminal response is
+ * kept only when the stream narrated nothing for its conversation.
  */
 export function buildAntigravityConversationLog(events: AntigravityOutputEvent[]): unknown[] {
     const aggregated = aggregateDeltaMessages(events);
-    const latestToolUpdates = new Map<string, AntigravityStreamStepUpdateEvent['step_update']>();
+    const toolUpdates = new Map<string, StreamStepUpdate>();
     const streamedText = new Map<string, string>();
     for (const event of aggregated) {
         if (!isAntigravityStreamEvent(event) || event.event !== 'step_update') continue;
         const update = event.step_update;
         if (normalize(update.step_type) === AGENT_RESPONSE) streamedText.set(update.conversation_id, (streamedText.get(update.conversation_id) ?? '') + (update.text_delta ?? ''));
-        else latestToolUpdates.set(stepKey(update), update);
+        else if (isStreamToolStep(update)) toolUpdates.set(stepKey(update), mergeToolUpdate(toolUpdates.get(stepKey(update)), update));
     }
     const emittedSteps = new Set<string>();
     const log: unknown[] = [];
@@ -139,16 +185,17 @@ export function buildAntigravityConversationLog(events: AntigravityOutputEvent[]
         if (event.event === 'init') { log.push({ type: 'system', session_id: event.conversation_id, conversation_id: event.conversation_id, model: event.init.model, message: { content: [] } }); return; }
         if (event.event === 'result') {
             const { conversation_id: conversationId, status, response } = event.result;
-            const text = response && response !== streamedText.get(conversationId) ? [{ type: 'text', text: response }] : [];
+            const text = response && !streamedText.get(conversationId)?.trim() ? [{ type: 'text', text: response }] : [];
             log.push({ type: 'result', session_id: conversationId, conversation_id: conversationId, status: status.toLowerCase(), isError: status.toUpperCase() === 'ERROR', message: { content: text } });
             return;
         }
         const update = event.step_update;
-        if (normalize(update.step_type) === AGENT_RESPONSE) { log.push(...streamStepToClaudeEvents(update)); return; }
+        if (normalize(update.step_type) === AGENT_RESPONSE) { log.push(...streamNarrationToClaudeEvents(update)); return; }
+        if (!isStreamToolStep(update)) return;
         const key = stepKey(update);
         if (emittedSteps.has(key)) return;
         emittedSteps.add(key);
-        log.push(...streamStepToClaudeEvents(latestToolUpdates.get(key) ?? update));
+        log.push(...streamToolStepToClaudeEvents(toolUpdates.get(key) ?? update));
     });
     return log;
 }

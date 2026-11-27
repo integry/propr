@@ -15,7 +15,7 @@ import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTracking
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { parseAntigravityJsonl, normalizeAntigravityModelId, type AntigravityOutputEvent } from './utils/antigravityOutputParser.js';
-import { buildAntigravityConversationLog } from './utils/antigravityConversationLog.js';
+import { buildAntigravityConversationLog, hasAntigravityStreamToolSteps } from './utils/antigravityConversationLog.js';
 import { cleanupAntigravityTranscript, createAntigravityTranscriptPath } from './utils/antigravityTranscriptPaths.js';
 import { estimateTokens } from '../../utils/tokenCalculation.js';
 import { antigravityModelIdsMatch, antigravityReportedIdentity, getAntigravityCompatibilityRoute, toAntigravityCliModelId } from './antigravityModelIds.js';
@@ -225,7 +225,10 @@ export class AntigravityAgent implements Agent {
         const rawConversationLog = sessionOutput.conversationLog.length > 0 ? sessionOutput.conversationLog : parsedOutput.conversationLog;
         // Implementation runs persist their whole trace (tool steps included);
         // the analysis filter applies only to analysis and summary output.
-        const conversationLog = buildAntigravityConversationLog(rawConversationLog);
+        // agy 1.5 stream `tool` steps name each tool with its parameters and
+        // output, which the transcript reduces to GENERIC; the transcript's
+        // steps are the fallback for a stream without tool steps.
+        const conversationLog = buildAntigravityConversationLog(hasAntigravityStreamToolSteps(parsedOutput.conversationLog) ? parsedOutput.conversationLog : rawConversationLog);
         const tokenUsage = this.mergeTokenUsage(parsedOutput.tokenUsage, sessionOutput.tokenUsage);
         const evidenceConflict = resolveAntigravityEvidenceConflict(parsedOutput.reportedModel, sessionOutput.reportedModel, parsedOutput.conversationId, sessionOutput.conversationId); const modelUsed = evidenceConflict ? undefined : parsedOutput.modelUsed || sessionOutput.modelUsed;
         // Matching base identities can differ in specificity. Keep explicit effort
