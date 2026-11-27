@@ -67,6 +67,7 @@ class AuthLock:
     """proper-lockfile compatible lock on a Pi auth.json."""
 
     def __init__(self, auth_path):
+        # Pi locks the resolved file, so a symlinked auth.json shares its lock.
         self.path = Path(os.path.realpath(auth_path) + ".lock")
 
     def __enter__(self):
@@ -123,7 +124,10 @@ def refreshed_entries(seeded, runtime):
 
 def sync(host_auth, runtime_auth, snapshot):
     """Write OAuth refreshes back to the host; returns the providers written."""
-    host_auth = Path(host_auth)
+    # Resolve once and use the resolved file for the lock, the read, the mode
+    # and the replacement: replacing a symlinked auth.json by its link path
+    # would swap the link for a regular file and leave its target stale.
+    host_auth = Path(os.path.realpath(host_auth))
     if not Path(snapshot).is_file():
         return []
     seeded = read_json(snapshot)

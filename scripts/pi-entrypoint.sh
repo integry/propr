@@ -23,9 +23,25 @@ pi_imported_files=(auth.json settings.json models.json AGENTS.md SYSTEM.md APPEN
 case "$pi_runtime_home" in
     /|"") echo "Refusing to use $pi_runtime_home as the disposable Pi home" >&2; exit 64 ;;
 esac
-case "$(realpath -m "$pi_runtime_home")/" in
-    "$(realpath -m "$pi_source_dir")/"*)
+# The disposable home is deleted and chowned below, so it must not overlap the
+# host Pi dir in either direction: inside it would write into the host dir, and
+# containing it (e.g. PROPR_PI_RUNTIME_HOME=/home/node/.pi) would delete it.
+# Compare canonical paths so symlinks and `..` cannot hide an overlap.
+pi_runtime_home_real="$(realpath -m -- "$pi_runtime_home")"
+pi_source_dir_real="$(realpath -m -- "$pi_source_dir")"
+if [ "$pi_runtime_home_real" = "/" ]; then
+    echo "Refusing to use $pi_runtime_home as the disposable Pi home" >&2
+    exit 64
+fi
+case "$pi_runtime_home_real/" in
+    "$pi_source_dir_real/"*)
         echo "The disposable Pi home must not be inside the host Pi dir ($pi_source_dir)" >&2
+        exit 64
+        ;;
+esac
+case "$pi_source_dir_real/" in
+    "$pi_runtime_home_real/"*)
+        echo "The disposable Pi home must not contain the host Pi dir ($pi_source_dir)" >&2
         exit 64
         ;;
 esac

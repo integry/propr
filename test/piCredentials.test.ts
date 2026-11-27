@@ -120,6 +120,26 @@ describe('pi-credentials.py', () => {
         }
     });
 
+    test('updates the target of a symlinked host auth.json and keeps the link', () => {
+        withRun(hostAuth(), run => {
+            const store = path.join(run.dir, 'store');
+            fs.mkdirSync(store);
+            const target = path.join(store, 'pi-auth.json');
+            fs.renameSync(run.host, target);
+            fs.chmodSync(target, 0o640);
+            fs.symlinkSync(target, run.host);
+            run.seed();
+            run.writeRuntime({ ...hostAuth(), anthropic: oauth('2') });
+            run.sync();
+            assert.ok(fs.lstatSync(run.host).isSymbolicLink(), 'the host link is not replaced by a regular file');
+            assert.equal(fs.readlinkSync(run.host), target);
+            assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')).anthropic, oauth('2'));
+            assert.equal(fs.statSync(target).mode & 0o7777, 0o640);
+            assert.deepEqual(fs.readdirSync(store), ['pi-auth.json'], 'no temp file or lock is left beside the target');
+            assert.deepEqual(fs.readdirSync(path.dirname(run.host)), ['auth.json']);
+        });
+    });
+
     test('a host login during the run wins over the runtime refresh', () => {
         withRun(hostAuth(), run => {
             run.seed();
@@ -439,6 +459,31 @@ exit "\${PROPR_TEST_EXIT:-0}"
             const result = spawnSync('bash', [entrypoint, 'pi', '--version'], { env: { ...env, PROPR_PI_RUNTIME_HOME: path.join(dirs.source, 'runtime') }, encoding: 'utf8' });
             assert.equal(result.status, 64);
             assert.equal(fs.existsSync(path.join(dirs.source, 'runtime')), false);
+        });
+    });
+
+    test('refuses a runtime home that contains the host Pi dir before deleting anything', () => {
+        withEntrypoint((env, dirs) => {
+            const piDir = path.dirname(dirs.source);
+            const link = path.join(dirs.runtime, '..', 'pi-link');
+            fs.symlinkSync(piDir, link);
+            // The parent of the source dir (the PROPR_PI_RUNTIME_HOME=/home/node/.pi case),
+            // the same dir spelled through `..`, and a symlink to it.
+            for (const runtimeHome of [piDir, path.join(dirs.source, '..'), link]) {
+                const result = spawnSync('bash', [entrypoint, 'pi', '--version'], { env: { ...env, PROPR_PI_RUNTIME_HOME: runtimeHome }, encoding: 'utf8' });
+                assert.equal(result.status, 64, `${runtimeHome}: ${result.stderr}`);
+                assert.match(result.stderr, /must not contain the host Pi dir/);
+                assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dirs.source, 'auth.json'), 'utf8')), hostAuth());
+                assert.deepEqual(fs.readdirSync(path.join(dirs.source, 'sessions')), ['host-session.jsonl']);
+            }
+        });
+    });
+
+    test('refuses a runtime home equal to the host Pi dir', () => {
+        withEntrypoint((env, dirs) => {
+            const result = spawnSync('bash', [entrypoint, 'pi', '--version'], { env: { ...env, PROPR_PI_RUNTIME_HOME: `${dirs.source}/` }, encoding: 'utf8' });
+            assert.equal(result.status, 64);
+            assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dirs.source, 'auth.json'), 'utf8')), hostAuth());
         });
     });
 
