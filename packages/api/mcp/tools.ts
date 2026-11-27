@@ -663,6 +663,19 @@ function implementationMessage(mode: string): string {
   return 'Implementation requested. Inspect plan issues and tasks for execution state.';
 }
 
+/**
+ * Adding issues to a running sequential or graph execution is not supported:
+ * its order and dependency edges are fixed when it starts. The caller is told
+ * which issues still hold it, so it can retry once they finish.
+ */
+function activeEpicQueueRefusal(queue: NonNullable<Awaited<ReturnType<typeof getEpicExecutionQueue>>>): McpError {
+  const unfinished = queue.items.filter(item => !['done', 'skipped'].includes(item.state)).map(item => item.issueNumber);
+  const running = unfinished.length ? unfinished : queue.issues;
+  return new McpError('EPIC_EXECUTION_ACTIVE',
+    `This plan's epic execution is still running issues ${running.map(number => `#${number}`).join(', ')}; retry when it finishes.`,
+    409, { stage: 'precondition', retryable: true, details: { executionId: queue.executionId, issues: running } });
+}
+
 /** Register implementation dispatch separately from plan editing and publication. */
 export function addPlanImplementationTool(
   tools: McpTool[], deps: ToolDeps, planner: ReturnType<typeof createPlannerRoutes>, target: McpTool['target'],
@@ -702,6 +715,9 @@ export function addPlanImplementationTool(
             ultrafix_max_cycles: args.runUltrafix ? args.ultrafixMaxCycles : null,
           });
         }
+        // A plan holds one execution queue: a chain or graph cannot start beside a running one. Checked after
+        // the claims, so an issue that queue already owns is refused as already requested; this transaction rolls back.
+        if (queuedMode && previous?.status === 'active') throw activeEpicQueueRefusal(previous);
         if (queuedMode) {
           const queue = await createEpicExecutionQueue({ draftId: args.planId, repository: args.repository,
             issues: [...dispatch.dispatchNow, ...dispatch.queued], advanceOn: dispatch.advanceOn,

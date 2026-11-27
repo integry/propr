@@ -928,6 +928,13 @@ issue an earlier receipt already owns is refused with
 `IMPLEMENTATION_ALREADY_REQUESTED` (409); inspect the plan and the earlier
 operation with `get_plan` and `get_operation` instead of retrying.
 
+**One running epic execution per plan.** A sequential or graph `implement_plan`
+cannot add issues to an epic execution that is still running for the same plan:
+its order and dependency edges are fixed when it starts. The call is refused
+with `EPIC_EXECUTION_ACTIVE` (409, retryable) before anything is claimed or
+labelled; `details` names the execution and the issues it is still running.
+Retry once that execution has finished.
+
 ### Following a submission through replacement attempts
 
 ProPR replaces an issue task automatically when its run is lost with its worker

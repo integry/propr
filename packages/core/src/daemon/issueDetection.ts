@@ -6,6 +6,7 @@ import { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
+import { enqueueIssueJobReplacingFinished, type IssueJobEnqueueOutcome } from '../queue/issueJobEnqueue.js';
 import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.js';
 import { getGithubUserWhitelist } from '../utils/userWhitelist.js';
 import { isAuthorizedIssueTriggerActor } from './issueTriggerAuthorization.js';
@@ -301,19 +302,25 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             correlationId: generateCorrelationId()
         };
 
-        const addToQueueWithRetry = (): Promise<unknown> => withRetry(
-            async () => (await getIssueQueue()).add('processGitHubIssue', issueJob, {
+        const addToQueueWithRetry = (): Promise<IssueJobEnqueueOutcome> => withRetry(
+            // A finished job still retained under this ID is replaced, not silently deduplicated against.
+            async () => enqueueIssueJobReplacingFinished(await getIssueQueue(), { name: 'processGitHubIssue', data: issueJob, opts: {
                 jobId,
                 attempts: 3,
                 backoff: { type: 'exponential', delay: 2000 },
                 removeOnComplete: true, // Allow new job with same ID after completion
                 removeOnFail: true,     // Allow retry by re-adding label after failure
-            }),
+            } }, correlatedLogger),
             { ...retryConfigs.redis, correlationId },
             `add_issue_to_queue_${issue.number}`
         );
 
-        await addToQueueWithRetry();
+        const enqueued = await addToQueueWithRetry();
+        if (enqueued.status === 'already_queued') {
+            correlatedLogger.info({ jobId, issueNumber: issue.number, repository: repoFullName, jobState: enqueued.state },
+                'A job for this issue is already queued (possibly delayed, e.g. waiting for disk space); not adding another');
+            return { status: 'ignored', reason: 'job_already_queued' };
+        }
 
         try {
             const activity = {

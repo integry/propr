@@ -1,4 +1,5 @@
-import { repositoryStorageLifecycle, protectStorageQueue } from '../storage/lifecycle.js';
+import { repositoryStorageLifecycle, protectStorageQueue, isWorktreeDiskPressureError } from '../storage/lifecycle.js';
+import { deferIssueJobOnDiskPressure, endIssueDiskPressureWait, isFinalJobFailure, ISSUE_JOB_NAME } from './issueDiskPressureDeferral.js';
 // Task queue module for processing GitHub issues and PR comments
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
 import { Redis, RedisOptions } from 'ioredis';
@@ -226,6 +227,21 @@ async function finalizeSubmissionIntakeAttempt(job: Job | undefined, err: Error)
 }
 
 /**
+ * An issue job that failed for good on a disk-pressure refusal (its wait for
+ * free space ran out, or waiting is disabled and its retries are spent) never
+ * reached its processor, so nothing told the issue or its plan. Best effort.
+ */
+async function reportIssueDiskPressureFailure(job: Job | undefined, err: Error): Promise<void> {
+    if (!job || job.name !== ISSUE_JOB_NAME || !isWorktreeDiskPressureError(err) || !isFinalJobFailure(job, err)) return;
+    try {
+        const { reportIssueDiskPressureRefusal } = await import('../services/issueDiskPressureRefusal.js');
+        await reportIssueDiskPressureRefusal(job as unknown as Parameters<typeof reportIssueDiskPressureRefusal>[0]);
+    } catch (error) {
+        logger.warn({ jobId: job.id, error: (error as Error).message }, 'Failed to report an issue job refused for disk pressure');
+    }
+}
+
+/**
  * Create a worker for processing jobs. Initializes Redis connection if needed.
  */
 export async function createWorker<T extends JobData = JobData, R extends JobResult = JobResult>(
@@ -250,11 +266,15 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
             await stopStalledAttemptContainers({ jobId: job.id, correlationId: (job.data as { correlationId?: string })?.correlationId, jobName: job.name })
                 .catch(error => logger.warn({ jobId: job.id, error: (error as Error).message }, 'Could not stop containers of a stalled job attempt'));
         }
-        return repositoryStorageLifecycle.use(() => processorFunction(job), {
+        // An issue job refused at admission for disk pressure waits for free space on the same job.
+        return deferIssueJobOnDiskPressure(job, () => repositoryStorageLifecycle.use(async () => {
+            if (job.name === ISSUE_JOB_NAME) await endIssueDiskPressureWait(job);
+            return processorFunction(job);
+        }, {
             filesystem: process.env.GIT_WORKTREES_BASE_PATH || '/tmp/git-processor/worktrees',
             reserveBytes: Number(process.env.WORKTREE_ADMISSION_RESERVE_BYTES || 2 * 1024 ** 3),
             taskBytes: Number(process.env.WORKTREE_TASK_BUDGET_BYTES || 1024 ** 3),
-        });
+        }));
     }, workerOptions);
 
     worker.on('completed', async (job: Job<T>, result: R) => {
@@ -291,7 +311,10 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
     worker.on('failed', async (job: Job<T> | undefined, err: Error) => {
         // BullMQ emits this after moving the job to delayed for its retry, or to failed for good.
         void syncPlanRefinementForJobAttempt(job as unknown as Job | undefined);
-        if (queueName === GITHUB_ISSUE_QUEUE_NAME) void finalizeSubmissionIntakeAttempt(job as unknown as Job | undefined, err);
+        if (queueName === GITHUB_ISSUE_QUEUE_NAME) {
+            void finalizeSubmissionIntakeAttempt(job as unknown as Job | undefined, err);
+            void reportIssueDiskPressureFailure(job as unknown as Job | undefined, err);
+        }
         const jobData = job?.data as unknown as IssueJobData | undefined;
         logger.error({
             jobId: job?.id,

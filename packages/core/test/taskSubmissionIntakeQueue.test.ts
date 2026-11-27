@@ -33,6 +33,8 @@ Object.assign(process.env, {
   GIT_CLONES_BASE_PATH: path.join(root, 'clones'), GIT_WORKTREES_BASE_PATH: path.join(root, 'worktrees'),
   // Injected: no disk has this much free space, so admission refuses every attempt.
   WORKTREE_ADMISSION_RESERVE_BYTES: String(Number.MAX_SAFE_INTEGER),
+  // No wait for disk space: each refusal fails an attempt, so the intake's retries are spent in seconds.
+  WORKTREE_DISK_PRESSURE_MAX_WAIT_MS: '0',
 });
 
 const { db, closeConnection } = await import('../src/db/connection.js');

@@ -139,6 +139,13 @@ export {
     createWorker,
     shutdownQueue
 } from './queue/taskQueue.js';
+export { enqueueIssueJobReplacingFinished, type IssueJobEnqueueOutcome } from './queue/issueJobEnqueue.js';
+export {
+    decideIssueDiskPressure,
+    issueDiskPressureMaxWaitMs,
+    ISSUE_DISK_PRESSURE_RETRY_DELAYS_MS,
+    type IssueDiskPressureWaitData,
+} from './queue/issueDiskPressureDeferral.js';
 export type {
     IssueJobData,
     AgentCapacityDeferralData,

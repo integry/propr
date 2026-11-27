@@ -1,7 +1,7 @@
 import type { Knex } from 'knex';
 import { db } from '../../db/connection.js';
 import { epicQueueIssue, getEpicExecutionQueue, isEpicQueueIssueInFlight, isSettled, reopenParallelQueueIssue, unblockQueueIssue,
-  blockQueueIssue, type EpicExecutionQueue, type EpicQueueIssue } from './epicQueueState.js';
+  blockQueueIssue, ownedIssue, type EpicExecutionQueue, type EpicQueueIssue } from './epicQueueState.js';
 
 /**
  * An issue run that ended with the `blocked` outcome (`on_blocker: report`)
@@ -67,4 +67,30 @@ export async function clearEpicQueueHeadBlocked({ draftId, issueNumber }: { draf
   const active = await activeQueueFor(database, draftId, issueNumber, timestamp);
   if (!active) return false;
   return unblockQueueIssue(database, active.queue, active.item, { timestamp, kinds: ['agent_blocked'] });
+}
+
+/** Why a queued issue whose job the worker refused for disk pressure holds its execution. */
+export function diskPressureRefusedReason(issueNumber: number): string {
+  return `Issue #${issueNumber} could not start: the worker had no free disk space for its working copy. `
+    + 'Free space on the worker host, then retry the issue.';
+}
+
+/**
+ * Records that the worker refused this queued issue's job for good (disk
+ * pressure, before any task started): the issue is blocked as a failed
+ * dispatch with that reason, so the plan shows why it stands still. Its
+ * dispatch claim is renewed at the same time, so recovery waits its normal
+ * retry interval before dispatching the issue again rather than at once.
+ * Returns true when an active execution containing the issue was marked.
+ */
+export async function markEpicQueueIssueDispatchRefused({ draftId, issueNumber, reason }: { draftId: string; issueNumber: number; reason: string },
+  { database = db, now = Date.now }: Deps = {}): Promise<boolean> {
+  const timestamp = now();
+  const active = await activeQueueFor(database, draftId, issueNumber, timestamp);
+  if (!active) return false;
+  if (!await blockQueueIssue(database, active.queue, active.item, { kind: 'dispatch_failed', reason, timestamp })) return false;
+  await ownedIssue(database, active.queue, active.item)
+    .where({ state: 'blocked', blocked_kind: 'dispatch_failed', blocked_reason: reason }).whereNotNull('dispatched_at')
+    .update({ dispatched_at: timestamp });
+  return true;
 }

@@ -15,6 +15,7 @@ import {
   buildDynamicLlmLabel,
   buildAgentModelLlmLabel,
   getIssueQueue,
+  enqueueIssueJobReplacingFinished,
   generateCorrelationId,
   withRetry,
   retryConfigs
@@ -70,7 +71,8 @@ export async function enqueueIssueImplementationJob(params: {
   const { owner, repo, issueNumber, userId, triggeringLabel } = params;
   const queue = await getIssueQueue();
   const jobId = `issue-${owner}-${repo}-${issueNumber}`;
-  await queue.add('processGitHubIssue', {
+  // A finished job still retained under this ID is replaced, so the request is not swallowed by it.
+  await enqueueIssueJobReplacingFinished(queue, { name: 'processGitHubIssue', data: {
     repoOwner: owner,
     repoName: repo,
     number: issueNumber,
@@ -80,13 +82,13 @@ export async function enqueueIssueImplementationJob(params: {
     ...(params.retryCommentId ? { retryCommentId: params.retryCommentId } : {}),
     ...(params.retryPublishedAt ? { retryPublishedAt: params.retryPublishedAt } : {}),
     correlationId: params.correlationId || generateCorrelationId()
-  }, {
+  }, opts: {
     jobId,
     attempts: 3,
     backoff: { type: 'exponential', delay: 2000 },
     removeOnComplete: true,
     removeOnFail: true
-  });
+  } }, params.correlationId ? logger.withCorrelation(params.correlationId) : logger);
 }
 
 async function publishImplementationLabels(params: {
