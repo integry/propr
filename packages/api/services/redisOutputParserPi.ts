@@ -195,15 +195,22 @@ function emitToolUse(state: PiParseState, id: string, timestamp: string): void {
   pushEvent(state, { type: 'tool_use' as const, toolName: call?.name || 'tool', input: call?.input, id, timestamp });
 }
 
-/** Pi reports a result in `tool_execution_end`, a `toolResult` message and `turn_end`: one event per call. */
+/**
+ * Pi reports a result in `tool_execution_end`, a `toolResult` message and
+ * `turn_end`: one event per call. Which copy a projection sees first depends on
+ * what Redis retention kept, so the result is keyed by its call rather than by
+ * its record, and a repeated copy reserves no record slot.
+ */
 function emitToolResult(state: PiParseState, id: string, { content, isError }: { content: unknown; isError: boolean }, timestamp: string): void {
-  if (state.pi.emittedToolResultIds.has(id)) {
-    skipEvent(state);
-    return;
-  }
+  if (state.pi.emittedToolResultIds.has(id)) return;
   emitToolUse(state, id, timestamp);
   state.pi.emittedToolResultIds.add(id);
-  pushEvent(state, { type: 'tool_result' as const, toolUseId: id, result: truncateContent(contentText(content)), isError, timestamp });
+  pushEvent(state, { type: 'tool_result' as const, toolUseId: id, result: truncateContent(contentText(content)), isError, timestamp }, piToolResultKey(id));
+}
+
+/** The event key of a call's result, the same whichever of Pi's copies emitted it. */
+function piToolResultKey(toolCallId: string): string {
+  return `pi:tool_result:${encodeURIComponent(toolCallId)}`;
 }
 
 function rememberToolCall(state: PiParseState, id: string, name: unknown, input: unknown): void {

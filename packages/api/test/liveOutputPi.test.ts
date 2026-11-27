@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 import { db } from '@propr/core';
-import { LiveOutputProjector } from '../services/liveOutputStream.js';
+import { LiveOutputProjector, projectLiveOutputRead, type LiveOutputRead } from '../services/liveOutputStream.js';
 
 after(async () => {
   await db.destroy();
@@ -35,4 +35,53 @@ test('Pi JSON records are projected live, one record at a time, with the IDs of 
   assert.deepEqual(events, full);
   assert.equal(events.at(-1)?.id, pendingId, 'the completed block keeps the ID it streamed under');
   assert.equal(incremental.snapshot().tokenUsage?.output_tokens, 229);
+});
+
+type Event = Record<string, unknown> & { id: string };
+
+/** The same Pi log read whole, and fresh after every record before `retained` was trimmed. */
+function fullAndTrimmed(records: string[], retained: number) {
+  const text = `${records.join('\n')}\n`;
+  const base = Buffer.byteLength(`${records.slice(0, retained).join('\n')}\n`);
+  const read = (from: number): LiveOutputRead => ({
+    epoch: 'generation:1', base: from, end: Buffer.byteLength(text), start: 0, head: records[0], from,
+    envelopes: from === 0 ? 0 : retained,
+    text: Buffer.from(text).subarray(from).toString(),
+  });
+  const project = (from: number) => projectLiveOutputRead(read(from), 'pi', null, { selectEvents: false }).events as Event[];
+  return { full: project(0), trimmed: project(base) };
+}
+
+test('a Pi tool result keeps its ID when retention leaves only a later copy of it', () => {
+  const result = { content: [{ type: 'text', text: 'tests pass' }], isError: false };
+  const records = [
+    JSON.stringify({ type: 'session', version: 3, id: 'session-1', timestamp: '2026-11-27T00:00:00.000Z', cwd: '/w' }),
+    JSON.stringify({ type: 'message_end', message: { role: 'assistant', timestamp: 1795790301000, stopReason: 'toolUse', content: [
+      { type: 'toolCall', id: 'call-1', name: 'bash', arguments: { command: 'npm test' } },
+    ] } }),
+    JSON.stringify({ type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'bash', args: { command: 'npm test' } }),
+    JSON.stringify({ type: 'tool_execution_end', toolCallId: 'call-1', toolName: 'bash', result, isError: false }),
+    JSON.stringify({ type: 'message_end', message: { role: 'toolResult', toolCallId: 'call-1', toolName: 'bash', timestamp: 1795790302000, ...result } }),
+    JSON.stringify({ type: 'turn_end', toolResults: [{ role: 'toolResult', toolCallId: 'call-1', toolName: 'bash', ...result }] }),
+    JSON.stringify({ type: 'message_end', message: { role: 'assistant', timestamp: 1795790303000, stopReason: 'stop', content: [{ type: 'text', text: 'Done.' }] } }),
+  ];
+  const uninterrupted = new LiveOutputProjector({ taskId: 'pi', epoch: 'generation:1', offset: 0 });
+  const watched = records.flatMap(record => uninterrupted.feed(`${record}\n`, uninterrupted.offset)) as Event[];
+  const { full, trimmed } = fullAndTrimmed(records, 4);
+  assert.deepEqual(watched, full);
+
+  for (const events of [full, trimmed]) {
+    assert.equal(events.filter(event => event.type === 'tool_result').length, 1, 'one result per call');
+  }
+  const resultId = (events: Event[]) => events.find(event => event.type === 'tool_result')?.id;
+  assert.ok(resultId(full));
+  assert.equal(resultId(trimmed), resultId(full), 'the retained copy names the result the watcher emitted');
+  const byId = new Map(full.map(event => [event.id, event]));
+  for (const event of trimmed) {
+    const before = byId.get(event.id);
+    assert.ok(before, `${event.id} is an event the uninterrupted projection emitted`);
+    // The retained copy carries its own timestamp, and the call it announces lacks the arguments.
+    if (event.type === 'tool_result') assert.deepEqual({ ...event, timestamp: null }, { ...before, timestamp: null });
+    else if (event.type !== 'tool_use') assert.deepEqual(event, before);
+  }
 });
