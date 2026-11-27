@@ -29,16 +29,17 @@ export interface AgentRuntimeCapabilityEntry extends AgentRuntimeCapabilities {
 const NONE: AgentRuntimeCapabilities = { extensions: false, proprMcp: false, skills: 'prompt' };
 
 /**
- * The runtime capability map. Claude, Codex, Antigravity and Vibe are
- * supported; each other runtime is turned on by its own change. OpenCode 1.x cannot be supported, so
- * its entry already carries the 2.x predicate.
+ * The runtime capability map. Claude, Codex, Antigravity, OpenCode 2.x and
+ * Vibe are supported. OpenCode 1.x ignores the 2.x `mcp.servers` and
+ * `skills.paths` config, so its entry carries the 2.x predicate.
  */
 export const AGENT_RUNTIME_CAPABILITIES: Readonly<Record<AgentType, Readonly<AgentRuntimeCapabilityEntry>>> = {
   claude: { extensions: true, proprMcp: true, skills: 'prompt' },
   codex: { extensions: true, proprMcp: true, skills: 'prompt' },
   // Skill bundles are also copied into `<runtime HOME>/.gemini/skills/<name>`.
   antigravity: { extensions: true, proprMcp: true, skills: 'native' },
-  opencode: { ...NONE, cliVersion: { minMajor: 2 } },
+  // OpenCode 2.x loads staged bundles through its own `skill` tool (`skills.paths`).
+  opencode: { extensions: true, proprMcp: true, skills: 'native', cliVersion: { minMajor: 2 } },
   // Vibe registers staged bundles through its own `skill` tool (VIBE_SKILL_PATHS).
   vibe: { extensions: true, proprMcp: true, skills: 'native' },
 };

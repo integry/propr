@@ -51,7 +51,7 @@ export const AgentCapabilitiesSection: React.FC<AgentCapabilitiesSectionProps> =
   /** Why a capability cannot be chosen now, or null when it can. */
   const lockReason = (capability: AutomationCapability): string | null => {
     if (capability === 'propr_mcp' && proprMcpSupport === 'unsupported') {
-      return `Not available for ${runtimeName}: only Claude, Codex and Vibe agents can use ProPR tools.`;
+      return `Not available for ${runtimeName}: ProPR tools need Claude, Codex, Antigravity, Vibe or OpenCode 2.x.`;
     }
     if (capability !== 'merge') return null;
     if (proprMcpSupport === 'unsupported') return `Not available for ${runtimeName}: merging happens in the action step, which needs ProPR tools.`;

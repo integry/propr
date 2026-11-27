@@ -1,4 +1,4 @@
-import { normalizeOpenCodeTimestamp, parseOpenCodeJsonl, type OpenCodeEvent } from '@propr/core';
+import { normalizeOpenCodeTimestamp, openCodeCodeModeToolDisplay, parseOpenCodeJsonl, type OpenCodeEvent } from '@propr/core';
 import { isDeepStrictEqual } from 'node:util';
 import type { ConversationResult, TokenUsage } from './liveDetailsTypes.js';
 
@@ -354,7 +354,7 @@ interface OpenCodeToolSource {
     input?: Record<string, unknown>;
     output?: string;
     error?: unknown;
-    metadata?: { output?: string; exit?: number };
+    metadata?: { output?: string; exit?: number; metadata?: unknown };
   };
 }
 
@@ -367,10 +367,12 @@ function isOpenCodeToolResultType(type: string): boolean {
 }
 
 function buildOpenCodeToolUseEvent(source: OpenCodeToolSource, timestamp: string): Record<string, unknown> {
+  // OpenCode 2 Code Mode: show an `execute` step under the MCP tools it called.
+  const codeMode = openCodeCodeModeToolDisplay(source);
   return {
     type: 'tool_use',
-    toolName: getOpenCodeToolName(source),
-    input: source.parameters || source.input || source.args || source.state?.input,
+    toolName: codeMode?.toolName ?? getOpenCodeToolName(source),
+    input: codeMode ? codeMode.input : source.parameters || source.input || source.args || source.state?.input,
     id: getOpenCodeToolId(source),
     timestamp
   };

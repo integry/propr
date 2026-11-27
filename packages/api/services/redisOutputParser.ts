@@ -4,6 +4,7 @@ import {
   isOpenCodeJsonlEvent,
   normalizeOpenCodeTimestamp,
   normalizeOpenCodeUsage,
+  openCodeCodeModeToolDisplay,
 } from '@propr/core';
 import { extractOpenCodeAssistantSegments } from '../routes/liveDetailsOpenCodeParser.js';
 import { parseVibeTranscriptOutput, processVibe3Entry, processVibeRoleRecord } from './redisOutputParserVibe.js';
@@ -450,7 +451,7 @@ function processOpenCodeEvent(
 
 interface OpenCodeRedisPart {
   type?: string; text?: string; content?: unknown; delta?: string; callID?: string; tokens?: Record<string, unknown>;
-  state?: { status?: string; input?: Record<string, unknown>; output?: string; error?: unknown; metadata?: { output?: string; exit?: number } };
+  state?: { status?: string; input?: Record<string, unknown>; output?: string; error?: unknown; metadata?: { output?: string; exit?: number; metadata?: unknown } };
   tool?: string; tool_name?: string; name?: string;
   input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
   output?: string; result?: string; status?: string; id?: string; tool_id?: string;
@@ -614,6 +615,9 @@ function isOpenCodeToolUseType(type: string): boolean { return OPEN_CODE_TOOL_US
 function isOpenCodeToolResultType(type: string): boolean { return OPEN_CODE_TOOL_RESULT_TYPES.includes(type); }
 
 function buildOpenCodeToolUseEvent(source: OpenCodeRedisToolSource, timestamp: string): ConversationEvent {
+  // OpenCode 2 Code Mode: show an `execute` step under the MCP tools it called.
+  const codeMode = openCodeCodeModeToolDisplay(source);
+  if (codeMode) return { type: 'tool_use' as const, toolName: codeMode.toolName, input: codeMode.input, id: getOpenCodeToolId(source), timestamp };
   return { type: 'tool_use' as const, toolName: source.tool_name || source.tool || source.name, input: source.parameters || source.input || source.args || source.state?.input, id: getOpenCodeToolId(source), timestamp };
 }
 

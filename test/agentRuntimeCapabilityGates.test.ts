@@ -102,14 +102,16 @@ describe('runtime capability map drives every gate', () => {
     assert.deepEqual([...EXTENSION_LIBRARY_CONTRACT.runtimes], extensionTypes);
     assert.deepEqual([...AUTOMATION_DEFINITION_CONTRACT.extensions.runtimes], extensionTypes);
     assert.deepEqual([...AUTOMATION_DEFINITION_CONTRACT.proprMcpAgentTypes], AGENT_TYPES.filter(type => map[type].proprMcp));
-    // Claude, Codex, Antigravity and Vibe are on; every other runtime is turned on by its own change.
-    assert.deepEqual(extensionTypes, ['claude', 'codex', 'antigravity', 'vibe']);
+    // Every runtime is on; OpenCode only from CLI 2.x.
+    assert.deepEqual(extensionTypes, ['claude', 'codex', 'antigravity', 'opencode', 'vibe']);
     assert.equal(map.vibe.skills, 'native');
+    assert.equal(map.opencode.skills, 'native');
+    assert.deepEqual(map.opencode.cliVersion, { minMajor: 2 });
     // A runtime that receives MCP servers renders them through its own builder.
     for (const type of AGENT_TYPES) if (map[type].extensions || map[type].proprMcp) assert.equal(typeof MCP_LAUNCH_BUILDERS[type], 'function', type);
   });
 
-  test('the CLI-version predicate removes capabilities from older OpenCode releases', () => withEntry('opencode', { extensions: true, proprMcp: true }, async () => {
+  test('the CLI-version predicate removes capabilities from older OpenCode releases', async () => {
     assert.equal(agentRuntimeCapabilities('opencode', '1.4.2').extensions, false);
     assert.equal(agentRuntimeCapabilities('opencode', '2.0.0').extensions, true);
     // Without a concrete version the mapped entry applies.
@@ -117,14 +119,21 @@ describe('runtime capability map drives every gate', () => {
     assert.equal(agentRuntimeCapabilities('opencode').proprMcp, true);
     assert.equal(launchCarriesExtensions({ agent: { config: { type: 'opencode', cliVersionResolved: '1.9.0' } } }, { extensions: { autoApply: true, servers: [], skills: [] } } as never), false);
     assert.equal(agentRuntimeCapabilities('unknown-runtime').extensions, false);
-  }));
+    // Automation checks read the agent's pinned version too.
+    const legacy = { ...agent('opencode'), cliVersion: '1.19.6' };
+    const deps = { loadRepos: async () => [repo], loadAgents: async () => [legacy], loadSyntheticAgents: async () => [] };
+    assert.match(await validateAgentDefinitionRuntime(definition('opencode', { capabilities: ['propr_mcp'] }), deps) ?? '', /does not support propr_mcp/);
+    assert.match(await validateAgentDefinitionRuntime(definition('opencode', { extensions: { servers: ['docs'], skills: [] } }), deps) ?? '', /Added extensions require/);
+    assert.equal(await validateAgentDefinitionRuntime(definition('opencode', { capabilities: ['propr_mcp'] }), { ...deps, loadAgents: async () => [{ ...legacy, cliVersion: '2.4.2' }] }), null);
+  });
 });
 
 test('a runtime without extension support records its skipped auto-applied items and launches without them', async () => {
   const { database, store } = await libraryStore();
   try {
     await database('tasks').insert({ task_id: 'task-1' });
-    const config = agent('opencode');
+    // OpenCode 1.x ignores the 2.x MCP and skills config, so it has no extension support.
+    const config = { ...agent('opencode'), cliVersionResolved: '1.19.6' };
     const options = { taskId: 'task-1', issueRef: { repoOwner: 'acme', repoName: 'app', number: 1 }, prompt: 'Fix it', worktreePath: '/unused', extensions: { autoApply: true, servers: [], skills: [], kind: 'issue' as const, labels: [] } };
     let launched: unknown = 'not launched';
     await executeWithExtensions(config, options as never, async prepared => { launched = prepared.extensions; return { success: true } as never; }, store);
@@ -138,6 +147,6 @@ test('a runtime without extension support records its skipped auto-applied items
     assert.deepEqual(event.skipped, [{ kind: 'server', name: 'docs', reason: 'runtime', source: 'auto' }]);
     // Explicitly added items still refuse on such a runtime.
     await assert.rejects(executeWithExtensions(config, { ...options, extensions: { ...options.extensions, servers: ['docs'] } } as never, async () => ({ success: true }) as never, store),
-      (error: Error & { status?: number }) => error.status === 400 && /Claude, Codex, Antigravity or Vibe/.test(error.message));
+      (error: Error & { status?: number }) => error.status === 400 && /Claude, Codex, Antigravity, OpenCode or Vibe/.test(error.message));
   } finally { await database.destroy(); }
 });

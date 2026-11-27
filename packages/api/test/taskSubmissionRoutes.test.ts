@@ -353,14 +353,15 @@ test('automation options are rejected when malformed, out of range, or bounded w
 test('submission routing rejects extension selections on unsupported runtimes before routing side effects', async () => {
   const { routing } = await import('../routes/taskSubmissionRoutes.js');
   const extensionProfile = { instanceId: 'instance', profileId: 'profile', revision: 1 };
-  for (const type of ['vibe', 'opencode', 'antigravity', 'claude', 'codex']) {
-    const registry = { ensureInitialized: async () => undefined, getAgentByAlias: () => ({ config: { alias: 'selected', type, enabled: true, defaultModel: 'model', supportedModels: ['model'] } }) } as never;
+  // OpenCode 1.x ignores the 2.x MCP and skills config; OpenCode 2.x is supported.
+  for (const [type, cliVersionResolved] of [['vibe'], ['opencode', '1.19.6'], ['opencode', '2.4.2'], ['antigravity'], ['claude'], ['codex']]) {
+    const registry = { ensureInitialized: async () => undefined, getAgentByAlias: () => ({ config: { alias: 'selected', type, cliVersionResolved, enabled: true, defaultModel: 'model', supportedModels: ['model'] } }) } as never;
     let labelCalls = 0;
     const labels = async () => { labelCalls++; return 'llm-selected'; };
-    if (['claude', 'codex', 'antigravity', 'vibe'].includes(type)) {
+    if (cliVersionResolved !== '1.19.6') {
       assert.equal((await routing({ agentAlias: 'selected', extensionProfile }, registry, labels, async () => ({ agentAlias: 'selected', model: 'model' }))).agentAlias, 'selected');
     } else {
-      await assert.rejects(routing({ agentAlias: 'selected', extensionProfile }, registry, labels, async () => ({ agentAlias: 'selected', model: 'model' })), error => (error as Error & { status?: number }).status === 400 && /Claude, Codex, Antigravity or Vibe/.test((error as Error).message));
+      await assert.rejects(routing({ agentAlias: 'selected', extensionProfile }, registry, labels, async () => ({ agentAlias: 'selected', model: 'model' })), error => (error as Error & { status?: number }).status === 400 && /Claude, Codex, Antigravity, OpenCode or Vibe/.test((error as Error).message));
       assert.equal(labelCalls, 0);
     }
     assert.equal((await routing({ agentAlias: 'selected' }, registry, labels)).agentAlias, 'selected');
@@ -505,7 +506,7 @@ test('a prepared legacy profile submission is refused locally on an unsupported 
   let sideEffects = 0;
   const routes = createTaskSubmissionRoutes({ db: database, services: {
     authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
-    routing: async () => ({ agentAlias: 'opencode', model: 'model', routingLabel: 'route', runtime: 'opencode' }),
+    routing: async () => ({ agentAlias: 'opencode', model: 'model', routingLabel: 'route', runtime: 'opencode', cliVersion: '1.19.6' }),
     getOctokit: async () => ({ request: async (route: string) => { sideEffects++; assert.fail(`Unexpected GitHub call before refusal: ${route}`); } }) as never,
     processingLabels: async () => ['AI'], enqueue: async () => {},
   } });
@@ -518,7 +519,7 @@ test('a prepared legacy profile submission is refused locally on an unsupported 
   const { submissionMarker } = await import('../../core/src/services/taskSubmissionService.js');
   const reconcileRoutes = createTaskSubmissionRoutes({ db: database, services: {
     authorize: async () => ({ id: 'repo', name: 'owner/repo', enabled: true, baseBranch: 'main' }),
-    routing: async () => ({ agentAlias: 'opencode', model: 'model', routingLabel: 'route', runtime: 'opencode' }),
+    routing: async () => ({ agentAlias: 'opencode', model: 'model', routingLabel: 'route', runtime: 'opencode', cliVersion: '1.19.6' }),
     getOctokit: async () => ({ request: async (route: string) => {
       if (route === 'POST /repos/{owner}/{repo}/issues') assert.fail('Never create another issue for an ambiguous attempt');
       if (route === 'GET /repos/{owner}/{repo}/issues') return { data: [{ number: 99, html_url: 'https://github.com/owner/repo/issues/99', body: submissionMarker(pending.id) }] };

@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Extensions and ProPR MCP for OpenCode 2.x** (#3844)
+  - OpenCode 2.x runs now receive extension library MCP servers and skill
+    bundles, and agent definitions and automations can give OpenCode agents the
+    `propr` MCP server. Servers and the skill path go into the inline config
+    (`OPENCODE_CONFIG_CONTENT`) under `mcp.servers` and `skills.paths`: stdio
+    servers run through the stdio bridge with their secrets passed by name in
+    the container environment, and remote servers read their bearer token
+    through `{env:VAR}`. OpenCode 1.x stays unsupported.
+  - Extension runs use only the run's MCP servers and skills: project and
+    `~/.claude` sources are switched off, and the entrypoint gives OpenCode a
+    disposable config dir without the host's `mcp` and `skills` (providers and
+    other settings are kept).
+  - MCP tool calls made through OpenCode's Code Mode `execute` tool show under
+    the called tool's name (`<server>.<tool>`) in the live view and the task log.
+  - Brings in the OpenCode 2.4.2 runtime from #3820, which this builds on.
+
 - **Extensions and ProPR MCP for Vibe 3** (#3842)
   - Vibe runs now receive extension library MCP servers and skill bundles, and
     agent definitions and automations can give Vibe agents the `propr` MCP

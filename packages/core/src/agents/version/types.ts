@@ -16,7 +16,7 @@ export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
     claude: '@anthropic-ai/claude-code',
     codex: '@openai/codex',
     antigravity: 'https://antigravity.google/cli/install.sh',
-    opencode: 'opencode-ai',
+    opencode: '@opencode/cli',
     vibe: 'mistral-vibe'
 } as const;
 
@@ -40,7 +40,7 @@ export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
     claude: '2.1.330',
     codex: '0.171.0',
     antigravity: '1.5.15',
-    opencode: '1.19.6',
+    opencode: '2.4.2',
     vibe: '3.1.5'
 };
 
@@ -60,6 +60,7 @@ export const AGENT_BUNDLE_CONTENT_FILES = [
     'scripts/codex-entrypoint.sh',
     'scripts/antigravity-entrypoint.sh',
     'scripts/opencode-entrypoint.sh',
+    'scripts/opencode-credentials.py',
     'scripts/opencode-run.sh',
     'scripts/vibe-entrypoint.sh',
     'scripts/vibe-prompt-file-runner.py',
