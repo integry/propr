@@ -14,8 +14,16 @@ CREATE TABLE credential (
     method_id TEXT, active INTEGER, time_created INTEGER, time_updated INTEGER
 )`;
 
+// Importing the helper (observeTempModes) must not leave scripts/__pycache__ behind.
+function runPython(args: string[]): string {
+    return execFileSync('python3', ['-I', ...args], {
+        encoding: 'utf8',
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }
+    });
+}
+
 function python(code: string, ...args: string[]): string {
-    return execFileSync('python3', ['-I', '-c', code, ...args], { encoding: 'utf8' });
+    return runPython(['-c', code, ...args]);
 }
 
 function runSql(dbPath: string, sql: string): void {
@@ -27,7 +35,7 @@ function querySql(dbPath: string, sql: string): unknown[] {
 }
 
 function runCredentials(action: 'seed' | 'sync', sourceDb: string, runtimeDb: string): void {
-    execFileSync('python3', ['-I', credentialsScript, action, sourceDb, runtimeDb], { encoding: 'utf8' });
+    runPython([credentialsScript, action, sourceDb, runtimeDb]);
 }
 
 describe('opencode-credentials.py', () => {
@@ -183,7 +191,7 @@ finally:
             withAuthJsonHost(shape, (dirs) => {
                 const log = path.join(dirs.runtimeDir, 'temp-modes.json');
                 containerRun(dirs, 1, (runtimeDb) => refreshOpenAi(runtimeDb, 'refresh-2'), (sourceDb, runtimeDb) => {
-                    execFileSync('python3', ['-I', '-c', observeTempModes, credentialsScript, log, 'sync', sourceDb, runtimeDb], { encoding: 'utf8' });
+                    python(observeTempModes, credentialsScript, log, 'sync', sourceDb, runtimeDb);
                 });
                 const modes = JSON.parse(fs.readFileSync(log, 'utf8')) as number[];
                 assert.ok(modes.length > 0, 'sync wrote auth.json through a temp file');
