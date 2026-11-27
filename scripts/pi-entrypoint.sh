@@ -66,6 +66,16 @@ run_as_node() {
     fi
 }
 
+# The same, replacing the current (sub)shell, so a backgrounded task's PID is
+# the task itself and signals sent to it reach Pi rather than a subshell.
+exec_as_node() {
+    if is_root; then
+        exec su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
+    else
+        exec "$@"
+    fi
+}
+
 prepare_runtime_home() {
     # A fresh dir every run, created owner-only: auth.json holds tokens.
     rm -rf -- "$pi_agent_dir" "$pi_seed_snapshot"
@@ -144,11 +154,51 @@ echo "Executing command: $1" >&2
 if is_root && [ -d /home/node/workspace ]; then
     cd /home/node/workspace
 fi
+# The task runs as a supervised child rather than in the foreground: tini only
+# signals this shell, and a foreground child would neither see `docker stop`
+# nor let the credential sync below run. Termination is forwarded to the task,
+# the shell waits for it to exit, and then syncs once like a normal exit.
+# Without job control bash points a background command's stdin at /dev/null,
+# so stdin (the prompt) is passed through explicitly, and ignores SIGINT and
+# SIGQUIT in it, so env restores their default handling for the task.
+pi_task_pid=""
+pi_received_signal=""
+forward_signal() {
+    pi_received_signal="$1"
+    if [ -n "$pi_task_pid" ]; then
+        kill -s "$1" "$pi_task_pid" 2>/dev/null || true
+    fi
+}
+trap 'forward_signal TERM' TERM
+trap 'forward_signal INT' INT
+trap 'forward_signal HUP' HUP
 set +e
-run_as_node "$@"
-command_status=$?
+exec_as_node env --default-signal=INT,QUIT "$@" 0<&0 &
+pi_task_pid=$!
+while :; do
+    wait "$pi_task_pid"
+    command_status=$?
+    # A trapped signal interrupts wait with 128+n while the task still runs.
+    if [ "$command_status" -le 128 ] || [ -z "$pi_received_signal" ]; then
+        break
+    fi
+    if ! kill -0 "$pi_task_pid" 2>/dev/null; then
+        # Already reaped: bash keeps its status for one more wait.
+        wait "$pi_task_pid"
+        final_status=$?
+        if [ "$final_status" -ne 127 ]; then command_status=$final_status; fi
+        break
+    fi
+done
+pi_task_pid=""
 set -e
+# A task that exits cleanly after being told to stop still reports the stop.
+if [ -n "$pi_received_signal" ] && [ "$command_status" -eq 0 ]; then
+    command_status=$((128 + $(kill -l "$pi_received_signal")))
+fi
 
+# Signals arriving during the sync are deferred until it finishes, so the
+# write-back completes once before the container exits.
 if [ -f "$pi_seed_snapshot" ]; then
     run_as_node python3 "$pi_credentials_helper" sync "$pi_source_dir/auth.json" "$pi_agent_dir/auth.json" "$pi_seed_snapshot" \
         || echo "Warning: could not write refreshed Pi credentials back to the host" >&2

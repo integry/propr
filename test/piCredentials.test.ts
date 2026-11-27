@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -349,6 +349,7 @@ if [ "$1" = "--version" ]; then echo 1.6.1; exit 0; fi
   echo "openrouter=$OPENROUTER_API_KEY"
   echo "files=$(cd "$PI_CODING_AGENT_DIR" && ls -A | LC_ALL=C sort | tr '\\n' ' ')"
   echo "auth_mode=$(stat -c %a "$PI_CODING_AGENT_DIR/auth.json")"
+  echo "stdin=$(cat)"
 } > "$PROPR_TEST_REPORT"
 python3 -c '
 import json, os, sys
@@ -357,11 +358,34 @@ auth = json.load(open(path))
 auth["anthropic"] = {**auth["anthropic"], "access": "access-2", "refresh": "refresh-2", "expires": 2}
 json.dump(auth, open(path, "w"))
 '
+# Keep working after the refresh until the container is stopped.
+if [ -n "\${PROPR_TEST_HANG:-}" ]; then echo $$ > "$PROPR_TEST_HANG"; exec sleep 60; fi
 exit "\${PROPR_TEST_EXIT:-0}"
 `;
 
-    function withEntrypoint(body: (env: NodeJS.ProcessEnv, dirs: { source: string; runtime: string; report: string }) => void): void {
+    type EntrypointDirs = { source: string; runtime: string; report: string };
+
+    function withEntrypoint(body: (env: NodeJS.ProcessEnv, dirs: EntrypointDirs) => void): void {
+        const { env, dirs, cleanup } = setUpEntrypoint();
+        try {
+            body(env, dirs);
+        } finally {
+            cleanup();
+        }
+    }
+
+    async function withEntrypointAsync(body: (env: NodeJS.ProcessEnv, dirs: EntrypointDirs) => Promise<void>): Promise<void> {
+        const { env, dirs, cleanup } = setUpEntrypoint();
+        try {
+            await body(env, dirs);
+        } finally {
+            cleanup();
+        }
+    }
+
+    function setUpEntrypoint(): { env: NodeJS.ProcessEnv; dirs: EntrypointDirs; cleanup(): void } {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-entrypoint-'));
+        const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
         try {
             const source = path.join(dir, 'host', '.pi', 'agent');
             const runtime = path.join(dir, 'runtime');
@@ -376,7 +400,7 @@ exit "\${PROPR_TEST_EXIT:-0}"
             fs.writeFileSync(path.join(source, 'sessions', 'host-session.jsonl'), '{}\n');
             fs.writeFileSync(path.join(bin, 'pi'), fakePi, { mode: 0o755 });
             const report = path.join(dir, 'report.txt');
-            body({
+            const env: NodeJS.ProcessEnv = {
                 ...process.env,
                 HOME: home,
                 PATH: `${bin}:${process.env.PATH}`,
@@ -387,9 +411,11 @@ exit "\${PROPR_TEST_EXIT:-0}"
                 OPENROUTER_API_KEY: 'sk-or-forwarded',
                 PI_CODING_AGENT_DIR: '/somewhere/else',
                 PYTHONDONTWRITEBYTECODE: '1',
-            }, { source, runtime, report });
-        } finally {
-            fs.rmSync(dir, { recursive: true, force: true });
+            };
+            return { env, dirs: { source, runtime, report }, cleanup };
+        } catch (error) {
+            cleanup();
+            throw error;
         }
     }
 
@@ -413,6 +439,7 @@ exit "\${PROPR_TEST_EXIT:-0}"
             assert.equal(report.openrouter, 'sk-or-forwarded', 'agent env vars reach Pi');
             assert.equal(report.files.trim(), 'AGENTS.md APPEND_SYSTEM.md SYSTEM.md auth.json models.json sessions settings.json');
             assert.equal(report.auth_mode, '600');
+            assert.equal(report.stdin, 'prompt', 'the prompt on stdin reaches the supervised task');
             assert.deepEqual(fs.readdirSync(path.join(agentDir, 'sessions')), [], 'host sessions are not imported');
             assert.match(result.stderr, /Pi CLI version: 1\.6\.1/);
             assert.doesNotMatch(result.stdout, /\S/, 'diagnostics stay off stdout');
@@ -431,6 +458,34 @@ exit "\${PROPR_TEST_EXIT:-0}"
             assert.equal(host.anthropic.refresh, 'refresh-2');
         });
     });
+
+    for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+        test(`forwards ${signal} to the running task, waits for it and still syncs refreshed credentials`, async () => {
+            await withEntrypointAsync(async (env, dirs) => {
+                const ready = path.join(dirs.runtime, '..', 'pi.pid');
+                const child = spawn('bash', [entrypoint, 'pi', '-p'], { env: { ...env, PROPR_TEST_HANG: ready }, stdio: ['pipe', 'ignore', 'pipe'] });
+                child.stdin.end();
+                let stderr = '';
+                child.stderr.on('data', chunk => { stderr += String(chunk); });
+                const exited = new Promise<number | null>(resolve => { child.on('exit', code => resolve(code)); });
+                const deadline = Date.now() + 20_000;
+                while (!(fs.existsSync(ready) && fs.readFileSync(ready, 'utf8').trim())) {
+                    assert.ok(Date.now() < deadline, `task never started: ${stderr}`);
+                    await new Promise(resolve => setTimeout(resolve, 20));
+                }
+                // The task has refreshed its token and is still working. docker
+                // stop: tini signals only the entrypoint shell.
+                child.kill(signal);
+                const code = await Promise.race([exited, new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 20_000))]);
+                if (code === 'timeout') child.kill('SIGKILL');
+                assert.equal(code, signal === 'SIGTERM' ? 143 : 130, stderr);
+                const taskPid = Number(fs.readFileSync(ready, 'utf8').trim());
+                assert.throws(() => process.kill(taskPid, 0), `the task was stopped, not orphaned: ${stderr}`);
+                const host = JSON.parse(fs.readFileSync(path.join(dirs.source, 'auth.json'), 'utf8')) as Auth;
+                assert.deepEqual(host, { ...hostAuth(), anthropic: { ...hostAuth().anthropic, access: 'access-2', refresh: 'refresh-2', expires: 2 } });
+            });
+        });
+    }
 
     test('writes the ProPR-generated mcp.json and never the host one', () => {
         withEntrypoint((env, dirs) => {
@@ -498,12 +553,13 @@ exit "\${PROPR_TEST_EXIT:-0}"
 
     test('drops to node through su-exec for every Pi call when started as root', () => {
         const script = fs.readFileSync(entrypoint, 'utf8');
-        assert.match(script, /su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);
-        for (const call of ['run_as_node python3 "$pi_credentials_helper" seed', 'run_as_node pi --version', 'run_as_node "$@"', 'run_as_node python3 "$pi_credentials_helper" sync']) {
+        assert.match(script, /\n        su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);
+        assert.match(script, /\n        exec su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);
+        for (const call of ['run_as_node python3 "$pi_credentials_helper" seed', 'run_as_node pi --version', 'exec_as_node env --default-signal=INT,QUIT "$@"', 'run_as_node python3 "$pi_credentials_helper" sync']) {
             assert.ok(script.includes(call), `${call} must run as node`);
         }
         // Outside run_as_node itself, nothing invokes pi or the helper directly.
-        const direct = script.split('\n').filter(line => /(^|[\s;(])(pi|python3)\s/.test(line.trim()) && !line.includes('run_as_node') && !line.includes('set -- pi') && !line.trim().startsWith('#'));
+        const direct = script.split('\n').filter(line => /(^|[\s;(])(pi|python3)\s/.test(line.trim()) && !line.includes('run_as_node') && !line.includes('exec_as_node') && !line.includes('set -- pi') && !line.trim().startsWith('#'));
         assert.deepEqual(direct, []);
     });
 });
