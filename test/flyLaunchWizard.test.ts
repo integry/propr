@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -15,7 +16,7 @@ import { storeManifestCredentials, type ManifestCredentials } from '../src/flyLa
 import { applyLaunchEnv, GITHUB_APP_KEY_FILE, readLaunchConfig, setupRequired, type LaunchConfig } from '../src/flyLaunch/launchConfig.ts';
 import { createLaunchStore, type LaunchStore } from '../src/flyLaunch/launchStore.ts';
 import { createSetupAccess, SETUP_ACCESS_FILE, SETUP_CLAIM_COOKIE } from '../src/flyLaunch/setupAccess.ts';
-import { createSetupWizard, type SetupWizard } from '../src/flyLaunch/setupWizard.ts';
+import { createSetupWizard, runSetupWizard, SETUP_WIZARD_CLOSE_GRACE_MS, type SetupWizardOptions } from '../src/flyLaunch/setupWizard.ts';
 import type { RuntimeValidators } from '../src/flyLaunch/runtimeValidation.ts';
 
 const PUBLIC_URL = 'https://propr-test.fly.dev';
@@ -53,14 +54,20 @@ function fakeGithub(calls: string[]): typeof fetch {
 
 interface Harness {
     store: LaunchStore;
-    wizard: SetupWizard;
+    /** Resolves with the final config: on Finish, or (`run`) once runSetupWizard has closed its server. */
+    completed: Promise<LaunchConfig>;
+    port: number;
     calls: string[];
     logs: string[];
     code: string;
     request(path: string, options?: { method?: string; form?: Record<string, string>; cookie?: string; origin?: string }): Promise<Response>;
 }
 
-async function startWizard(overrides: { validators?: Partial<RuntimeValidators> } = {}): Promise<Harness> {
+/**
+ * `run: true` serves through the real runSetupWizard lifecycle (listen, Finish,
+ * bounded close) instead of a test server around createSetupWizard.
+ */
+async function startWizard(overrides: { validators?: Partial<RuntimeValidators>; run?: boolean; closeGraceMs?: number } = {}): Promise<Harness> {
     const root = mkdtempSync(join(tmpdir(), 'fly-launch-wizard-'));
     cleanups.push(() => rmSync(root, { recursive: true, force: true }));
     const store = createLaunchStore(join(root, 'fly-launch'));
@@ -68,20 +75,33 @@ async function startWizard(overrides: { validators?: Partial<RuntimeValidators> 
     const code = access.issueCode()!;
     const calls: string[] = [];
     const logs: string[] = [];
-    const wizard = createSetupWizard({
+    const options: SetupWizardOptions = {
         store, access, publicUrl: PUBLIC_URL, controlPlaneApp: 'propr-test', fetcher: fakeGithub(calls), log: message => logs.push(message),
         validators: {
             sprites: async token => { if (token !== 'good-sprites') throw new Error('401'); },
             flyApp: async (app, token) => (app === 'propr-agents' && token === 'FlyV1 agent' ? 200 : 403),
             ...overrides.validators,
         },
-    });
-    const server: Server = createServer((req, res) => { void wizard.handle(req, res); });
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-    cleanups.push(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
-    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    };
+    let port: number;
+    let completed: Promise<LaunchConfig>;
+    if (overrides.run) {
+        let listening!: (port: number) => void;
+        const bound = new Promise<number>(resolve => { listening = resolve; });
+        completed = runSetupWizard({ ...options, host: '127.0.0.1', port: 0, closeGraceMs: overrides.closeGraceMs, onListening: listening });
+        completed.catch(() => undefined);
+        port = await Promise.race([bound, completed.then(() => { throw new Error('the wizard closed before listening'); })]);
+    } else {
+        const wizard = createSetupWizard(options);
+        completed = wizard.completed;
+        const server: Server = createServer((req, res) => { void wizard.handle(req, res); });
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+        cleanups.push(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+        port = (server.address() as { port: number }).port;
+    }
+    const base = `http://127.0.0.1:${port}`;
     return {
-        store, wizard, calls, logs, code,
+        store, completed, port, calls, logs, code,
         request(path, options = {}) {
             const headers: Record<string, string> = {};
             if (options.cookie) headers.Cookie = options.cookie;
@@ -215,7 +235,7 @@ test('the full wizard: manifest flow, install, administrator, runtime, finish; t
     // 6. Finish: idle shutdown stays off unless chosen; the wizard completes and closes.
     const done = await h.request('/setup/finish', { method: 'POST', cookie, form: {} });
     assert.equal(done.status, 200);
-    const final = await h.wizard.completed;
+    const final = await h.completed;
     assert.ok(final.completedAt);
     assert.equal(existsSync(h.store.path(SETUP_ACCESS_FILE)), false);
     assert.equal((await h.request('/setup', { cookie })).status, 503);
@@ -250,28 +270,67 @@ async function throughAdministrator(h: Harness): Promise<string> {
     return cookie;
 }
 
-test('a runtime save still checking when Finish completes is refused with 409 and does not undo the finish', async () => {
+/** A Sprites check that holds until released; `started` resolves once a check is waiting. */
+function heldSpritesCheck(): { started: Promise<void>; release: () => void; validators: Partial<RuntimeValidators> } {
     let checking!: () => void;
     let release!: () => void;
     const started = new Promise<void>(resolve => { checking = resolve; });
     const held = new Promise<void>(resolve => { release = resolve; });
-    const h = await startWizard({ validators: { sprites: async () => { checking(); await held; } } });
+    return { started, release, validators: { sprites: async () => { checking(); await held; } } };
+}
+
+/** Whether a fresh TCP connection to the port is refused (the listener is closed). */
+function refused(port: number): Promise<boolean> {
+    return new Promise(resolve => {
+        const socket = connect(port, '127.0.0.1');
+        socket.once('connect', () => { socket.destroy(); resolve(false); });
+        socket.once('error', error => resolve((error as NodeJS.ErrnoException).code === 'ECONNREFUSED'));
+    });
+}
+
+async function eventuallyRefused(port: number): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt++) {
+        if (await refused(port)) return;
+        await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.fail('the wizard still accepts connections after Finish');
+}
+
+const pendingMarker = Symbol('pending');
+const isPending = async (promise: Promise<unknown>): Promise<boolean> =>
+    (await Promise.race([promise, new Promise(resolve => setImmediate(() => resolve(pendingMarker)))])) === pendingMarker;
+
+test('a runtime save still checking when Finish completes is refused with 409 and does not undo the finish', async () => {
+    const check = heldSpritesCheck();
+    // The real runSetupWizard lifecycle; the grace is far longer than the test may take, so only the drain can end it.
+    const h = await startWizard({ run: true, closeGraceMs: 60_000, validators: check.validators });
     const cookie = await throughAdministrator(h);
     assert.equal((await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'none' } })).status, 303);
 
     // A second runtime choice is still being checked when Finish is sent.
     const pendingSave = h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'sprites', spritesToken: 'late-sprites' } });
-    await started;
+    await check.started;
     const done = await h.request('/setup/finish', { method: 'POST', cookie, form: {} });
     assert.equal(done.status, 200);
-    const final = await h.wizard.completed;
-    assert.ok(final.completedAt);
+    assert.equal(done.headers.get('connection'), 'close');
+    const finished = readLaunchConfig(h.store);
+    assert.ok(finished.completedAt);
 
-    release();
+    // After Finish no new connection is accepted, but the server waits for the pending check.
+    await eventuallyRefused(h.port);
+    assert.ok(await isPending(h.completed), 'runSetupWizard waits for the in-flight request');
+
+    const released = Date.now();
+    check.release();
     const late = await pendingSave;
     assert.equal(late.status, 409);
+    assert.equal(late.headers.get('connection'), 'close');
     assert.match(await late.text(), /Setup already completed/);
     assert.match(h.logs.join('\n'), /its result was not saved/);
+
+    const final = await h.completed;
+    assert.ok(Date.now() - released < 5_000, 'the server closes once the last answer is sent, not at the grace deadline');
+    assert.deepEqual(final, finished);
 
     const stored = readLaunchConfig(h.store);
     assert.equal(stored.completedAt, final.completedAt, 'the late save keeps completedAt');
@@ -279,6 +338,29 @@ test('a runtime save still checking when Finish completes is refused with 409 an
     assert.equal(stored.runtime, 'none');
     assert.equal(stored.env.SPRITES_TOKEN, undefined);
     assert.equal(setupRequired(readLaunchConfig(h.store), {}), false, 'the wizard does not start again on restart');
+});
+
+test('after Finish a request that never answers is cut at the grace deadline, so shutdown stays bounded', async () => {
+    const check = heldSpritesCheck();
+    cleanups.push(() => check.release());
+    const h = await startWizard({ run: true, closeGraceMs: 300, validators: check.validators });
+    assert.ok(SETUP_WIZARD_CLOSE_GRACE_MS <= 10_000, 'the default grace is a few seconds');
+    const cookie = await throughAdministrator(h);
+    assert.equal((await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'none' } })).status, 303);
+
+    const pendingSave = h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'sprites', spritesToken: 'stuck' } });
+    pendingSave.catch(() => undefined);
+    await check.started;
+    const finishedAt = Date.now();
+    assert.equal((await h.request('/setup/finish', { method: 'POST', cookie, form: {} })).status, 200);
+
+    const final = await h.completed;
+    const elapsed = Date.now() - finishedAt;
+    assert.ok(elapsed >= 250, `closed after ${elapsed}ms, before the grace deadline`);
+    assert.ok(elapsed < 5_000, `closed after ${elapsed}ms`);
+    await assert.rejects(pendingSave, 'the stuck connection is cut');
+    assert.ok(final.completedAt);
+    assert.equal(await refused(h.port), true);
 });
 
 test('storing manifest credentials: key file 0600, App env for direct webhooks, earlier install and admin cleared', () => {

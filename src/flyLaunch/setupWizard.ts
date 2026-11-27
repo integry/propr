@@ -271,6 +271,8 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         done = true;
         log(`fly-launch: setup complete (idle shutdown ${idle ? 'on' : 'off'}); starting ProPR`);
         response.once('finish', () => finish(final));
+        // The wizard server closes after this answer; the browser must not reuse the connection.
+        response.shouldKeepAlive = false;
         send(response, 200, startingPage());
     };
 
@@ -354,10 +356,36 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
     return { handle, completed };
 }
 
-/** Serve the wizard until setup is complete; resolves with the final config once the server has closed. */
-export async function runSetupWizard(options: SetupWizardOptions & { host: string; port: number }): Promise<LaunchConfig> {
+/** How long in-flight wizard requests get to answer after Finish before their connections are cut. */
+export const SETUP_WIZARD_CLOSE_GRACE_MS = 5_000;
+
+export interface RunSetupWizardOptions extends SetupWizardOptions {
+    host: string;
+    port: number;
+    /** Defaults to SETUP_WIZARD_CLOSE_GRACE_MS. */
+    closeGraceMs?: number;
+    /** Called with the bound port once the wizard listens (tests listen on port 0). */
+    onListening?: (port: number) => void;
+}
+
+/**
+ * Serve the wizard until setup is complete; resolves with the final config
+ * once the server has closed. After Finish the listener closes at once (no
+ * new connections; the port is free for the control plane), idle keep-alive
+ * connections are closed, and requests still in flight, such as a runtime
+ * check that was pending when Finish landed, may still send their answer
+ * (409) on a connection that then closes. Whatever is left after the grace
+ * period is cut, so shutdown stays bounded.
+ */
+export async function runSetupWizard(options: RunSetupWizardOptions): Promise<LaunchConfig> {
     const wizard = createSetupWizard(options);
+    const inFlight = new Set<ServerResponse>();
+    let closing = false;
     const server: Server = createServer((request, response) => {
+        // Once closing, no connection is kept alive after its answer.
+        if (closing) response.shouldKeepAlive = false;
+        inFlight.add(response);
+        response.once('close', () => inFlight.delete(response));
         wizard.handle(request, response).catch(() => {
             if (!response.headersSent) response.writeHead(500).end();
         });
@@ -366,10 +394,14 @@ export async function runSetupWizard(options: SetupWizardOptions & { host: strin
         server.once('error', reject);
         server.listen(options.port, options.host, () => resolve());
     });
+    options.onListening?.((server.address() as { port: number }).port);
     const config = await wizard.completed;
+    closing = true;
+    for (const response of inFlight) if (!response.headersSent) response.shouldKeepAlive = false;
     await new Promise<void>(resolve => {
-        server.close(() => resolve());
-        server.closeAllConnections();
+        const force = setTimeout(() => server.closeAllConnections(), options.closeGraceMs ?? SETUP_WIZARD_CLOSE_GRACE_MS);
+        server.close(() => { clearTimeout(force); resolve(); });
+        server.closeIdleConnections();
     });
     return config;
 }
