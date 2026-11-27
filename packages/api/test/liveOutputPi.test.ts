@@ -166,3 +166,147 @@ test('a Pi block streaming when a watcher starts past its message_start is not p
     assert.deepEqual(completed, full.filter(event => event.type === 'thought'), 'message_end names each block as a full read does');
   }
 });
+
+/*
+ * Every live event ID comes from data its record carries, so it cannot depend
+ * on where a read starts. These checks run the whole class of retention cases
+ * the one-off regressions above cover, for every start line of a real Pi
+ * capture and of a stream with several streamed text and thinking deltas
+ * (hand-built from Pi 1.6.1 record shapes).
+ */
+function fixtureRecords(name: string): string[] {
+  return readFileSync(new URL(`../../../test/fixtures/pi/${name}`, import.meta.url), 'utf8').split('\n').filter(Boolean);
+}
+
+/** Streams Pi should not produce, but whose IDs must not depend on the read start either. */
+function irregularRecords(): string[] {
+  const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { total: 0 } };
+  const update = (assistantMessageEvent: Record<string, unknown>) => JSON.stringify({ type: 'message_update', usage, assistantMessageEvent });
+  const start = (message: Record<string, unknown>) => JSON.stringify({ type: 'message_start', message: { role: 'assistant', content: [], stopReason: 'pending', ...message } });
+  const end = (message: Record<string, unknown>) => JSON.stringify({ type: 'message_end', message: { role: 'assistant', usage, ...message } });
+  return [
+    JSON.stringify({ type: 'session', version: 3, id: 'session-irregular', timestamp: '2026-11-27T00:00:00.000Z', cwd: '/w' }),
+    // A block starts before the previous one ended; message_end carries both.
+    start({ timestamp: 1795790401000 }),
+    update({ type: 'text_start', contentIndex: 0 }),
+    update({ type: 'text_delta', contentIndex: 0, delta: 'First ' }),
+    update({ type: 'text_delta', contentIndex: 0, delta: 'half' }),
+    update({ type: 'thinking_start', contentIndex: 1 }),
+    update({ type: 'thinking_delta', contentIndex: 1, delta: 'Then ' }),
+    update({ type: 'thinking_delta', contentIndex: 1, delta: 'think' }),
+    update({ type: 'thinking_end', contentIndex: 1, content: 'Then think.' }),
+    end({ timestamp: 1795790401000, stopReason: 'stop', content: [{ type: 'text', text: 'First half, complete.' }, { type: 'thinking', thinking: 'Then think.' }] }),
+    // A message that never ends, then one with no timestamp, named by its responseId.
+    start({ timestamp: 1795790402000 }),
+    update({ type: 'text_start', contentIndex: 0 }),
+    update({ type: 'text_delta', contentIndex: 0, delta: 'Abandoned ' }),
+    update({ type: 'text_delta', contentIndex: 0, delta: 'draft' }),
+    start({}),
+    update({ type: 'text_start', contentIndex: 0 }),
+    update({ type: 'text_delta', contentIndex: 0, delta: 'Unstamped ' }),
+    update({ type: 'text_end', contentIndex: 0, content: 'Unstamped reply.' }),
+    end({ responseId: 'resp-9', stopReason: 'error', errorMessage: 'overloaded', content: [{ type: 'text', text: 'Unstamped reply.' }] }),
+  ];
+}
+
+const RETENTION_STREAMS: Array<[string, () => string[], { wellFormed: boolean }]> = [
+  ['pi-1.6.1-json-tool-task.jsonl', () => fixtureRecords('pi-1.6.1-json-tool-task.jsonl'), { wellFormed: true }],
+  ['pi-1.6.1-json-streamed-blocks.jsonl', () => fixtureRecords('pi-1.6.1-json-streamed-blocks.jsonl'), { wellFormed: true }],
+  ['an irregular stream', irregularRecords, { wellFormed: false }],
+];
+
+/** The `toolCallId` a call's or a result's live ID is derived from. */
+function toolCallIdOf(event: Event): string | null {
+  const match = /:(?:tool_use:external|pi:tool_result):([^:]+)(?::0)?$/.exec(event.id);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function assertNoDuplicateIds(events: Event[], label: string): void {
+  const seen = new Set<string>();
+  for (const event of events) {
+    assert.ok(!seen.has(event.id), `${label}: ${event.id} appears twice`);
+    seen.add(event.id);
+  }
+}
+
+/**
+ * Checks 1–3 of a read against the uninterrupted one. In a stream that is not
+ * `wellFormed` (as Pi writes: every message stamped and ended), an unstamped
+ * message takes the time of the latest stamped record, which depends on the
+ * read start.
+ */
+function assertNamesAsUninterrupted(events: Event[], full: Map<string, Event>, label: string, wellFormed: boolean): void {
+  assertNoDuplicateIds(events, label);
+  for (const event of events) {
+    const before = full.get(event.id);
+    assert.ok(before, `${label}: ${event.id} is an ID of the uninterrupted parse`);
+    assert.equal(event.type, before.type, `${label}: ${event.id} names the same kind of event`);
+    if (event.type === 'thought') {
+      const time = (thought: Event) => wellFormed ? thought : { ...thought, timestamp: null };
+      assert.deepEqual(time(event), time(before), `${label}: a completed block has the uninterrupted ID, text and time`);
+    } else if (event.type === 'tool_use') {
+      assert.ok(toolCallIdOf(event), `${label}: a call's ID is its toolCallId`);
+    } else if (event.type === 'tool_result') {
+      assert.equal(toolCallIdOf(event), event.toolUseId, `${label}: a result's ID is its call's toolCallId`);
+      assert.deepEqual([event.result, event.isError], [before.result, before.isError], `${label}: ${event.id} is the same result`);
+    }
+  }
+  const calls = new Map(events.filter(event => event.type === 'tool_use').map(event => [toolCallIdOf(event), event]));
+  for (const result of events.filter(event => event.type === 'tool_result')) {
+    const call = calls.get(result.toolUseId as string);
+    assert.ok(call, `${label}: result ${result.id} has its call in the same read`);
+    assert.equal(toolCallIdOf(call), toolCallIdOf(result), `${label}: a call and its result share one toolCallId identity`);
+  }
+}
+
+for (const [fixture, load, { wellFormed }] of RETENTION_STREAMS) {
+  test(`Pi live IDs of ${fixture} do not depend on which line a retained read starts on`, () => {
+    const records = load();
+    const { full } = fullAndTrimmed(records, 0);
+    assertNoDuplicateIds(full, 'uninterrupted');
+    if (load !== irregularRecords) assert.ok(full.some(event => event.type === 'tool_result'), 'the fixture has tool results');
+    assert.ok(full.some(event => event.type === 'thought'), 'the fixture has assistant blocks');
+    const byId = new Map(full.map(event => [event.id, event]));
+
+    // A watcher fed one record at a time names everything as the full read does.
+    const watcher = new LiveOutputProjector({ taskId: 'pi', epoch: 'generation:1', offset: 0 });
+    assert.deepEqual(records.flatMap(record => watcher.feed(`${record}\n`, watcher.offset)), full);
+
+    for (let i = 1; i < records.length; i++) {
+      const { trimmed } = fullAndTrimmed(records, i);
+      assertNamesAsUninterrupted(trimmed, byId, `read from line ${i}`, wellFormed);
+    }
+  });
+
+  test(`an incremental Pi read of ${fixture} merged with a later retained read has no duplicates`, () => {
+    const records = load();
+    const { full } = fullAndTrimmed(records, 0);
+    const byId = new Map(full.map(event => [event.id, event]));
+    for (let k = 1; k <= records.length; k++) {
+      // The watcher read lines 0..k-1, then lost its place; the next read starts at j ≤ k after retention.
+      const watcher = new LiveOutputProjector({ taskId: 'pi', epoch: 'generation:1', offset: 0 });
+      const published = records.slice(0, k).flatMap(record => watcher.feed(`${record}\n`, watcher.offset)) as Event[];
+      const pending = watcher.pending() as Event | null;
+      if (pending) {
+        // A block of a message that never ends is never completed.
+        const final = byId.get(pending.id);
+        if (wellFormed) assert.ok(final, `lines 0..${k - 1}: the streaming block's ID is the one it completes under`);
+        if (final) assert.equal(final.type, 'thought');
+      }
+      for (let j = 1; j <= k && j < records.length; j++) {
+        const { trimmed } = fullAndTrimmed(records, j);
+        const label = `lines 0..${k - 1} then ${j}..end`;
+        const merged = new Map<string, Event>();
+        for (const event of [...published, ...trimmed]) merged.set(event.id, event);
+        assertNamesAsUninterrupted([...merged.values()], byId, label, wellFormed);
+        // Each call, result and block appears once, however the two reads overlap.
+        const identities = [...merged.values()].map(event => event.type === 'thought' ? `thought:${event.content}` : `${event.type}:${toolCallIdOf(event)}`);
+        assert.equal(new Set(identities).size, identities.length, `${label}: no event appears under two IDs`);
+        for (const event of published) {
+          const later = trimmed.find(other => other.id === event.id);
+          if (later?.type === 'thought') assert.deepEqual(later.content, event.content, `${label}: a block both reads have is identical`);
+        }
+      }
+    }
+  });
+}
