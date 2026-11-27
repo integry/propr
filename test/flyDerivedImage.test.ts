@@ -1158,3 +1158,27 @@ test('build Machines left by an earlier worker process are found by name prefix 
     // The search runs once per app and worker process.
     assert.deepEqual(api.listed, ['propr-build-']);
 });
+
+test('a run cancelled while startup reconciliation waits for a slot settles at once; reconciliation continues', async () => {
+    const api = new LeftoverMachines();
+    // The young leftover first: with one slot, reconciliation holds it and waits for a second slot for the old one.
+    api.list = async prefix => { api.listed.push(prefix); return [api.young, api.old].filter(m => api.leftovers.has(m.id)); };
+    const fly = runtime(api, new Registry(), 'leftovers-cancel', () => [], { PROPR_FLY_MACHINES_MAX: '1' }, { ...FAST, reconcileMs: 20 });
+    const cancel = new AbortController();
+    const first = fly.start(spec('first'), { signal: cancel.signal });
+    while (!api.listed.length) await delay(5);
+    await delay(50);
+    cancel.abort(new Error('cancelled'));
+    const settled = await Promise.race([first.wait().then(() => 'resolved', (error: Error) => error.message), delay(500).then(() => 'blocked')]);
+    assert.equal(settled, 'cancelled', 'the cancelled run is not held by the young leftover');
+    await first.release?.().catch(() => {});
+    assert.deepEqual(api.events, [], 'no Machine was created or deleted for the cancelled run');
+    // Reconciliation went on without the run: once the young leftover is gone, the old one takes the slot and is deleted.
+    api.youngGone = true;
+    const next = fly.start(spec('next'));
+    assert.equal((await next.wait()).exitCode, 0);
+    assert.deepEqual(api.events.slice(0, 2), ['destroy leftover old1', 'create launch']);
+    assert.equal(api.peak, 1);
+    await next.release!();
+    assert.deepEqual(api.listed, ['propr-build-']);
+});

@@ -63,8 +63,11 @@ function drain(state: Slots, max: number) {
     }
 }
 
-/** Pacing for checks on Machines that outlive their run; tests shorten it. */
-export const retainedMachineChecks = { intervalMs: 30_000, maxIntervalMs: 300_000 };
+/**
+ * Pacing for checks on Machines that outlive their run, and how long a lost create is looked up for before
+ * an empty lookup counts as absence (as for build Machines, `lostCreateWindowMs`); tests shorten them.
+ */
+export const retainedMachineChecks = { intervalMs: 30_000, maxIntervalMs: 300_000, lostCreateWindowMs: 60_000 };
 
 /**
  * Keeps a run's slot until `confirmGone` resolves true, meaning the Machine no longer exists at Fly
@@ -103,8 +106,9 @@ interface UndeletedMachine {
 
 /**
  * Frees the slot of a run whose Machine this worker did not delete. Only a run that never created a Machine frees it
- * at once. A Machine kept for recovery holds it until Fly confirms it is gone; a lost create holds it until the lookup
- * succeeds, deleting a found Machine first (its agent never started: it waits for the start gate).
+ * at once. A Machine kept for recovery holds it until Fly confirms it is gone; a lost create holds it until a lookup
+ * after `lostCreateWindowMs` finds nothing, or until a found Machine is deleted (its agent never started: it waits
+ * for the start gate).
  */
 export function releaseUndeletedFlyMachineSlot(release: () => void, api: MachinesApi, { config, machine, createUnconfirmed, launchName, run }: UndeletedMachine) {
     const context = { app: config.app, run, machine };
@@ -112,10 +116,13 @@ export function releaseUndeletedFlyMachineSlot(release: () => void, api: Machine
     else if (machine) releaseSlotWhenGone(release, () => api.gone(machine), config.credentialRetention * 1000, context);
     else if (createUnconfirmed && api.find) {
         const find = api.find.bind(api);
+        // The create's own lookups already found nothing, and Fly may still be creating the Machine: an empty
+        // lookup frees the slot only once the window has passed. A Machine found is deleted first.
+        const deadline = Date.now() + retainedMachineChecks.lostCreateWindowMs;
         releaseSlotWhenGone(release, async () => {
             const found = await find(launchName);
-            if (found) await api.destroy(found);
-            return true;
+            if (found) { await api.destroy(found); return true; }
+            return Date.now() >= deadline;
         }, 0, context);
     }
     // Without a lookup a lost create can never be confirmed either way; keep the slot.

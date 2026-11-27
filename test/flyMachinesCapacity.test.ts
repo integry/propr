@@ -5,7 +5,7 @@ import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachi
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { acquireFlyMachineSlot, flyMachinesMax, retainedMachineChecks } from '../packages/core/src/agents/runtime/fly/capacity.ts';
 import { flyConfig } from '../packages/core/src/agents/runtime/fly/config.ts';
-import { MachineCreateUnconfirmedError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
 import { RUN } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
@@ -180,7 +180,7 @@ class KeptForRecovery extends Machines {
 
 test('a Machine kept for recovery holds its slot until Fly confirms it is gone', async t => {
     Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20 });
-    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000 }));
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000, lostCreateWindowMs: 60_000 }));
     const api = new KeptForRecovery();
     const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'kept', PROPR_FLY_MACHINES_MAX: '1', PROPR_FLY_CREDENTIAL_RETENTION_SECONDS: '1' }, async () => []);
     const kept = runtime.start(spec('kept'));
@@ -229,7 +229,7 @@ class LostCreate extends Machines {
 
 test('a run whose create outcome is unknown keeps its slot until the Machine is found and deleted or absent', async t => {
     Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20 });
-    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000 }));
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000, lostCreateWindowMs: 60_000 }));
     const api = new LostCreate();
     const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'lost', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
     const lost = runtime.start(spec('lost'));
@@ -242,6 +242,67 @@ test('a run whose create outcome is unknown keeps its slot until the Machine is 
     await until(() => api.created.length === 2);
     assert.deepEqual(api.deleted, ['m0'], 'the found Machine, whose agent never started, is deleted first');
     assert.equal(api.peak, 1);
+    await until(() => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
+});
+
+/** The first create's response is lost and its lookups find nothing; Fly makes m0 visible under the run's name later. */
+class LateCreate extends Machines {
+    lookups = 0;
+    visible = false;
+    deleted: string[] = [];
+    launches: string[] = [];
+    override async create(launch: MachineLaunch) {
+        this.launches.push(launch.name);
+        const id = await super.create(launch);
+        if (id === 'm0') throw new MachineNotFoundAfterCreateError('Fly Machines API POST returned HTTP 502');
+        return id;
+    }
+    override async find(name: string) {
+        this.lookups++;
+        return this.visible && name === this.launches[0] ? 'm0' : undefined;
+    }
+    override destroy(id: string) {
+        if (id === 'm0') { this.deleted.push(id); this.live--; return Promise.resolve(); }
+        return super.destroy();
+    }
+}
+
+test('a lost create whose lookups find nothing keeps its slot through the lookup window, and a late Machine is deleted first', async t => {
+    Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20, lostCreateWindowMs: 300 });
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000, lostCreateWindowMs: 60_000 }));
+    const api = new LateCreate();
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'late', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const lost = runtime.start(spec('lost'));
+    const queued = runtime.start(spec('queued'));
+    await assert.rejects(lost.wait(), /HTTP 502/);
+    await delay(150);
+    assert.deepEqual(api.created, ['m0'], 'an empty lookup inside the window is not evidence that no Machine exists');
+    assert.ok(api.lookups >= 3, 'the lookup is repeated through the window');
+    api.visible = true; // the delayed create becomes visible
+    await until(() => api.created.length === 2);
+    assert.deepEqual(api.deleted, ['m0'], 'the late Machine is deleted before the queued run creates its own');
+    assert.equal(api.peak, 1);
+    await until(() => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
+});
+
+test('a lost create that stays absent past the lookup window frees its slot', async t => {
+    Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20, lostCreateWindowMs: 150 });
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000, lostCreateWindowMs: 60_000 }));
+    const api = new LateCreate();
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'absent', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const lost = runtime.start(spec('lost'));
+    const failedAt = await lost.wait().then(() => assert.fail('the lost create must fail the run'), () => Date.now());
+    api.live--; // nothing appeared: the counted Machine never existed
+    const queued = runtime.start(spec('queued'));
+    await until(() => api.created.length === 2);
+    assert.ok(Date.now() - failedAt >= 140, 'the slot is held for the whole lookup window');
+    assert.deepEqual(api.deleted, []);
     await until(() => api.destroys.length === 1);
     api.destroys.shift()!();
     assert.equal((await queued.wait()).exitCode, 0);

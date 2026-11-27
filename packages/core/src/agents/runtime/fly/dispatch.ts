@@ -1,4 +1,5 @@
 import type { AgentRuntimePackageLoader } from '../agentRuntimePackageIndex.js';
+import { startupStep } from '../startupStep.js';
 import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, type MachineLaunch, type MachinesApi } from './api.js';
 import { acquireFlyMachineSlot } from './capacity.js';
 import type { FlyConfig } from './config.js';
@@ -43,7 +44,9 @@ export async function dispatchFlyRun({ images, loadPackages, api, config, prepar
     // Read for every run, so a Settings change applies to the next Machine. An unreadable
     // or invalid list fails the run rather than starting it without its packages.
     const configured = await loadPackages();
-    await images?.reconcileLeftovers(api, config);
+    // Shared by concurrent runs and continuing without this one: a cancelled run stops waiting for it at once,
+    // while the leftovers it found keep their capacity slots until they are gone.
+    if (images) await startupStep(signal, () => images.reconcileLeftovers(api, config));
     const selectOptions: SelectOptions = { api, config, packages: configured, signal, run, checkAvailability: loadPackages.checkAvailability };
     // The index check runs only when this selection installs the list (a build, or the start-time install).
     const selection = await selectFlyPackageImage(images, prepared, selectOptions);
