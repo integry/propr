@@ -176,3 +176,22 @@ test('distinguishes authentication, quota, HTTP 429, and unrelated failures for 
   });
   assert.equal((await check(config.id))?.errorCode, 'rate_limit');
 });
+
+test('an unreadable login is not ready with its actionable reason, without a provider call', async () => {
+  const reason = "agy stores its login in the OS keyring on desktops, which ProPR containers can't read. Sign in once with `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy`, or use ProPR's managed login.";
+  const antigravity: AgentConfig = { ...config, id: 'agy', type: 'antigravity', alias: 'antigravity', configPath: '~/.gemini', supportedModels: ['antigravity-gemini-3.8-flash'], defaultModel: 'antigravity-gemini-3.8-flash' };
+  let analyses = 0;
+  let problem: string | undefined = reason;
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [antigravity],
+    createAgent: () => ({
+      credentialProblem: () => problem,
+      analyze: async () => { analyses++; return { success: true, response: 'OK' }; },
+    }),
+  });
+  assert.deepEqual(await check('agy'), { agentId: 'agy', model: 'antigravity-gemini-3.8-flash', status: 'error', errorCode: 'auth_required', error: reason });
+  assert.equal(analyses, 0);
+  problem = undefined;
+  assert.equal((await check('agy', true))?.status, 'ready');
+  assert.equal(analyses, 1);
+});

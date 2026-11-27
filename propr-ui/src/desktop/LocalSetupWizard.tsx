@@ -5,6 +5,7 @@ import type {
   DesktopSecretSelection, DesktopSetupRequest, DesktopSetupResumeView, DesktopSetupSnapshot,
 } from '../../../apps/desktop/src/shared/contract';
 import type { DesktopGuidedLocalSetupAdapter, DesktopProfile } from './types';
+import { ANTIGRAVITY_EXISTING_LOGIN_HINT } from '@propr/shared';
 
 type Stage = 'prerequisites' | 'directory' | 'github' | 'intake' | 'agents' | 'summary';
 type GithubMode = DesktopSetupRequest['github']['mode'];
@@ -226,6 +227,7 @@ const Form: React.FC<{ stage: Stage; draft: Draft; busy: boolean; error: string 
           <label key={mode}><input type="radio" checked={draft.intakeMode === mode} onChange={() => set('intakeMode', mode as IntakeMode)} /><span><strong>{intakeModeLabel(mode as IntakeMode)}</strong></span></label>)}</div>}
       {draft.intakeMode === 'direct_webhook' && <div className="desktop-setup-wide"><button type="button" className="desktop-secondary-button" onClick={props.acquireSecret}><KeyRound /> Enter webhook secret securely</button><small>{draft.webhookSecret?.label ?? ' No secret entered'}</small></div>}</>}
     {stage === 'agents' && <><h1>Select coding agents</h1><div className="desktop-agent-options">{agents.map(agent => <label key={agent}><input type="checkbox" checked={draft.selectedAgents.includes(agent)} onChange={() => set('selectedAgents', draft.selectedAgents.includes(agent) ? draft.selectedAgents.filter(value => value !== agent) : [...draft.selectedAgents, agent])} /><span>{agent}</span></label>)}</div>
+      {draft.selectedAgents.includes('antigravity') && <div className="desktop-setup-note" data-testid="antigravity-keyring-note"><strong>Antigravity</strong><br />{ANTIGRAVITY_EXISTING_LOGIN_HINT.replace(/`/g, '')}</div>}
       {draft.githubMode !== 'demo' && <label className="desktop-setup-field"><span>Allowed GitHub users (comma-separated, optional)</span><div><input value={draft.whitelist} onChange={event => set('whitelist', event.target.value)} /></div></label>}</>}
     {stage === 'summary' && <SetupSummary draft={draft} />}
     {props.error && <div className="desktop-inline-error" role="alert">{props.error}</div>}

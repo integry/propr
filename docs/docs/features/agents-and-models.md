@@ -42,6 +42,8 @@ Direct-login accounts use the portable saved path `~/.propr/agent-credentials/<a
 
 To reuse an account that is already authenticated on the host, select **Use existing config** and provide its config path. Launcher deployments also expose that path with the matching `HOST_*` setting. You can authenticate existing paths with a host CLI or `propr agent login <type>`; both CLI and Web login actions run the configured agent image, avoiding host/image CLI version drift. Gemini CLI was discontinued upstream; Gemini models route through Antigravity.
 
+For Antigravity, an existing `~/.gemini` works only if it contains the file token `antigravity-cli/antigravity-oauth-token`. On macOS and Linux desktops with a keyring, `agy` keeps its login in the OS keyring instead, which agent containers cannot read; ProPR then reports the agent as not ready. Sign in once with `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy` (your keyring login keeps working), or use the managed login, which runs `agy` in a container with no keyring and always writes the file token. See [Antigravity troubleshooting](../architecture/agent-runtime.md#troubleshooting-run-agy-to-log-in-although-you-are-signed-in).
+
 ## Goal sessions
 
 Codex, Claude and Antigravity run goals on their native goal support. Antigravity goals use its `/goal` command in a persistent CLI conversation: ProPR streams activity, saves the conversation ID, and delivers checkpoints, operator input, pause and cancel by interrupting at the next finished step and resuming that exact conversation. Availability is checked against the configured image's CLI capabilities.

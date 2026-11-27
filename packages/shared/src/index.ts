@@ -559,6 +559,7 @@ export * from './goalCheckpoints.js';
 export * from './goalCreation.js';
 
 export { ANTIGRAVITY_COMPATIBILITY_ROUTES, ANTIGRAVITY_COMPATIBILITY_ALIASES, getAntigravityCompatibilityRoute, getModelInfoWithAntigravityCompatibility, antigravitySupportedModel, agentSupportsSavedModel, currentAntigravityModel } from './antigravityCompatibility.js';
+export { ANTIGRAVITY_FILE_TOKEN_ENV, ANTIGRAVITY_FILE_TOKEN_SIGN_IN_COMMAND, ANTIGRAVITY_TOKEN_FILE, ANTIGRAVITY_KEYRING_MARKER_FILE, ANTIGRAVITY_KEYRING_LOGIN_GUIDANCE, ANTIGRAVITY_EXISTING_LOGIN_HINT, ANTIGRAVITY_MANAGED_LOGIN_HINT, antigravityMissingLoginReason, isAntigravityMissingLoginOutput, antigravityLoginFailureReason, type AntigravityMissingLoginOptions } from './antigravityKeyringLogin.js';
 export { OPENCODE_RETIRED_MODEL_ROUTES, OPENCODE_RETIRED_MODEL_ALIASES, currentOpenCodeModel, retiredOpenCodeModelLabel } from './openCodeCompatibility.js';
 export { claudeModelRetirement, currentClaudeModel, isClaudeModelRetired } from './claudeCompatibility.js';
 export * from './goalBlockers.js';

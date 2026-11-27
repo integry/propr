@@ -24,6 +24,10 @@ import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import {
   AGENT_LOGIN_DESCRIPTORS,
+  ANTIGRAVITY_KEYRING_MARKER_FILE,
+  ANTIGRAVITY_TOKEN_FILE,
+  antigravityLoginFailureReason,
+  antigravityMissingLoginReason,
   LOGINABLE_AGENT_TYPES,
 } from "@propr/shared";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
@@ -620,6 +624,16 @@ export async function validateAgents(
         fix: "Set HOST_OPENCODE_DATA_DIR to the host OpenCode data path (usually ~/.local/share/opencode).",
       };
     }
+    // agy keeps desktop logins in the OS keyring; without the file token the
+    // container cannot sign in, so skip the billable run and name the fix.
+    const antigravityKeyringLogin = d.type === "antigravity" && existsSync(join(home, ANTIGRAVITY_KEYRING_MARKER_FILE));
+    if (d.type === "antigravity" && !existsSync(join(hostDir, ANTIGRAVITY_TOKEN_FILE))) {
+      return {
+        status: "fail",
+        detail: `${join(hostDir, ANTIGRAVITY_TOKEN_FILE)} not found — the container has no Antigravity login`,
+        fix: antigravityMissingLoginReason({ keyringMarkerDetected: antigravityKeyringLogin }),
+      };
+    }
     const { args, stdin } = d.imageInvocation({ image, hostDir, workspaceDir, promptFileHost, cfg });
     const run = await execAsync("docker", args, {
       input: stdin,
@@ -629,6 +643,10 @@ export async function validateAgents(
     });
     const ev = evaluateRun(run);
     const loginHint = d.loginArgs ? ` Re-authenticate with: propr agent login ${d.type}.` : "";
+    const loginFailure = d.type === "antigravity" && !ev.ok
+      ? antigravityLoginFailureReason(`${run.stdout}\n${run.stderr}`, { keyringMarkerDetected: antigravityKeyringLogin })
+      : undefined;
+    if (loginFailure) return { status: "fail", detail: ev.detail, fix: loginFailure };
     return {
       status: ev.ok ? "ok" : "fail",
       detail: ev.detail,

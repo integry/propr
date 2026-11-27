@@ -35,7 +35,13 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy login
 ```
 
-Antigravity stores CLI configuration and credentials under `~/.gemini`. Use equivalent setup for Codex (`~/.codex`) if you plan to enable it.
+Antigravity stores CLI configuration under `~/.gemini`. On macOS and on Linux desktops with gnome-keyring or KWallet, `agy` keeps the login itself in the OS keyring, which ProPR's agent containers cannot read. Sign in once with file storage forced so `~/.gemini/antigravity-cli/antigravity-oauth-token` exists; your keyring login keeps working:
+
+```bash
+AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy
+```
+
+Alternatively, skip the host login and use `propr agent login antigravity` or the Web UI's managed login, which always write the file token. See [Antigravity troubleshooting](../architecture/agent-runtime.md#troubleshooting-run-agy-to-log-in-although-you-are-signed-in). Use equivalent setup for Codex (`~/.codex`) if you plan to enable it.
 
 ### OpenCode
 

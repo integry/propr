@@ -27,6 +27,7 @@ import type { AgentWatchdogTrip } from '../../claude/docker/agentActivityWatchdo
 import { buildAntigravityDockerArgs } from './utils/antigravityDockerArgsBuilder.js';
 import { readBoundedProviderOutputFile } from './utils/boundedProviderOutput.js';
 import { detectAntigravityPrintTimeout } from './utils/antigravityPrintTimeout.js';
+import { antigravityRunLoginFailure, inspectAntigravityCredentials, resolveAntigravityLoginFailure } from './utils/antigravityCredentialCheck.js';
 
 // Re-export UsageLimitError for convenience
 export { UsageLimitError };
@@ -67,8 +68,8 @@ function resolveAntigravityEvidenceConflict(stdoutModel: string | undefined, tra
     return undefined;
 }
 
-function formatAnalysisFailure(protocolError: string | undefined, stderr: string): string {
-    return `Analysis failed: ${protocolError || stderr || 'No result returned'}`;
+function formatAnalysisFailure(protocolError: string | undefined, stderr: string, loginFailure?: string): string {
+    return `Analysis failed: ${loginFailure || protocolError || stderr || 'No result returned'}`;
 }
 
 export class AntigravityAgent implements Agent {
@@ -156,6 +157,7 @@ export class AntigravityAgent implements Agent {
                 timeoutMs: this.timeoutMs,
             });
             if (response.success) verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
+            else response.error = resolveAntigravityLoginFailure(`${response.logs}\n${response.error ?? ''}`, this.getHostConfigPath()) ?? response.error;
             logger.info({ taskId, conversationId: response.conversationId, success: response.success, error: response.error, agentAlias: this.config.alias }, 'Antigravity native goal attempt finished');
             return response;
         } catch (error) {
@@ -200,7 +202,7 @@ export class AntigravityAgent implements Agent {
             providerModel: response.reportedModel ?? response.modelUsed, modifiedFiles: [],
             commitMessage: null, summary: response.summary ?? undefined, prompt, sessionId: response.sessionId, conversationId: response.conversationId, conversationLog: response.conversationLog,
             tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined,
-            error: success ? undefined : (printTimeout ? executionError : undefined) || result.stderr || executionError || 'Antigravity execution failed',
+            error: success ? undefined : (printTimeout ? executionError : undefined) || antigravityRunLoginFailure(result, this.getHostConfigPath()) || result.stderr || executionError || 'Antigravity execution failed',
             terminationReason
         };
 
@@ -418,7 +420,7 @@ export class AntigravityAgent implements Agent {
                 return { response: analysisText, modelUsed: resolvedModel, executionTimeMs, success: true,
                     tokenUsage: antigravityTokenUsage, sessionId };
             }
-            return { response: '', modelUsed: resolvedModel, executionTimeMs, success: false, error: formatAnalysisFailure(resolvedProtocolError, result.stderr) };
+            return { response: '', modelUsed: resolvedModel, executionTimeMs, success: false, error: formatAnalysisFailure(resolvedProtocolError, result.stderr, antigravityRunLoginFailure(result, this.getHostConfigPath())) };
         } catch (error) {
             const executionTimeMs = Date.now() - startTime;
             const err = error as Error;
@@ -431,13 +433,17 @@ export class AntigravityAgent implements Agent {
         logger.debug({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Running health check for Antigravity agent...');
         try {
             const imageExists = await agentDockerImageExists(this.config.dockerImage, 10000);
-            logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage, imageExists }, imageExists ? 'Health check passed' : 'Health check failed: Docker image not found');
-            return imageExists;
+            logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage, imageExists }, imageExists ? 'Docker image found' : 'Health check failed: Docker image not found');
+            const credentialProblem = imageExists ? this.credentialProblem() : undefined; // A keyring-only agy login fails every run.
+            if (credentialProblem) logger.warn({ agentAlias: this.config.alias, reason: credentialProblem }, 'Health check failed: no Antigravity file token');
+            return imageExists && !credentialProblem;
         } catch (error) {
             logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'Health check failed with error');
             return false;
         }
     }
+
+    credentialProblem(): string | undefined { return inspectAntigravityCredentials(this.getHostConfigPath()).reason; }
 
     private buildAntigravityShellCommand(repositoryInspection = false): string {
         // With no prompt flag, agy detects non-TTY stdin and enters print mode.

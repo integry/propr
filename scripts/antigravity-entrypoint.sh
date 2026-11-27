@@ -93,6 +93,7 @@ if [ -d "$antigravity_config_dir" ]; then
     else
         echo "Warning: no obvious Antigravity authentication files found under /home/node/.gemini" >&2
         echo "Ensure the Antigravity config directory is properly mounted and initialized" >&2
+        echo "agy stores its login in the OS keyring on desktops, which ProPR containers can't read. Sign in once with \`AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy\`, or use ProPR's managed login." >&2
     fi
 fi
 
