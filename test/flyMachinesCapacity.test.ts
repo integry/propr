@@ -5,7 +5,7 @@ import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachi
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { acquireFlyMachineSlot, flyMachinesMax, retainedMachineChecks } from '../packages/core/src/agents/runtime/fly/capacity.ts';
 import { flyConfig } from '../packages/core/src/agents/runtime/fly/config.ts';
-import { MachineCreateUnconfirmedError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { MachineCreateUnconfirmedError, MachinesClient, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
 import { RUN } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
@@ -257,4 +257,69 @@ test('a run whose create outcome is unknown keeps its slot until the Machine is 
     api.destroys.shift()!();
     assert.equal((await queued.wait()).exitCode, 0);
     await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
+});
+
+/** m0 was already deleted at Fly (by an operator, or a deletion whose response was lost): deleting it returns HTTP 404. */
+class AlreadyDeleted extends Machines {
+    client = new MachinesClient(flyConfig(base));
+    deleteStatuses: number[] = [];
+    override destroy(id: string) {
+        if (id !== 'm0') return super.destroy();
+        this.live--;
+        return this.client.destroy(id);
+    }
+}
+
+test('a deletion answered with HTTP 404 frees the slot at once and admits the queued run', async t => {
+    const api = new AlreadyDeleted();
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+        assert.equal(init.method, 'DELETE');
+        assert.match(url, /\/machines\/m0\?force=true/);
+        api.deleteStatuses.push(404);
+        return new Response('{"error":"machine not found"}', { status: 404 });
+    });
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'unknown', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const first = runtime.start(spec('first'));
+    const queued = runtime.start(spec('queued'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await until('the queued run creates its Machine after m0\'s deletion returned 404', () => api.created.length === 2);
+    assert.deepEqual(api.deleteStatuses, [404], 'one deletion attempt, not a retry loop');
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    assert.equal(api.peak, 1);
+    await Promise.all([first, queued].map(run => run.release!()));
+});
+
+/** Every deletion of m0 fails with HTTP 500; the Machine disappears at Fly only when the test says so. */
+class DeletionAlwaysFails extends Machines {
+    attempts = 0;
+    override destroy(id: string) {
+        if (id !== 'm0') return super.destroy();
+        this.attempts++;
+        return Promise.reject(new Error('Fly Machines API DELETE returned HTTP 500'));
+    }
+}
+
+test('a Machine that disappears while its deletion keeps failing frees its slot and ends the retries', async () => {
+    const api = new DeletionAlwaysFails();
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'vanishing', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const first = runtime.start(spec('first'));
+    const queued = runtime.start(spec('queued'));
+    assert.equal((await first.wait()).exitCode, 0);
+    assert.equal(api.attempts, 1);
+    assert.deepEqual(api.goneChecks, ['m0'], 'a failed deletion asks Fly whether the Machine is gone');
+    await delay(50);
+    assert.deepEqual(api.created, ['m0'], 'a Machine Fly still lists keeps its slot');
+    api.vanished.add('m0');
+    api.live--;
+    await until('the queued run creates its Machine once a retry finds m0 gone', () => api.created.length === 2, CLEANUP_RETRY_TIMEOUT_MS);
+    assert.equal(api.attempts, 2);
+    assert.deepEqual(api.goneChecks, ['m0', 'm0']);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    assert.equal(api.attempts, 2, 'no retry after Fly confirmed the Machine is gone');
+    assert.equal(api.peak, 1);
+    await Promise.all([first, queued].map(run => run.release!()));
 });

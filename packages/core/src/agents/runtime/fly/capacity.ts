@@ -139,9 +139,17 @@ export class FlyMachineSlot {
         });
     }
 
-    /** Deletes the Machine, then frees the slot; a failed deletion keeps it. */
+    /**
+     * Deletes the Machine, then frees the slot. A failed deletion keeps the slot unless Fly confirms the Machine is
+     * gone (deleted elsewhere, reclaimed, or a deletion whose response was lost), which also ends the caller's retries.
+     */
     async destroy(machine: string) {
-        await this.api.destroy(machine);
+        try { await this.api.destroy(machine); }
+        catch (error) {
+            const gone = await this.api.gone(machine).catch(() => false);
+            if (!gone) throw error;
+            logger.info({ app: this.config.app, run: this.run, machine, err: error }, 'Fly Machine deletion failed but the Machine is gone; capacity slot freed');
+        }
         this.release();
     }
 
