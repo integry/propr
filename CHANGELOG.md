@@ -151,6 +151,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Server and service images run on Node 24** (#3864)
+  - The app (`propr/app`), launcher, Node service, API, UI and docs images
+    move from `node:22-*` to the same `node:24-alpine` / `node:24-slim`
+    variants. Node 24 is the Active LTS, and `@fly/sprites` 0.2.5, which the
+    Sprites runtime uses, requires Node `>=24.0.0`, so the app image build no
+    longer warns `EBADENGINE`.
+  - `.nvmrc` is `24`, so CI jobs that read it build and test on Node 24.
+  - The CLI and the other npm packages keep their `engines` ranges: Node 22
+    users are unaffected, and the CLI compatibility matrix still covers 22
+    and 24. The agent images keep their Node version.
+
 - Upgraded bundled Mistral Vibe from 2.25.8 to 3.1.5. Tasks use native prompt files and stream Vibe’s structured responses. Vibe runs no longer exit before starting when `~/.vibe/config.toml` sets an absolute host `session_logging.save_dir`: session logs now always go to the container runtime home. The live task view shows Vibe 3 tool calls and their results again. [PyPI release](https://pypi.org/project/mistral-vibe/3.1.5/)
 
 - **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)

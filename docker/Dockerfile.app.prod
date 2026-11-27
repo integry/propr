@@ -12,7 +12,7 @@
 # using the propr/ui image. Mirrors propr-ui/Dockerfile's build stage, without
 # a VITE_API_BASE_URL: the served bundle always calls its own origin and the
 # API generates /config.js at runtime.
-FROM node:22-slim AS ui-builder
+FROM node:24-slim AS ui-builder
 
 WORKDIR /app
 
@@ -39,7 +39,7 @@ RUN npm run build --workspace=packages/shared \
 
 
 # --- Stage 1: builder ---------------------------------------------------------
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 
 WORKDIR /build
 
@@ -107,7 +107,7 @@ RUN node scripts/stage-app-runtime-dependencies.mjs --root /build --out /runtime
 
 
 # --- Stage 2: runtime ---------------------------------------------------------
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
 
 WORKDIR /usr/src/app
 

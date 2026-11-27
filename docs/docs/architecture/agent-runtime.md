@@ -106,7 +106,7 @@ To verify a deployment, set `PROPR_FLY_LIVE_TOKEN`, `PROPR_FLY_LIVE_APP` and `PR
 
 ## Fly Sprites
 
-The Node 22 worker pins `@fly/sprites` to 0.2.5. Upstream declares Node 24 or newer. CI smoke-tests the pinned SDK on Node 22, and the live runtime suite checks service compatibility before merge. For Extension Library items see [Extensions by runtime](#extensions-by-runtime).
+The worker runs on Node 24, the range `@fly/sprites` 0.2.5 declares (`>=24.0.0`), and pins the SDK to that version. CI smoke-tests the pinned SDK on the `.nvmrc` Node version, and the live runtime suite checks service compatibility before merge. For Extension Library items see [Extensions by runtime](#extensions-by-runtime).
 
 Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an individual Claude Code, Codex, or Antigravity agent. Supply an organization token in the worker’s `PROPR_SPRITES_TOKEN` environment variable (`SPRITES_TOKEN` is also accepted). The worker defaults `SPRITES_CLIENT_SIGNALS` to `0` unless the operator sets it. Runs use the clone workspace transport. Restricted runs use the Sprite's DNS allowlist, which the worker applies before the run and clears after restoring the checkpoint. Runs reach ProPR MCP as described in [ProPR MCP from Sprites](#propr-mcp-from-sprites). See [Restricted mode on Fly Sprites](../features/execution-safety.md#restricted-mode-on-fly-sprites).
 
