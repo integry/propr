@@ -1,5 +1,8 @@
 import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
+import { agentContainerNetwork } from '../../agentContainerNetwork.js';
+import { antigravityToolPolicyArgs, antigravityToolPolicyEnvironment } from '../../mcpLaunch/antigravityMcpLaunch.js';
+import type { AgentToolPolicy } from '../../types.js';
 import { buildAntigravityContainerName } from './antigravityContainerName.js';
 import {
     buildAntigravityRepositoryScoutMcpConfig,
@@ -28,6 +31,8 @@ interface AntigravityDockerArgsParams {
     dockerImage: string;
     agentAlias?: string;
     shellCommand: string;
+    /** Task runs only: run MCP servers, the exclusive switch and native skills. */
+    toolPolicy?: AgentToolPolicy;
 }
 
 function buildAgentEnvironmentArgs(
@@ -75,11 +80,13 @@ export function buildAntigravityDockerArgs(params: AntigravityDockerArgsParams):
         worktreePath, githubToken, modelName, issueNumber, environment, configEnvironment,
         taskId, executionType, transcriptPath, readOnlyWorkspace = false,
         repositoryInspection = false, executionMode = 'task', configPath, dockerImage,
-        agentAlias, shellCommand,
+        agentAlias, shellCommand, toolPolicy,
     } = params;
     if (repositoryInspection && !readOnlyWorkspace) {
         throw new Error('Repository inspection requires a read-only workspace');
     }
+    // The entrypoint writes the MCP config into the disposable runtime home only.
+    if (toolPolicy && (executionMode !== 'task' || repositoryInspection)) throw new Error('Antigravity MCP launch requires a disposable task runtime');
     const configMountTarget = executionMode === 'goal'
         ? '/home/node/.gemini'
         : ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH;
@@ -101,7 +108,7 @@ export function buildAntigravityDockerArgs(params: AntigravityDockerArgsParams):
 
     return [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges',
-        '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
+        '--cap-add', 'CHOWN', '--network', agentContainerNetwork(toolPolicy), '--user', '0:0',
         ...buildWorkspaceMountArgs({ worktreePath, readOnlyWorkspace, repositoryInspection, gitMountArgs: params.gitMountArgs }, workerOwnedGit),
         '-v', `${configPath}:${configMountTarget}:rw`,
         ...buildCredentialArgs(repositoryInspection, githubToken),
@@ -111,7 +118,11 @@ export function buildAntigravityDockerArgs(params: AntigravityDockerArgsParams):
         '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${configMountTarget}`,
         ...buildRepositoryInspectionArgs(repositoryInspection),
         ...(transcriptPath ? ['-e', `PROPR_ANTIGRAVITY_TRANSCRIPT_PATH=${transcriptPath}`] : []),
-        ...envVars, ...buildAgentGitCredentialArgs(), '-w', '/home/node/workspace',
+        ...envVars,
+        // After operator variables, so their envVars cannot change them. Tokens
+        // and stdio secrets by name only: docker copies the values from its own environment.
+        ...(toolPolicy ? [...antigravityToolPolicyEnvironment(toolPolicy), ...Object.keys(antigravityToolPolicyArgs(toolPolicy).env).flatMap(name => ['-e', name])] : []),
+        ...buildAgentGitCredentialArgs(), '-w', '/home/node/workspace',
         dockerImage, '/bin/bash', '-lc', shellCommand, 'propr-antigravity',
     ];
 }

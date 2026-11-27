@@ -65,6 +65,11 @@ export interface AgentToolPolicy {
     dockerNetwork?: string;
     /** Internal operator-resolved stdio descriptors; never customer API input. */
     localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
+    /**
+     * Skill bundles staged read-only at `/opt/propr/extensions/<id>`, for
+     * runtimes that also register them natively under their own name.
+     */
+    skills?: { id: string; name: string }[];
 }
 
 export interface AgentExtensionRequest {

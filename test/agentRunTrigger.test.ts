@@ -77,7 +77,7 @@ describe('triggerAgentRun', () => {
     database = await openDatabase();
     queue = fakeQueue();
     repos = [repo('acme/app'), repo('acme/lib')];
-    agents = [agent(), agent({ id: 'agent-ag', type: 'antigravity', alias: 'gemini', supportedModels: ['pro'] })];
+    agents = [agent(), agent({ id: 'agent-ag', type: 'vibe', alias: 'gemini', supportedModels: ['pro'] })];
     synthetic = [];
   });
   afterEach(async () => { await database.destroy(); });
@@ -255,7 +255,7 @@ describe('validateAgentDefinitionRuntime', () => {
   };
   const deps: AgentRunTriggerDependencies = {
     loadRepos: async () => [repo('acme/app'), repo('acme/off', false)],
-    loadAgents: async () => [agent(), agent({ id: 'agent-ag', type: 'antigravity', alias: 'gemini', supportedModels: ['pro'] }),
+    loadAgents: async () => [agent(), agent({ id: 'agent-ag', type: 'vibe', alias: 'gemini', supportedModels: ['pro'] }),
       agent({ id: 'agent-off', alias: 'off', enabled: false })],
     loadSyntheticAgents: async () => [syntheticAgent],
   };
@@ -299,7 +299,7 @@ describe('validateAgentDefinitionRuntime', () => {
     const withDefault = (agents: AgentConfig[], alias: string | null) => (overrides: Partial<StoredAgentDefinition>) =>
       validateAgentDefinitionRuntime({ ...base, agentAlias: null, modelName: null, ...overrides },
         { ...deps, loadAgents: async () => agents, loadDefaultAgentAlias: async () => alias });
-    const gemini = agent({ id: 'agent-ag', type: 'antigravity', alias: 'gemini', supportedModels: ['pro'] });
+    const gemini = agent({ id: 'agent-ag', type: 'vibe', alias: 'gemini', supportedModels: ['pro'] });
 
     const geminiDefault = withDefault([agent(), gemini], 'gemini');
     assert.match(await geminiDefault({ capabilities: ['propr_mcp'] }) ?? '', /default agent does not support propr_mcp/);
@@ -309,9 +309,9 @@ describe('validateAgentDefinitionRuntime', () => {
 
     assert.equal(await withDefault([agent(), gemini], 'claude')({ autonomyMode: 'auto' }), null);
     // The `default` alias is the fallback, and a disabled configured default is skipped like in the registry.
-    assert.match(await withDefault([agent(), agent({ id: 'd', type: 'antigravity', alias: 'default' })], null)(
+    assert.match(await withDefault([agent(), agent({ id: 'd', type: 'vibe', alias: 'default' })], null)(
       { capabilities: ['propr_mcp'] }) ?? '', /propr_mcp/);
-    assert.equal(await withDefault([agent({ alias: 'default' }), agent({ id: 'g', type: 'antigravity', alias: 'gemini',
+    assert.equal(await withDefault([agent({ alias: 'default' }), agent({ id: 'g', type: 'vibe', alias: 'gemini',
       enabled: false })], 'gemini')({ capabilities: ['propr_mcp'] }), null);
     assert.match(await withDefault([agent(), gemini], null)({ capabilities: ['propr_mcp'] }) ?? '', /No default agent/);
     // With no agents configured the registry falls back to an environment Claude agent.
@@ -321,9 +321,9 @@ describe('validateAgentDefinitionRuntime', () => {
   test('added extensions require a qualified direct or default runtime even without propr_mcp', async () => {
     const extensions = { servers: ['docs'], skills: [] };
     assert.equal(await check({ extensions }), null);
-    assert.match(await check({ extensions, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude or Codex/);
-    assert.match(await check({ extensions, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude or Codex/);
-    assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude or Codex/);
+    assert.match(await check({ extensions, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude, Codex or Antigravity/);
+    assert.match(await check({ extensions, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude, Codex or Antigravity/);
+    assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude, Codex or Antigravity/);
     assert.equal(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'claude' }), null);
     // Without added items, library items that apply automatically never block another runtime.
     assert.equal(await check({ extensions: { servers: [], skills: [] }, agentAlias: 'gemini', modelName: 'pro' }), null);
@@ -333,9 +333,9 @@ describe('validateAgentDefinitionRuntime', () => {
     const withAgents = (agents: AgentConfig[]) => validateAgentDefinitionRuntime(
       { ...base, agentAlias: 'pool', modelName: 'mixed', capabilities: ['propr_mcp'] }, { ...deps, loadAgents: async () => agents });
     assert.equal(await withAgents([agent(),
-      agent({ id: 'agent-ag', type: 'antigravity', alias: 'gemini', supportedModels: ['pro'], enabled: false })]), null);
+      agent({ id: 'agent-ag', type: 'vibe', alias: 'gemini', supportedModels: ['pro'], enabled: false })]), null);
     assert.match(await withAgents([agent({ enabled: false }),
-      agent({ id: 'agent-ag', type: 'antigravity', alias: 'gemini', supportedModels: ['pro'], enabled: false })]) ?? '', /propr_mcp/);
+      agent({ id: 'agent-ag', type: 'vibe', alias: 'gemini', supportedModels: ['pro'], enabled: false })]) ?? '', /propr_mcp/);
   });
 });
 
