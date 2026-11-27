@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // A minimal OAuth 2.1 authorization server and OAuth-protected, stateful MCP
-// endpoint for the Fly smoke's extensions mode. No dependencies: it runs on a
-// disposable Sprite behind its public HTTPS URL.
+// endpoint for the Fly smoke's extensions mode. No dependencies: it runs behind
+// a public HTTPS URL on a disposable Fly Machine (Sprites runs) or Sprite (Fly
+// Machines runs).
 //
 // - Protected resource metadata (RFC 9728) and authorization server metadata (RFC 8414).
 // - Dynamic client registration (RFC 7591), authorization code with PKCE S256,
@@ -13,7 +14,8 @@
 // - `/stats`: counters only (refreshes, sessions, calls), no tokens.
 //
 // State is written to STATE_FILE after each change, so a Sprite that sleeps
-// and restarts keeps registrations and tokens. MCP sessions are kept too.
+// and restarts keeps registrations and tokens. The Fly Machine host never
+// auto-stops, so its in-memory state lasts the run. MCP sessions are kept too.
 //
 // Env: PUBLIC_URL (https origin, required), PORT (8080), ACCESS_TTL (90), STATE_FILE.
 import { createServer } from 'node:http';

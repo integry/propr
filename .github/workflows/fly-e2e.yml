@@ -11,7 +11,7 @@ on:
       extensions:
         description: >-
           Also verify Extension Library items on the remote runtime: a skill bundle, a pinned npm MCP server and four
-          URL MCP servers (stateful, stateless, Bearer and a disposable OAuth server on a Sprite)
+          URL MCP servers (stateful, stateless, Bearer and a disposable OAuth server: a Fly Machine on Sprites runs, a Sprite on Fly Machines runs)
         type: boolean
         default: false
       mcp:
@@ -50,7 +50,7 @@ jobs:
         run: |
           missing=()
           required=(FLY_E2E_TOKEN FLY_E2E_APP_ENV FLY_E2E_GITHUB_TOKEN FLY_E2E_GH_OAUTH_CLIENT_ID FLY_E2E_GH_OAUTH_CLIENT_SECRET)
-          # The extensions mode hosts its OAuth fixture on a Sprite, whatever the agent runtime.
+          # Fly Machines runs host the extensions mode's OAuth fixture on a Sprite (Sprites runs use a Fly Machine).
           [[ $AGENT_RUNTIME != sprites && $EXTENSIONS != true ]] || required+=(FLY_E2E_SPRITES_TOKEN)
           for name in "${required[@]}"; do
             [[ ${!name} == true ]] || missing+=("$name")
@@ -102,8 +102,12 @@ jobs:
       URL_STATELESS_TOOL: read_wiki_structure
       URL_BEARER: https://mcptest.io/fixtures/auth-bearer/mcp
       URL_BEARER_TOKEN: mcptest-public-token
-      # The OAuth fixture: a disposable Sprite with a public URL, so it takes none of the org's three Machines.
-      OAUTH_SPRITE: propr-e2e-oauth-${{ github.run_id }}-${{ github.run_attempt }}
+      # The OAuth fixture runs in the pool the run's agents don't use: the Free plan allows three Sprites and three
+      # Machines per org. Sprites runs host it on a Fly Machine in its own disposable app (with the control plane,
+      # 2 of 3 Machines); Fly Machines runs host it on a disposable Sprite, leaving the Machines to the agents.
+      OAUTH_FIXTURE_HOST: ${{ (inputs.agent_runtime || 'sprites') == 'sprites' && 'fly-machine' || 'sprite' }}
+      # The Sprite's or Fly app's name.
+      OAUTH_FIXTURE_NAME: propr-e2e-oauth-${{ github.run_id }}-${{ github.run_attempt }}
       # Core refreshes one minute before expiry, so a 90 s token forces refreshes during the run.
       OAUTH_ACCESS_TTL: 90
     steps:
@@ -303,7 +307,7 @@ jobs:
           bash -eu "$OUT/claude-settings.sh"
 
       - name: Start the OAuth MCP fixture on a disposable Sprite
-        if: env.EXTENSIONS == 'true'
+        if: env.EXTENSIONS == 'true' && env.OAUTH_FIXTURE_HOST == 'sprite'
         timeout-minutes: 8
         env:
           SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
@@ -315,7 +319,7 @@ jobs:
           import { readFileSync, appendFileSync } from 'node:fs';
           import { SpritesClient } from '@fly/sprites';
           const client = new SpritesClient(process.env.SPRITES_TOKEN);
-          const name = process.env.OAUTH_SPRITE;
+          const name = process.env.OAUTH_FIXTURE_NAME;
           // A public URL: ProPR's gateway and OAuth client reach it like any provider, over HTTPS on 443.
           await client.createSprite(name, { urlSettings: { auth: 'public' } });
           const sprite = await client.getSprite(name);
@@ -337,8 +341,78 @@ jobs:
           const metadata = await (await fetch(`${origin}/.well-known/oauth-protected-resource/mcp`)).json();
           if (metadata.resource !== `${origin}/mcp`) throw new Error('The OAuth fixture names another resource');
           appendFileSync(process.env.GITHUB_ENV, `OAUTH_FIXTURE_ORIGIN=${origin}\n`);
-          console.log(`OAuth MCP fixture at ${origin}/mcp (access tokens ${process.env.OAUTH_ACCESS_TTL} s)`);
+          console.log(`OAuth MCP fixture at ${origin}/mcp on a Sprite (access tokens ${process.env.OAUTH_ACCESS_TTL} s)`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- OAuth MCP fixture host: Sprite \`${name}\` (${origin}/mcp)\n`);
           JS
+
+      - name: Start the OAuth MCP fixture on a Fly Machine in a disposable app
+        if: env.EXTENSIONS == 'true' && env.OAUTH_FIXTURE_HOST == 'fly-machine'
+        timeout-minutes: 8
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Marker first: teardown destroys the app even if creation's response is lost.
+          touch "$OUT/destroy-oauth-app"
+          flyctl apps create "$OAUTH_FIXTURE_NAME" --org "$ORG"
+          origin="https://$OAUTH_FIXTURE_NAME.fly.dev"
+          dir="$OUT/oauth-fixture-app"
+          mkdir -p "$dir"
+          cp .github/fly-e2e/oauth-mcp-fixture.mjs "$dir/fixture.mjs"
+          # One Machine that never auto-stops: OAuth registrations, tokens and sessions stay in its memory and
+          # STATE_FILE for the whole run. The Fly proxy terminates HTTPS on 443 for the *.fly.dev name.
+          cat > "$dir/fly.toml" <<TOML
+          app = "$OAUTH_FIXTURE_NAME"
+          primary_region = "$REGION"
+
+          [build]
+            image = "node:22-slim"
+
+          [env]
+            PUBLIC_URL = "$origin"
+            PORT = "8080"
+            ACCESS_TTL = "$OAUTH_ACCESS_TTL"
+            STATE_FILE = "/tmp/oauth-mcp-fixture.json"
+
+          [processes]
+            app = "node /oauth-fixture/fixture.mjs"
+
+          [[files]]
+            guest_path = "/oauth-fixture/fixture.mjs"
+            local_path = "$dir/fixture.mjs"
+
+          [http_service]
+            internal_port = 8080
+            force_https = true
+            auto_stop_machines = "off"
+            auto_start_machines = true
+            min_machines_running = 1
+            processes = ["app"]
+
+          [[vm]]
+            size = "shared-cpu-1x"
+            memory = "256mb"
+          TOML
+          # --ha=false: one Machine, not the default two, so the org stays within its three.
+          flyctl deploy --config "$dir/fly.toml" --app "$OAUTH_FIXTURE_NAME" --ha=false --yes --wait-timeout 5m
+          # Deploy allocates public IPs for an http_service; allocate them here if it did not.
+          if flyctl ips list --app "$OAUTH_FIXTURE_NAME" --json | jq -e 'length == 0' > /dev/null; then
+            flyctl ips allocate-v4 --shared --app "$OAUTH_FIXTURE_NAME"
+            flyctl ips allocate-v6 --app "$OAUTH_FIXTURE_NAME"
+          fi
+          machines=$(flyctl machines list --app "$OAUTH_FIXTURE_NAME" --json | jq length)
+          [[ $machines == 1 ]] || { echo "::error::The OAuth fixture app has $machines Machines, expected 1"; exit 1; }
+          for attempt in $(seq 0 60); do
+            curl --fail --silent --show-error --max-time 10 -o /dev/null "$origin/health" && break
+            [[ $attempt -lt 60 ]] || { echo "::error::The OAuth fixture did not answer /health"; exit 1; }
+            sleep 5
+          done
+          curl --fail --silent --show-error "$origin/.well-known/oauth-protected-resource/mcp" |
+            jq -e --arg resource "$origin/mcp" '.resource == $resource' > /dev/null ||
+            { echo "::error::The OAuth fixture names another resource"; exit 1; }
+          echo "OAUTH_FIXTURE_ORIGIN=$origin" >> "$GITHUB_ENV"
+          echo "OAuth MCP fixture at $origin/mcp on a Fly Machine (access tokens $OAUTH_ACCESS_TTL s)"
+          echo "- OAuth MCP fixture host: Fly Machine in the disposable app \`$OAUTH_FIXTURE_NAME\` ($origin/mcp)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Add Extension Library items before idle shutdown
         if: env.EXTENSIONS == 'true'
@@ -717,7 +791,7 @@ jobs:
               echo "| Server | Session | Auth | Tool calls | Token refreshes | Re-initialized | Closed |"
               echo "| --- | --- | --- | --- | --- | --- | --- |"
               jq -r '.[] | "| `\(.server)` | \(.sessionMode) | \(.authentication) | \(.toolCalls) | \(.refreshes) | \(.reinitialized) | \(.reason)\(if .deleted then ", DELETE sent" else "" end) |"' <<< "$closed"
-              echo "- OAuth fixture (access tokens ${OAUTH_ACCESS_TTL}s): $(jq -r '"\(.refreshes) refreshes, \(.sessionsOpened) sessions opened, \(.sessionsDeleted) deleted, \(.sessionNotFound) session-not-found replies"' <<< "$stats")"
+              echo "- OAuth fixture on a $([[ $OAUTH_FIXTURE_HOST == sprite ]] && echo Sprite || echo 'Fly Machine') (\`$OAUTH_FIXTURE_NAME\`, access tokens ${OAUTH_ACCESS_TTL}s): $(jq -r '"\(.refreshes) refreshes, \(.sessionsOpened) sessions opened, \(.sessionsDeleted) deleted, \(.sessionNotFound) session-not-found replies"' <<< "$stats")"
             } | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           # Read the worker's measurement for this issue AND PR, after wake was observed.
@@ -860,12 +934,18 @@ jobs:
           node --input-type=module <<'JS'
           import { SpritesClient } from '@fly/sprites';
           const client = new SpritesClient(process.env.SPRITES_TOKEN);
-          const name = process.env.OAUTH_SPRITE;
+          const name = process.env.OAUTH_FIXTURE_NAME;
           const remaining = await client.listAllSprites(name);
           for (const sprite of remaining) if (sprite.name === name) await client.deleteSprite(name);
           if ((await client.listAllSprites(name)).some(sprite => sprite.name === name)) throw new Error(`Sprite ${name} is still listed`);
           console.log(`Deleted the OAuth fixture Sprite ${name}`);
           JS
+      - name: Destroy the OAuth fixture's Fly app
+        # Keyed only on the marker written before the app is created, so it runs whatever failed.
+        if: always() && env.EXTENSIONS == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: if [[ -f $OUT/destroy-oauth-app ]]; then flyctl apps destroy "$OAUTH_FIXTURE_NAME" --yes; fi
       - name: Close fixture work
         if: always() && env.ISSUE != ''
         env:
