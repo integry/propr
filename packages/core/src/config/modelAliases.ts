@@ -3,6 +3,7 @@ import { OPENCODE_RETIRED_MODEL_ALIASES, OPENCODE_RETIRED_MODEL_ROUTES, getModel
 import { AgentRegistry } from '../agents/AgentRegistry.js';
 import type { AgentConfig } from '../agents/types.js';
 import { toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../agents/impl/openCodeModelIds.js';
+import { isPiModelId, toPiCliModel, toPiOpenRouterId, PI_MODEL_PREFIX } from '../agents/impl/piModelIds.js';
 import { MODEL_SHORT_NAMES, MODEL_INFO_MAP, ALL_MODELS, AGENT_MODELS, type AgentType } from './modelDefinitions.js';
 
 export type ModelAlias = string;
@@ -20,7 +21,10 @@ export function getModelShortName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
     const modelInfo = getModelInfoWithAntigravityCompatibility(modelId);
     if (modelInfo?.shortName) return modelInfo.shortName;
-    const normalized = modelId.substring(modelId.lastIndexOf(':') + 1);
+    const piModel = piUnderlyingModel(modelId);
+    if (piModel && MODEL_INFO_MAP[`${PI_MODEL_PREFIX}${piModel}`]) return MODEL_INFO_MAP[`${PI_MODEL_PREFIX}${piModel}`].shortName;
+    // Pi model refs may end in a `:<variant>` (e.g. OpenRouter `:free`), so their leaf is the model name.
+    const normalized = piModel ? piModel.replace(/:[^/]*$/, '') : modelId.substring(modelId.lastIndexOf(':') + 1);
     const leaf = normalized.substring(normalized.lastIndexOf('/') + 1);
     return leaf
         .split(/[-_.]+/)
@@ -34,6 +38,12 @@ export function getModelShortName(modelId: string | undefined): string {
         .join(' ') || 'AI';
 }
 
+/** The `provider/model` behind a ProPR Pi model id, without a thinking suffix. */
+function piUnderlyingModel(modelId: string): string | undefined {
+    if (!isPiModelId(modelId)) return undefined;
+    try { return toPiCliModel(modelId).model; } catch { return undefined; }
+}
+
 /**
  * Gets the full display name for a model ID.
  * Used for PR comments and detailed displays where the full name is preferred.
@@ -42,7 +52,8 @@ export function getModelShortName(modelId: string | undefined): string {
 export function getModelName(modelId: string | undefined): string {
     if (!modelId) return 'AI';
     const modelInfo = getModelInfoWithAntigravityCompatibility(modelId);
-    return modelInfo?.name || getModelShortName(modelId);
+    const piModel = piUnderlyingModel(modelId);
+    return modelInfo?.name || (piModel && MODEL_INFO_MAP[`${PI_MODEL_PREFIX}${piModel}`]?.name) || getModelShortName(modelId);
 }
 
 /**
@@ -156,6 +167,13 @@ function getOpenRouterId(internalModelId: ModelId): string {
     // OpenRouter slug so pricing/cost still resolves.
     const openCodeGoId = toOpenCodeGoOpenRouterId(internalModelId);
     if (openCodeGoId) return openCodeGoId;
+    // A Pi model with a thinking suffix prices as its catalog entry; one routed
+    // through OpenRouter carries its OpenRouter slug.
+    const piModel = piUnderlyingModel(internalModelId);
+    const piInfo = piModel ? MODEL_INFO_MAP[`${PI_MODEL_PREFIX}${piModel}`] : undefined;
+    if (piInfo?.openRouterId) return piInfo.openRouterId;
+    const piOpenRouterId = toPiOpenRouterId(internalModelId);
+    if (piOpenRouterId) return piOpenRouterId;
     // An agent can be configured with an alias ("fable", "fable51", "opus55"),
     // and that raw string is what gets recorded against a run. Resolve it so
     // cost uses the model's own published rates instead of falling through to
@@ -337,6 +355,7 @@ function getDefaultModel(): ModelId | null {
 function getAgentTypeFromModel(modelId: string): AgentType {
     const lowerModel = modelId.toLowerCase();
     if (isOpenCodeModelId(lowerModel)) return 'opencode';
+    if (isPiModelId(lowerModel)) return 'pi';
     if (lowerModel.startsWith('antigravity')) return 'antigravity';
     if (lowerModel.startsWith('claude')) return 'claude';
     if (lowerModel.startsWith('zai-glm-') || lowerModel.startsWith('mistral') || lowerModel.startsWith('devstral') || lowerModel.includes('vibe')) return 'vibe';

@@ -344,6 +344,8 @@ export interface AgentExecutionResult {
     summary?: string;       // Extracted summary of work
     modifiedFiles: string[];
     cost?: number;          // Estimated cost in USD
+    /** Run cost the provider reported as authoritative (Pi `totalFromProvider`); recorded instead of ProPR pricing. */
+    providerCostUsd?: number;
 
     // Metadata
     modelUsed: string;
@@ -437,5 +439,6 @@ export const CONTAINER_CONFIG_PATHS: Record<AgentType, string> = {
     codex: '/home/node/.codex',
     antigravity: '/home/node/.gemini',
     opencode: '/home/node/.config/opencode',
-    vibe: '/home/node/.vibe'
+    vibe: '/home/node/.vibe',
+    pi: '/home/node/.pi/agent'
 };

@@ -59,6 +59,8 @@ export interface ExecuteClaudeCodeOptions {
 }
 
 export interface ClaudeCodeResponse {
+    /** Run cost the provider reported as authoritative (Pi `totalFromProvider`); recorded instead of ProPR pricing. */
+    providerCostUsd?: number;
     /** Container-observed workflow validation report, independent of agent prose. */
     repositoryValidation?: string;
     /** Structured per-command outcome the `repositoryValidation` report is rendered from. */

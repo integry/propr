@@ -21,7 +21,8 @@ const DEFAULT_CLI_VERSIONS: Record<AgentConfig['type'], string> = {
     codex: AGENT_DEFAULT_VERSIONS.codex,
     antigravity: AGENT_DEFAULT_VERSIONS.antigravity,
     opencode: AGENT_DEFAULT_VERSIONS.opencode,
-    vibe: AGENT_DEFAULT_VERSIONS.vibe
+    vibe: AGENT_DEFAULT_VERSIONS.vibe,
+    pi: AGENT_DEFAULT_VERSIONS.pi
 };
 
 const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
@@ -30,6 +31,8 @@ const CURRENT_DEFAULT_MODELS: Partial<Record<AgentConfig['type'], string[]>> = {
     antigravity: AGENT_DEFAULTS.antigravity.defaultModels,
     opencode: AGENT_DEFAULTS.opencode.defaultModels,
     vibe: AGENT_DEFAULTS.vibe.defaultModels
+    // Pi has none: its models are per provider, and the operator keeps only
+    // those their credentials can reach.
 };
 const OPENCODE_CURRENT_MODELS = OPENCODE_MODELS.map(model => model.id);
 const RETIRED_OPENCODE_DEFAULT_MODELS = new Set(Object.keys(OPENCODE_RETIRED_MODEL_ROUTES));
@@ -269,7 +272,9 @@ function removeDeprecatedModels(agent: AgentConfig): boolean {
         return false;
     }
 
-    if (agent.type === 'opencode') {
+    // OpenCode and Pi route any provider/model the CLI knows, so a model
+    // outside the curated catalog is not retired.
+    if (agent.type === 'opencode' || agent.type === 'pi') {
         return false;
     }
 

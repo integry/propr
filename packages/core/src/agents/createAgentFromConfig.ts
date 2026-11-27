@@ -4,6 +4,7 @@ import { ClaudeAgent } from './impl/ClaudeAgent.js';
 import { CodexAgent } from './impl/CodexAgent.js';
 import { OpenCodeAgent } from './impl/OpenCodeAgent.js';
 import { VibeAgent } from './impl/VibeAgent.js';
+import { PiAgent } from './impl/PiAgent.js';
 
 export function createAgentFromConfig(config: AgentConfig): Agent {
   switch (config.type) {
@@ -17,6 +18,8 @@ export function createAgentFromConfig(config: AgentConfig): Agent {
       return new OpenCodeAgent(config);
     case 'vibe':
       return new VibeAgent(config);
+    case 'pi':
+      return new PiAgent(config);
     default:
       throw new Error(`Unknown agent type: ${config.type}`);
   }

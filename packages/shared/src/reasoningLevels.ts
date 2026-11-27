@@ -33,6 +33,15 @@ export const CLAUDE_REASONING_LEVELS = [
   'auto',
 ] as const satisfies readonly ReasoningLevel[];
 
+// Pi clamps a requested thinking level to what the selected model supports.
+export const PI_REASONING_LEVELS = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const satisfies readonly ReasoningLevel[];
+
 export function isReasoningLevel(value: string): value is ReasoningLevel {
   return (REASONING_LEVELS as readonly string[]).includes(value);
 }
@@ -90,6 +99,7 @@ export function parseReasoningLevelFromLabels(labels: readonly ReasoningLevelLab
 export function getReasoningLevelsForAgentType(agentType: AgentType, model?: string): readonly ReasoningLevel[] {
   if (agentType === 'codex') return CODEX_REASONING_LEVELS;
   if (agentType === 'claude') return CLAUDE_REASONING_LEVELS;
+  if (agentType === 'pi') return PI_REASONING_LEVELS;
   if (agentType === 'antigravity') {
     if (model?.includes('gpt-oss-120b')) return ['medium'];
     // Antigravity CLI serves Gemini 4 Hydrogen (1.5.8) and Neon (1.5.12) at XHigh too.

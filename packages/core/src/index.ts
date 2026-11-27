@@ -93,7 +93,7 @@ export type { PlanIssueSelectionAgent } from './config/planIssueDefaultSelection
 export { resolveConfiguredModel } from './config/configuredModel.js';
 export { resolveModelAlias, getDefaultModel, getPreferredModelForAgent, getModelShortName, getModelName, MODEL_ALIASES, MODEL_SHORT_NAMES, resolveLlmLabel, getOpenRouterId, getAgentTypeFromModel, resolveCustomLabel, getAllCustomLabels, findMatchingModel, resolveReviewModels, ReviewModelResolutionError, NoDefaultModelConfiguredError } from './config/modelAliases.js';
 export type { LlmLabelResolution, ReviewAssignment } from './config/modelAliases.js';
-export { CLAUDE_MODELS, CODEX_MODELS, ANTIGRAVITY_MODELS, OPENCODE_MODELS, VIBE_MODELS, ALL_MODELS, AGENT_MODELS, AGENT_DISPLAY, AGENT_DISPLAY_ORDER, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
+export { CLAUDE_MODELS, CODEX_MODELS, ANTIGRAVITY_MODELS, OPENCODE_MODELS, VIBE_MODELS, PI_MODELS, ALL_MODELS, AGENT_MODELS, AGENT_DISPLAY, AGENT_DISPLAY_ORDER, MODEL_INFO_MAP, AGENT_DEFAULTS, typeBadgeColors } from './config/modelDefinitions.js';
 export type { AgentType as ModelAgentType, AgentDisplayInfo, ModelInfo } from './config/modelDefinitions.js';
 export { getEffectiveTokenLimit, getModelHardLimit, DEFAULT_CONTEXT_LEVEL, MIN_CONTEXT_LEVEL, MAX_CONTEXT_LEVEL, EFFECTIVE_MAX_RATIO, MODEL_LIMITS } from './config/modelLimits.js';
 export type { ContextLevel } from './config/modelLimits.js';
@@ -511,6 +511,10 @@ export {
 } from './services/agentTankBundledRunner.js';
 export type { BuildOpenCodePromptOptions, OpenCodeDockerArgsParams, OpenCodeEvent, ParsedOpenCodeOutput } from './agents/impl/openCodeUtils.js';
 export { VibeAgent, parseVibeConversationLog, parseVibeOutput } from './agents/impl/VibeAgent.js';
+export { PiAgent, parsePiConversationLog, parsePiOutput, isSuccessfulPiResult } from './agents/impl/PiAgent.js';
+export { buildPiCliArgs, buildPiDockerArgs } from './agents/impl/utils/piDockerArgsBuilder.js';
+export { buildPiExecutionResult } from './agents/impl/utils/piExecutionResult.js';
+export { toPiCliModel, toProprPiModelId, isPiModelId } from './agents/impl/piModelIds.js';
 export type {
     Agent,
     AgentConfig,

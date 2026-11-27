@@ -424,6 +424,7 @@ export {
     normalizeModelReasoningLevel,
     resolveClaudeReasoningLevel,
     resolveCodexReasoningLevel,
+    resolvePiReasoningLevel,
     resolveAgentModelReasoningLevel,
     validateModelReasoningLevel,
     resolveRuntimeModelReasoningLevel,
@@ -433,6 +434,7 @@ export {
     type ModelReasoningLevel,
     type ClaudeRuntimeReasoningLevel,
     type CodexRuntimeReasoningLevel,
+    type PiThinkingLevel,
     type RuntimeReasoningLevel
 } from './configManagerReasoning.js';
 
