@@ -1,10 +1,12 @@
 import {
   PI_PROVIDERS,
   getPiLoginProviders,
+  getPiProviderInfo,
   getPiProviderApiKeyEnv,
   isValidAgentLoginProvider,
 } from '@propr/shared';
 import type { AgentConfig } from '../../api/proprApi';
+import { getModelDisplayName } from '../../utils/modelDisplay';
 
 /** `pi-<provider>/<model>`, or undefined when either part is unusable. */
 export function buildPiModelId(provider: string, model: string): string | undefined {
@@ -29,4 +31,16 @@ export function piApiKeyEnvNames(supportedModels: string[], defaultModel: string
 export function piLoginProviderChoices(agent: Pick<AgentConfig, 'supportedModels' | 'defaultModel'>): string[] {
   const fromModels = getPiLoginProviders(agent.supportedModels, agent.defaultModel);
   return [...fromModels, ...PI_PROVIDERS.map(provider => provider.id).filter(id => !fromModels.includes(id))];
+}
+
+/**
+ * A readable description of a `pi-<provider>/<model>` id: the model's
+ * catalog or humanized name and the provider's label, never the raw id.
+ */
+export function describePiModel(modelId: string): string {
+  const match = /^pi-([^/]+)\/(.+)$/.exec(modelId);
+  if (!match) return getModelDisplayName(modelId);
+  const [, provider, model] = match;
+  const providerLabel = getPiProviderInfo(provider)?.label ?? getModelDisplayName(provider);
+  return `${getModelDisplayName(model)} via ${providerLabel}`;
 }

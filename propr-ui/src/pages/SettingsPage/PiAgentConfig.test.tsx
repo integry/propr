@@ -4,7 +4,7 @@ import { getManagedAgentConfigPath } from '@propr/shared';
 import AgentConfigModal from './AgentConfigModal';
 import AgentLoginModal from './AgentLoginModal';
 import { startAgentLogin } from '../../api/agentLoginApi';
-import { buildPiModelId, piApiKeyEnvNames, piLoginProviderChoices } from './piAgentFieldsUtils';
+import { buildPiModelId, describePiModel, piApiKeyEnvNames, piLoginProviderChoices } from './piAgentFieldsUtils';
 import { AGENT_DEFAULTS } from '../../config/modelDefinitions';
 
 vi.mock('../../api/agentVersionApi', () => ({
@@ -40,6 +40,12 @@ describe('Pi agent settings helpers', () => {
       .toEqual(['OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'HF_TOKEN']);
     expect(piLoginProviderChoices(piAgent).slice(0, 3)).toEqual(['openrouter', 'anthropic', 'openai-codex']);
   });
+
+  it('describes Pi models by display name and provider label, never the raw id', () => {
+    expect(describePiModel('pi-openrouter/qwen/qwen3-coder')).toBe('Qwen3 Coder via OpenRouter');
+    expect(describePiModel('pi-anthropic/claude-sonnet-5-5')).toBe('Claude Sonnet 5.5 via Anthropic');
+    expect(describePiModel('pi-some-new-host/foo-model-2')).toBe('Foo Model 2 via Some New Host');
+  });
 });
 
 describe('AgentConfigModal for Pi', () => {
@@ -63,6 +69,8 @@ describe('AgentConfigModal for Pi', () => {
     fireEvent.change(screen.getByLabelText(/^OPENROUTER_API_KEY/), { target: { value: ' sk-or-test ' } });
     fireEvent.change(screen.getByLabelText('Pi model id'), { target: { value: 'qwen/qwen3-coder' } });
     fireEvent.change(screen.getByLabelText('Pi model provider'), { target: { value: 'openrouter' } });
+    expect(screen.getByText('Adds Qwen3 Coder via OpenRouter.')).toBeInTheDocument();
+    expect(screen.queryByText(/qwen\/qwen3-coder/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     fireEvent.click(screen.getByRole('button', { name: 'Add Agent' }));
 

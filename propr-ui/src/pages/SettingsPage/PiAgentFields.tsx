@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
-import { PI_PROVIDERS, getPiProviderInfo } from '@propr/shared';
-import { buildPiModelId, piApiKeyEnvNames } from './piAgentFieldsUtils';
+import { PI_PROVIDERS } from '@propr/shared';
+import { buildPiModelId, describePiModel, piApiKeyEnvNames } from './piAgentFieldsUtils';
 
 interface PiAgentFieldsProps {
   supportedModels: string[];
@@ -125,7 +125,9 @@ const PiAgentFields: React.FC<PiAgentFieldsProps> = ({
         <p className="mt-1 text-xs text-gray-500">
           {duplicate
             ? 'This model is already in the list.'
-            : <>Runs as <code className="font-mono">pi --model {getPiProviderInfo(provider)?.id ?? provider}/{model.trim() || '<model>'}</code>.</>}
+            : modelId
+              ? `Adds ${describePiModel(modelId)}.`
+              : 'Enter the model id as Pi names it for this provider.'}
         </p>
       </div>
     </>
