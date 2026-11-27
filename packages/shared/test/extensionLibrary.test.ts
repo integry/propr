@@ -62,7 +62,7 @@ test('explicit entries that are missing, disabled or out of limits are skipped w
     ['skill', bundleId(1), 'disabled', 'additional'], ['skill', bundleId(2), 'not_found', 'additional'],
   ]);
   assert.equal(set.skipped.find(s => s.name === bundleId(1))?.label, 'writing');
-  assert.equal(resolveExtensionSet(library([server('docs')]), { ...context, runtime: 'opencode', additional: { servers: ['docs'] } }).skipped[0].reason, 'runtime');
+  assert.equal(resolveExtensionSet(library([server('docs')]), { ...context, runtime: 'opencode', cliVersion: '1.19.6', additional: { servers: ['docs'] } }).skipped[0].reason, 'runtime');
 });
 
 test('write servers are left out without the run write authorization', () => {
