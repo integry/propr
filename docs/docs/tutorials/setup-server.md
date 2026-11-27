@@ -135,10 +135,11 @@ docker run --rm \
   -e HOST_VIBE_DIR="$HOME/.vibe" \
   -e HOST_VIBE_PROMPT_CACHE_DIR="/tmp/propr-vibe-prompts-$(id -u)" \
   -e VIBE_PROMPT_CACHE_DIR=/tmp/propr-vibe-prompts \
+  -e HOST_PI_DIR="$HOME/.pi/agent" \
   propr/launcher:latest
 ```
 
-Omit the OpenCode and Vibe lines if you do not enable those agents. If you run your own GitHub App, set `HOST_GH_PRIVATE_KEY` in `.env` to the absolute host path of the `.pem`; the launcher bind-mounts it into the app containers. To update later, run `docker pull propr/launcher:latest` and re-run the same command.
+Omit the OpenCode, Vibe and Pi lines if you do not enable those agents. If you run your own GitHub App, set `HOST_GH_PRIVATE_KEY` in `.env` to the absolute host path of the `.pem`; the launcher bind-mounts it into the app containers. To update later, run `docker pull propr/launcher:latest` and re-run the same command.
 
 ## Finish In The Web UI
 

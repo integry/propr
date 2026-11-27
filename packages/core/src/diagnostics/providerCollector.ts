@@ -5,33 +5,38 @@ import { ManagedLogSpool, digest, type LogIdentity, type Cursor } from './manage
 import { PinnedDirectory } from './privateDirectory.js';
 import { assertProviderOwner, isProviderOwnershipError } from './providerOwnership.js';
 
-export type DiagnosticProvider = 'codex' | 'claude' | 'antigravity' | 'opencode' | 'vibe';
+export type DiagnosticProvider = 'codex' | 'claude' | 'antigravity' | 'opencode' | 'vibe' | 'pi';
 // Exact structural allowlists. No glob of an entire home; no repository paths.
 const files: Record<DiagnosticProvider, RegExp> = {
     codex: /^(?:log\/codex-tui\.log|(?:sessions|archived_sessions)\/\d{4}\/\d{2}\/\d{2}\/rollout-[\w.-]+\.jsonl)$/,
     claude: /^(?:debug\/[\w.-]+\.txt|projects\/[^/]+\/[\w.-]+\.jsonl|projects\/[^/]+\/[\w.-]+\/subagents\/agent-[\w.-]+\.jsonl)$/,
     opencode: /^log\/[\w.-]+\.log$/,
     vibe: /^logs\/session\/[\w.-]+\/messages\.jsonl$/,
+    // Host-run Pi sessions only: ProPR runs keep theirs in a disposable in-container dir.
+    pi: /^sessions\/--[^/]+--\/[\w.-]+\.jsonl$/,
     antigravity: /^antigravity-cli\/(?:log\/[\w.-]+\.log|brain\/[\w.-]+\/\.system_generated\/logs\/transcript\.jsonl)$/,
 };
 const protectedFiles: Record<DiagnosticProvider, RegExp> = {
     codex: /^(?:state_\d+|logs_\d+)\.sqlite(?:-wal|-shm)?$/,
     claude: /^history\.jsonl$/,
     opencode: /^opencode\.db(?:-wal|-shm)?$/,
-    antigravity: /$a/, vibe: /$a/,
+    antigravity: /$a/, vibe: /$a/, pi: /$a/,
 };
 const directories: Record<DiagnosticProvider, RegExp> = {
     codex: /^(?:log|sessions|archived_sessions|(?:sessions|archived_sessions)\/\d{4}(?:\/\d{2}){0,2})$/,
     claude: /^(?:debug|projects|projects\/[^/]+|projects\/[^/]+\/[\w.-]+(?:\/subagents)?)$/,
     opencode: /^log$/,
     vibe: /^(?:logs|logs\/session|logs\/session\/[\w.-]+)$/,
+    pi: /^(?:sessions|sessions\/--[^/]+--)$/,
     antigravity: /^(?:antigravity-cli|antigravity-cli\/log|antigravity-cli\/brain|antigravity-cli\/brain\/[\w.-]+(?:\/\.system_generated(?:\/logs)?)?)$/,
 };
 /** Classification is independent of export eligibility. Session records can
  * supply diagnostics, but are NEVER disposable diagnostic files. */
 export function nativeFileClass(provider: DiagnosticProvider, relative: string): 'diagnostic' | 'session' | 'database' | 'auth-config' | 'unknown' {
     if (/^(?:auth\.json|account\.json|\.credentials\.json|credentials\.json|config\.[\w.-]+|settings\.[\w.-]+|\.env)$/.test(relative)
-        || relative === 'antigravity-cli/antigravity-oauth-token') return 'auth-config';
+        || relative === 'antigravity-cli/antigravity-oauth-token'
+        // Pi's models.json may carry custom-provider API keys.
+        || (provider === 'pi' && relative === 'models.json')) return 'auth-config';
     if (provider === 'claude' && relative === 'history.jsonl') return 'session';
     if (protectedFiles[provider].test(relative)) return 'database';
     if (!files[provider].test(relative)) return 'unknown';

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pi coding agent setup and operations**: Pi (`pi`) can now be configured
+  everywhere the other agents are. The agent dialog offers an existing host
+  dir (`~/.pi/agent`), a ProPR-managed login, or provider API keys in env vars.
+  The managed login runs `pi auth login <provider> --no-browser` (device code
+  or a pasted redirect URL), or `--api-key`, and writes straight to
+  `~/.propr/agent-credentials/<agent-id>/.pi/agent`. The health check runs
+  `pi auth check --provider <p> --json --no-refresh` and reports ready,
+  not_ready or invalid without refreshing tokens. Managed diagnostics redact
+  Pi's `auth.json` and inventory the host Pi dir. The MCP settings catalog lists
+  `PI_CONFIG_PATH`, `PI_TIMEOUT_MS` and `HOST_PI_DIR`, and the agent runtime
+  docs describe the disposable agent dir and the OAuth refresh write-back rules.
+
 ### Changed
 
 - Upgraded bundled Mistral Vibe from 2.25.8 to 3.1.5. Tasks use native prompt files and stream Vibe’s structured responses. Vibe runs no longer exit before starting when `~/.vibe/config.toml` sets an absolute host `session_logging.save_dir`: session logs now always go to the container runtime home. The live task view shows Vibe 3 tool calls and their results again. [PyPI release](https://pypi.org/project/mistral-vibe/3.1.5/)

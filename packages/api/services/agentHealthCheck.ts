@@ -38,7 +38,7 @@ function healthErrorCode(error: unknown): NonNullable<AgentHealthResult['errorCo
 
 export function createAgentHealthCheck(dependencies: {
   loadAgents: () => Promise<AgentConfig[]>;
-  createAgent: (config: AgentConfig) => Pick<Agent, 'analyze'>;
+  createAgent: (config: AgentConfig) => Pick<Agent, 'analyze' | 'checkCredentials'>;
   imageExists?: (image: string) => Promise<boolean>;
   prepareImage?: (image: string) => Promise<void>;
 
@@ -131,7 +131,19 @@ export function createAgentHealthCheck(dependencies: {
         if (!resolved.image || (dependencies.resolveExecutionImage && dependencies.imageExists && !await dependencies.imageExists(resolved.image))) {
           return preparationResult ?? { agentId, model, status: 'error', errorCode: 'unknown', error: redactSecrets(resolved.error || 'Agent image is unavailable.').slice(0, 2000) };
         }
-        const result = await dependencies.createAgent({ ...config, dockerImage: resolved.image }).analyze('Reply with only OK. Do not use tools.', {
+        const agent = dependencies.createAgent({ ...config, dockerImage: resolved.image });
+        if (agent.checkCredentials) {
+          // A credential check (Pi: `pi auth check --no-refresh`) answers
+          // without spending tokens or refreshing a login.
+          const credentials = await agent.checkCredentials(model);
+          if (credentials.status === 'ready') return { agentId, model, status: 'ready' };
+          return {
+            agentId, model, status: 'error',
+            errorCode: credentials.reason === 'provider_not_found' ? 'unknown' : 'auth_required',
+            error: redactSecrets(credentials.message || `Credentials are ${credentials.status === 'invalid' ? 'invalid' : 'not configured'}.`).slice(0, 2000),
+          };
+        }
+        const result = await agent.analyze('Reply with only OK. Do not use tools.', {
           model,
           timeoutMs: 30_000,
           executionType: 'agent-health-check',

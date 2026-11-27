@@ -51,6 +51,10 @@ mkdir -p "/tmp/propr-vibe-prompts-$(id -u)"
 
 `/tmp/propr-vibe-prompts-$(id -u)` is the default host path and `/tmp/propr-vibe-prompts` the in-container path. Override with `HOST_VIBE_PROMPT_CACHE_DIR` (host) and `VIBE_PROMPT_CACHE_DIR` (container) only when needed.
 
+### Pi
+
+Pi keeps provider credentials in `~/.pi/agent/auth.json` after `pi auth login <provider>`. ProPR mounts that directory through `HOST_PI_DIR` (usually `$HOME/.pi/agent`) as a read-write source for a disposable per-run copy, so token refreshes are written back. You can skip the host directory: log in from the Web UI (**Log in to a new account**) or with `propr agent login <pi-agent> --provider <provider>`, or set provider API keys such as `OPENROUTER_API_KEY` on the agent.
+
 ## Set Up And Start With The CLI (Recommended)
 
 The ProPR CLI is the [stack control plane](../features/propr-cli.md#local-stack-control-plane) — it scaffolds the runtime directory, verifies the host, and starts the stack. The quickest way to get everything running is the guided `propr setup` wizard:
@@ -86,7 +90,7 @@ If you prefer to control each step yourself (for scripting, CI, or troubleshooti
 propr init stack               # creates .env + data/ logs/ repos/, detects agent credentials
 ```
 
-`propr init stack` writes `.env` from the bundled template and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`). The template defaults to the hosted ProPR GitHub App over WebSocket routing (`GITHUB_EVENT_INTAKE_MODE=routing_websocket`).
+`propr init stack` writes `.env` from the bundled template and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`, `~/.pi/agent`). The template defaults to the hosted ProPR GitHub App over WebSocket routing (`GITHUB_EVENT_INTAKE_MODE=routing_websocket`).
 
 **2. Configure GitHub access in `.env`.** On the default path, install the shared ProPR GitHub App on your repositories, then run `propr login` and `propr relay enroll` from the stack directory — enrollment proves your identity with the GitHub token from `propr login` and writes the relay/routing credentials and `GH_INSTALLATION_ID` straight into `.env`, with no GitHub App or private key of your own. Running your own GitHub App is the advanced alternative (App permissions, `GH_APP_ID`, `GH_INSTALLATION_ID`, `HOST_GH_PRIVATE_KEY`); [GitHub Authentication](../operations/github-auth.md) covers both modes in full.
 

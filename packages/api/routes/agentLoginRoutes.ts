@@ -69,9 +69,22 @@ export function createAgentLoginRoutes(deps: AgentLoginRoutesDeps = {}) {
         res.status(404).json({ error: 'Agent not found' });
         return;
       }
+      const provider = req.body?.provider;
+      const apiKey = req.body?.apiKey;
+      if (provider !== undefined && typeof provider !== 'string') {
+        res.status(400).json({ error: 'provider must be a string' });
+        return;
+      }
+      if (apiKey !== undefined && typeof apiKey !== 'boolean') {
+        res.status(400).json({ error: 'apiKey must be a boolean' });
+        return;
+      }
       // Disabled agents may be authenticated intentionally before they are
       // enabled, so login resolution does not filter on agent.enabled.
-      const session = await sessions.start(agent, owner);
+      const session = await sessions.start(agent, owner, {
+        ...(provider && { provider }),
+        ...(apiKey && { apiKey: true }),
+      });
       res.status(202).json(session);
     } catch (error) {
       sendRouteError(res, error);

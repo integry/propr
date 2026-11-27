@@ -37,7 +37,7 @@ For virtual routing across several configured direct agents, see [Synthetic Pool
 | Mistral Vibe | `vibe` | `propr/agent` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
 | Pi coding agent | `pi` | `propr/agent` | `HOST_PI_DIR` → `~/.pi/agent` (or provider API keys such as `OPENROUTER_API_KEY` in the agent's environment variables) |
 
-When adding Claude, Codex, Antigravity, or OpenCode in the Web UI, choose either **Log in to a new account** or **Use existing config**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config.
+When adding Claude, Codex, Antigravity, OpenCode, or Pi in the Web UI, choose either **Log in to a new account** or **Use existing config**. Pi also offers **API keys in env vars**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config. A Pi login signs in to one provider at a time; see [Pi](#pi).
 
 Direct-login accounts use the portable saved path `~/.propr/agent-credentials/<agent-id>/…`. ProPR maps it automatically to `~/.propr/agent-credentials` for native and Compose installs, or to `PROPR_DATA_DIR/agent-credentials` for the launcher container. You do not enter a host path. The generated provider subdirectory is mounted read-write so its CLI can refresh auth state, and the agent image normalizes ownership before dropping to its unprivileged runtime user.
 
@@ -46,6 +46,14 @@ To reuse an account that is already authenticated on the host, select **Use exis
 ### Pi
 
 Pi routes to many providers, so its model IDs name the provider: `pi-<provider>/<model>` runs as `pi --model <provider>/<model>` (for example `pi-openrouter/mistralai/devstral-2512`). Add any provider/model Pi knows to the agent's supported models; an optional `:<thinking>` suffix (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) pins a thinking level, and a configured ProPR reasoning level overrides it (`ultra` and `ultracode` run at `max`). PR titles show the underlying model.
+
+Pi has three credential choices in the agent dialog:
+
+- **Use existing config** mounts a host Pi agent directory (`~/.pi/agent`, or `HOST_PI_DIR`/`PI_CONFIG_PATH` for launcher and Compose installs) that you signed in to with `pi auth login` on the host.
+- **Log in to a new account** creates a managed `~/.propr/agent-credentials/<agent-id>/.pi/agent` and runs `pi auth login <provider> --no-browser` in the agent image. Depending on the provider, the dialog shows a device code, a URL whose code you paste back, or a URL whose final redirect URL you paste back. Choose **API key** in the login dialog to run `pi auth login <provider> --api-key` and type the key at Pi's prompt instead. `propr agent login <pi-agent> --provider <provider> [--api-key]` does the same from the CLI. The provider defaults to the default model's provider, and you can log in again for each provider your models use.
+- **API keys in env vars** stores provider keys such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` or `GEMINI_API_KEY` in the agent's environment variables. No host directory is needed.
+
+The health check runs `pi auth check --provider <provider> --json --no-refresh`: it reports whether credentials for the health-check model's provider are ready, missing (`not_ready`) or invalid, without spending tokens or refreshing OAuth tokens. See [Agent Runtime](../architecture/agent-runtime.md#pi) for the disposable agent directory and the token refresh write-back rules.
 
 Each run is `pi -p --mode json --no-approve` with the prompt on stdin, so repository `.pi/` extensions, settings and prompts are never trusted; `AGENTS.md` and `CLAUDE.md` still load. Sessions go to a disposable directory inside the container. ProPR records the full event stream (messages, thinking, tool calls and tool results) as the task's execution events, sums token usage over every response, and uses the provider-reported cost when every response carries one.
 

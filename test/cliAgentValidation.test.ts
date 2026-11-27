@@ -277,3 +277,43 @@ test("planAgentLogin starts the login container as root so the entrypoint can dr
   assert.ok(plan);
   assert.equal(plan.dockerArgs[plan.dockerArgs.indexOf("--user") + 1], "0:0");
 });
+
+test("planAgentLogin runs a headless Pi login for one provider on the mounted agent dir", () => {
+  const cfg = fakeConfig({ hostPiDir: "/tmp/pi-agent" });
+  const { plan, error } = planAgentLogin("pi", cfg, "/tmp/propr-login", undefined, { provider: "openai-codex" });
+  assert.equal(error, undefined);
+  assert.ok(plan);
+  assert.equal(plan.hostDir, "/tmp/pi-agent");
+  assert.ok(plan.dockerArgs.includes("/tmp/pi-agent:/home/node/.pi/agent:rw"));
+  for (const env of ["PROPR_AGENT_TYPE=pi", "PROPR_PI_LOGIN=1", "PROPR_PI_SOURCE_DIR=/home/node/.pi/agent"]) {
+    assert.ok(plan.dockerArgs.includes(env), `${env} is set`);
+  }
+  assert.deepEqual(plan.dockerArgs.slice(-5), ["pi", "auth", "login", "openai-codex", "--no-browser"]);
+
+  const apiKey = planAgentLogin("pi", cfg, "/tmp/propr-login", undefined, { provider: "openrouter", apiKey: true });
+  assert.deepEqual(apiKey.plan?.dockerArgs.slice(-5), ["pi", "auth", "login", "openrouter", "--api-key"]);
+
+  const defaulted = planAgentLogin("pi", cfg, "/tmp/propr-login");
+  assert.deepEqual(defaulted.plan?.dockerArgs.slice(-2), ["anthropic", "--no-browser"], "defaults to the first default model's provider");
+
+  assert.match(planAgentLogin("pi", cfg, "/tmp/propr-login", undefined, { provider: "bad provider;" }).error ?? "", /Provider must use/);
+  assert.match(planAgentLogin("claude", fakeConfig({ hostClaudeDir: "/tmp/claude" }), "/tmp/propr-login", undefined, { provider: "anthropic" }).error ?? "",
+    /does not take --provider/);
+});
+
+test("Pi image validation prompts on stdin with no session or tools and a read-only agent dir", async () => {
+  const logFile = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-docker-log-")), "docker.log");
+  const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "pi");
+  mkdirSync(hostDir);
+  const restore = installFakeDocker(logFile);
+  try {
+    const cfg = fakeConfig({ hostPiDir: hostDir });
+    const rows = await validateAgents(fakeOrchestrator(), cfg, { skipHost: true });
+    assert.deepEqual(rows.map(row => row.type), ["pi"], "a configured HOST_PI_DIR selects pi by default");
+    const logged = readFileSync(logFile, "utf8");
+    assert.ok(logged.includes(`${hostDir}:/home/node/.pi/agent:ro`));
+    assert.match(logged, /PROPR_AGENT_TYPE=pi .*pi -p --no-session --no-tools$/m);
+  } finally {
+    restore();
+  }
+});

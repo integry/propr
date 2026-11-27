@@ -45,6 +45,7 @@ test('version-matched layouts distinguish disposable diagnostics from protected 
             ['antigravity', '1.2.4', 'antigravity-cli/log/runtime.log', 'antigravity-cli/brain/session/.system_generated/logs/transcript.jsonl', null, 'antigravity-cli/antigravity-oauth-token'],
             ['opencode', '1.19.6', 'log/opencode.log', null, 'opencode.db-shm', 'auth.json'],
             ['vibe', '2.25.8', null, 'logs/session/session/messages.jsonl', null, 'credentials.json'],
+            ['pi', '1.6.1', null, 'sessions/--home-node-workspace--/2026-11-27T18-00-00-000Z_session.jsonl', null, 'auth.json'],
         ] as const;
         for (const [provider, , diagnostic, session, database, auth] of layouts) {
             const root = path.join(f.root, provider); fs.mkdirSync(root);

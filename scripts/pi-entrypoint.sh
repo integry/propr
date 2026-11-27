@@ -104,6 +104,45 @@ prepare_runtime_home() {
     echo "Using disposable Pi agent directory at $pi_agent_dir" >&2
 }
 
+# Managed login (PROPR_PI_LOGIN=1, `pi auth login <provider>` from ProPR's
+# login session): Pi writes auth.json straight into the mounted credential dir.
+# No disposable copy and no write-back are involved, because a new login is
+# not a refresh of a seeded entry and sync would never keep it.
+if [ "${PROPR_PI_LOGIN:-}" = "1" ]; then
+    if [ ! -d "$pi_source_dir" ]; then
+        echo "Pi agent directory not mounted at $pi_source_dir" >&2
+        exit 64
+    fi
+    if is_root; then
+        if [ "${PROPR_MANAGED_CREDENTIALS:-}" = "1" ]; then
+            # This directory belongs to this ProPR agent, so it is safe to
+            # normalize ownership before dropping privileges to node.
+            chown -R node:node "$pi_source_dir" 2>/dev/null || true
+            chmod -R u+rwX "$pi_source_dir" 2>/dev/null || true
+        else
+            echo "Skipping Pi agent directory ownership changes to avoid mutating host bind mounts" >&2
+        fi
+    fi
+    if ! run_as_node test -w "$pi_source_dir"; then
+        echo "The Pi agent directory at $pi_source_dir is not writable by the node user (UID 1000)" >&2
+        exit 73
+    fi
+    export PI_CODING_AGENT_DIR="$pi_source_dir"
+    unset PI_CODING_AGENT_SESSION_DIR
+    if [ $# -eq 0 ]; then
+        echo "No Pi login command provided" >&2
+        exit 64
+    fi
+    case "$1" in
+        -*) set -- pi "$@" ;;
+    esac
+    # Log the command and subcommand only. API keys are typed at Pi's prompt,
+    # never passed as arguments.
+    echo "Executing command: $1 ${2:-} ${3:-}" >&2
+    cd /home/node/workspace 2>/dev/null || true
+    exec_as_node "$@"
+fi
+
 prepare_runtime_home
 
 if [ -f "$pi_agent_dir/auth.json" ]; then

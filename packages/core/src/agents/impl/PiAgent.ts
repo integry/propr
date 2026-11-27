@@ -4,7 +4,7 @@ import path from 'path';
 import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
-import type { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
+import type { Agent, AgentConfig, AgentCredentialCheckResult, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand, type ExecutionResult as DockerCommandResult } from '../../claude/docker/dockerExecutor.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
@@ -17,6 +17,8 @@ import { analysisReasoningLevelField, buildAnalysisSafetySuffix, executeWithUsag
 import { buildPromptWithRetryContext, buildLogMetadata } from './utils/vibeAgentHelpers.js';
 import { buildPiDockerArgs, forwardablePiEnvVars, type PiDockerArgsParams, type PiDockerInvocation } from './utils/piDockerArgsBuilder.js';
 import { buildPiFailureMessage, isSuccessfulPiResult, parsePiOutput, type ParsedPiOutput } from './utils/piOutputParser.js';
+import { buildPiAuthCheckDockerArgs, runPiAuthCheck, type PiAuthCheckRunner } from './utils/piAuthCheck.js';
+import { toPiCliModel } from './piModelIds.js';
 import { buildPiExecutionResult, reportedPiReasoningLevel } from './utils/piExecutionResult.js';
 import { failedExecutionResult } from './utils/failedAgentExecution.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
@@ -207,6 +209,19 @@ export class PiAgent implements Agent {
             logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'Health check failed with error');
             return false;
         }
+    }
+
+    /**
+     * `pi auth check --provider <p> --json --no-refresh` for the model's
+     * provider: reports ready, not_ready or invalid without a prompt or a
+     * token refresh.
+     */
+    async checkCredentials(model: string, run?: PiAuthCheckRunner): Promise<AgentCredentialCheckResult> {
+        const { provider } = toPiCliModel(model);
+        const invocation = buildPiAuthCheckDockerArgs({ config: this.config, configPath: this.resolveOptionalConfigPath(), provider });
+        const result = await runPiAuthCheck(invocation, provider, { run });
+        logger.info({ agentAlias: this.config.alias, provider, status: result.status, reason: result.reason, authType: result.authType }, 'Pi credential check finished');
+        return result;
     }
 
     private async resolveThinkingLevel(reasoningLevel: ModelReasoningLevel | undefined, model: string, useConfiguredReasoningLevel = true): Promise<PiThinkingLevel | null> {

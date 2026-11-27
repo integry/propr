@@ -538,6 +538,15 @@ test("resolves every confirmed target with isolated HOME, CODEX_HOME, and XDG_CO
   assert.equal(byTarget.antigravity, join(env.HOME!, ".gemini", "antigravity-cli", "skills", "propr"));
   assert.equal(byTarget.opencode, join(env.XDG_CONFIG_HOME!, "opencode", "skills", "propr"));
   assert.equal(byTarget.vibe, join(env.HOME!, ".vibe", "skills", "propr"));
+  assert.equal(byTarget.pi, join(env.HOME!, ".pi", "agent", "skills", "propr"));
+});
+
+test("Pi skills follow PI_CODING_AGENT_DIR when it is set", () => {
+  const root = temporaryRoot();
+  const home = join(root, "home");
+  const agentDir = join(root, "pi-agent");
+  assert.equal(resolveAgentSkillLocations(["pi"], { HOME: home, PI_CODING_AGENT_DIR: agentDir })[0].path, join(agentDir, "skills", "propr"));
+  assert.equal(resolveAgentSkillLocations(["pi"], { HOME: home, PI_CODING_AGENT_DIR: " " })[0].path, join(home, ".pi", "agent", "skills", "propr"));
 });
 
 test("blank optional home overrides use their required fallbacks", () => {
@@ -586,6 +595,7 @@ test("allows provider-specific paths for a direct root session", (t) => {
       "/root/.gemini/antigravity-cli/skills/propr",
       "/root/.config/opencode/skills/propr",
       "/root/.vibe/skills/propr",
+      "/root/.pi/agent/skills/propr",
     ]
   );
 });

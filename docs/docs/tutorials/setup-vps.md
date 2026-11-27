@@ -248,6 +248,7 @@ command fails:
 | Codex | see [Agents and Models](../features/agents-and-models.md) | `~/.codex` |
 | OpenCode | `curl -fsSL https://opencode.ai/install \| bash` | `~/.config/opencode` |
 | Vibe | see [Agents and Models](../features/agents-and-models.md) | `~/.vibe` |
+| Pi | `npm i -g @earendil-works/pi-coding-agent`, then `pi auth login <provider>` | `~/.pi/agent` |
 
 See [Agents and Models](../features/agents-and-models.md) for each agent's exact
 install command, login step, and credential directory — including the OpenCode

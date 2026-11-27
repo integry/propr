@@ -338,6 +338,9 @@ export function resolveConfig(env = process.env, overrides = {}) {
     const hostOpencodeXdgDir = get('HOST_OPENCODE_XDG_DIR');
     const hostOpencodeDataDir = get('HOST_OPENCODE_DATA_DIR');
     const hostVibeDir = get('HOST_VIBE_DIR');
+    // Pi's agent dir (~/.pi/agent) holds auth.json. Agent runs copy it into a
+    // disposable dir and write OAuth refreshes back, so the mount is writable.
+    const hostPiDir = get('HOST_PI_DIR');
     // Claude Code keeps its account/onboarding config in the `.claude.json` file
     // next to its credential dir (~/.claude → ~/.claude.json). An explicit
     // HOST_CLAUDE_JSON is always mounted (a missing file then fails loudly); the
@@ -413,6 +416,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         hostCodexDir, hostAntigravityDir,
         hostOpencodeXdgDir, hostOpencodeDataDir,
         hostVibeDir, vibePromptCacheDir, hostVibePromptCacheDir,
+        hostPiDir,
         hostGhPrivateKey,
         // Hosted UI tunnel settings (see resolution above). Defaults keep local
         // development unaffected: no instance id ⇒ no derived public URL.
@@ -432,6 +436,7 @@ export function resolveConfig(env = process.env, overrides = {}) {
         indexingReindexInterval: get('INDEXING_REINDEX_INTERVAL_MS') || '86400000',
         mistralApiKey,
         vibeConfigPath: get('VIBE_CONFIG_PATH'),
+        piConfigPath: get('PI_CONFIG_PATH'),
         manifest, images: manifest.images, manifestPath,
         managedAgent, agentDockerImageOverride,
     });
@@ -548,6 +553,10 @@ export function agentCredentialArgs(cfg, { opencodeDataReadWrite = false, readOn
     if (cfg.hostVibeDir) {
         args.push('-v', `${cfg.hostVibeDir}:${cfg.hostVibeDir}${readOnly ? ':ro' : ''}`);
         args.push('-e', `VIBE_CONFIG_PATH=${cfg.hostVibeDir}`);
+    }
+    if (cfg.hostPiDir) {
+        args.push('-v', `${cfg.hostPiDir}:${cfg.hostPiDir}${readOnly ? ':ro' : ''}`);
+        args.push('-e', `PI_CONFIG_PATH=${cfg.hostPiDir}`);
     }
     return args;
 }
@@ -2313,6 +2322,11 @@ export function validateEnv(cfg) {
         errors.push(`PROPR_INSTANCE_ID ("${cfg.proprInstanceId}") is not a valid DNS label. Use 1–63 letters/digits/hyphens with no leading or trailing hyphen, or unset PROPR_INSTANCE_ID and use a valid PROPR_UI_PUBLIC_API_URL.`);
     }
 
+    if (cfg.piConfigPath && !cfg.hostPiDir) {
+        errors.push(
+            'PI_CONFIG_PATH is set but HOST_PI_DIR is not. Set HOST_PI_DIR to the host path of your Pi agent directory (usually ~/.pi/agent).'
+        );
+    }
     if (cfg.vibeConfigPath && !cfg.hostVibeDir) {
         errors.push(
             'VIBE_CONFIG_PATH is set but HOST_VIBE_DIR is not. Set HOST_VIBE_DIR to the host path of your .vibe directory.'
@@ -2361,6 +2375,7 @@ export function validateEnv(cfg) {
         ['HOST_OPENCODE_XDG_DIR', cfg.hostOpencodeXdgDir],
         ['HOST_OPENCODE_DATA_DIR', cfg.hostOpencodeDataDir],
         ['HOST_VIBE_DIR', cfg.hostVibeDir],
+        ['HOST_PI_DIR', cfg.hostPiDir],
     ];
     const invalidCredential = credentialDirs
         .map(([name, value]) => (value ? validateDockerBindPath(name, value) : null))

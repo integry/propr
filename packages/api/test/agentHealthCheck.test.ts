@@ -176,3 +176,34 @@ test('distinguishes authentication, quota, HTTP 429, and unrelated failures for 
   });
   assert.equal((await check(config.id))?.errorCode, 'rate_limit');
 });
+
+test('agents with a credential check answer from it without running a prompt', async () => {
+  const pi: AgentConfig = {
+    id: 'pi', type: 'pi', alias: 'pi', enabled: true, configPath: '~/.pi/agent', dockerImage: 'propr/agent:test',
+    supportedModels: ['pi-openrouter/mistralai/devstral-2512', 'pi-anthropic/claude-sonnet-5-5'], defaultModel: 'pi-openrouter/mistralai/devstral-2512',
+  };
+  const outcomes = [
+    { status: 'ready', provider: 'anthropic', authType: 'oauth' },
+    { status: 'not_ready', provider: 'anthropic', reason: 'credentials_not_configured', message: 'Pi has no credentials for anthropic.' },
+    { status: 'invalid', provider: 'anthropic', reason: 'invalid_state', message: 'Pi\'s anthropic credentials are invalid (invalid_state).' },
+    { status: 'not_ready', provider: 'anthropic', reason: 'provider_not_found', message: 'Pi does not know the provider "anthropic".' },
+  ] as const;
+  const checkedModels: string[] = [];
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [pi],
+    createAgent: () => ({
+      analyze: async () => { throw new Error('A credential check must not run a prompt'); },
+      checkCredentials: async (model: string) => { checkedModels.push(model); return outcomes[checkedModels.length - 1]; },
+    }),
+  });
+  assert.deepEqual(await check('pi'), { agentId: 'pi', model: 'pi-anthropic/claude-sonnet-5-5', status: 'ready' });
+  const notReady = await check('pi', true);
+  assert.equal(notReady?.status, 'error');
+  assert.equal(notReady?.errorCode, 'auth_required');
+  assert.match(notReady?.error ?? '', /no credentials for anthropic/);
+  const invalid = await check('pi', true);
+  assert.equal(invalid?.errorCode, 'auth_required');
+  assert.match(invalid?.error ?? '', /invalid/);
+  assert.equal((await check('pi', true))?.errorCode, 'unknown', 'an unknown provider is not a login problem');
+  assert.deepEqual(checkedModels, Array(4).fill('pi-anthropic/claude-sonnet-5-5'), 'the probe model picks the provider');
+});

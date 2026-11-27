@@ -52,6 +52,7 @@ Targets and paths:
   antigravity  ~/.gemini/antigravity-cli/skills/propr
   opencode     \$XDG_CONFIG_HOME/opencode/skills/propr (or ~/.config/opencode/skills/propr)
   vibe         ~/.vibe/skills/propr
+  pi           \$PI_CODING_AGENT_DIR/skills/propr (or ~/.pi/agent/skills/propr)
 
 Examples:
   $ propr skill install codex claude

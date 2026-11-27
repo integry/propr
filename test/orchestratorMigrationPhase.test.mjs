@@ -264,6 +264,7 @@ test('migration owner argv contains only its data bind and forced migration runt
       HOST_OPENCODE_DATA_DIR: '/stack/opencode-data',
       HOST_VIBE_DIR: '/stack/vibe',
       HOST_VIBE_PROMPT_CACHE_DIR: '/stack/vibe-prompts',
+      HOST_PI_DIR: '/stack/pi-agent',
       PROPR_UI_TUNNEL_TOKEN: 'sensitive-tunnel-token',
     };
 

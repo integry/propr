@@ -420,6 +420,26 @@ export interface Agent {
      * Verifies the agent is ready (e.g. docker image exists).
      */
     healthCheck(): Promise<boolean>;
+
+    /**
+     * Checks the provider credentials a model would use without running a
+     * prompt or refreshing tokens. Agents whose CLI has no such check omit it,
+     * and health checks fall back to a short analysis.
+     */
+    checkCredentials?(model: string): Promise<AgentCredentialCheckResult>;
+}
+
+/** Outcome of Agent.checkCredentials. */
+export interface AgentCredentialCheckResult {
+    /** ready: usable; not_ready: none configured; invalid: present but unusable. */
+    status: 'ready' | 'not_ready' | 'invalid';
+    provider?: string;
+    /** Provider-reported reason code, e.g. `credentials_not_configured`. */
+    reason?: string;
+    /** How the provider is authenticated when ready, e.g. `oauth` or `api_key`. */
+    authType?: string;
+    /** Human-readable explanation for not_ready and invalid. */
+    message?: string;
 }
 
 // Re-export types that are commonly needed with agent types

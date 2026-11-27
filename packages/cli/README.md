@@ -148,7 +148,7 @@ propr skill remove codex           # refuses modified or foreign content
 propr skill install codex --force  # preserves a timestamped backup first
 ```
 
-Target names map to `~/.codex/skills/propr` (or `$CODEX_HOME/skills/propr` when set), `~/.claude/skills/propr`, `~/.gemini/antigravity-cli/skills/propr`, `$XDG_CONFIG_HOME/opencode/skills/propr` (or `~/.config`), and `~/.vibe/skills/propr`. Run `propr skill --help` for the exact mapping.
+Target names map to `~/.codex/skills/propr` (or `$CODEX_HOME/skills/propr` when set), `~/.claude/skills/propr`, `~/.gemini/antigravity-cli/skills/propr`, `$XDG_CONFIG_HOME/opencode/skills/propr` (or `~/.config`), `~/.vibe/skills/propr`, and `~/.pi/agent/skills/propr` (or `$PI_CODING_AGENT_DIR/skills/propr` when set). Run `propr skill --help` for the exact mapping.
 
 ### Authentication
 
@@ -409,9 +409,10 @@ propr agent delete my-agent --force                      # Delete without confir
 propr agent enable my-agent                              # Enable / disable without deleting
 propr agent disable my-agent
 propr agent login antigravity                            # Log in through the agent's own Docker image
+propr agent login pi --provider anthropic                # Pi: one provider per login (add --api-key to save a key)
 ```
 
-**Agent types:** `claude`, `codex`, `antigravity`, `opencode`, `vibe`
+**Agent types:** `claude`, `codex`, `antigravity`, `opencode`, `vibe`, `pi`
 
 #### Synthetic pools
 

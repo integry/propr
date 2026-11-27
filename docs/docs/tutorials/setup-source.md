@@ -32,7 +32,7 @@ npm ci
 Create the credential and cache directories that agent containers mount, before the first start — Docker otherwise creates missing mount sources as root-owned, which causes write failures:
 
 ```bash
-mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe /tmp/propr-vibe-prompts
+mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe ~/.pi/agent /tmp/propr-vibe-prompts
 ```
 
 The development Compose file mounts the fixed `/tmp/propr-vibe-prompts` path; the per-user `/tmp/propr-vibe-prompts-$(id -u)` default applies only to the CLI and launcher.

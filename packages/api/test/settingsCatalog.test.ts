@@ -98,15 +98,21 @@ test('find_setting ranks aliases and environment names and explains access', asy
   assert.equal(timeout.matches[0].restartRequired, true);
   assert.equal(timeout.matches[0].docs, 'operations/configuration-reference');
   assert.equal(timeout.matches[0].howToChange, 'Change CODEX_TIMEOUT_MS in the deployment environment and restart ProPR.');
-  assert.doesNotMatch(timeout.matches[0].howToChange, /CLAUDE_TIMEOUT_MS|ANTIGRAVITY_TIMEOUT_MS|OPENCODE_TIMEOUT_MS|VIBE_TIMEOUT_MS/);
+  assert.doesNotMatch(timeout.matches[0].howToChange, /CLAUDE_TIMEOUT_MS|ANTIGRAVITY_TIMEOUT_MS|OPENCODE_TIMEOUT_MS|VIBE_TIMEOUT_MS|PI_TIMEOUT_MS/);
 
   const timeoutGroup = await findSetting('agent task timeouts');
   assert.equal(timeoutGroup.matches[0].id, 'agents.timeouts');
   assert.equal(
     timeoutGroup.matches[0].howToChange,
-    'Configure the applicable deployment environment variables separately: CLAUDE_TIMEOUT_MS, CODEX_TIMEOUT_MS, ANTIGRAVITY_TIMEOUT_MS, OPENCODE_TIMEOUT_MS, VIBE_TIMEOUT_MS; then restart ProPR.',
+    'Configure the applicable deployment environment variables separately: CLAUDE_TIMEOUT_MS, CODEX_TIMEOUT_MS, ANTIGRAVITY_TIMEOUT_MS, OPENCODE_TIMEOUT_MS, VIBE_TIMEOUT_MS, PI_TIMEOUT_MS; then restart ProPR.',
   );
   assert.doesNotMatch(timeoutGroup.matches[0].howToChange, / or /);
+
+  const pi = await findSetting('PI_CONFIG_PATH');
+  assert.equal(pi.matches[0].id, 'agents.pi');
+  assert.equal(pi.matches[0].mcpStatus, 'environment_only');
+  const piHost = await findSetting('HOST_PI_DIR');
+  assert.equal(piHost.matches[0].id, 'agents.host_credentials');
 
   const redisPort = await findSetting('REDIS_PORT');
   assert.equal(redisPort.matches[0].id, 'queue.redis');

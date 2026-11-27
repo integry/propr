@@ -2,8 +2,12 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import {
+  buildAgentLoginCommand,
   getAgentLoginDescriptor,
+  getPiLoginProviders,
   isManagedAgentConfigPath,
+  type AgentLoginDescriptor,
+  type AgentLoginOptions,
   type AgentType,
 } from '@propr/shared';
 import type { AgentConfig } from '@propr/core';
@@ -44,6 +48,10 @@ export interface AgentLoginSessionSnapshot {
   id: string;
   agentId: string;
   agentType: AgentType;
+  /** Provider a provider-scoped login (Pi) signs in to. */
+  provider?: string;
+  /** Whether the login saves an API key instead of an account sign-in. */
+  apiKey?: boolean;
   status: AgentLoginSessionStatus;
   output: string;
   createdAt: string;
@@ -114,6 +122,24 @@ function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
   // script(1) supplies the controlling PTY while keeping Node's stdin/stdout
   // pipeable for the browser session.
   return spawn('script', ['-qefc', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
+/**
+ * Provider-scoped logins (Pi) default to the provider of the agent's default
+ * model; other agents take no options.
+ */
+function resolveLoginOptions(
+  agent: AgentConfig,
+  descriptor: AgentLoginDescriptor,
+  options: AgentLoginOptions,
+): AgentLoginOptions {
+  if (!descriptor.providerLogin) return options;
+  const provider = options.provider?.trim()
+    || getPiLoginProviders(agent.supportedModels ?? [], agent.defaultModel)[0];
+  if (!provider) {
+    throw new AgentLoginInputError(`Choose a provider to log in to; ${agent.type} has no provider models configured`);
+  }
+  return { provider, ...(options.apiKey && { apiKey: true }) };
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
@@ -234,10 +260,17 @@ export class AgentLoginSessionManager {
     return containerIds.length;
   }
 
-  async start(agent: AgentConfig, owner: string): Promise<AgentLoginSessionSnapshot> {
-    const descriptor = getAgentLoginDescriptor(agent.type);
-    if (!descriptor) {
+  async start(agent: AgentConfig, owner: string, options: AgentLoginOptions = {}): Promise<AgentLoginSessionSnapshot> {
+    const baseDescriptor = getAgentLoginDescriptor(agent.type);
+    if (!baseDescriptor) {
       throw new AgentLoginInputError(`${agent.type} does not support interactive login`);
+    }
+    const loginOptions = resolveLoginOptions(agent, baseDescriptor, options);
+    let descriptor: AgentLoginDescriptor;
+    try {
+      descriptor = { ...baseDescriptor, command: buildAgentLoginCommand(baseDescriptor, loginOptions) };
+    } catch (error) {
+      throw new AgentLoginInputError((error as Error).message);
     }
     const credentialPath = resolveAgentLoginConfigPath(agent);
     if (this.activeCredentialPaths.has(credentialPath)) throw new AgentLoginConflictError();
@@ -249,6 +282,8 @@ export class AgentLoginSessionManager {
       id,
       agentId: agent.id,
       agentType: agent.type,
+      ...(loginOptions.provider && { provider: loginOptions.provider }),
+      ...(baseDescriptor.providerLogin && { apiKey: loginOptions.apiKey === true }),
       owner,
       credentialPath,
       containerName,
@@ -441,9 +476,12 @@ export class AgentLoginSessionManager {
   }
 
   private snapshot(session: AgentLoginSession): AgentLoginSessionSnapshot {
-    const { id, agentId, agentType, status, output, createdAt, updatedAt, expiresAt, exitCode, error } = session;
+    const { id, agentId, agentType, provider, apiKey, status, output, createdAt, updatedAt, expiresAt, exitCode, error } = session;
     return {
-      id, agentId, agentType, status, output,
+      id, agentId, agentType,
+      ...(provider === undefined ? {} : { provider }),
+      ...(apiKey === undefined ? {} : { apiKey }),
+      status, output,
       createdAt, updatedAt, expiresAt,
       ...(exitCode === undefined ? {} : { exitCode }),
       ...(error === undefined ? {} : { error }),

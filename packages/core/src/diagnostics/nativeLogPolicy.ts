@@ -20,7 +20,7 @@ export interface NativeLogInventory {
 export const NATIVE_LOG_LIMITS = Object.freeze({ roots: 128, entries: 4096, scanMs: 250, passMs: 2000,
     rootBytes: 256 * 1024 * 1024, totalBytes: 1024 * 1024 * 1024, minimumFreeBytes: 256 * 1024 * 1024 });
 export type NativeLogLimits = { [K in keyof typeof NATIVE_LOG_LIMITS]: number };
-const providers = new Set(['codex', 'claude', 'antigravity', 'opencode', 'vibe']);
+const providers = new Set(['codex', 'claude', 'antigravity', 'opencode', 'vibe', 'pi']);
 
 /** OS-admin configuration, never a member setting or an inferred personal home.
  * The declaration attests ownership; it does not authorize deletion. */
