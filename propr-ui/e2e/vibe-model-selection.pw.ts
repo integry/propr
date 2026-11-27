@@ -21,7 +21,7 @@ test('Vibe offers GLM models and saves the selected default', async ({ page }) =
       return route.fulfill({ json: { success: true, ...(saved ?? { agents: [] }) } });
     }
     if (pathname.includes('/versions')) return route.fulfill({ json: {
-      agentType: 'vibe', defaultVersion: '2.25.8', availableTags: [], recentVersions: [],
+      agentType: 'vibe', defaultVersion: '3.1.5', availableTags: [], recentVersions: [],
     } });
     if (pathname === '/api/config/synthetic-agents') return route.fulfill({ json: { synthetic_agents: [] } });
     if (pathname === '/api/config/agent-tank/status') return route.fulfill({ json: { available: true } });

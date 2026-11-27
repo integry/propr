@@ -126,7 +126,7 @@ export function describeRemoteAgentRuntimePackageInstall(usage: AgentRuntimeUsag
     if (usage.docker) return undefined;
     const ways = [
         ...(usage.runtimes.includes(SPRITES_AGENT_RUNTIME) ? ['when Sprites are provisioned'] : []),
-        ...(usage.runtimes.includes(FLY_MACHINES_AGENT_RUNTIME) ? ['at every Fly Machine start'] : []),
+        ...(usage.runtimes.includes(FLY_MACHINES_AGENT_RUNTIME) ? ['in a derived Fly Machine image'] : []),
     ];
     return `Installed ${ways.join(' and ')}; no Docker image is built`;
 }

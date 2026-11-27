@@ -60,8 +60,9 @@ export function legacyVibeDockerArgs(agent, params) {
 
     const containerName = buildVibeContainerName(agent.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
     const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
-    const cliArgs = agent.getCliArgs(repositoryInspection);
-    const promptMountArgs = agent.buildPromptMountArgs(promptFilePath, cliArgs);
+    // CLI flags and the prompt mount come from the agent's own helper: the
+    // Vibe 3 upgrade on main changed them independently of the runtime seam.
+    const { cliArgs, promptMountArgs } = agent.buildCliAndPromptArgs({ repositoryInspection, mode, maxTurns, promptFilePath, runtimeHomePath });
     const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:/tmp/propr-vibe-home:rw`] : [];
     const dockerArgs = [
         'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',

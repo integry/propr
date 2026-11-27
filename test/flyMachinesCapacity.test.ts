@@ -5,10 +5,12 @@ import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachi
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { acquireFlyMachineSlot, flyMachinesMax, retainedMachineChecks } from '../packages/core/src/agents/runtime/fly/capacity.ts';
 import { flyConfig } from '../packages/core/src/agents/runtime/fly/config.ts';
-import { MachineCreateUnconfirmedError, MachinesClient, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, MachinesClient, MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { machineLimitRetry } from '../packages/core/src/agents/runtime/fly/machineLimit.ts';
 import { RUN } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
+import logger from '../packages/core/src/utils/logger.ts';
 
 after(closeConnection);
 
@@ -191,7 +193,7 @@ class KeptForRecovery extends Machines {
 
 test('a Machine kept for recovery holds its slot until Fly confirms it is gone', async t => {
     Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20 });
-    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000 }));
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000, lostCreateWindowMs: 60_000 }));
     const api = new KeptForRecovery();
     const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'kept', PROPR_FLY_MACHINES_MAX: '1', PROPR_FLY_CREDENTIAL_RETENTION_SECONDS: '1' }, async () => []);
     const kept = runtime.start(spec('kept'));
@@ -240,7 +242,7 @@ class LostCreate extends Machines {
 
 test('a run whose create outcome is unknown keeps its slot until the Machine is found and deleted or absent', async t => {
     Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20 });
-    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000 }));
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000, lostCreateWindowMs: 60_000 }));
     const api = new LostCreate();
     const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'lost', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
     const lost = runtime.start(spec('lost'));
@@ -257,6 +259,99 @@ test('a run whose create outcome is unknown keeps its slot until the Machine is 
     api.destroys.shift()!();
     assert.equal((await queued.wait()).exitCode, 0);
     await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
+});
+
+/** The first create's response is lost and its lookups find nothing; Fly makes m0 visible under the run's name later. */
+class LateCreate extends Machines {
+    lookups = 0;
+    visible = false;
+    deleted: string[] = [];
+    launches: string[] = [];
+    override async create(launch: MachineLaunch) {
+        this.launches.push(launch.name);
+        const id = await super.create(launch);
+        if (id === 'm0') throw new MachineNotFoundAfterCreateError('Fly Machines API POST returned HTTP 502');
+        return id;
+    }
+    override async find(name: string) {
+        this.lookups++;
+        return this.visible && name === this.launches[0] ? 'm0' : undefined;
+    }
+    override destroy(id: string) {
+        if (id === 'm0') { this.deleted.push(id); this.live--; return Promise.resolve(); }
+        return super.destroy();
+    }
+}
+
+test('a lost create whose lookups find nothing keeps its slot through the lookup window, and a late Machine is deleted first', async t => {
+    Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20, lostCreateWindowMs: 300 });
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000, lostCreateWindowMs: 60_000 }));
+    const api = new LateCreate();
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'late', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const lost = runtime.start(spec('lost'));
+    const queued = runtime.start(spec('queued'));
+    await assert.rejects(lost.wait(), /HTTP 502/);
+    await delay(150);
+    assert.deepEqual(api.created, ['m0'], 'an empty lookup inside the window is not evidence that no Machine exists');
+    assert.ok(api.lookups >= 3, 'the lookup is repeated through the window');
+    api.visible = true; // the delayed create becomes visible
+    await until('the queued run creates its Machine once the late Machine is deleted', () => api.created.length === 2);
+    assert.deepEqual(api.deleted, ['m0'], 'the late Machine is deleted before the queued run creates its own');
+    assert.equal(api.peak, 1);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
+});
+
+test('a lost create that stays absent past the lookup window frees its slot', async t => {
+    Object.assign(retainedMachineChecks, { intervalMs: 10, maxIntervalMs: 20, lostCreateWindowMs: 150 });
+    t.after(() => Object.assign(retainedMachineChecks, { intervalMs: 30_000, maxIntervalMs: 300_000, lostCreateWindowMs: 60_000 }));
+    const api = new LateCreate();
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'absent', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const lost = runtime.start(spec('lost'));
+    const failedAt = await lost.wait().then(() => assert.fail('the lost create must fail the run'), () => Date.now());
+    api.live--; // nothing appeared: the counted Machine never existed
+    const queued = runtime.start(spec('queued'));
+    await until('the queued run creates its Machine once the lookup window has passed', () => api.created.length === 2);
+    assert.ok(Date.now() - failedAt >= 140, 'the slot is held for the whole lookup window');
+    assert.deepEqual(api.deleted, []);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    await Promise.all([lost, queued].map(run => run.release!().catch(() => {})));
+});
+
+test('Machines API: a lost create whose lookup fails is unconfirmed, gone() only on 404 or destroyed, list() by name prefix', async t => {
+    const Unconfirmed = MachineCreateUnconfirmedError;
+    const config = flyConfig(base);
+    const launch = { name: 'propr-lost', skip_service_registration: true, skip_secrets: true, config: {} } as unknown as MachineLaunch;
+    const created = '2026-11-26T10:00:00Z';
+    const responses: Record<string, () => Response> = {
+        '/machines/kept': () => Response.json({ id: 'kept', state: 'stopped' }),
+        '/machines/dying': () => Response.json({ id: 'dying', state: 'destroyed' }),
+        '/machines/missing': () => new Response(null, { status: 404 }),
+        '/machines/flaky': () => new Response('{}', { status: 503 }),
+    };
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+        if (url.endsWith('/machines') && init.method === 'POST') throw new Error('lost response');
+        if (url.includes('?metadata.propr_run_id=')) return new Response('{}', { status: 503 });
+        if (url.endsWith('/machines') && init.method !== 'POST') return Response.json([
+            { id: 'b1', name: 'propr-build-1', state: 'started', created_at: created },
+            { id: 'a1', name: 'propr-agent', state: 'started' },
+            { id: 'bad id', name: 'propr-build-2', state: 'started' },
+        ]);
+        const key = Object.keys(responses).find(path => url.endsWith(path))!;
+        return responses[key]();
+    });
+    const api = new MachinesClient(config);
+    await assert.rejects(api.create(launch), (error: Error) => error instanceof Unconfirmed && /lost response; the lookup by name failed too/.test(error.message));
+    await assert.rejects(api.find('propr-lost'), /HTTP 503/);
+    assert.equal(await api.gone('kept'), false);
+    assert.equal(await api.gone('dying'), true);
+    assert.equal(await api.gone('missing'), true);
+    await assert.rejects(api.gone('flaky'), /HTTP 503/, 'a failed lookup is not evidence of absence');
+    assert.deepEqual(await api.list('propr-build-'), [{ id: 'b1', name: 'propr-build-1', state: 'started', createdAt: Date.parse(created) }]);
 });
 
 /** m0 was already deleted at Fly (by an operator, or a deletion whose response was lost): deleting it returns HTTP 404. */
@@ -322,4 +417,89 @@ test('a Machine that disappears while its deletion keeps failing frees its slot 
     assert.equal(api.attempts, 2, 'no retry after Fly confirmed the Machine is gone');
     assert.equal(api.peak, 1);
     await Promise.all([first, queued].map(run => run.release!()));
+});
+
+/** Fly refuses the first `refusals` creates with its organization machine-limit 422; the Machine list is recorded on each refusal. */
+class MachineLimit extends Machines {
+    attempts: string[] = [];
+    listed: Array<{ prefix: string; includeDeleted?: boolean }> = [];
+    constructor(public refusals: number) { super(); }
+    override async create(launch: MachineLaunch) {
+        this.attempts.push(launch.name);
+        if (this.refusals-- > 0) throw new MachinesHttpError('POST', 422, 'Your organization has reached its machine limit.');
+        return super.create(launch);
+    }
+    async list(prefix: string, options?: { includeDeleted?: boolean }) {
+        this.listed.push({ prefix, includeDeleted: options?.includeDeleted });
+        return [{ id: 'old', name: 'propr-leaving', state: 'destroyed' }];
+    }
+}
+
+const shortMachineLimitRetry = (totalMs: number) => {
+    const saved = { ...machineLimitRetry };
+    Object.assign(machineLimitRetry, { firstDelayMs: 10, maxDelayMs: 40, totalMs });
+    return () => Object.assign(machineLimitRetry, saved);
+};
+
+/** The machine-limit records logged at warn and error level, as [message, fields]. */
+function machineLimitLogs(t: { mock: { method: typeof import('node:test').mock.method } }) {
+    const records: Array<[string, Record<string, unknown>]> = [];
+    for (const level of ['warn', 'error'] as const) {
+        t.mock.method(logger, level, (fields: Record<string, unknown>, message?: string) => {
+            if (typeof message === 'string' && message.startsWith('Fly organization machine limit reached')) records.push([message, fields]);
+        });
+    }
+    return records;
+}
+
+test('a create refused for the organization machine limit keeps its slot and retries the same launch', async t => {
+    t.after(shortMachineLimitRetry(5_000));
+    const logs = machineLimitLogs(t);
+    const api = new MachineLimit(2);
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'org-limit', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const first = runtime.start(spec('first'));
+    const queued = runtime.start(spec('queued'));
+    await until('the first run is deleting its Machine', () => api.destroys.length === 1);
+    assert.equal(api.attempts.length, 3, 'two refusals, then the create that succeeds');
+    assert.equal(new Set(api.attempts).size, 1, 'every retry posts the same launch name');
+    assert.deepEqual(api.created, ['m0'], 'one Machine launched');
+    assert.deepEqual(api.listed, [{ prefix: '', includeDeleted: true }, { prefix: '', includeDeleted: true }],
+        'each refusal lists the agent app\'s Machines, destroyed ones included');
+    const listedRecords = logs.filter(([message]) => message.endsWith('; Machines in the agent app'));
+    assert.deepEqual(listedRecords.map(([, fields]) => [fields.attempt, fields.machines]),
+        [[1, [{ id: 'old', state: 'destroyed', name: 'propr-leaving' }]], [2, [{ id: 'old', state: 'destroyed', name: 'propr-leaving' }]]]);
+    const accepted = logs.filter(([message]) => message.endsWith('; create accepted after retries'));
+    assert.equal(accepted.length, 1, 'the retried create logs its outcome once');
+    assert.equal(accepted[0][1].attempts, 3);
+    assert.equal(accepted[0][1].machine, 'm0');
+    assert.ok(typeof accepted[0][1].waitedMs === 'number' && accepted[0][1].waitedMs >= 0);
+    assert.ok(!logs.some(([message]) => message.endsWith('; create given up')));
+    api.destroys.shift()!();
+    assert.equal((await first.wait()).exitCode, 0);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    assert.equal(api.peak, 1, 'the queued run never created a Machine while the first held the slot');
+    await Promise.all([first, queued].map(run => run.release!()));
+});
+
+test('a create still refused for the machine limit after the bound fails the run and frees its slot', async t => {
+    t.after(shortMachineLimitRetry(100));
+    const logs = machineLimitLogs(t);
+    const api = new MachineLimit(Infinity);
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'org-limit-bound', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const failed = runtime.start(spec('failed'));
+    await assert.rejects(failed.wait(), /Fly organization machine limit reached: Fly refused the Machine create \d+ times over \d+s \(Fly Machines API POST returned HTTP 422: Your organization has reached its machine limit\.\)/);
+    assert.ok(api.attempts.length >= 3, 'retried until the bound');
+    const givenUp = logs.filter(([message]) => message.endsWith('; create given up'));
+    assert.equal(givenUp.length, 1);
+    assert.equal(givenUp[0][1].attempts, api.attempts.length);
+    assert.equal(givenUp[0][1].reason, 'bound');
+    assert.ok(!logs.some(([message]) => message.endsWith('; create accepted after retries')));
+    api.refusals = 0;
+    const next = runtime.start(spec('next'));
+    await until('the next run, admitted after the failed one freed its slot, is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await next.wait()).exitCode, 0);
+    await Promise.all([failed, next].map(run => run.release!().catch(() => {})));
 });
