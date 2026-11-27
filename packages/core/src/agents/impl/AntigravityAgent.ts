@@ -1,3 +1,4 @@
+import { executeWithExtensions } from '../../extensions/extensionLaunch.js';
 import { antigravityCredentialRoot } from '../../diagnostics/credentialRedaction.js';
 import { assertToolPolicySupported, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
@@ -85,7 +86,12 @@ export class AntigravityAgent implements Agent {
         return antigravityCredentialRoot(this.config.configPath, resolveConfigPath);
     }
 
+    /** The capability map decides whether library items reach this runtime; skipped ones are recorded. */
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        return executeWithExtensions(this.config, options, prepared => this.executeTaskWithoutExtensions(prepared));
+    }
+
+    private async executeTaskWithoutExtensions(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: rawCustomPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, environment, taskId, prNumber, metadata } = options;
         // No native web switch: the restriction is best effort through the prompt.
         const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, options.toolPolicy);

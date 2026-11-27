@@ -3,8 +3,9 @@ import { getTaskExtensionsPreview, type TaskExtensionsPreview } from '../../api/
 
 /**
  * The library items a New Task submission would use, fetched for the chosen
- * repository and agent. Errors and unqualified runtimes show nothing: the
- * worker resolves the library again at launch either way.
+ * repository and agent. Errors show nothing; an unqualified runtime shows a
+ * note when items would otherwise apply. The worker resolves the library again
+ * at launch either way.
  */
 export function useTaskExtensionsPreview(repository: string, agentAlias: string | undefined, model: string | undefined, enabled: boolean): TaskExtensionsPreview | undefined {
   const [preview, setPreview] = useState<TaskExtensionsPreview>();

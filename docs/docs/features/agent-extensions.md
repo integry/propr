@@ -121,14 +121,57 @@ as omitted.
 
 Resolution happens when the task's container is created, not when it is
 queued. Editing the library never invalidates a queued task: it launches with the
-library as it is at that moment. Claude and Codex task execution are the qualified
-targets. Other runtimes, and goal runs, launch without extensions as before
-(goal execution refuses explicitly added items). Review runs and Ultrafix review
-steps do not use the library.
+library as it is at that moment. The [runtime support](#runtime-support) table
+lists which agent runtimes are qualified targets. Other runtimes launch without
+extensions, and goal runs launch without them as before (goal execution refuses
+explicitly added items). Review runs and Ultrafix review steps do not use the
+library.
 If the library cannot be read when an issue task or follow-up resolves it (for
 example after a restore with mismatched revision identity), that run launches
 without extensions and a warning is logged; automation runs and explicitly added
 items still refuse.
+
+### Runtime support
+
+One runtime capability map (`AGENT_RUNTIME_CAPABILITIES` in `@propr/shared`)
+decides, per agent type, whether a runtime receives extension library items,
+whether it can receive the run-scoped ProPR MCP server (the `propr_mcp`
+capability and the preview and auto acting steps of agent definitions and
+automations), and how skill bundles reach it. Every gate reads it: library
+resolution, New Task, task submission, the worker launch, and agent definition
+and automation validation. The machine-readable contracts expose the same lists
+(`runtimes` in the extension library contract, `proprMcpAgentTypes` and
+`extensions.runtimes` in the automation definition contract).
+
+| Agent runtime | Extensions | ProPR MCP | Skills |
+| --- | --- | --- | --- |
+| Claude | Yes | Yes | Prompt pointer |
+| Codex | Yes | Yes | Prompt pointer |
+| Antigravity | No | No | — |
+| OpenCode | No (1.x is never supported; 2.x can be) | No | — |
+| Vibe | No | No | — |
+
+An entry can carry a CLI-version predicate: a runtime whose resolved CLI version
+fails it has no capabilities, whatever the entry says. On a runtime without
+extension support:
+
+- auto-applied items are not applied, and each one that would otherwise apply is
+  recorded in the task's `extensions.resolved` event as skipped with reason
+  `runtime`;
+- New Task shows *Extensions aren't available for &lt;agent&gt;* in place of
+  the extensions panel, when library items would otherwise apply;
+- explicitly added items are refused (`400 Extensions require Claude or Codex
+  task execution`).
+
+Each supported runtime renders the run's MCP servers through its own launch
+builder, which share one contract: `mcpServers` (the Core gateway URL
+`<gateway>/api/extensions/mcp/<name>` with a run-scoped bearer token in
+`PROPR_EXTENSION_MCP_<i>_TOKEN`), `localMcpServers` (`node
+/opt/propr/extension-stdio-bridge.mjs <base64 config>` with secrets in
+`PROPR_EXTENSION_STDIO_*` variables) and `exclusiveMcp` (no ambient servers or
+skills). Skill bundles are staged read-only at
+`/opt/propr/extensions/<id>/SKILL.md` and named in the prompt; a runtime may also
+register them natively.
 
 ### Opt-out labels
 
@@ -148,7 +191,9 @@ automation runs. New Task's **Run without extensions** switch adds
 ### New Task
 
 New Task shows, read-only, which library items will apply for the chosen
-repository and agent (`GET /api/task-submission-extensions`, names only). When a
+repository and agent (`GET /api/task-submission-extensions`, names only). For an
+agent whose runtime cannot receive extensions, it shows a short note naming the
+agent instead (the response is `qualified: false` with `unsupported`). When a
 write server would apply, the form offers **Allow write servers for this task's
 first run**. The opt-in is sealed into the submission and is valid only for that
 submission's initial task; label-started tasks, retries, replacement attempts and
@@ -168,7 +213,8 @@ names, which were auto-applied (`autoApplied`) and which were added explicitly
 (`added`), items left out by the per-run limit (`omitted`), skipped additional
 items with their reasons (`skipped`; auto-applied items appear there too when their
 credential is missing: `secret_not_configured`, `oauth_not_connected` or
-`oauth_needs_sign_in`), and, when they applied, `labelOptOut` (the
+`oauth_needs_sign_in`, or when the agent's runtime cannot receive extensions:
+`runtime`), and, when they applied, `labelOptOut` (the
 labels and the items they removed) and `autoApplySkipped` (the Codex reason
 below). The event never contains secrets, URLs, credentials or tool output. The
 existing `network.extensions` telemetry event is unchanged. The run grant records

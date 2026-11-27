@@ -529,6 +529,9 @@ export { CONTAINER_CONFIG_PATHS } from './agents/types.js';
 export {
     claudeToolPolicyArgs,
     codexToolPolicyArgs,
+    mcpLaunchBuilder,
+    MCP_LAUNCH_BUILDERS,
+    type McpLaunchBuilder,
     promptOnlyToolPolicyNotice,
     withPromptOnlyToolPolicy,
     PROPR_MCP_SERVER_NAME,

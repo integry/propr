@@ -115,7 +115,8 @@ test('the New Task preview lists only names of items that apply to the repositor
     assert.doesNotMatch(JSON.stringify(res.state.body), new RegExp(`${secret}|8\\.8\\.8\\.8`));
     const unqualified = response();
     await routesFor(db, [], 'vibe').extensions(request(undefined, { query: { repository: 'owner/repo' } }), unqualified.res);
-    assert.deepEqual(unqualified.state.body, { qualified: false, revision: 1, servers: [], skills: [] });
+    // A runtime without extension support names the agent, since items would otherwise apply.
+    assert.deepEqual(unqualified.state.body, { qualified: false, revision: 1, servers: [], skills: [], unsupported: { agentAlias: 'claude', runtime: 'vibe' } });
     const invalid = response();
     await routesFor(db).extensions(request(undefined, { query: { repository: 'not a repo' } }), invalid.res);
     assert.equal(invalid.state.status, 400);

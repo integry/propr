@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One runtime capability map for extensions and ProPR MCP** (#3841)
+  - `AGENT_RUNTIME_CAPABILITIES` in `@propr/shared` now decides, per agent
+    type, whether a runtime receives extension library items and the ProPR MCP
+    server, and how skills reach it, with an optional CLI-version predicate
+    (OpenCode 1.x is never supported). Every extension and `propr_mcp` gate
+    reads it. Claude and Codex are unchanged; no other runtime is enabled yet.
+  - On a runtime without extension support, New Task shows *Extensions aren't
+    available for <agent>* instead of hiding the extensions panel, and each
+    auto-applied item that would otherwise apply is listed in the task's
+    `extensions.resolved` event as skipped with reason `runtime`.
+  - Per-runtime MCP rendering moved into one launch builder per agent type with
+    a shared `mcpServers` / `localMcpServers` / `exclusiveMcp` contract. The
+    extension library docs gained a runtime support table.
+
 - Upgraded bundled Mistral Vibe from 2.25.8 to 3.1.5. Tasks use native prompt files and stream Vibe’s structured responses. Vibe runs no longer exit before starting when `~/.vibe/config.toml` sets an absolute host `session_logging.save_dir`: session logs now always go to the container runtime home. The live task view shows Vibe 3 tool calls and their results again. [PyPI release](https://pypi.org/project/mistral-vibe/3.1.5/)
 
 - **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)
