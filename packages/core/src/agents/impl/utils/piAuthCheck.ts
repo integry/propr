@@ -33,6 +33,7 @@ export function buildPiAuthCheckDockerArgs(params: { config: AgentConfig; config
             'pi', 'auth', 'check', '--provider', provider, '--json', '--no-refresh',
         ],
         secretEnv,
+        configEnv: {},
     };
 }
 

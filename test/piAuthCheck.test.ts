@@ -96,7 +96,7 @@ describe('PiAgent.checkCredentials', () => {
         assert.equal(seen[seen.indexOf('--provider') + 1], 'openrouter');
 
         await assert.rejects(
-            runPiAuthCheck({ args: [], secretEnv: {} }, 'anthropic', { run: async () => ({ stdout: '', stderr: 'docker: Error response from daemon', exitCode: 125 }) }),
+            runPiAuthCheck({ args: [], secretEnv: {}, configEnv: {} }, 'anthropic', { run: async () => ({ stdout: '', stderr: 'docker: Error response from daemon', exitCode: 125 }) }),
             /could not run \(exit code 125\): docker: Error response/,
         );
     });
