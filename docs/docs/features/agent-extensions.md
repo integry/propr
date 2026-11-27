@@ -1,7 +1,7 @@
 ---
 sidebar_label: "Instance agent extensions"
 title: "Configure agent skills and MCP extensions"
-description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, applied automatically to Claude and Codex issue tasks, pull request follow-ups and automation runs."
+description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, applied automatically to Claude, Codex and Antigravity issue tasks, pull request follow-ups and automation runs."
 ---
 # Instance agent extensions
 
@@ -18,7 +18,7 @@ administrator in Access first.
 **Skills & MCP servers** opens with two flat lists, **MCP servers** and
 **Skills**. The Settings inspector beside them summarises how items apply: each
 item applies automatically in the repositories it is limited to, unticking it
-switches it off, and only Claude and Codex runs use extensions. Items with
+switches it off, and only Claude, Codex and Antigravity runs use extensions. Items with
 **Apply automatically** turned off reach only the automations that add them, write
 servers need the run's [write authorization](#mcp-policy), and the
 [opt-out labels](#opt-out-labels) remove items from one issue or pull request.
@@ -147,7 +147,7 @@ and automation validation. The machine-readable contracts expose the same lists
 | --- | --- | --- | --- |
 | Claude | Yes | Yes | Prompt pointer |
 | Codex | Yes | Yes | Prompt pointer |
-| Antigravity | No | No | — |
+| Antigravity | Yes | Yes | Native (`~/.gemini/skills`) and prompt pointer |
 | OpenCode | No (1.x is never supported; 2.x can be) | No | — |
 | Vibe | No | No | — |
 
@@ -160,8 +160,8 @@ extension support:
   `runtime`;
 - New Task shows *Extensions aren't available for &lt;agent&gt;* in place of
   the extensions panel, when library items would otherwise apply;
-- explicitly added items are refused (`400 Extensions require Claude or Codex
-  task execution`).
+- explicitly added items are refused (`400 Extensions require Claude, Codex or
+  Antigravity task execution`).
 
 Each supported runtime renders the run's MCP servers through its own launch
 builder, which share one contract: `mcpServers` (the Core gateway URL
@@ -293,6 +293,35 @@ workspace contains `.codex/config.toml`. When either holds, the run launches
 auto-applied items of automation runs. Items an automation adds explicitly keep
 the strict behaviour: such a run still ignores the operator configuration and
 refuses a workspace `.codex/config.toml`.
+
+### Antigravity configuration
+
+Antigravity (`agy`) task runs use a disposable runtime home
+(`/tmp/propr-antigravity-home`) inside the task container. The entrypoint writes
+the run's servers to `<runtime HOME>/.gemini/config/mcp_config.json`: stdio
+servers as `command`/`args` for the bridge, gateway and ProPR MCP servers as
+`serverUrl` with an `Authorization` header. agy does not expand `${VAR}` in
+headers, so the worker passes a template that names each token variable and the
+entrypoint writes the run token into the file. The file exists only in the
+container: it is owned by `node`, mode `0600`, deleted when agy exits and never
+copied back to the mounted host `~/.gemini`. The agent process itself does not
+receive the token variables; stdio servers inherit the agent environment, so
+their secrets reach the bridge as `PROPR_EXTENSION_STDIO_*` variables.
+
+Extension runs are exclusive: the run's file replaces any `mcp_config.json`
+already in the runtime home instead of merging with it, and skills start from an
+empty `<runtime HOME>/.gemini/skills`. Each staged bundle is copied to
+`<runtime HOME>/.gemini/skills/<name>/SKILL.md`, where agy loads global skills,
+and is also named in the prompt. agy also reads workspace configuration from the
+repository (`.agents/`, including `.agents/mcp_config.json`, and the
+`.claude/`, `.gemini/` and `.cursor/skills` skill directories); those are part of
+the task's repository and are not removed.
+
+A `401` from an MCP server makes agy fall back to OAuth discovery and wait until
+the run times out. Before starting agy, the entrypoint sends one `initialize`
+request with the run credential to each remote server; a `401` stops the run at
+once with `PROPR_MCP_AUTH_FAILED: MCP server "<name>" refused the run credential
+(HTTP 401)`. The check counts as one gateway call of the run's budget per server.
 
 ## OAuth servers
 
@@ -517,7 +546,7 @@ scripts, so such a package would not work.
 - The run mounts the install read-only at `/opt/propr/packages/<n>` and starts
   it with the image's Node through the same stdio bridge
   (`/opt/propr/extension-stdio-bridge.mjs`) as an operator catalog stdio entry,
-  for Claude and Codex alike. The bridge enforces the selected tools, bounds the
+  for Claude, Codex and Antigravity alike. The bridge enforces the selected tools, bounds the
   JSON protocol, drops the server's stderr and redacts the configured secrets.
 - The server process has the run's own network policy and nothing more. It is
   never reachable through Core's HTTPS gateway.
@@ -579,7 +608,7 @@ the agent image.
 
 An operator supplies a bounded JSON array through `PROPR_EXTENSION_CATALOG_FILE` on Core and workers. Install it outside task/repository mounts, owned by the operator with no group/other write permissions. The file contains configuration and secret **references**, never secret values. No API accepts catalog installation or command configuration. Restart/update the operator service configuration through its existing secret-management mechanism; never put credentials in library/UI input.
 
-A stdio entry contains `id`, `kind: "stdio"`, an absolute `executable` under `/usr/local/bin`, `/usr/bin` or `/opt/propr` already installed in the qualified task image, a fixed `args` array, `secretEnv` mapping child environment field names to operator-managed service environment references, and allowed `tools` and required `capability`. There is no shell interpolation, customer argument substitution, host path/socket access or additional bind mount. Both Claude and Codex launch the installed `/opt/propr/extension-stdio-bridge.mjs` adapter in the existing isolated task container. It enforces the selected tools and bounded JSON protocol, drops child stderr and redacts configured secrets and encodings. Secret values travel through inherited environment names only, stay out of launch args/config JSON, and the launcher does not write them to the repository or provider home. Stdio catalog credentials are disclosed to the task container, including the agent CLI, shell tools and repository setup hooks. Those processes can read, persist or transmit them; output redaction does not prevent that access. Use only credentials appropriate for that trust boundary. Deployments must rebuild the qualified task image to include the adapter; no runtime package installation is attempted.
+A stdio entry contains `id`, `kind: "stdio"`, an absolute `executable` under `/usr/local/bin`, `/usr/bin` or `/opt/propr` already installed in the qualified task image, a fixed `args` array, `secretEnv` mapping child environment field names to operator-managed service environment references, and allowed `tools` and required `capability`. There is no shell interpolation, customer argument substitution, host path/socket access or additional bind mount. Claude, Codex and Antigravity all launch the installed `/opt/propr/extension-stdio-bridge.mjs` adapter in the existing isolated task container. It enforces the selected tools and bounded JSON protocol, drops child stderr and redacts configured secrets and encodings. Secret values travel through inherited environment names only, stay out of launch args/config JSON, and the launcher does not write them to the repository or provider home. Stdio catalog credentials are disclosed to the task container, including the agent CLI, shell tools and repository setup hooks. Those processes can read, persist or transmit them; output redaction does not prevent that access. Use only credentials appropriate for that trust boundary. Deployments must rebuild the qualified task image to include the adapter; no runtime package installation is attempted.
 
 An HTTPS catalog entry instead contains `kind: "https"`, one credential-free fixed `url`, explicit pinned IP `addresses`, optional operator `bearerSecretRef`, and allowed `tools` and required `capability`. TLS identity and every resolved address must match; redirects remain refused. Restricted runs additionally need the hostname in their effective allowlist and private IP literals in the instance-owned address allowlist. Merely installing an internal catalog entry grants no network exception to a run.
 

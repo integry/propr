@@ -102,8 +102,8 @@ describe('runtime capability map drives every gate', () => {
     assert.deepEqual([...EXTENSION_LIBRARY_CONTRACT.runtimes], extensionTypes);
     assert.deepEqual([...AUTOMATION_DEFINITION_CONTRACT.extensions.runtimes], extensionTypes);
     assert.deepEqual([...AUTOMATION_DEFINITION_CONTRACT.proprMcpAgentTypes], AGENT_TYPES.filter(type => map[type].proprMcp));
-    // Claude and Codex stay as before; every other runtime is turned on by its own change.
-    assert.deepEqual(extensionTypes, ['claude', 'codex']);
+    // Claude, Codex and Antigravity are on; every other runtime is turned on by its own change.
+    assert.deepEqual(extensionTypes, ['claude', 'codex', 'antigravity']);
     // A runtime that receives MCP servers renders them through its own builder.
     for (const type of AGENT_TYPES) if (map[type].extensions || map[type].proprMcp) assert.equal(typeof MCP_LAUNCH_BUILDERS[type], 'function', type);
   });
@@ -137,6 +137,6 @@ test('a runtime without extension support records its skipped auto-applied items
     assert.deepEqual(event.skipped, [{ kind: 'server', name: 'docs', reason: 'runtime', source: 'auto' }]);
     // Explicitly added items still refuse on such a runtime.
     await assert.rejects(executeWithExtensions(config, { ...options, extensions: { ...options.extensions, servers: ['docs'] } } as never, async () => ({ success: true }) as never, store),
-      (error: Error & { status?: number }) => error.status === 400 && /Claude or Codex/.test(error.message));
+      (error: Error & { status?: number }) => error.status === 400 && /Claude, Codex or Antigravity/.test(error.message));
   } finally { await database.destroy(); }
 });

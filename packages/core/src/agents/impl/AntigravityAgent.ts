@@ -1,6 +1,6 @@
 import { executeWithExtensions } from '../../extensions/extensionLaunch.js';
 import { antigravityCredentialRoot } from '../../diagnostics/credentialRedaction.js';
-import { assertToolPolicySupported, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
+import { antigravityToolPolicyArgs, assertToolPolicySupported, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
 import { type ModelReasoningLevel } from '@propr/shared';
@@ -113,13 +113,14 @@ export class AntigravityAgent implements Agent {
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
             const reasoningLevel = await this.resolveReasoningLevel(options.reasoningLevel, effectiveModel);
             const requestedCliModel = effectiveModel ? toAntigravityCliModelId(effectiveModel, reasoningLevel) : undefined;
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, reasoningLevel, issueNumber: issueRef.number, environment, taskId, transcriptPath });
+            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, reasoningLevel, issueNumber: issueRef.number, environment, taskId, transcriptPath, toolPolicy: options.toolPolicy });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'antigravity',
-                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
-                    taskId, streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel
+                    taskId, streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
+                    ...(options.toolPolicy && { extraEnvVars: antigravityToolPolicyArgs(options.toolPolicy).env })
                 }),
                 { alias: this.config.alias }
             );
@@ -462,7 +463,7 @@ export class AntigravityAgent implements Agent {
         return level ?? route?.effort ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, route?.model ?? model) ?? await loadModelReasoningLevel();
     }
 
-    private buildDockerArgs(params: { gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number }): string[] {
+    private buildDockerArgs(params: { toolPolicy?: AgentTaskOptions['toolPolicy']; gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number }): string[] {
         const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false, executionMode = 'task', resumeConversationId, nativeGoalLaunch = false, printTimeoutMs = this.timeoutMs } = params;
         const configPath = this.getHostConfigPath();
         const runtimeName = 'antigravity';
@@ -471,7 +472,7 @@ export class AntigravityAgent implements Agent {
             configEnvironment: this.config.envVars, taskId, executionType, transcriptPath,
             readOnlyWorkspace, repositoryInspection, executionMode, configPath,
             dockerImage: this.config.dockerImage, agentAlias: this.config.alias,
-            shellCommand: this.buildAntigravityShellCommand(repositoryInspection),
+            shellCommand: this.buildAntigravityShellCommand(repositoryInspection), toolPolicy: params.toolPolicy,
         });
         // The prompt is delivered through non-TTY stdin, not as an argv element,
         // to avoid spawn E2BIG on large repo-context prompts. Only CLI flags such
