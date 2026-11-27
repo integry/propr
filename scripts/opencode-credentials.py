@@ -1,37 +1,94 @@
 """Transfer OpenCode 2 credential rows between the mounted and disposable databases."""
 
+import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
 
 COLUMNS = "id, integration_id, label, value, connector_id, method_id, active, time_created, time_updated"
+# The v1 auth.json OAuth fields an OpenCode 2 token refresh can change.
+OAUTH_REFRESH_FIELDS = ("refresh", "access", "expires")
 
 
-def seed(source, runtime):
-    # Old stores can have a session database alongside v1 auth.json. OpenCode
-    # itself migrates that JSON when it initializes the disposable database.
-    if not source.execute("SELECT 1 FROM sqlite_master WHERE name='credential'").fetchone():
-        return
-    rows = source.execute(f"SELECT {COLUMNS} FROM credential").fetchall()
+def has_credential_table(source):
+    return source is not None and bool(
+        source.execute("SELECT 1 FROM sqlite_master WHERE name='credential'").fetchone()
+    )
+
+
+def read_auth_json(path):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def seed(source, runtime, runtime_auth):
+    rows = source.execute(f"SELECT {COLUMNS} FROM credential").fetchall() if has_credential_table(source) else []
     with runtime:
         if rows:
             # The source DB is authoritative even if a stale legacy auth.json remains.
             runtime.execute("DELETE FROM credential")
             runtime.executemany(f"INSERT INTO credential ({COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?)", rows)
-        # OpenCode 1.x creates the table but leaves it empty; its credentials
-        # live in auth.json, which OpenCode already imported into the runtime
-        # database. Keep those rows and record them as missing from the host,
-        # so sync can move them (and any refresh) into the host database.
+        # Otherwise the credentials came from auth.json, which OpenCode already
+        # imported into the runtime database. Keep those rows and record them
+        # as missing from the host, so sync can persist them and any refresh.
         runtime.execute(
             "CREATE TABLE propr_original_credential AS SELECT id, value, ? AS on_host FROM credential",
             (1 if rows else 0,),
         )
+        if not has_credential_table(source):
+            # Without a host credential table, auth.json is the only host store.
+            # Remember what was imported so sync can detect concurrent edits.
+            runtime.execute("CREATE TABLE propr_original_auth_json (content TEXT)")
+            runtime.execute(
+                "INSERT INTO propr_original_auth_json VALUES (?)", (json.dumps(read_auth_json(runtime_auth)),)
+            )
 
 
-def sync(source, runtime):
+def sync_auth_json(runtime, host_auth):
+    original = json.loads(runtime.execute("SELECT content FROM propr_original_auth_json").fetchone()[0])
+    current = read_auth_json(host_auth)
+    if not isinstance(original, dict) or not isinstance(current, dict):
+        return
+    changed = False
+    for integration_id, value in runtime.execute("""
+        SELECT current.integration_id, current.value
+        FROM credential AS current JOIN propr_original_credential AS original USING (id)
+        WHERE original.on_host = 0 AND current.value != original.value
+    """):
+        seeded = original.get(integration_id)
+        refreshed = json.loads(value)
+        # Only refresh OAuth entries the host still holds exactly as seeded, so
+        # a host login or logout during the run wins.
+        if not isinstance(seeded, dict) or seeded.get("type") != "oauth" or refreshed.get("type") != "oauth":
+            continue
+        if current.get(integration_id) != seeded:
+            continue
+        current[integration_id] = {**seeded, **{k: refreshed[k] for k in OAUTH_REFRESH_FIELDS if k in refreshed}}
+        changed = True
+    if not changed:
+        return
+    # Write atomically next to the original and keep its permissions.
+    temporary = host_auth.with_name(f"{host_auth.name}.propr-tmp-{os.getpid()}")
+    try:
+        temporary.write_text(json.dumps(current, indent=2))
+        os.chmod(temporary, host_auth.stat().st_mode & 0o7777)
+        os.replace(temporary, host_auth)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def sync(source, runtime, host_auth):
     if not runtime.execute("SELECT 1 FROM sqlite_master WHERE name='propr_original_credential'").fetchone():
         return
-    if not source.execute("SELECT 1 FROM sqlite_master WHERE name='credential'").fetchone():
+    if not has_credential_table(source):
+        # Never create a database or table in the host data dir: a pinned 1.x
+        # CLI runs its own migrations against it. Refresh auth.json instead,
+        # which OpenCode 2 imports into the next disposable database.
+        if runtime.execute("SELECT 1 FROM sqlite_master WHERE name='propr_original_auth_json'").fetchone():
+            sync_auth_json(runtime, host_auth)
         return
     changes = runtime.execute("""
         SELECT current.value, current.time_updated, current.id, original.value
@@ -59,9 +116,20 @@ def sync(source, runtime):
         )
 
 
+def connect(path, mode):
+    return sqlite3.connect(Path(path).as_uri() + "?mode=" + mode, uri=True)
+
+
 if __name__ == "__main__":
     action, source_path, runtime_path = sys.argv[1:]
-    mode = "ro" if action == "seed" else "rw"
-    with sqlite3.connect(Path(source_path).as_uri() + "?mode=" + mode, uri=True) as source:
-        with sqlite3.connect(Path(runtime_path).as_uri() + "?mode=rw", uri=True) as runtime:
-            {"seed": seed, "sync": sync}[action](source, runtime)
+    # The host may have only auth.json; never create opencode.db there.
+    source = connect(source_path, "ro" if action == "seed" else "rw") if Path(source_path).is_file() else None
+    try:
+        with connect(runtime_path, "rw") as runtime:
+            if action == "seed":
+                seed(source, runtime, Path(runtime_path).with_name("auth.json"))
+            else:
+                sync(source, runtime, Path(source_path).with_name("auth.json"))
+    finally:
+        if source is not None:
+            source.close()

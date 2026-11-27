@@ -117,6 +117,113 @@ describe('opencode-credentials.py', () => {
         });
     });
 
+    type HostShape = 'auth.json only' | 'database without credential table';
+
+    // What `opencode auth list --standalone` (2.4.2) imports from a v1 auth.json
+    // into a fresh disposable database; row ids are random on every run.
+    function importAuthJson(runtimeDb: string, authJson: string, run: number): void {
+        const auth = JSON.parse(fs.readFileSync(authJson, 'utf8')) as Record<string, Record<string, unknown>>;
+        const rows = Object.entries(auth).map(([integration, entry], index) => {
+            const value = entry.type === 'oauth'
+                ? { type: 'oauth', methodID: 'oauth', refresh: entry.refresh, access: entry.access, expires: entry.expires }
+                : { type: 'key', key: entry.key };
+            return `INSERT INTO credential VALUES ('cred-run${run}-${index}', '${integration}', 'imported', '${JSON.stringify(value)}', NULL, NULL, NULL, ${run}, ${run});`;
+        });
+        runSql(runtimeDb, `${createCredentialTable}; ${rows.join('\n')}`);
+    }
+
+    function refreshOpenAi(runtimeDb: string, refresh: string): void {
+        runSql(runtimeDb, `UPDATE credential SET time_updated=99,
+            value='{"type":"oauth","methodID":"oauth","refresh":"${refresh}","access":"access-${refresh}","expires":99}'
+            WHERE integration_id='openai'`);
+    }
+
+    function withAuthJsonHost(shape: HostShape, run: (dirs: { sourceDb: string; runtimeDir: string; authJson: string }) => void): void {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-credentials-'));
+        try {
+            const sourceDir = path.join(dir, 'source');
+            const runtimeDir = path.join(dir, 'runtime');
+            fs.mkdirSync(sourceDir);
+            fs.mkdirSync(runtimeDir);
+            const sourceDb = path.join(sourceDir, 'opencode.db');
+            const authJson = path.join(sourceDir, 'auth.json');
+            fs.writeFileSync(authJson, JSON.stringify({
+                openai: { type: 'oauth', refresh: 'refresh-1', access: 'access-1', expires: 1, accountId: 'acct' },
+                openrouter: { type: 'api', key: 'router-key' }
+            }), { mode: 0o600 });
+            // A pre-credential-table 1.x database: sessions only, no credential table.
+            if (shape === 'database without credential table') runSql(sourceDb, 'CREATE TABLE session (id TEXT PRIMARY KEY)');
+            run({ sourceDb, runtimeDir, authJson });
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    }
+
+    // One container run: the entrypoint copies auth.json into the disposable
+    // data dir, OpenCode imports it, then seed, the task, and sync.
+    function containerRun(dirs: { sourceDb: string; runtimeDir: string; authJson: string }, run: number, task: (runtimeDb: string) => void): string {
+        const runDir = path.join(dirs.runtimeDir, `run-${run}`);
+        fs.mkdirSync(runDir);
+        const runtimeDb = path.join(runDir, 'opencode.db');
+        fs.copyFileSync(dirs.authJson, path.join(runDir, 'auth.json'));
+        importAuthJson(runtimeDb, path.join(runDir, 'auth.json'), run);
+        runCredentials('seed', dirs.sourceDb, runtimeDb);
+        task(runtimeDb);
+        runCredentials('sync', dirs.sourceDb, runtimeDb);
+        return runtimeDb;
+    }
+
+    function hostSchema(sourceDb: string): unknown[] {
+        return fs.existsSync(sourceDb) ? querySql(sourceDb, "SELECT name FROM sqlite_master ORDER BY name") : [];
+    }
+
+    for (const shape of ['auth.json only', 'database without credential table'] as HostShape[]) {
+        test(`writes OAuth refreshes back to auth.json for a host with ${shape}`, () => {
+            withAuthJsonHost(shape, (dirs) => {
+                const schemaBefore = hostSchema(dirs.sourceDb);
+                containerRun(dirs, 1, (runtimeDb) => refreshOpenAi(runtimeDb, 'refresh-2'));
+
+                // The refresh reaches the host in the v1 format; other fields and entries are kept.
+                assert.deepStrictEqual(JSON.parse(fs.readFileSync(dirs.authJson, 'utf8')), {
+                    openai: { type: 'oauth', refresh: 'refresh-2', access: 'access-refresh-2', expires: 99, accountId: 'acct' },
+                    openrouter: { type: 'api', key: 'router-key' }
+                });
+                assert.strictEqual(fs.statSync(dirs.authJson).mode & 0o777, 0o600);
+                assert.deepStrictEqual(fs.readdirSync(path.dirname(dirs.authJson)).filter((name) => name.includes('propr-tmp')), []);
+                // No database or credential table is created on the host.
+                assert.strictEqual(fs.existsSync(dirs.sourceDb), shape !== 'auth.json only');
+                assert.deepStrictEqual(hostSchema(dirs.sourceDb), schemaBefore);
+
+                // The next run imports the refreshed token, and its refresh persists too.
+                const next = containerRun(dirs, 2, (runtimeDb) => {
+                    assert.deepStrictEqual(
+                        querySql(runtimeDb, "SELECT json_extract(value, '$.refresh') FROM credential WHERE integration_id='openai'"),
+                        [['refresh-2']]
+                    );
+                    refreshOpenAi(runtimeDb, 'refresh-3');
+                });
+                assert.ok(fs.existsSync(next));
+                assert.strictEqual(JSON.parse(fs.readFileSync(dirs.authJson, 'utf8')).openai.refresh, 'refresh-3');
+            });
+        });
+
+        test(`does not overwrite a host login made during the run for a host with ${shape}`, () => {
+            withAuthJsonHost(shape, (dirs) => {
+                const hostLogin = { type: 'oauth', refresh: 'host-login', access: 'host-access', expires: 5 };
+                containerRun(dirs, 1, (runtimeDb) => {
+                    // The task refreshes while the host CLI logs in again.
+                    refreshOpenAi(runtimeDb, 'refresh-2');
+                    const auth = JSON.parse(fs.readFileSync(dirs.authJson, 'utf8'));
+                    fs.writeFileSync(dirs.authJson, JSON.stringify({ ...auth, openai: hostLogin }));
+                });
+                assert.deepStrictEqual(JSON.parse(fs.readFileSync(dirs.authJson, 'utf8')), {
+                    openai: hostLogin,
+                    openrouter: { type: 'api', key: 'router-key' }
+                });
+            });
+        });
+    }
+
     test('replaces runtime rows with the source rows when the source has OpenCode 2 credentials', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-credentials-'));
         try {
