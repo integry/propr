@@ -493,10 +493,9 @@ jobs:
           wait_state stopped
           # Anything the runtime installs after this point ran for the post-wake run.
           echo "STOPPED_AT_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
-          if [[ $MCP == true || $CAPACITY == true ]]; then
-            # Keep the worker log from the wake on: `flyctl logs --no-tail` only returns the latest lines.
-            nohup flyctl logs --app "$APP" --json > "$OUT/app-logs.jsonl" 2> "$OUT/app-logs.err" &
-          fi
+          # Keep the worker log from the wake on: `flyctl logs --no-tail` only returns the latest lines (about a
+          # minute of them while two runs are busy), so a record from the start of a run can be gone by its end.
+          nohup flyctl logs --app "$APP" --json > "$OUT/app-logs.jsonl" 2> "$OUT/app-logs.err" &
           gh issue edit "$ISSUE" --repo "$REPO" --add-label AI
           wait_state started
           # Labeled after the first, so with PROPR_FLY_MACHINES_MAX=1 this run queues behind it.
@@ -588,11 +587,15 @@ jobs:
           fi
           # Evidence: the runtime installed the configured list after the idle stop (Sprite provisioning, or the
           # derived Fly Machine image built by the first run; a fallback install at Machine start does not count).
+          # Read from the log streamed since the idle stop, not only the short --no-tail buffer: with
+          # PROPR_FLY_MACHINES_MAX=1 the build happens minutes before this run's PR, and the queued run's
+          # records push it out of the buffer.
+          worker_logs=$({ cat "$OUT/app-logs.jsonl" 2> /dev/null; flyctl logs --app "$APP" --no-tail --json; } |
+            jq -sc --argjson since "$STOPPED_AT_MS" '[.[] | .message? | strings | fromjson? | objects
+              | select((.time // 0) >= $since)] | unique | sort_by(.time)')
           expected_log=$([[ $AGENT_RUNTIME == sprites ]] && echo 'Installed agent runtime packages on Sprite' ||
             echo 'Installed agent runtime packages in a derived Fly Machine image')
-          install=$(flyctl logs --app "$APP" --no-tail --json |
-            jq -sc --argjson since "$STOPPED_AT_MS" --arg msg "$expected_log" '[.[] | .message | fromjson?
-              | select((.msg // "") == $msg and (.time // 0) >= $since)] | last // empty')
+          install=$(jq -c --arg msg "$expected_log" '[.[] | select(.msg == $msg)] | last // empty' <<< "$worker_logs")
           [[ -n $install ]] || { echo "::error::Missing '$expected_log' log after the idle stop"; exit 1; }
           jq -r '"\(.msg): packagesDigest=\(.packagesDigest) packageCount=\(.packageCount) installMs=\(.installMs)"' <<< "$install"
           jq -e --arg digest "$RUNTIME_PACKAGES_DIGEST" --argjson count "$RUNTIME_PACKAGE_COUNT" \
@@ -604,6 +607,14 @@ jobs:
               { echo "::error::The derived image build log names no registry.fly.io/$AGENT_APP digest"; exit 1; }
             echo "DERIVED_IMAGE=$derived" >> "$GITHUB_ENV"
             echo "Derived Fly Machine image: $derived (layerBytes=$(jq -r .layerBytes <<< "$install"), verifiedFiles=$(jq -r .verifiedFiles <<< "$install"))"
+            # The build is shared, so its record may name the other cap-mode run. Tie this issue's run to the image
+            # by its run name (<agent>-issue-<number>-<task id>), whatever the timing.
+            launch=$(jq -ce --arg issue "$ISSUE" '[.[] | select(.msg == "Launched the agent Fly Machine from the derived image"
+              and ((.run // "") | test("(^|-)issue-" + $issue + "-")))] | first | objects' <<< "$worker_logs") ||
+              { echo "::error::No 'Launched the agent Fly Machine from the derived image' record for the run of $REPO#$ISSUE"; exit 1; }
+            [[ $(jq -r .image <<< "$launch") == "$derived" ]] ||
+              { echo "::error::The run of $REPO#$ISSUE launched $(jq -r .image <<< "$launch"), not the derived image $derived"; exit 1; }
+            echo "Run $(jq -r .run <<< "$launch") launched Machine $(jq -r .machine <<< "$launch") from $derived (build record run: $(jq -r .run <<< "$install"))"
           fi
           if [[ $EXTENSIONS == true ]]; then
             expected=("SKILL-OK-$RUN_TOKEN" "Echo: MCP-OK-$RUN_TOKEN")
@@ -673,6 +684,17 @@ jobs:
             echo "::error::A run hit Fly's organization machine limit (HTTP 422) despite PROPR_FLY_MACHINES_MAX=1"
             exit 1
           fi
+          # The queued run launches from the digest the first build pushed, with no second build Machine.
+          : "${DERIVED_IMAGE:?The first run did not report a derived image}"
+          since=$(jq -cr --argjson since "$STOPPED_AT_MS" '[.[] | select((.time // 0) >= $since)]' <<< "$logs")
+          launch2=$(jq -ce --arg issue "$ISSUE2" '[.[] | select(.msg == "Launched the agent Fly Machine from the derived image"
+            and ((.run // "") | test("(^|-)issue-" + $issue + "-")))] | first | objects' <<< "$since") ||
+            { echo "::error::No 'Launched the agent Fly Machine from the derived image' record for the queued run of $REPO#$ISSUE2"; exit 1; }
+          image2=$(jq -r .image <<< "$launch2")
+          [[ $image2 == "$DERIVED_IMAGE" ]] ||
+            { echo "::error::The queued run launched $image2, not the first run's derived image $DERIVED_IMAGE"; exit 1; }
+          builds=$(jq '[.[] | select(.msg == "Installed agent runtime packages in a derived Fly Machine image")] | length' <<< "$since")
+          [[ $builds == 1 ]] || { echo "::error::Expected exactly 1 derived image build after the idle stop, found $builds"; exit 1; }
           # Both issues must have a successful Fly Machines execution.
           check=$(base64 -w0 <<JS
           const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
@@ -688,6 +710,7 @@ jobs:
               {
                 echo "### PROPR_FLY_MACHINES_MAX=1"
                 echo "- Queued run: \`$(jq -r .run <<< "$queued")\` (active=$(jq -r .active <<< "$queued"), queued=$(jq -r .queued <<< "$queued"))"
+                echo "- $REPO#$ISSUE2 run \`$(jq -r .run <<< "$launch2")\` launched Machine \`$(jq -r .machine <<< "$launch2")\` from \`$image2\`, the first run's derived image; $builds build Machine after the idle stop"
                 echo "- Both issues ($REPO#$ISSUE, $REPO#$ISSUE2, PR #$pr) succeeded on Fly Machines with no machine-limit error"
               } | tee -a "$GITHUB_STEP_SUMMARY"
               exit 0

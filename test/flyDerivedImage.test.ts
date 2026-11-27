@@ -19,6 +19,7 @@ import { MEDIA, parseFlyImage, sha256, type ImageManifest, type RegistryApi } fr
 import { RUN, WRAPPER, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
+import logger from '../packages/core/src/utils/logger.ts';
 
 after(closeConnection);
 beforeEach(resetFlyPackageImages);
@@ -204,6 +205,26 @@ test('concurrent runs share one build', async () => {
     for (const run of runs) assert.equal((await run.wait()).exitCode, 0);
     assert.equal(api.launches.filter(l => l.config.processes[0].cmd[0] === 'build').length, 1);
     await Promise.all(runs.map(run => run.release!()));
+});
+
+test('every agent Machine created from the derived image logs its run and image, also a run that reused the cached build', async t => {
+    const infos: Array<{ fields: Record<string, unknown>; msg: string }> = [];
+    t.mock.method(logger, 'info', (fields: Record<string, unknown>, msg: string) => { infos.push({ fields, msg }); });
+    const api = new Machines();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'launch-log', ['figlet']);
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    const second = fly.start(spec('second')); // the worker's cached image: no build and no registry log of its own
+    assert.equal((await second.wait()).exitCode, 0);
+    await second.release!();
+    const image = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet']));
+    assert.equal(infos.filter(i => i.msg === 'Installed agent runtime packages in a derived Fly Machine image').length, 1);
+    const launches = infos.filter(i => i.msg === 'Launched the agent Fly Machine from the derived image').map(i => i.fields);
+    assert.deepEqual(launches.map(({ run, image: launched, packageCount }) => ({ run, image: launched, packageCount })),
+        [{ run: 'first', image, packageCount: 1 }, { run: 'second', image, packageCount: 1 }]);
+    assert.deepEqual(launches.map(l => l.machine), api.launches.filter(l => !isBuild(l)).map(l => 'm' + api.launches.indexOf(l)));
 });
 
 test('an apt failure in the build fails the run with apt output and creates no agent Machine', async () => {

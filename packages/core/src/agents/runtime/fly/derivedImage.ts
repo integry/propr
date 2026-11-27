@@ -404,7 +404,7 @@ interface AgentMachineCreate {
 export async function createAgentMachine({ api, images, prepared, options, state, slot, mayRetry, onAttempt, onBootStart }: AgentMachineCreate) {
     try {
         onAttempt();
-        return await api.create(prepared.launch, onBootStart);
+        return await launched(await api.create(prepared.launch, onBootStart));
     }
     catch (error) {
         const derived = state.selection.derived;
@@ -423,7 +423,18 @@ export async function createAgentMachine({ api, images, prepared, options, state
         if (!mayRetry()) throw error;
         // The image preparation above may outlast the boot timeout: the replacement Machine gets its own window.
         onAttempt();
-        return api.create(prepared.launch, onBootStart);
+        return launched(await api.create(prepared.launch, onBootStart));
+    }
+
+    /**
+     * Logged for every agent Machine created from a derived image, whether this run built it or reused it
+     * (the registry tag, or the worker's cache, which logs nothing else), so each run's image can be traced.
+     */
+    function launched(machine: string) {
+        const image = state.selection.derived;
+        if (image) logger.info({ run: options.run, machine, image, ...agentRuntimePackagesLogFields(options.packages) },
+            'Launched the agent Fly Machine from the derived image');
+        return machine;
     }
 }
 
