@@ -9,6 +9,7 @@ import {
     buildAntigravityRepositoryScoutPermissions,
     REPOSITORY_SCOUT_CONTAINER_ROOT,
 } from './repositoryScoutMcpServer.js';
+import { buildAntigravityTranscriptArgs } from './antigravityTranscriptPaths.js';
 
 const ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH = '/home/node/.gemini-source';
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -23,6 +24,7 @@ export interface AntigravityDockerArgsParams {
     configEnvironment?: Record<string, string>;
     taskId?: string;
     executionType?: string;
+    /** Worker-side path of a disposable run's transcript; its directory is mounted read-write. */
     transcriptPath?: string;
     readOnlyWorkspace?: boolean;
     repositoryInspection?: boolean;
@@ -99,7 +101,7 @@ export function buildAntigravityRunSpec(params: AntigravityDockerArgsParams): Ag
             .env('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG', buildAntigravityRepositoryScoutMcpConfig())
             .env('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_PERMISSIONS', buildAntigravityRepositoryScoutPermissions());
     }
-    if (transcriptPath) builder.env('PROPR_ANTIGRAVITY_TRANSCRIPT_PATH', transcriptPath);
+    builder.dockerOptions(buildAntigravityTranscriptArgs(transcriptPath), 'logs');
     addAgentEnvironment(builder, true, configEnvironment, environment);
     builder.dockerOptions(buildAgentGitCredentialArgs(), 'credential');
     return builder.command('/bin/bash', '-lc', shellCommand, 'propr-antigravity').build();

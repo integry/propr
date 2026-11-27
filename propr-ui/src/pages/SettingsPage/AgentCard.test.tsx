@@ -66,6 +66,16 @@ describe('AgentCard', () => {
     expect(screen.queryByRole('button', { name: 'View Quota / Usage' })).not.toBeInTheDocument();
   });
 
+  it('explains an Antigravity login kept in the OS keyring and keeps the managed login offer', () => {
+    const error = "agy stores its login in the OS keyring on desktops, which ProPR containers can't read. Sign in once with `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy`, or use ProPR's managed login.";
+    renderCard({ agent: { ...agent, type: 'antigravity', alias: 'antigravity' }, health: { agentId: agent.id, status: 'error', errorCode: 'auth_required', error }, onRecheck: vi.fn() });
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Login not readable by agent containers');
+    expect(alert).not.toHaveTextContent('Authentication expired');
+    expect(alert.querySelector('code')).toHaveTextContent(/^AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy$/);
+    expect(screen.getByRole('button', { name: 'Log in' })).toBeInTheDocument();
+  });
+
   it('opens provider usage for rate limits without offering login in the alert or menu', async () => {
     vi.mocked(getAgentTankUsage).mockResolvedValue({ enabled: true, agents: {
       antigravity: { name: 'antigravity', usage: { models: [{ model: 'Gemini Flash', percentUsed: 100, resetsIn: '2h' }] } },

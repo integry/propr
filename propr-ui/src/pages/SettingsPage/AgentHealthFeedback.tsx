@@ -4,6 +4,7 @@ import { isAgentLoginSupported } from '@propr/shared';
 import type { AgentConfig } from '../../api/proprApi';
 import type { AgentHealthState } from './useAgentHealth';
 import AgentQuotaUsage from './AgentQuotaUsage';
+import InlineCodeText from './InlineCodeText';
 
 export default function AgentHealthFeedback({ agent, health, onLogin, onRecheck, readOnly }: {
   agent: AgentConfig;
@@ -23,14 +24,14 @@ export default function AgentHealthFeedback({ agent, health, onLogin, onRecheck,
   if (health.status !== 'error') return null;
   const rateLimited = health.errorCode === 'rate_limit';
   const title = health.errorCode === 'preparation_failed' ? 'Agent image preparation failed' : rateLimited ? 'Rate limit exceeded'
-    : health.errorCode === 'auth_required' ? 'Authentication expired'
+    : health.errorCode === 'auth_required' ? (/OS keyring/.test(health.error ?? '') ? 'Login not readable by agent containers' : 'Authentication expired')
       : 'Agent unavailable';
   return (
     <>
       <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
         <div role="alert" className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
           <p className="font-medium">{title}</p>
-          <p className="mt-1">{health.error || 'Agent check failed.'}</p>
+          <p className="mt-1"><InlineCodeText text={health.error || 'Agent check failed.'} /></p>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {rateLimited && (

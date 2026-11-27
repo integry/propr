@@ -499,6 +499,11 @@ Logs in using the agent's own pinned CLI inside its image, with the credential
 directory mounted — so the credentials match exactly what runs jobs (no host
 install or host/image version drift). Useful after a failed image check.
 
+Antigravity: the container has no OS keyring, so agy saves a file token
+(~/.gemini/antigravity-cli/antigravity-oauth-token) that tasks can read, even
+when your desktop agy login lives in the keyring. To reuse a host login instead,
+sign in once with \`AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy\`.
+
 Examples:
   $ propr agent login antigravity
   $ propr agent login opencode

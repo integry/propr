@@ -30,10 +30,12 @@
  *   - Core images pull by default; the agent image pulls when an agent is selected.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize, resolve } from "node:path";
 import {
+  ANTIGRAVITY_EXISTING_LOGIN_HINT,
+  ANTIGRAVITY_TOKEN_FILE,
   resolveGithubEventIntakeMode,
   validateIntakeModePrerequisites,
   DEFAULT_LOCAL_API_OAUTH_CALLBACK_URL,
@@ -570,6 +572,20 @@ export interface SetupRunResult {
   errors: SetupStructuredError[];
 }
 
+/**
+ * Whether the Antigravity file token is confirmed absent. A token path this
+ * process cannot inspect (permission denied) is not reported as missing: the
+ * root-started container may still read it.
+ */
+function antigravityFileTokenAbsent(configDir: string): boolean {
+  try {
+    return !statSync(join(configDir, ANTIGRAVITY_TOKEN_FILE)).isFile();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR";
+  }
+}
+
 async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult> {
   const { prompts = {}, reporter = {}, skipRemoteImageCheck, actions } = options;
   const catalog = agentCatalog();
@@ -1082,6 +1098,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
     } else {
       const vars: Record<string, string> = {};
       const existingEnv = actions.readEnvVars(rootDir);
+      let antigravityFileTokenMissing = false;
       for (const type of selectedAgents) {
         const desc = catalog.find((a) => a.type === type);
         if (!desc) continue;
@@ -1095,12 +1112,15 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
           assertSafeAgentCredentialDir(effectiveDir, cred.envKey);
           actions.prepareAgentCredentialDir(effectiveDir);
           vars[cred.envKey] = effectiveDir;
+          // An existing ~/.gemini from a keyring login has no file token the container can read.
+          if (cred.envKey === "HOST_ANTIGRAVITY_DIR" && existsSync(effectiveDir) && antigravityFileTokenAbsent(effectiveDir)) antigravityFileTokenMissing = true;
         }
       }
       const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false });
       const detailParts: string[] = [];
       detailParts.push(applied.written.length > 0 ? `recorded ${applied.written.length} credential dir(s)` : "no new credentials to record");
       if (applied.skipped.length > 0) detailParts.push(`${applied.skipped.length} already set`);
+      if (antigravityFileTokenMissing) detailParts.push(`antigravity: ${ANTIGRAVITY_EXISTING_LOGIN_HINT}`);
       settle("configure-agents", { status: "done", detail: detailParts.join("; ") });
     }
   } catch (error) {
