@@ -1,24 +1,26 @@
 import { repositoryWorkflowExecution, buildWorkflowWrapper, markWorkflowWrapperBuilt } from '../../workflow/workflowExecution.js';
-import type { AgentType } from '../../agents/types.js';
+import type { AgentCliType } from '../../agents/constants.js';
 import { buildAgentContainerResourceArgs } from '../../agents/agentContainerResources.js';
 import { claudeConfigSeedScript } from './claudeConfigSeed.js';
 
 export { buildAgentContainerResourceArgs };
 
-const ENTRYPOINT_PATHS: Record<AgentType, string> = {
+const ENTRYPOINT_PATHS: Record<AgentCliType, string> = {
     claude: '/home/node/claude-entrypoint.sh',
     codex: '/home/node/codex-entrypoint.sh',
     antigravity: '/home/node/antigravity-entrypoint.sh',
     opencode: '/home/node/opencode-entrypoint.sh',
-    vibe: '/home/node/vibe-entrypoint.sh'
+    vibe: '/home/node/vibe-entrypoint.sh',
+    pi: '/home/node/pi-entrypoint.sh'
 };
 
-const GIT_IDENTITIES: Record<AgentType, { name: string; email: string }> = {
+const GIT_IDENTITIES: Record<AgentCliType, { name: string; email: string }> = {
     claude: { name: 'ProPR Claude Bot', email: 'claude-bot@propr.dev' },
     codex: { name: 'ProPR Codex Bot', email: 'codex-bot@propr.dev' },
     antigravity: { name: 'ProPR Antigravity Bot', email: 'antigravity-bot@propr.dev' },
     opencode: { name: 'ProPR OpenCode Bot', email: 'opencode-bot@propr.dev' },
-    vibe: { name: 'ProPR Vibe Bot', email: 'vibe-bot@propr.dev' }
+    vibe: { name: 'ProPR Vibe Bot', email: 'vibe-bot@propr.dev' },
+    pi: { name: 'ProPR Pi Bot', email: 'pi-bot@propr.dev' }
 };
 
 const WORKSPACE_PATH = '/home/node/workspace';
@@ -69,7 +71,7 @@ exec "$entrypoint" "$@"
 export function wrapDockerRunArgsWithRepoSetup(
     dockerArgs: string[],
     dockerImage: string,
-    agentType: AgentType
+    agentType: AgentCliType
 ): string[] {
     const imageIndex = dockerArgs.indexOf(dockerImage);
     if (imageIndex === -1) {

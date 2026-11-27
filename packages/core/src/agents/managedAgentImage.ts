@@ -1,6 +1,6 @@
 import logger from '../utils/logger.js';
 import { executeDockerCommand } from '../claude/docker/dockerExecutor.js';
-import { AGENT_TYPES } from './constants.js';
+import { AGENT_CLI_TYPES } from './constants.js';
 import { managedAgentVersionDifferences, readManagedAgentPin, type ManagedAgentPin } from './managedAgentPin.js';
 import type { AgentCliVersionMatrix } from './version/versionService.js';
 
@@ -56,7 +56,7 @@ function verificationFailure(pin: ManagedAgentPin, inspected: InspectedImage, ve
     if (labels['dev.propr.agent-bundle'] !== 'true') return 'it is not a unified agent bundle';
     if (labels['org.opencontainers.image.source'] !== IMAGE_SOURCE) return 'its source label does not name the ProPR repository';
     if (labels['org.opencontainers.image.revision'] !== pin.sourceRevision) return `its revision label does not match ${pin.sourceRevision}`;
-    const mismatched = AGENT_TYPES.filter(type => labels[`dev.propr.agent.${type}.version`] !== versions[type]);
+    const mismatched = AGENT_CLI_TYPES.filter(type => labels[`dev.propr.agent.${type}.version`] !== versions[type]);
     return mismatched.length ? `its CLI version labels do not match the configured ${mismatched.join(', ')} versions` : null;
 }
 

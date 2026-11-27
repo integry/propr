@@ -8,7 +8,7 @@ import path from 'path';
 import crypto from 'crypto';
 import logger from '../../utils/logger.js';
 import type { AgentConfig, AgentType } from '../types.js';
-import { AGENT_TYPES } from '../constants.js';
+import { AGENT_CLI_TYPES, type AgentCliType } from '../constants.js';
 import type { AvailableVersionsResponse, CliVersionType } from './types.js';
 import {
     AGENT_CLI_PACKAGES,
@@ -28,10 +28,11 @@ import {
     resolvePyPiVersionSpec
 } from './pypiClient.js';
 
-const PYPI_AGENT_TYPES = new Set<AgentType>(['vibe']);
-const INSTALLER_AGENT_TYPES = new Set<AgentType>(['antigravity']);
+const PYPI_AGENT_TYPES = new Set<AgentCliType>(['vibe']);
+const INSTALLER_AGENT_TYPES = new Set<AgentCliType>(['antigravity']);
 
-export type AgentCliVersionMatrix = Record<AgentType, string>;
+/** One CLI version per CLI bundled in the unified agent image. */
+export type AgentCliVersionMatrix = Record<AgentCliType, string>;
 
 export function getDefaultAgentCliVersionMatrix(): AgentCliVersionMatrix {
     return { ...AGENT_DEFAULT_VERSIONS };
@@ -88,7 +89,7 @@ export function findAgentCliVersionConflicts(
 }
 
 export function getAgentBundleVersionHash(versions: AgentCliVersionMatrix): string {
-    const serialized = AGENT_TYPES.map(type => `${type}=${versions[type]}`).join('\n');
+    const serialized = AGENT_CLI_TYPES.map(type => `${type}=${versions[type]}`).join('\n');
     return crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 12);
 }
 
@@ -104,14 +105,14 @@ async function validatePyPiCustomVersion(versionSpec: string, packageName: strin
     return trimmedVersionSpec;
 }
 
-function resolvePyPiTag(agentType: AgentType, packageName: string, versionSpec: string): Promise<string> | string {
+function resolvePyPiTag(agentType: AgentCliType, packageName: string, versionSpec: string): Promise<string> | string {
     if (!AGENT_CLI_TAGS[agentType].includes(versionSpec)) {
         throw new Error(`Unknown tag '${versionSpec}' for PyPI-backed package ${packageName}`);
     }
     return versionSpec === 'latest' ? getLatestPyPiVersion(packageName) : AGENT_DEFAULT_VERSIONS[agentType];
 }
 
-function resolveInstallerVersion(agentType: AgentType, versionType: CliVersionType, versionSpec?: string): string {
+function resolveInstallerVersion(agentType: AgentCliType, versionType: CliVersionType, versionSpec?: string): string {
     if (versionType === 'default') {
         return AGENT_DEFAULT_VERSIONS[agentType];
     }
@@ -145,13 +146,13 @@ export function getDockerTagComponent(value: string): string {
 /**
  * Resolves a version specification to an actual semver version.
  *
- * @param agentType - The agent type (claude, codex, antigravity, vibe)
+ * @param agentType - The bundled CLI (claude, codex, antigravity, opencode, vibe, pi)
  * @param versionType - How the version is specified
  * @param versionSpec - The version specification (tag name, version number, or custom input)
  * @returns The resolved semver version
  */
 export async function resolveVersion(
-    agentType: AgentType,
+    agentType: AgentCliType,
     versionType: CliVersionType,
     versionSpec?: string
 ): Promise<string> {
@@ -217,7 +218,7 @@ export async function resolveVersion(
  * @param agentType - The agent type
  * @returns Available versions response
  */
-export async function getAvailableVersions(agentType: AgentType): Promise<AvailableVersionsResponse> {
+export async function getAvailableVersions(agentType: AgentCliType): Promise<AvailableVersionsResponse> {
     const packageName = AGENT_CLI_PACKAGES[agentType];
     const defaultVersion = AGENT_DEFAULT_VERSIONS[agentType];
     const tagNames = AGENT_CLI_TAGS[agentType];

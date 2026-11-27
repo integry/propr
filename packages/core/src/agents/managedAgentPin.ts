@@ -1,5 +1,5 @@
-import { AGENT_TYPES } from './constants.js';
-import type { AgentConfig, AgentType } from './types.js';
+import { AGENT_CLI_TYPES, type AgentCliType } from './constants.js';
+import type { AgentConfig } from './types.js';
 import { AGENT_DEFAULT_VERSIONS } from './version/types.js';
 import {
     type AgentCliVersionMatrix,
@@ -34,8 +34,8 @@ export function readManagedAgentPin(env: NodeJS.ProcessEnv = process.env): Manag
  * build-arg overrides, so its snapshot is this revision's default matrix; the
  * image labels are verified against the same matrix before it is used.
  */
-export function managedAgentVersionDifferences(versions: AgentCliVersionMatrix): AgentType[] {
-    return AGENT_TYPES.filter(type => versions[type] !== AGENT_DEFAULT_VERSIONS[type]);
+export function managedAgentVersionDifferences(versions: AgentCliVersionMatrix): AgentCliType[] {
+    return AGENT_CLI_TYPES.filter(type => versions[type] !== AGENT_DEFAULT_VERSIONS[type]);
 }
 
 /** The pin when it can serve this exact CLI matrix; null keeps the generated-bundle path. */

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import logger from '../utils/logger.js';
-import type { AgentType } from '../agents/types.js';
+import type { AgentCliType } from '../agents/constants.js';
 import { AGENT_EGRESS_PROXY_SUPPORT, AGENT_EGRESS_RESTRICTED_ENV, baseEgressAllowlist, compileEgressAllowlist } from './egressAllowlist.js';
 import { EgressDenialRecorder, startEgressProxy, upstreamProxiesFromEnv, type EgressProxy, type EgressProxyStats } from './egressProxy.js';
 import type { AgentNetworkMode, ResolvedNetworkPolicy } from './networkPolicy.js';
@@ -334,7 +334,7 @@ export async function prepareDockerRunNetwork(command: string, args: string[], e
     const entrypointIndex = args.indexOf('--entrypoint');
     const agentType = envValue(containerOptions(args), 'PROPR_AGENT_TYPE');
     const scriptIndex = entrypointIndex < 0 ? 0 : args.indexOf('-lc', entrypointIndex) + 1;
-    const support = agentType ? AGENT_EGRESS_PROXY_SUPPORT[agentType as AgentType] : undefined;
+    const support = agentType ? AGENT_EGRESS_PROXY_SUPPORT[agentType as AgentCliType] : undefined;
     const fallbackReason = !support ? 'container does not identify a supported agent'
         : !support.supported ? support.note
         : scriptIndex <= 0 || entrypointIndex < 0 ? 'container is not started through the ProPR wrapper'
@@ -365,7 +365,7 @@ export async function prepareDockerRunNetwork(command: string, args: string[], e
         }));
         proxy = await startEgressProxy({
             socketPath: path.join(directory, SOCKET_NAME),
-            allowlist: compileEgressAllowlist([...baseEgressAllowlist(agentType as AgentType), ...context.policy.allow]),
+            allowlist: compileEgressAllowlist([...baseEgressAllowlist(agentType as AgentCliType), ...context.policy.allow]),
             // Only the administrator's own IP literals open loopback, private or link-local addresses.
             addressAllowlist: compileEgressAllowlist(context.policy.instanceAllow ?? []),
             recorder: context.recorder,
@@ -383,7 +383,7 @@ export async function prepareDockerRunNetwork(command: string, args: string[], e
     try { await verifySocketMountOnce(args[entrypointIndex + 2], path.join(roots.host, id)); } catch { /* logged */ }
 
     // Non-essential traffic the agent would otherwise attempt and have denied, unless the caller decided.
-    const quietEnv = (AGENT_EGRESS_RESTRICTED_ENV[agentType as AgentType] ?? [])
+    const quietEnv = (AGENT_EGRESS_RESTRICTED_ENV[agentType as AgentCliType] ?? [])
         .filter(([key]) => envValue(containerOptions(args), key) === undefined)
         .flatMap(([key, value]) => ['-e', `${key}=${value}`]);
 

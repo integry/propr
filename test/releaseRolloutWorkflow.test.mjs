@@ -678,7 +678,7 @@ describe('published preview runtime inspection', () => {
         return JSON.stringify({ os: 'linux', architecture, config: { Labels: {
           'org.opencontainers.image.source': 'https://github.com/integry/propr', 'org.opencontainers.image.revision': revision,
           'dev.propr.agent-bundle': 'true', 'dev.propr.agent-tank.version': '1.0.0',
-          ...Object.fromEntries(['claude', 'codex', 'antigravity', 'opencode', 'vibe'].map(cli => [`dev.propr.agent.${cli}.version`, '1.0.0'])),
+          ...Object.fromEntries(['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'pi'].map(cli => [`dev.propr.agent.${cli}.version`, '1.0.0'])),
         } } });
       }
       throw new Error(`Unexpected registry operation ${args}`);

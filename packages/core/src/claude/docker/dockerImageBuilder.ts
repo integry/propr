@@ -51,7 +51,8 @@ function bundleBuildArgs(versions: AgentCliVersionMatrix): string[] {
         '--build-arg', `CODEX_CLI_VERSION=${versions.codex}`,
         '--build-arg', `ANTIGRAVITY_CLI_VERSION=${versions.antigravity}`,
         '--build-arg', `OPENCODE_CLI_VERSION=${versions.opencode}`,
-        '--build-arg', `VIBE_CLI_VERSION=${versions.vibe}`
+        '--build-arg', `VIBE_CLI_VERSION=${versions.vibe}`,
+        '--build-arg', `PI_CLI_VERSION=${versions.pi}`
     ];
 }
 

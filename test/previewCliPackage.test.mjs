@@ -34,7 +34,7 @@ function registryFixture(change = () => {}) {
       value = { os: 'linux', architecture, config: { Labels: {
         'org.opencontainers.image.source': 'https://github.com/integry/propr',
         'org.opencontainers.image.revision': source, 'dev.propr.agent-bundle': 'true',
-        ...Object.fromEntries(['claude', 'codex', 'antigravity', 'opencode', 'vibe'].map(cli => [`dev.propr.agent.${cli}.version`, '1.0.0'])),
+        ...Object.fromEntries(['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'pi'].map(cli => [`dev.propr.agent.${cli}.version`, '1.0.0'])),
         'dev.propr.agent-tank.version': '1.0.0',
       } } };
     } else throw new Error(`Unexpected registry operation ${args}`);

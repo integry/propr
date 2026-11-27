@@ -340,7 +340,7 @@ check_ui_api_configuration
 
 docker run --rm "$AGENT_TAG" sh -c '
   set -eu
-  for executable in claude codex agy opencode vibe agent-tank git gh rg python3; do
+  for executable in claude codex agy opencode vibe pi agent-tank git gh rg python3; do
     command -v "$executable" >/dev/null
   done
 ' >/dev/null
@@ -355,11 +355,56 @@ echo "✓ agent-tank runs through the entrypoint without a provider entrypoint"
 # Exercise GitHub CLI through every normal agent entrypoint. Merely checking
 # command -v is insufficient because each entrypoint places gh-wrapper first in
 # PATH; a wrapper that delegates back through PATH resolves itself and hangs.
-for entrypoint in claude codex antigravity opencode vibe; do
+for entrypoint in claude codex antigravity opencode vibe pi; do
   docker run --rm --network none --entrypoint "/home/node/${entrypoint}-entrypoint.sh" \
     "$AGENT_TAG" gh --version >/dev/null
 done
 echo "✓ agent entrypoints can execute GitHub CLI through the wrapper"
+
+# Pi runs through the shared entrypoint's dispatch, as ProPR starts it.
+pi_version="$(docker run --rm --network none -e PROPR_AGENT_TYPE=pi "$AGENT_TAG" pi --version 2>"$DATA_DIR/pi-version.log")" || {
+  echo "✗ pi --version failed through the agent entrypoint"
+  cat "$DATA_DIR/pi-version.log"
+  exit 1
+}
+pi_label="$(docker image inspect --format '{{ index .Config.Labels "dev.propr.agent.pi.version" }}' "$AGENT_TAG")"
+if [ -z "$pi_label" ] || [ "$pi_version" != "$pi_label" ]; then
+  echo "✗ pi --version ($pi_version) through the entrypoint does not match the image label ($pi_label)"
+  exit 1
+fi
+echo "✓ pi --version runs through the agent entrypoint"
+
+# ProPR starts Pi task containers as root (--user 0:0) with a mounted host Pi
+# dir as the credential source. Everything the entrypoint does before the task
+# (import, seeding, version probe) and after it (credential sync) must leave
+# the disposable runtime dir node-owned, or Pi cannot write its state there.
+pi_root_owned="$(docker run --rm --network none --user 0:0 \
+  -e PROPR_PI_SOURCE_DIR=/tmp/propr-pi-source \
+  --entrypoint sh "$AGENT_TAG" -c '
+    set -eu
+    mkdir -p /tmp/propr-pi-source/sessions /tmp/propr-pi-source/extensions
+    printf "%s" "{\"anthropic\":{\"type\":\"oauth\",\"access\":\"a\",\"refresh\":\"r\",\"expires\":1}}" > /tmp/propr-pi-source/auth.json
+    printf "%s" "{}" > /tmp/propr-pi-source/settings.json
+    printf "%s" "{}" > /tmp/propr-pi-source/mcp.json
+    chown -R node:node /tmp/propr-pi-source
+    chmod 600 /tmp/propr-pi-source/auth.json
+    /home/node/pi-entrypoint.sh pi --version >/dev/null
+    test ! -e /tmp/propr-pi-home/agent/mcp.json
+    test ! -e /tmp/propr-pi-home/agent/extensions
+    test -f /tmp/propr-pi-home/agent/auth.json
+    find /tmp/propr-pi-home ! -user node -print
+  ' 2>"$DATA_DIR/pi-entrypoint.log")" || {
+  echo "✗ Pi entrypoint failed when started as root with a mounted source dir"
+  cat "$DATA_DIR/pi-entrypoint.log"
+  exit 1
+}
+if [ -n "$pi_root_owned" ]; then
+  echo "✗ Pi entrypoint left files not owned by node in the disposable runtime dir:"
+  echo "$pi_root_owned"
+  cat "$DATA_DIR/pi-entrypoint.log"
+  exit 1
+fi
+echo "✓ Pi entrypoint keeps disposable state node-owned when started as root"
 
 docker run --rm --entrypoint node \
   -e "EXPECTED_VERSION=$EXPECTED_VERSION" \

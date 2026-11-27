@@ -58,6 +58,7 @@ const AGENT_CLI_LABELS = Object.freeze({
   antigravity: 'dev.propr.agent.antigravity.version',
   opencode: 'dev.propr.agent.opencode.version',
   vibe: 'dev.propr.agent.vibe.version',
+  pi: 'dev.propr.agent.pi.version',
   'agent-tank': 'dev.propr.agent-tank.version',
 });
 const IMAGE_SOURCE = 'https://github.com/integry/propr';

@@ -154,6 +154,23 @@ RUN npm install -g "opencode-ai@${OPENCODE_CLI_VERSION}" \
     && rm -f /tmp/opencode-help
 
 
+FROM agent-base AS pi-cli
+# Pi needs Node >= 22.19.0; agent-base pins AGENT_NODE_VERSION (22.23.x).
+ARG PI_CLI_VERSION=1.6.1
+USER root
+RUN npm install -g "@earendil-works/pi-coding-agent@${PI_CLI_VERSION}" \
+    && npm cache clean --force \
+    && rm -rf /root/.npm \
+    && export PI_CODING_AGENT_DIR=/tmp/pi-build-agent PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 PI_OFFLINE=1 \
+    && test "$(pi --version)" = "${PI_CLI_VERSION}" \
+    && pi --help > /tmp/pi-help 2>&1 \
+    && for flag in --mode --print --model --thinking --tools --no-builtin-tools --session-dir --no-approve; do \
+        grep -qE "(^|[[:space:],])${flag}([=[:space:],]|\$)" /tmp/pi-help \
+            || { echo "pi --help does not list ${flag}" >&2; exit 1; }; \
+    done \
+    && rm -rf /tmp/pi-help /tmp/pi-build-agent
+
+
 FROM agent-base AS vibe-cli
 ARG VIBE_CLI_VERSION=3.1.5
 # mistral-vibe only publishes cp312 wheels; Debian bookworm's system python3 is 3.11,
@@ -236,6 +253,7 @@ USER root
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
 COPY --from=codex-cli /usr/local/lib/node_modules/@openai /usr/local/lib/node_modules/@openai
 COPY --from=opencode-cli /usr/local/lib/node_modules/opencode-ai /usr/local/lib/node_modules/opencode-ai
+COPY --from=pi-cli /usr/local/lib/node_modules/@earendil-works /usr/local/lib/node_modules/@earendil-works
 COPY --from=agent-tank-cli /usr/local/lib/node_modules/agent-tank /usr/local/lib/node_modules/agent-tank
 COPY --from=vibe-cli /usr/local/bin/uv /usr/local/bin/uv
 COPY --from=vibe-cli /usr/local/bin/uvx /usr/local/bin/uvx
@@ -257,8 +275,10 @@ COPY --chown=node:node \
     scripts/antigravity-entrypoint.sh \
     scripts/opencode-entrypoint.sh \
     scripts/vibe-entrypoint.sh \
+    scripts/pi-entrypoint.sh \
     /home/node/
 COPY scripts/extension-stdio-bridge.mjs /opt/propr/extension-stdio-bridge.mjs
+COPY scripts/pi-credentials.py /opt/propr/pi-credentials.py
 COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
 COPY --chown=node:node scripts/vibe-prompt-file-runner.py /usr/local/bin/propr-vibe-prompt-file
 RUN set -eu; \
@@ -271,6 +291,7 @@ RUN set -eu; \
     link_npm_bin @anthropic-ai/claude-code claude \
     && link_npm_bin @openai/codex codex \
     && link_npm_bin opencode-ai opencode \
+    && link_npm_bin @earendil-works/pi-coding-agent pi \
     && ln -s /opt/uv/tools/mistral-vibe/bin/vibe /usr/local/bin/vibe \
     && link_npm_bin agent-tank agent-tank \
     && ln -sf /home/node/.local/bin/agy /usr/local/bin/agy \
@@ -281,12 +302,15 @@ RUN set -eu; \
         /home/node/antigravity-entrypoint.sh \
         /home/node/opencode-entrypoint.sh \
         /home/node/vibe-entrypoint.sh \
+        /home/node/pi-entrypoint.sh \
         /usr/local/bin/opencode-run \
         /usr/local/bin/propr-vibe-prompt-file \
     && claude --version \
     && codex --version \
     && opencode --version \
     && vibe --version \
+    && PI_CODING_AGENT_DIR=/tmp/pi-build-agent PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 PI_OFFLINE=1 pi --version \
+    && rm -rf /tmp/pi-build-agent \
     && agy --version \
     && agent-tank --version
 
@@ -314,6 +338,7 @@ ARG CODEX_CLI_VERSION=0.171.0
 ARG ANTIGRAVITY_CLI_VERSION=1.5.15
 ARG OPENCODE_CLI_VERSION=1.19.6
 ARG VIBE_CLI_VERSION=3.1.5
+ARG PI_CLI_VERSION=1.6.1
 ARG AGENT_TANK_CLI_VERSION=0.10.0
 
 LABEL dev.propr.agent-bundle="true" \
@@ -322,6 +347,7 @@ LABEL dev.propr.agent-bundle="true" \
       dev.propr.agent.antigravity.version="${ANTIGRAVITY_CLI_VERSION}" \
       dev.propr.agent.opencode.version="${OPENCODE_CLI_VERSION}" \
       dev.propr.agent.vibe.version="${VIBE_CLI_VERSION}" \
+      dev.propr.agent.pi.version="${PI_CLI_VERSION}" \
       dev.propr.agent-tank.version="${AGENT_TANK_CLI_VERSION}"
 
 COPY --from=agent-image-build / /

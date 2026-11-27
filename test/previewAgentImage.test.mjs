@@ -34,12 +34,13 @@ const labels = (overrides = {}) => ({
   'dev.propr.agent.antigravity.version': '1.2.4',
   'dev.propr.agent.opencode.version': '1.18.31',
   'dev.propr.agent.vibe.version': '2.25.8',
+  'dev.propr.agent.pi.version': '1.6.1',
   'dev.propr.agent-tank.version': '0.10.0',
   ...overrides,
 });
 
 const cliVersions = () => ({
-  claude: '2.1.284', codex: '0.160.0', antigravity: '1.2.4', opencode: '1.18.31', vibe: '2.25.8', 'agent-tank': '0.10.0',
+  claude: '2.1.284', codex: '0.160.0', antigravity: '1.2.4', opencode: '1.18.31', vibe: '2.25.8', pi: '1.6.1', 'agent-tank': '0.10.0',
 });
 
 const smokeEvidence = (overrides = {}) => ({

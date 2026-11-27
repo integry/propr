@@ -10,7 +10,7 @@ import { buildCodexStreamConfigArgs, resolveCodexStreamConfig } from '../package
 import { AGENT_EGRESS_PROXY_SUPPORT } from '../packages/core/src/network/egressAllowlist.js';
 import { executeWithNetworkPolicy } from '../packages/core/src/network/egressExecution.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
-import type { AgentType } from '../packages/core/src/agents/types.js';
+import type { AgentCliType } from '../packages/core/src/agents/constants.js';
 
 // Runs each agent CLI marked supported in AGENT_EGRESS_PROXY_SUPPORT inside a
 // restricted container, with only its built-in allowlist and a deliberately
@@ -32,7 +32,7 @@ const codexTransport = (transport: 'websocket' | 'sse') => buildCodexStreamConfi
     .map(arg => `'${arg.replaceAll("'", `'\\''`)}'`).join(' ');
 
 /** One invocation per supported transport, each with a credential the provider rejects. */
-const CASES: Array<{ name: string; agent: AgentType; env: string[]; setup?: string; command: string }> = [
+const CASES: Array<{ name: string; agent: AgentCliType; env: string[]; setup?: string; command: string }> = [
     {
         // stream-json carries the provider's error (text mode only prints "Execution error"); the
         // non-essential traffic (telemetry, error reporting, auto-update) is denied by the proxy anyway.
@@ -57,6 +57,11 @@ const CASES: Array<{ name: string; agent: AgentType; env: string[]; setup?: stri
         name: 'Vibe', agent: 'vibe', env: ['MISTRAL_API_KEY=propr-egress-invalid'],
         setup: `printf '%s' '${PROMPT}' > /tmp/propr-egress-prompt.txt && export PROPR_VIBE_PROMPT_FILE=/tmp/propr-egress-prompt.txt`,
         command: 'propr-vibe-prompt-file --output json',
+    },
+    {
+        // JSON mode reports the provider's 401 in the assistant message's errorMessage.
+        name: 'Pi', agent: 'pi', env: ['ANTHROPIC_API_KEY=sk-ant-propr-egress-invalid'],
+        command: `pi -p --mode json --no-session --model anthropic/claude-sonnet-4-5 '${PROMPT}' </dev/null`,
     },
 ];
 
