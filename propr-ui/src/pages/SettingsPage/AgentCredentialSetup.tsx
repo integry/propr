@@ -1,10 +1,11 @@
 import React from 'react';
-import { isAgentLoginSupported } from '@propr/shared';
+import { ANTIGRAVITY_EXISTING_LOGIN_HINT, ANTIGRAVITY_MANAGED_LOGIN_HINT, isAgentLoginSupported } from '@propr/shared';
 import {
   AGENT_DEFAULTS,
   type AgentType,
 } from '../../config/modelDefinitions';
 import type { CredentialSetup } from './agentCredentialSetupUtils';
+import InlineCodeText from './InlineCodeText';
 
 interface AgentCredentialSetupProps {
   isEditing: boolean;
@@ -56,6 +57,7 @@ const AgentCredentialSetup: React.FC<AgentCredentialSetupProps> = ({
             <div className="mt-2 rounded-md border border-cyan-200 bg-cyan-50 px-3 py-2 text-xs text-cyan-900">
               ProPR will keep this account isolated at{' '}
               <code className="break-all font-mono">{configPath}</code> and open the provider login after saving.
+              {type === 'antigravity' && <> {ANTIGRAVITY_MANAGED_LOGIN_HINT}</>}
             </div>
           )}
         </div>
@@ -80,6 +82,11 @@ const AgentCredentialSetup: React.FC<AgentCredentialSetupProps> = ({
           {!isEditing && credentialSetup === 'existing' && (
             <p className="mt-1 text-xs text-gray-500">
               ProPR reads and updates the login files in this directory.
+            </p>
+          )}
+          {credentialSetup === 'existing' && type === 'antigravity' && (
+            <p className="mt-1 text-xs text-amber-800" data-testid="antigravity-keyring-hint">
+              <InlineCodeText text={ANTIGRAVITY_EXISTING_LOGIN_HINT} />
             </p>
           )}
         </div>

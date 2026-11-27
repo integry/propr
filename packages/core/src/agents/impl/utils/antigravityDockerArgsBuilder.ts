@@ -9,6 +9,7 @@ import {
     buildAntigravityRepositoryScoutPermissions,
     REPOSITORY_SCOUT_CONTAINER_ROOT,
 } from './repositoryScoutMcpServer.js';
+import { buildAntigravityTranscriptArgs } from './antigravityTranscriptPaths.js';
 
 const ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH = '/home/node/.gemini-source';
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -23,6 +24,7 @@ interface AntigravityDockerArgsParams {
     configEnvironment?: Record<string, string>;
     taskId?: string;
     executionType?: string;
+    /** Worker-side path of a disposable run's transcript; its directory is mounted read-write. */
     transcriptPath?: string;
     readOnlyWorkspace?: boolean;
     repositoryInspection?: boolean;
@@ -117,7 +119,7 @@ export function buildAntigravityDockerArgs(params: AntigravityDockerArgsParams):
         ...(executionMode === 'task' ? ['-e', 'PROPR_EPHEMERAL_STATE=1'] : []),
         '-e', `PROPR_ANTIGRAVITY_SOURCE_CONFIG=${configMountTarget}`,
         ...buildRepositoryInspectionArgs(repositoryInspection),
-        ...(transcriptPath ? ['-e', `PROPR_ANTIGRAVITY_TRANSCRIPT_PATH=${transcriptPath}`] : []),
+        ...buildAntigravityTranscriptArgs(transcriptPath),
         ...envVars,
         // After operator variables, so their envVars cannot change them. Tokens
         // and stdio secrets by name only: docker copies the values from its own environment.
