@@ -7,6 +7,7 @@ import {
 } from '@propr/core';
 import { extractOpenCodeAssistantSegments } from '../routes/liveDetailsOpenCodeParser.js';
 import { parseVibeTranscriptOutput, processVibe3Entry, processVibeRoleRecord } from './redisOutputParserVibe.js';
+import { createAntigravityStreamProjectionState, isAntigravityStreamEnvelope, processAntigravityStreamEnvelope, type AntigravityStreamProjectionState } from './redisOutputParserAntigravity.js';
 
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
@@ -36,6 +37,8 @@ interface ParseState {
   lastOpenCodeCumulativeTopLevelUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
   pendingAssistantMessage: string; pendingAssistantTimestamp: string | null; pendingAssistantInternalReasoning: boolean;
   antigravityStreamActive: boolean;
+  /** agy stream-json (`event:` envelope) projection state. */
+  antigravityStream: AntigravityStreamProjectionState;
   syntheticTimestampBaseMs: number | null;
   syntheticTimestampIndex: number;
   seenEventFingerprints: Set<string>;
@@ -804,6 +807,12 @@ function parseLine(line: string, state: ParseState): void {
       ? normalizeOpenCodeTimestamp(rawTimestamp)
       : rawTimestamp || getNextSyntheticTimestamp(state);
 
+    // agy 1.1.12+ stream-json envelopes (task runs and native goals).
+    if (isAntigravityStreamEnvelope(event)) {
+      processAntigravityStreamEnvelope(event, timestamp, state, flushTimestamp => flushPendingMessage(state, flushTimestamp));
+      return;
+    }
+
     // Vibe 3 entries key on type/turnId, not role; effects carry no role at all.
     if (processVibe3Entry(event, timestamp, state)) return;
 
@@ -859,6 +868,7 @@ function createParseState(options: RedisOutputParseOptions): ParseState {
     pendingAssistantTimestamp: null,
     pendingAssistantInternalReasoning: false,
     antigravityStreamActive: false,
+    antigravityStream: createAntigravityStreamProjectionState(),
     syntheticTimestampBaseMs: Number.isNaN(executionStartMs) ? null : executionStartMs,
     syntheticTimestampIndex: 0,
     seenEventFingerprints: new Set(),

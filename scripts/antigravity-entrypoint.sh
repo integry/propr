@@ -148,11 +148,21 @@ if [ $# -gt 0 ]; then
             done
         fi
 
+        # The worker mounts a private read-write directory for the transcript;
+        # export it before --rm discards the disposable runtime home.
         if [ -n "${PROPR_ANTIGRAVITY_TRANSCRIPT_PATH:-}" ]; then
             transcript_source=$(find "$antigravity_config_dir/antigravity-cli/brain" -type f -path '*/.system_generated/logs/transcript.jsonl' -print -quit 2>/dev/null || true)
             if [ -n "$transcript_source" ]; then
-                mkdir -p "$(dirname "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH")"
-                cp "$transcript_source" "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH" || echo "Warning: could not export transient Antigravity transcript" >&2
+                # Replace rather than write through anything the agent left at the destination.
+                if mkdir -p "$(dirname "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH")" \
+                    && rm -f "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH" \
+                    && cp "$transcript_source" "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH"; then
+                    chmod 0644 "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH" 2>/dev/null || true
+                else
+                    echo "Warning: could not export transient Antigravity transcript" >&2
+                fi
+            else
+                echo "Warning: no Antigravity transcript found to export" >&2
             fi
         fi
 
