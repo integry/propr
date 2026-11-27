@@ -25,6 +25,12 @@ export interface PiStreamState {
   emittedBlocks: Set<number>;
   /** The block mirrored into the pending assistant message. */
   activeIndex: number | null;
+  /**
+   * Identity of the current assistant message: its own timestamp, which its
+   * `message_start` and `message_end` both carry. Null when this projection
+   * did not see the message start (retention trimmed it).
+   */
+  messageId: string | null;
   toolCalls: Map<string, PiToolCall>;
   emittedToolUseIds: Set<string>;
   emittedToolResultIds: Set<string>;
@@ -60,6 +66,7 @@ export function createPiStreamState(): PiStreamState {
     blocks: new Map(),
     emittedBlocks: new Set(),
     activeIndex: null,
+    messageId: null,
     toolCalls: new Map(),
     emittedToolUseIds: new Set(),
     emittedToolResultIds: new Set(),
@@ -128,13 +135,25 @@ function clearPending(state: PiParseState): void {
 }
 
 /**
- * Emit a completed text or thinking block. When it is the block being streamed,
- * it takes the buffered message's key and timestamp so its identity stays put.
+ * The event key of an assistant block, the same whether its `*_end` update or
+ * the final `message_end` emitted it, so a read that starts after retention
+ * trimmed the stream names the block the watcher emitted.
+ */
+function piBlockKey(messageId: string, index: number): string {
+  return `pi:block:${encodeURIComponent(messageId)}:${index}`;
+}
+
+/**
+ * Emit a completed text or thinking block under its message's block key. With
+ * no known message it falls back to the streamed record's key, or the current
+ * record's.
  */
 function emitBlock(state: PiParseState, index: number, { kind, text }: PiBlock, timestamp: string): void {
   const streamed = state.pi.activeIndex === index;
-  const key = streamed ? state.pendingAssistantKey : null;
-  const eventTimestamp = streamed ? state.pendingAssistantTimestamp ?? timestamp : timestamp;
+  const messageId = state.pi.messageId;
+  const key = messageId ? piBlockKey(messageId, index) : streamed ? state.pendingAssistantKey : null;
+  // A known message's records all carry its time; a record-keyed block keeps the time it streamed at.
+  const eventTimestamp = streamed && !messageId ? state.pendingAssistantTimestamp ?? timestamp : timestamp;
   if (streamed) clearPending(state);
   state.pi.emittedBlocks.add(index);
   state.pi.blocks.delete(index);
@@ -169,20 +188,30 @@ function processMessageUpdate(update: JsonRecord, timestamp: string, state: PiPa
   // a block still streaming before one stays buffered for message_end.
   if (index === null || !kind) return;
   if (state.pi.emittedBlocks.has(index)) return;
-  if (state.pi.activeIndex !== null && state.pi.activeIndex !== index) commitActiveBlock(state, timestamp);
+  if (state.pi.activeIndex !== null && state.pi.activeIndex !== index) {
+    // An unknown message's earlier block stays buffered for message_end, like an ended one.
+    if (state.pi.messageId) commitActiveBlock(state, timestamp);
+    else clearPending(state);
+  }
   const block = state.pi.blocks.get(index) ?? { kind, text: '' };
   state.pi.blocks.set(index, block);
   if (type.endsWith('_end')) {
     const content = typeof update.content === 'string' ? update.content : block.text;
-    emitBlock(state, index, { kind, text: content }, timestamp);
-    return;
-  }
-  if (type.endsWith('_delta') && typeof update.delta === 'string') block.text += update.delta;
+    // Without the message's identity the block could only be named by this
+    // record, which retention may trim; message_end emits it under its key.
+    if (state.pi.messageId) {
+      emitBlock(state, index, { kind, text: content }, timestamp);
+      return;
+    }
+    block.text = content;
+  } else if (type.endsWith('_delta') && typeof update.delta === 'string') block.text += update.delta;
   if (!block.text) return;
   state.pi.activeIndex = index;
   state.pendingAssistantMessage = truncateContent(block.text);
   state.pendingAssistantInternalReasoning = kind === 'thinking';
   state.pendingAssistantTimestamp ??= timestamp;
+  // Streaming under the block's key keeps its ID when it completes.
+  if (state.pi.messageId) state.pendingAssistantKey = piBlockKey(state.pi.messageId, index);
 }
 
 function emitToolUse(state: PiParseState, id: string, timestamp: string): void {
@@ -231,13 +260,15 @@ function addUsage(state: PiParseState, usage: unknown): void {
 }
 
 function processAssistantMessageEnd(message: JsonRecord, timestamp: string, state: PiParseState): void {
+  state.pi.messageId = messageIdentity(message);
   const content = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content;
   if (Array.isArray(content)) {
     content.forEach((block, index) => {
       if (!isRecord(block)) return;
       if (block.type === 'text' || block.type === 'thinking') {
         if (state.pi.emittedBlocks.has(index)) {
-          if (typeof block[block.type] === 'string' && (block[block.type] as string).trim()) skipEvent(state);
+          // A keyed block takes no slot of this record; a record-keyed one keeps its slot.
+          if (!state.pi.messageId && typeof block[block.type] === 'string' && (block[block.type] as string).trim()) skipEvent(state);
           return;
         }
         const text = block.type === 'text' ? block.text : block.thinking;
@@ -251,6 +282,7 @@ function processAssistantMessageEnd(message: JsonRecord, timestamp: string, stat
   // A block that streamed but is missing from the final message is dropped.
   if (state.pi.activeIndex !== null) clearPending(state);
   resetAssistantMessage(state);
+  state.pi.messageId = null;
   addUsage(state, message.usage);
   if (FAILED_STOP_REASONS.has(String(message.stopReason)) && typeof message.errorMessage === 'string' && message.errorMessage) {
     pushEvent(state, { type: 'thought' as const, content: truncateContent(`Pi stopped (${message.stopReason}): ${message.errorMessage}`), timestamp });
@@ -262,6 +294,7 @@ function processMessage(type: string, message: JsonRecord, timestamp: string, st
     if (type === 'message_start') {
       commitActiveBlock(state, timestamp);
       resetAssistantMessage(state);
+      state.pi.messageId = messageIdentity(message);
     } else {
       processAssistantMessageEnd(message, timestamp, state);
     }
@@ -292,6 +325,12 @@ function processTurnEnd(event: JsonRecord, timestamp: string, state: PiParseStat
     rememberToolCall(state, result.toolCallId, result.toolName, undefined);
     emitToolResult(state, result.toolCallId, { content: result.content, isError: result.isError === true }, timestamp);
   }
+}
+
+/** An assistant message's identity, from the creation time both its start and end records carry. */
+function messageIdentity(message: JsonRecord): string | null {
+  const ms = message.timestamp;
+  return typeof ms === 'number' && Number.isFinite(ms) ? String(ms) : null;
 }
 
 function messageTimestamp(message: JsonRecord): string | null {

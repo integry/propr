@@ -428,7 +428,7 @@ test('Pi message_update deltas are buffered per contentIndex until text_end, thi
     feed(update({ type: 'thinking_delta', contentIndex: 0, delta: 'math.js' }), '4');
     assert.strictEqual(projection.pendingEvent()?.event.content, 'Look at math.js');
     assert.strictEqual(projection.pendingEvent()?.event.internalReasoning, true);
-    assert.strictEqual(projection.pendingEvent()?.key, '3');
+    assert.strictEqual(projection.pendingEvent()?.key, 'pi:block:1795790400000:0', 'a block streams under its message key');
 
     const thought = feed(update({ type: 'thinking_end', contentIndex: 0, content: 'Look at math.js first.' }), '5');
     assert.deepStrictEqual(thought.map(event => [event.content, event.internalReasoning]), [['Look at math.js first.', true]]);
@@ -450,7 +450,8 @@ test('Pi message_update deltas are buffered per contentIndex until text_end, thi
         ],
         usage: { input: 100, output: 20, cacheRead: 30, cacheWrite: 5, totalTokens: 155 },
         stopReason: 'toolUse',
-        timestamp: 1795790401000,
+        // Pi stamps the assistant message once, when it starts streaming.
+        timestamp: 1795790400000,
     } }), '10');
     assert.deepStrictEqual(end.map(event => [event.type, event.content ?? event.toolName]), [
         ['thought', 'Reading it now.'],
@@ -475,7 +476,7 @@ test('Pi message_update deltas are buffered per contentIndex until text_end, thi
         ['tool_result', 'call-1', false],
     ]);
     assert.deepStrictEqual(result.events[3].input, { command: 'false' });
-    assert.strictEqual(result.events[1].timestamp, new Date(1795790400000).toISOString(), 'streamed block keeps its first-delta timestamp');
+    assert.strictEqual(result.events[1].timestamp, new Date(1795790400000).toISOString(), 'streamed block keeps its message timestamp');
     assert.deepStrictEqual(result.tokenUsage, { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 5, cache_read_input_tokens: 30 });
 });
 

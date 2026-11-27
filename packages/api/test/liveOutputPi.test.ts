@@ -85,3 +85,42 @@ test('a Pi tool result keeps its ID when retention leaves only a later copy of i
     else if (event.type !== 'tool_use') assert.deepEqual(event, before);
   }
 });
+
+test('Pi text and thinking keep their IDs when retention leaves only their end or final-message copy', () => {
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } };
+  const update = (assistantMessageEvent: Record<string, unknown>) => JSON.stringify({ type: 'message_update', usage, assistantMessageEvent });
+  const timestamp = 1795790301000;
+  const records = [
+    JSON.stringify({ type: 'session', version: 3, id: 'session-1', timestamp: '2026-11-27T00:00:00.000Z', cwd: '/w' }),
+    JSON.stringify({ type: 'message_start', message: { role: 'assistant', timestamp, stopReason: 'pending', content: [] } }),
+    update({ type: 'thinking_start', contentIndex: 0 }),
+    update({ type: 'thinking_delta', contentIndex: 0, delta: 'Weighing the ' }),
+    update({ type: 'thinking_end', contentIndex: 0, content: 'Weighing the options.' }),
+    update({ type: 'text_start', contentIndex: 1 }),
+    update({ type: 'text_delta', contentIndex: 1, delta: 'All ' }),
+    update({ type: 'text_end', contentIndex: 1, content: 'All checks pass.' }),
+    JSON.stringify({ type: 'message_end', message: { role: 'assistant', timestamp, stopReason: 'error', errorMessage: 'overloaded', content: [
+      { type: 'thinking', thinking: 'Weighing the options.' }, { type: 'text', text: 'All checks pass.' },
+    ] } }),
+  ];
+  const uninterrupted = new LiveOutputProjector({ taskId: 'pi', epoch: 'generation:1', offset: 0 });
+  const watched: Event[] = [];
+  for (const record of records) {
+    const pendingId = uninterrupted.pending()?.id;
+    const emitted = uninterrupted.feed(`${record}\n`, uninterrupted.offset) as Event[];
+    if (pendingId && emitted.length) assert.equal(emitted[0].id, pendingId, 'a completed block keeps the ID it streamed under');
+    watched.push(...emitted);
+  }
+  const narration = (events: Event[]) => events.filter(event => event.type === 'thought');
+  assert.deepEqual(narration(watched).map(event => [event.content, event.internalReasoning ?? false]), [
+    ['Weighing the options.', true], ['All checks pass.', false], ['Pi stopped (error): overloaded', false],
+  ]);
+
+  // Retained reads starting at a delta, at thinking_end, at text_end and at message_end.
+  for (const retained of [3, 4, 7, 8]) {
+    const { full, trimmed } = fullAndTrimmed(records, retained);
+    assert.deepEqual(watched, full);
+    // The final message still carries every block, so each read has all of them, once and under the same IDs.
+    assert.deepEqual(trimmed, full, `the read from record ${retained} names what the watcher emitted`);
+  }
+});
