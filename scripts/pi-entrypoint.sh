@@ -15,6 +15,9 @@ pi_runtime_home="${PROPR_PI_RUNTIME_HOME:-/tmp/propr-pi-home}"
 pi_agent_dir="$pi_runtime_home/agent"
 pi_seed_snapshot="$pi_runtime_home/propr-seeded-auth.json"
 pi_credentials_helper="${PROPR_PI_CREDENTIALS_HELPER:-/opt/propr/pi-credentials.py}"
+# Goal runs only: the goal's persisted session store, mounted outside the
+# disposable home so its sessions survive the run and are resumed next time.
+pi_goal_session_dir="${PROPR_PI_GOAL_SESSION_DIR:-}"
 # Only these host files are imported. Host sessions/, extensions/ and mcp.json
 # are never copied: sessions and extensions stay on the host, and ProPR
 # generates mcp.json itself (PROPR_PI_MCP_CONFIG).
@@ -46,6 +49,21 @@ case "$pi_source_dir_real/" in
         ;;
 esac
 
+if [ -n "$pi_goal_session_dir" ]; then
+    # The disposable home is deleted every run: the goal's sessions must not live in it.
+    pi_goal_session_dir_real="$(realpath -m -- "$pi_goal_session_dir")"
+    case "$pi_goal_session_dir_real/" in
+        "$pi_runtime_home_real/"*|"$pi_source_dir_real/"*)
+            echo "The Pi goal session dir must be outside the disposable Pi home and the host Pi dir" >&2
+            exit 64
+            ;;
+    esac
+    if [ "$pi_goal_session_dir_real" = "/" ]; then
+        echo "Refusing to use $pi_goal_session_dir as the Pi goal session dir" >&2
+        exit 64
+    fi
+fi
+
 export PI_CODING_AGENT_DIR="$pi_agent_dir"
 export PI_CODING_AGENT_SESSION_DIR="$pi_agent_dir/sessions"
 # Pi's own update check, install telemetry and startup catalog fetches go to
@@ -74,6 +92,26 @@ exec_as_node() {
     else
         exec "$@"
     fi
+}
+
+# Session files hold the whole goal conversation: owner-only (node), before Pi
+# writes and after it exits, whatever modes Pi created them with.
+restrict_goal_sessions() {
+    [ -n "$pi_goal_session_dir" ] || return 0
+    if is_root; then
+        chown -R node:node "$pi_goal_session_dir"
+    fi
+    chmod -R u+rwX,go-rwx "$pi_goal_session_dir"
+}
+
+prepare_goal_sessions() {
+    [ -n "$pi_goal_session_dir" ] || return 0
+    if [ ! -d "$pi_goal_session_dir" ]; then
+        echo "Pi goal session dir not mounted at $pi_goal_session_dir" >&2
+        exit 64
+    fi
+    restrict_goal_sessions
+    echo "Using persisted Pi goal sessions at $pi_goal_session_dir" >&2
 }
 
 prepare_runtime_home() {
@@ -144,6 +182,7 @@ if [ "${PROPR_PI_LOGIN:-}" = "1" ]; then
 fi
 
 prepare_runtime_home
+prepare_goal_sessions
 
 if [ -f "$pi_agent_dir/auth.json" ]; then
     # Record what was imported before Pi can rewrite it.
@@ -242,5 +281,7 @@ if [ -f "$pi_seed_snapshot" ]; then
     run_as_node python3 "$pi_credentials_helper" sync "$pi_source_dir/auth.json" "$pi_agent_dir/auth.json" "$pi_seed_snapshot" \
         || echo "Warning: could not write refreshed Pi credentials back to the host" >&2
 fi
+
+restrict_goal_sessions || echo "Warning: could not restrict Pi goal session permissions" >&2
 
 exit "$command_status"

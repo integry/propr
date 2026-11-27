@@ -110,6 +110,11 @@ export interface AgentTaskOptions {
      * Omitted for the existing one-shot task behavior.
      */
     executionMode?: 'task' | 'goal';
+    /**
+     * The goal this run belongs to, in goal mode. Providers whose session store
+     * is disposable per run (Pi) keep the goal's sessions under this identity.
+     */
+    goalId?: string;
     /** Exact provider session identity to resume in goal mode. */
     resumeSessionId?: string;
     /** Provider conversation identity when it differs from the session ID. */

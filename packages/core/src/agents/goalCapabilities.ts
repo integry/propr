@@ -70,6 +70,7 @@ export const GOAL_CAPABILITY_COMMANDS: Partial<Record<AgentType, string>> = {
     claude: 'claude',
     codex: 'codex',
     antigravity: 'agy',
+    pi: 'pi',
 };
 
 interface JsonMessage {
@@ -170,6 +171,16 @@ export function antigravityHelpSupportsWholeSession(output: string): boolean {
         .every(option => cliHelpHasOption(output, option));
 }
 
+/**
+ * Pi goals are whole sessions: print mode with JSON events, a ProPR-assigned
+ * session ID for a new goal, an exact session file to resume, and a session
+ * directory outside Pi's disposable home.
+ */
+export function piHelpSupportsWholeSession(output: string): boolean {
+    return ['-p', '--mode', '--session', '--session-id', '--session-dir', '--no-session']
+        .every(option => cliHelpHasOption(output, option));
+}
+
 const ANTIGRAVITY_GOAL_PROBE_SEPARATOR = '===PROPR-ANTIGRAVITY-GOAL-PROBE===';
 /** The description Antigravity registers for its native `/goal` slash command. */
 export const ANTIGRAVITY_GOAL_COMMAND_DESCRIPTION = 'Run until the specified goal is completely finished.';
@@ -262,6 +273,18 @@ async function probeAntigravity(agent: Agent, executor: DockerExecutor): Promise
         : unsupportedCapability(agent, 'Pinned Antigravity runtime does not provide the native /goal command');
 }
 
+async function probePi(agent: Agent, executor: DockerExecutor): Promise<GoalCapability> {
+    // The entrypoint is bypassed: no Pi dir is seeded and nothing is mounted. The
+    // offline switches keep Pi's startup catalog and update checks off the network.
+    const result = await executor('docker', [
+        'run', '--rm', '--network', 'none', '-e', 'PI_OFFLINE=1', '-e', 'PI_SKIP_VERSION_CHECK=1', '-e', 'PI_TELEMETRY=0',
+        '--entrypoint', '/bin/sh', agent.config.dockerImage, '-c', 'pi --help',
+    ], { timeout: 30_000 });
+    return piHelpSupportsWholeSession(`${result.stdout}\n${result.stderr}`)
+        ? supportedCapability(agent)
+        : unsupportedCapability(agent, 'Pinned Pi runtime does not expose print-mode JSON sessions with --session-id, --session and --session-dir');
+}
+
 /** Capability-probe the configured runtime without authentication or provider inference. */
 export async function probeGoalCapability(
     agent: Agent,
@@ -272,6 +295,7 @@ export async function probeGoalCapability(
         if (agent.config.type === 'codex') return await probeCodex(agent, executor);
         if (agent.config.type === 'claude') return await probeClaude(agent, executor);
         if (agent.config.type === 'antigravity') return await probeAntigravity(agent, executor);
+        if (agent.config.type === 'pi') return await probePi(agent, executor);
         return unsupportedCapability(agent, 'Provider has no proven goal-session transport');
     } catch (error) {
         return unsupportedCapability(agent, `Capability introspection failed: ${(error as Error).message}`);

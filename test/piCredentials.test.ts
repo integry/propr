@@ -355,6 +355,11 @@ if [ "$1" = "--version" ]; then echo 1.6.1; exit 0; fi
   echo "auth_mode=$(stat -c %a "$PI_CODING_AGENT_DIR/auth.json")"
   echo "stdin=$(cat)"
 } > "$PROPR_TEST_REPORT"
+# A goal run: Pi writes its session file with its own (group/world-readable) modes.
+if [ -n "\${PROPR_PI_GOAL_SESSION_DIR:-}" ]; then
+  echo "goal_dir_mode=$(stat -c %a "$PROPR_PI_GOAL_SESSION_DIR")" >> "$PROPR_TEST_REPORT"
+  (umask 022 && echo '{}' > "$PROPR_PI_GOAL_SESSION_DIR/2026-11-27T00-00-00-000Z_goal-session.jsonl")
+fi
 python3 -c '
 import json, os, sys
 path = os.path.join(os.environ["PI_CODING_AGENT_DIR"], "auth.json")
@@ -535,6 +540,34 @@ exit "\${PROPR_TEST_EXIT:-0}"
                 assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dirs.source, 'auth.json'), 'utf8')), hostAuth());
                 assert.deepEqual(fs.readdirSync(path.join(dirs.source, 'sessions')), ['host-session.jsonl']);
             }
+        });
+    });
+
+    test('keeps a goal\'s mounted session dir across runs and makes it owner-only before and after Pi runs', () => {
+        withEntrypoint((env, dirs) => {
+            const goalSessions = path.join(dirs.runtime, '..', 'goal-sessions');
+            fs.mkdirSync(goalSessions, { mode: 0o755 });
+            fs.chmodSync(goalSessions, 0o755);
+            const earlier = path.join(goalSessions, '2026-11-26T00-00-00-000Z_goal-session-old.jsonl');
+            fs.writeFileSync(earlier, '{}\n', { mode: 0o644 });
+            fs.chmodSync(earlier, 0o644);
+            const result = spawnSync('bash', [entrypoint, 'pi', '-p'], { env: { ...env, PROPR_PI_GOAL_SESSION_DIR: goalSessions }, encoding: 'utf8' });
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(reportOf(dirs.report).goal_dir_mode, '700', 'restricted before Pi starts');
+            assert.equal(fs.statSync(goalSessions).mode & 0o777, 0o700);
+            assert.deepEqual(fs.readdirSync(goalSessions).sort(), ['2026-11-26T00-00-00-000Z_goal-session-old.jsonl', '2026-11-27T00-00-00-000Z_goal-session.jsonl']);
+            for (const file of fs.readdirSync(goalSessions)) assert.equal(fs.statSync(path.join(goalSessions, file)).mode & 0o777, 0o600, file);
+        });
+    });
+
+    test('refuses a goal session dir inside the disposable home or missing from the container', () => {
+        withEntrypoint((env, dirs) => {
+            const inside = spawnSync('bash', [entrypoint, 'pi', '-p'], { env: { ...env, PROPR_PI_GOAL_SESSION_DIR: path.join(dirs.runtime, 'agent', 'sessions') }, encoding: 'utf8' });
+            assert.equal(inside.status, 64, inside.stderr);
+            assert.match(inside.stderr, /outside the disposable Pi home/);
+            const missing = spawnSync('bash', [entrypoint, 'pi', '-p'], { env: { ...env, PROPR_PI_GOAL_SESSION_DIR: path.join(dirs.runtime, '..', 'not-mounted') }, encoding: 'utf8' });
+            assert.equal(missing.status, 64, missing.stderr);
+            assert.match(missing.stderr, /not mounted/);
         });
     });
 

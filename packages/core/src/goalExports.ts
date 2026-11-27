@@ -6,6 +6,7 @@ export {
     claudeHelpSupportsWholeSession,
     claudeHelpSupportsNativeGoal,
     claudeGoalCommandProbeSucceeded,
+    piHelpSupportsWholeSession,
     codexHandshakeSupportsNativeGoal,
     codexSchemaSupportsNativeGoal,
     probeGoalCapability,
@@ -41,6 +42,7 @@ export {
     type RejectedGoalCheckpointDeclaration,
     type GoalResultState,
 } from './goals.js';
+export { removePiGoalSessions, piGoalSessionsRoot } from './agents/impl/utils/piGoalSession.js';
 export type { GoalJobData } from './queue/taskQueue.types.js';
 export {
     MAX_GOAL_TITLE_LENGTH,

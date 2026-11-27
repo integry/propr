@@ -277,6 +277,10 @@ The mounted directory is only a source. Each run gets a fresh, owner-only dispos
 
 Every Pi call the entrypoint makes (the version probe, the run itself, and credential seeding and sync) runs as `node`.
 
+#### Goal Sessions
+
+Goal runs keep their sessions outside the disposable directory. The worker creates an owner-only host directory per goal, `/tmp/git-processor/pi-goal-sessions/<goal-id>` (`PI_GOAL_SESSIONS_PATH` overrides the root), and mounts it read-write at `/home/node/.propr-pi-goal-session` with `PROPR_PI_GOAL_SESSION_DIR` set. The entrypoint refuses a goal session directory inside the disposable home or the host Pi directory, chowns it to `node`, and makes it and its files owner-only before Pi starts and again after Pi exits, including after a stop. Pi runs with `--session-dir` on that directory and either `--session-id <id>` (a new goal session under the ID ProPR assigned) or `--session <file>` (the exact saved file of a resumed goal). The worker checks that the saved file exists before resuming, because Pi otherwise starts an empty session at a missing path. Deleting the goal removes the directory.
+
 #### Refresh Write-Back Rules
 
 After the run, `scripts/pi-credentials.py` writes OAuth token refreshes from the disposable `auth.json` back to the host `auth.json`:
