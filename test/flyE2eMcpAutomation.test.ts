@@ -70,15 +70,20 @@ async function call(route: RequestHandler, req: Request) {
 }
 
 test('the workflow names the agent alias its configure step saves', () => {
-  const saved = [...workflow.matchAll(/saveAgents\(\[\{[^\]]*?\balias: '([^']+)'/g)].map(match => match[1]);
-  assert.equal(saved.length, 1, 'exactly one agent saved by the fixture');
-  assert.equal(payload.agentId, saved[0]);
-  assert.match(workflow, /jq --arg repo "\$REPO" '\.repositories = \[\$repo\]' \.github\/fly-e2e\/mcp-automation-definition\.json/);
+  // The configure step saves the selected agent (the AGENT env, default claude) with its type as id and alias.
+  const saved = [...workflow.matchAll(/saveAgents\(\[\{[^\]]*?\balias: ([^,\s]+)/g)].map(match => match[1]);
+  assert.deepEqual(saved, ['type'], 'exactly one agent saved by the fixture, aliased by its type');
+  assert.match(workflow, /const type = '__AGENT__';/);
+  assert.match(workflow, /-e "s\/__AGENT__\/\$AGENT\/"/);
+  assert.match(workflow, /AGENT: \$\{\{ inputs\.agent \|\| 'claude' \}\}/);
+  // The MCP step points the payload at that same agent; the stored default matches the default agent.
+  assert.match(workflow, /jq --arg repo "\$REPO" --arg agent "\$AGENT" '\.repositories = \[\$repo\] \| \.agentId = \$agent' \\\n\s+\.github\/fly-e2e\/mcp-automation-definition\.json/);
+  assert.equal(payload.agentId, 'claude');
 });
 
 test('the Fly MCP payload is created and started through the REST routes under PROPR_SPRITES_MCP_TRANSPORT=forward', async () => {
   await core.runMigrations();
-  // What the workflow's "Configure the fixture Claude agent" step saves.
+  // What the workflow's configure step saves for the default agent (claude).
   const { dockerImage, defaultModels } = core.AGENT_DEFAULTS.claude;
   await core.saveAgents([{ id: 'claude', type: 'claude', alias: 'claude', enabled: true,
     configPath: getManagedAgentConfigPath('claude', 'claude'), dockerImage,

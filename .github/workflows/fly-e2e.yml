@@ -818,8 +818,10 @@ jobs:
           )
           flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $seed | base64 -d | node --input-type=module'"
           source .github/fly-e2e/propr-api.sh
-          # The same payload test/flyE2eMcpAutomation.test.ts pushes through the real route handlers.
-          definition=$(jq --arg repo "$REPO" '.repositories = [$repo]' .github/fly-e2e/mcp-automation-definition.json |
+          # The same payload test/flyE2eMcpAutomation.test.ts pushes through the real route handlers,
+          # on the agent the configure step saved (its alias is the agent type).
+          definition=$(jq --arg repo "$REPO" --arg agent "$AGENT" '.repositories = [$repo] | .agentId = $agent' \
+            .github/fly-e2e/mcp-automation-definition.json |
             propr_api POST /automation-definitions --data-binary @- | jq -er '.definition.id | strings')
           echo "Created automation definition $definition"
           echo "MCP_TRIGGERED_AT=$(( $(date +%s) * 1000 ))" >> "$GITHUB_ENV"
