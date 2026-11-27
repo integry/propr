@@ -1,5 +1,5 @@
 import { isIP } from 'node:net';
-import { baseEgressAllowlist, DEFAULT_EGRESS_PORTS, parseEgressAllowEntry } from '../../network/egressAllowlist.js';
+import { agentCommandModel, baseEgressAllowlist, DEFAULT_EGRESS_PORTS, parseEgressAllowEntry } from '../../network/egressAllowlist.js';
 import { NetworkPolicyError } from '../../network/egressExecution.js';
 import type { AgentType } from '../types.js';
 import type { AgentRunEgressRule, AgentRunNetworkPolicy, AgentRunNetworkRestriction, AgentRunSpec } from './types.js';
@@ -48,14 +48,24 @@ export function agentRunPrivateAddressRules(instanceAllow: readonly string[]): A
  * (the agent's base hosts plus the policy's additions), with the instance's
  * own IP literals as the only private destinations.
  */
-export function agentRunNetworkPolicy(agentType: AgentType, restriction?: AgentRunNetworkRestriction): AgentRunNetworkPolicy {
+export function agentRunNetworkPolicy(agentType: AgentType, restriction?: AgentRunNetworkRestriction, model?: string): AgentRunNetworkPolicy {
     if (!restriction) return OPEN_AGENT_RUN_NETWORK_POLICY;
     return {
         mode: 'restricted',
-        allow: agentRunEgressRules([...baseEgressAllowlist(agentType), ...restriction.allow]),
+        allow: agentRunEgressRules([...baseEgressAllowlist(agentType, model), ...restriction.allow]),
         privateAddressAllow: agentRunPrivateAddressRules(restriction.instanceAllow ?? []),
         source: restriction.source,
     };
+}
+
+/** The model the run's command line selects; OpenCode's base allowlist adds that provider's hosts. */
+export function agentRunModel(spec: Pick<AgentRunSpec, 'args'>): string | undefined {
+    return agentCommandModel(spec.args);
+}
+
+/** {@link agentRunNetworkPolicy} for a spec: its agent type and configured model. */
+export function agentRunSpecNetworkPolicy(spec: AgentRunSpec, restriction?: AgentRunNetworkRestriction): AgentRunNetworkPolicy {
+    return agentRunNetworkPolicy(spec.profile.agentType, restriction, agentRunModel(spec));
 }
 
 const ruleKey = (rule: AgentRunEgressRule): string => `${rule.wildcard ? '*.' : ''}${rule.host}:${[...new Set(rule.ports)].sort((a, b) => a - b).join(',')}`;
@@ -96,7 +106,7 @@ export function isValidRestrictedAgentRunNetworkPolicy(policy: AgentRunNetworkPo
 export function assertAgentRunNetworkRepresentationsAgree(spec: AgentRunSpec): void {
     const { restriction, policy } = spec.network;
     if (!restriction || policy?.mode !== 'restricted') return;
-    if (sameAgentRunNetworkPolicy(agentRunNetworkPolicy(spec.profile.agentType, restriction), policy)) return;
+    if (sameAgentRunNetworkPolicy(agentRunSpecNetworkPolicy(spec, restriction), policy)) return;
     throw new NetworkPolicyError(`Agent run ${spec.name} carries a restricted network policy${policy.source ? ` (${policy.source})` : ''} that differs from its network restriction (${restriction.source})`);
 }
 
@@ -110,5 +120,5 @@ export function assertAgentRunNetworkRepresentationsAgree(spec: AgentRunSpec): v
 export function withAgentRunNetworkPolicy(spec: AgentRunSpec): AgentRunSpec {
     if (!spec.network.restriction && spec.network.policy?.mode === 'restricted') return spec;
     assertAgentRunNetworkRepresentationsAgree(spec);
-    return { ...spec, network: { ...spec.network, policy: agentRunNetworkPolicy(spec.profile.agentType, spec.network.restriction) } };
+    return { ...spec, network: { ...spec.network, policy: agentRunSpecNetworkPolicy(spec, spec.network.restriction) } };
 }

@@ -16,17 +16,24 @@ import type { FlyConfig } from './config.js';
 import { RUN, AGENT, WRAPPER, PACKAGE_SERVERS, wrapper } from './wrapper.js';
 import { PACKAGE_SERVER_INSTALLER, packageServerInstallSpec, type RemotePackageInstall } from '../../../extensions/remotePackageServers.js';
 import { FLY_PATH as PATH, flyPackageInstallSpec } from './packages.js';
+import { isRemoteAgentType, isRemotePromptMount, readRemotePromptFile, remoteRuntimeHome, unsupportedRemoteRunMount,
+    writeReturnedRuntimeFile, type RemoteAgentType, type RemoteRuntimeHome } from '../remoteRunMounts.js';
+import logger from '../../../utils/logger.js';
 
 export const helper = ['/usr/bin/python3', '-I', WRAPPER];
 const shim = '/opt/propr/fly-provider';
 type Bind = Extract<AgentRunMount, { type: 'bind' }>;
 export function unsupportedFlyMount(m: Bind) {
-    const store = m.credentialStore;
-    if (store?.perRun && store.store === 'config' && ['claude', 'codex'].includes(store.provider)
-        && m.target === '/home/node/.' + store.provider && m.purpose === 'credential' && !m.readOnly) return;
+    // The agent configuration's credential stores (per-run copies), Vibe's prompt file and runtime home.
+    if (m.credentialStore) return unsupportedRemoteRunMount(m);
     if (m.target === SEED && m.readOnly && m.purpose === 'credential') return;
     if (['scratch', 'logs'].includes(m.purpose) && !m.readOnly && /^\/tmp\/[\w-]+(?:\/[\w-]+)*$/.test(m.target)) return;
-    return `cannot provide the ${m.purpose} mount at ${m.target}`;
+    return unsupportedRemoteRunMount(m);
+}
+
+/** What Fly Machines refuses for an agent type, or undefined for Claude Code, Codex, Mistral Vibe and OpenCode. */
+export function unsupportedFlyAgentType(type: string): string | undefined {
+    return isRemoteAgentType(type) ? undefined : 'Fly Machines supports Claude Code, Codex, Mistral Vibe and OpenCode';
 }
 
 function validateLaunch(spec: AgentRunSpec, options: AgentRunOptions) {
@@ -39,15 +46,19 @@ function validateLaunch(spec: AgentRunSpec, options: AgentRunOptions) {
         || clone?.script !== WORKSPACE_TRANSPORT_SCRIPT || clone.resultDir !== WORKSPACE_TRANSPORT_RESULT_DIR)
         throw new Error('Fly Machines requires a prepared writable clone workspace');
     const provider = spec.profile.agentType;
-    if (provider !== 'claude' && provider !== 'codex') throw new Error('Fly Machines supports Claude Code and Codex');
+    const refusal = unsupportedFlyAgentType(provider);
+    if (refusal || !isRemoteAgentType(provider)) throw new Error(refusal);
     return { clone, containerPath, provider } as const;
 }
 
 type AddFile = (target: string, content: string | Buffer, mode?: number) => void;
 
-function prepareMounts(mounts: readonly AgentRunMount[], provider: 'claude' | 'codex', add: AddFile) {
+function prepareMounts(mounts: readonly AgentRunMount[], provider: RemoteAgentType, add: AddFile) {
     const directories = new Set<string>();
     const requests: CredentialStoreRequest[] = [];
+    /** Each credential store's path in the Machine, by store id. */
+    const storePaths = new Map<string, string>();
+    const runtimeHomes: RemoteRuntimeHome[] = [];
     let backupTmpfs = false;
     for (const m of mounts) {
         if (m.type === 'tmpfs') {
@@ -59,42 +70,53 @@ function prepareMounts(mounts: readonly AgentRunMount[], provider: 'claude' | 'c
         const reason = unsupportedFlyMount(m);
         if (reason) throw new Error(reason);
         if (m.credentialStore) {
-            if (m.credentialStore.provider !== provider || requests.length) throw new Error('Mismatched Fly credential store');
-            requests.push({ provider, id: 'config', store: 'config' as const, canonicalRoot: m.source });
+            const { store } = m.credentialStore;
+            if (m.credentialStore.provider !== provider || storePaths.has(store)) throw new Error('Mismatched Fly credential store');
+            requests.push({ provider, id: store, store, canonicalRoot: m.source });
+            storePaths.set(store, m.target);
         } else if (m.target === SEED) {
             const file = readRegularFileInside(path.dirname(m.source), path.basename(m.source), MAX_RETURNED_CREDENTIAL_BYTES);
             if (!file || file === 'oversized') throw new Error('Invalid Claude configuration seed');
             add(SEED, file.content);
-        } else directories.add(m.target);
-    }
-    return { requests, directories, backupTmpfs };
-}
-
-function stageCredentials(store: CredentialStoreBundle | undefined, storePath: string, add: AddFile,
-    directories: Set<string>) {
-    const owned: string[] = [];
-    const secrets: string[] = [];
-    if (store) {
-        directories.add(storePath);
-        for (const directory of store.directories) directories.add(path.join(storePath, directory));
-        for (const file of store.files) {
-            const target = path.join(storePath, file.path);
-            add(target, file.content, file.mode & 0o111 ? 0o700 : 0o600);
-            owned.push(target);
-            directories.add(path.dirname(target));
-            if (file.refresh) {
-                // Protect credential strings even when the CLI prints only one field.
-                try { JSON.parse(file.content.toString(), (key, value) => {
-                    if (typeof value === 'string' && /^(?:(?:access|refresh|id|auth)_?)?token$|^(?:openai_)?api_?key$/i.test(key)) secrets.push(value);
-                    return value;
-                }); } catch { secrets.push(file.content.toString().trim()); }
-            }
+        } else if (isRemotePromptMount(m)) {
+            // Root-owned and read-only for the agent, like Docker's read-only bind.
+            add(m.target, readRemotePromptFile(m), 0o644);
+        } else {
+            // Scratch, logs and a runtime home: a directory in the Machine, created for this run.
+            const home = remoteRuntimeHome(m);
+            if (home) runtimeHomes.push(home);
+            directories.add(m.target);
         }
     }
-    return { owned, secrets };
+    return { requests, storePaths, runtimeHomes, directories, backupTmpfs };
 }
 
-function providerArgv(spec: AgentRunSpec, provider: 'claude' | 'codex') {
+/** Credential-shaped JSON keys (Claude, Codex and OpenCode logins) whose values are redacted from the output. */
+const CREDENTIAL_KEY = /^(?:(?:access|refresh|id|auth)_?)?token$|^(?:openai_)?api_?key$|^(?:access|refresh|key)$/i;
+/** Environment names that carry a provider credential (OpenCode reads its provider keys from these). */
+const CREDENTIAL_ENV = /(?:API_?KEY|TOKEN|SECRET|PASSWORD)$/i;
+
+/** The run's credential store files: what the Machine gets, the node user owns and the output redacts. */
+interface StagedCredentials { add: AddFile; directories: Set<string>; owned: string[]; secrets: string[] }
+
+function stageCredentials(store: CredentialStoreBundle, storePath: string, staged: StagedCredentials) {
+    const { add, directories, owned, secrets } = staged;
+    directories.add(storePath);
+    for (const directory of store.directories) directories.add(path.join(storePath, directory));
+    for (const file of store.files) {
+        const target = path.join(storePath, file.path);
+        add(target, file.content, file.mode & 0o111 ? 0o700 : 0o600);
+        owned.push(target);
+        directories.add(path.dirname(target));
+        // Protect credential strings even when the CLI prints only one field.
+        try { JSON.parse(file.content.toString(), (key, value) => {
+            if (typeof value === 'string' && CREDENTIAL_KEY.test(key)) secrets.push(value);
+            return value;
+        }); } catch { if (file.refresh) secrets.push(file.content.toString().trim()); }
+    }
+}
+
+function providerArgv(spec: AgentRunSpec, provider: RemoteAgentType) {
     if (!spec.args.length) throw new Error('Fly Machines needs a provider command');
     return [spec.repoSetup?.providerEntrypoint ?? spec.entrypoint ?? `/home/node/${provider}-entrypoint.sh`, ...spec.args];
 }
@@ -144,17 +166,20 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     for (const [name, value] of env) {
         if (/^(?:PROPR_)?FLY_(?:(?:API|LIVE)_)?TOKEN$/.test(name) || value.includes(config.token)) env.delete(name);
     }
-    const { requests, directories, backupTmpfs } = prepareMounts(spec.mounts, provider, add);
+    const { requests, storePaths, runtimeHomes, directories, backupTmpfs } = prepareMounts(spec.mounts, provider, add);
     const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(), '.locks') } });
     const bundle = broker.materialize(requests, { definedEnv: [...env].filter(([, v]) => v).map(([k]) => k) });
-    const store = bundle.stores[0];
-    const storePath = '/home/node/.' + provider;
-    const staged = stageCredentials(store, storePath, add, directories);
-    const owned = staged.owned;
+    // Each store of the agent configuration (OpenCode has a config and a data store) at its provider path.
+    const storePath = (store: CredentialStoreBundle) => storePaths.get(store.id)!;
+    const staged: StagedCredentials = { add, directories, owned: [], secrets: [] };
+    for (const store of bundle.stores) stageCredentials(store, storePath(store), staged);
+    const { owned, secrets: storeSecrets } = staged;
+    const returning = bundle.stores.filter(store => store.outputs.length);
     const credentialNames = [...providerCredentialManifest(provider, 'config')?.apiKeyEnv ?? [], 'OPENAI_API_KEY',
-        'ANTHROPIC_AUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN', PROPR_MCP_BEARER_TOKEN_ENV];
+        'ANTHROPIC_AUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN', PROPR_MCP_BEARER_TOKEN_ENV,
+        ...[...env.keys()].filter(name => CREDENTIAL_ENV.test(name))];
     const extensionStaged = stageExtension(extension, add);
-    const secrets = [transportToken, ...extensionStaged.secrets, ...Object.values(bundle.secretEnv), ...staged.secrets, ...credentialNames.map(k => env.get(k))]
+    const secrets = [transportToken, ...extensionStaged.secrets, ...Object.values(bundle.secretEnv), ...storeSecrets, ...credentialNames.map(k => env.get(k))]
         .filter((v): v is string => v !== undefined && v.length >= 12);
     const environment = { PATH, ...Object.fromEntries(env), ...bundle.secretEnv, HOME: '/home/node', USER: 'node', LOGNAME: 'node' };
     // Only trusted values enter the root shell. Provider settings such as
@@ -176,7 +201,7 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     const hookBin = '/opt/propr/fly-hook';
     if (setup) add(hookBin + '/su-exec', '#!/bin/sh\nshift\nexec /usr/local/bin/su-exec node /usr/bin/python3 -I ' + WRAPPER + ' hook "$@"\n', 0o755);
     const command = ['/bin/bash', '-c', clone.script, ...(setup ? [`export PATH=${hookBin}:$PATH\n${setup.script}`, shim, ...spec.args] : [WORKSPACE_DIRECT_AGENT_LAUNCH, ...helper, 'agent'])];
-    const credentialPath = store?.outputs.length ? storePath : undefined;
+    const credentialPath = returning.length ? returning.map(storePath).join(', ') : undefined;
     add(RUN + '/input', JSON.stringify({ command, transportEnv, owned, backupTmpfs, credentialPath, bootTimeout: config.bootTimeout, credentialRetention: config.credentialRetention, timeout: options.timeout ?? 300_000, directories: [...directories], extensions: extensionStaged.skills, secrets }));
     add(RUN + '/stdin', options.stdinData ?? '');
     const name = 'propr-' + randomUUID();
@@ -195,18 +220,41 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
             add(RUN + '/packages.json', JSON.stringify(flyPackageInstallSpec(packages)));
         },
         async commit(api: MachinesApi, id: string) {
-            if (!store) return;
+            if (!bundle.stores.length) return;
             const returned: ReturnedCredentialFile[] = [];
-            for (const relative of store.outputs) {
-                const res = await api.exec(id, ['su-exec', 'node', ...helper, 'export', path.join(storePath, relative)]);
-                if (res.exit_code !== 0) throw new Error('Unable to export Fly Machine credentials');
-                const exported = JSON.parse(res.stdout);
-                if (exported === null) continue;
-                const [mtimeMs, encoded] = exported;
-                const content = Buffer.from(encoded, 'base64');
-                if (!Number.isFinite(mtimeMs) || content.length > MAX_RETURNED_CREDENTIAL_BYTES || content.toString('base64') !== encoded) throw new Error('Invalid Fly credential export');
-                returned.push({ storeId: store.id, path: relative, mtimeMs, content });
+            for (const store of returning) {
+                for (const relative of store.outputs) {
+                    const exported = await exportMachineFile(api, id, path.join(storePath(store), relative));
+                    if (exported === 'failed') throw new Error('Unable to export Fly Machine credentials');
+                    if (exported) returned.push({ storeId: store.id, path: relative, ...exported });
+                }
             }
             await broker.commit(bundle, returned);
+        },
+        /** Copy the run's runtime home results (Vibe's usage export) back to the worker; best effort, the run's outcome does not depend on it. */
+        async collectRuntimeFiles(api: MachinesApi, id: string) {
+            for (const home of runtimeHomes) {
+                for (const relative of home.returnFiles) {
+                    try {
+                        const exported = await exportMachineFile(api, id, path.posix.join(home.target, relative));
+                        if (exported === 'failed') throw new Error('export failed');
+                        if (exported) writeReturnedRuntimeFile(home, relative, exported.content);
+                    } catch (error) {
+                        logger.warn({ run: spec.name, file: path.posix.join(home.target, relative), err: error }, 'Could not collect a Fly run file');
+                    }
+                }
+            }
         } };
+}
+
+/** A file read by the node user in the Machine without following links (see the wrapper's export), or null when absent. */
+async function exportMachineFile(api: MachinesApi, id: string, file: string): Promise<{ mtimeMs: number; content: Buffer } | null | 'failed'> {
+    const res = await api.exec(id, ['su-exec', 'node', ...helper, 'export', file]);
+    if (res.exit_code !== 0) return 'failed';
+    const exported = JSON.parse(res.stdout);
+    if (exported === null) return null;
+    const [mtimeMs, encoded] = exported;
+    const content = Buffer.from(encoded, 'base64');
+    if (!Number.isFinite(mtimeMs) || content.length > MAX_RETURNED_CREDENTIAL_BYTES || content.toString('base64') !== encoded) throw new Error('Invalid Fly credential export');
+    return { mtimeMs, content };
 }

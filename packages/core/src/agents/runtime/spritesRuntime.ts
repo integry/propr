@@ -42,6 +42,9 @@ function mcpForwardTarget(spec: AgentRunSpec, environment: NodeJS.ProcessEnv, ga
     return target;
 }
 
+/** Agent types whose pinned CLIs Sprite setup installs (see scripts/sprites-agent-setup.sh). */
+const SPRITES_AGENT_TYPES: readonly string[] = ['codex', 'claude', 'antigravity', 'vibe', 'opencode'];
+
 // Operator catalog executables are not part of a Sprite: those servers stay refused (explicit) or dropped (auto-applied).
 const SPRITES_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false });
 
@@ -73,7 +76,7 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
 
     unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec) {
         const type = spec.profile.agentType;
-        if (!['codex', 'claude', 'antigravity'].includes(type)) return `unsupported agent type ${type}`;
+        if (!SPRITES_AGENT_TYPES.includes(type)) return `unsupported agent type ${type}`;
         return spritesCliVersionRefusal({ ...config, type });
     }
 
@@ -217,6 +220,8 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
                 const executed = await execute(sprite, launch, {
                     output, signal: executionSignal, prepared, onSpawn: () => { commit = () => prepared.commit(sprite); },
                 });
+                // Before the release restores the checkpoint: runtime home results (Vibe's usage export) the provider's parsers read on the worker.
+                if (commit) await prepared.collect(sprite);
                 return { ...executed, computeUsage: { runtime: 'sprites', wallTimeMs: Date.now() - checkedOutAt + provisioningMs + restoreMs,
                     queueMs, provisioningMs, restoreMs, ...(packageInstallMs !== undefined && { packageInstallMs }),
                     ...(packageServerInstallMs !== undefined && { packageServerInstallMs }), cpuSeconds: null, peakMemoryBytes: null, avgMemoryBytes: null,

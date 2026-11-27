@@ -37,6 +37,50 @@ export const AGENT_EGRESS_BASE_HOSTS: Record<AgentType, readonly string[]> = {
 };
 
 /**
+ * OpenCode talks to whichever provider its configured model names
+ * (`<provider>/<model>`). Each provider ProPR knows is listed with its API and
+ * sign-in hosts; a restricted OpenCode run allows the hosts of its model's
+ * provider. These providers are covered: OpenCode Zen and Go (`opencode`),
+ * Anthropic, OpenAI, OpenRouter, Google (Gemini API), Mistral, Groq,
+ * DeepSeek, xAI and GitHub Copilot. Another provider (or a custom `baseURL`
+ * in opencode.json) needs its host in the network allowlist in Settings.
+ */
+export const OPENCODE_PROVIDER_EGRESS_HOSTS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+    opencode: ['opencode.ai'],
+    anthropic: ['api.anthropic.com', 'console.anthropic.com'],
+    openai: ['api.openai.com', 'auth.openai.com', 'chatgpt.com'],
+    openrouter: ['openrouter.ai'],
+    google: ['generativelanguage.googleapis.com'],
+    mistral: ['api.mistral.ai'],
+    groq: ['api.groq.com'],
+    deepseek: ['api.deepseek.com'],
+    xai: ['api.x.ai'],
+    'github-copilot': ['api.githubcopilot.com', 'api.individual.githubcopilot.com'],
+});
+
+/** The model an agent command line selects (`--model <id>` or `--model=<id>`), if any. */
+export function agentCommandModel(args: readonly string[]): string | undefined {
+    for (let index = 0; index < args.length; index++) {
+        const arg = args[index];
+        if (arg === '--model') return args[index + 1] || undefined;
+        if (arg.startsWith('--model=')) return arg.slice('--model='.length) || undefined;
+    }
+    return undefined;
+}
+
+/**
+ * Provider hosts a run needs beyond the agent's base list, derived from its
+ * configured model: for OpenCode, the hosts of the model's provider (see
+ * {@link OPENCODE_PROVIDER_EGRESS_HOSTS}). Every other agent has one provider,
+ * already in its base list.
+ */
+export function agentModelEgressHosts(agentType: AgentType, model?: string): readonly string[] {
+    if (agentType !== 'opencode' || !model) return [];
+    const provider = model.slice(0, model.indexOf('/')).trim().toLowerCase();
+    return provider ? OPENCODE_PROVIDER_EGRESS_HOSTS[provider] ?? [] : [];
+}
+
+/**
  * Whether each agent CLI is known to send its provider API traffic through
  * `HTTPS_PROXY`. An agent marked unsupported runs with open networking (and a
  * timeline warning) instead of failing every request, unless the instance
@@ -64,8 +108,9 @@ export const AGENT_EGRESS_RESTRICTED_ENV: Partial<Record<AgentType, ReadonlyArra
     claude: [['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '1']],
 };
 
-export function baseEgressAllowlist(agentType: AgentType): string[] {
-    return [...new Set([...COMMON_HOSTS, ...AGENT_EGRESS_BASE_HOSTS[agentType]])];
+/** The hosts a restricted run of `agentType` always reaches, plus its configured model's provider hosts (OpenCode). */
+export function baseEgressAllowlist(agentType: AgentType, model?: string): string[] {
+    return [...new Set([...COMMON_HOSTS, ...AGENT_EGRESS_BASE_HOSTS[agentType], ...agentModelEgressHosts(agentType, model)])];
 }
 
 interface ParsedEntry { host: string; wildcard: boolean; port?: number }

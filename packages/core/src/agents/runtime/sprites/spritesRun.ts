@@ -8,10 +8,22 @@ import { CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/
 import type { AgentRunOptions } from '../dockerRuntime.js';
 import type { AgentRunMount, AgentRunSpec } from '../types.js';
 import type { ExtensionSkillFile } from '../../../extensions/extensionLaunchContext.js';
+import { isRemoteAgentType, isRemotePromptMount, readRemotePromptFile, remoteCredentialStoreTarget, remoteRuntimeHome,
+    unsupportedRemoteRunMount, writeReturnedRuntimeFile, type RemoteRuntimeHome } from '../remoteRunMounts.js';
+import type { AgentType } from '../../types.js';
+import type { CredentialStoreKind } from '../../credentials/providerManifests.js';
+import logger from '../../../utils/logger.js';
 
 const PATH = '/opt/propr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 const antigravityHome = '/opt/propr/run/tmp/propr-antigravity-home';
-const stores = { claude: '/home/node/.claude', codex: '/home/node/.codex', antigravity: antigravityHome + '/.gemini' };
+/** The run's /tmp: the launcher binds this directory over /tmp in the run's mount namespace. */
+const runTmp = '/opt/propr/run/tmp';
+/** Where a provider's store lives while the agent runs: Antigravity's in its disposable HOME, the others at their bind targets. */
+function liveStorePath(provider: AgentType, store: CredentialStoreKind): string | undefined {
+    if (provider === 'antigravity') return store === 'config' ? antigravityHome + '/.gemini' : undefined;
+    return remoteCredentialStoreTarget(provider, store);
+}
+const isSpriteProvider = (provider: AgentType) => provider === 'antigravity' || isRemoteAgentType(provider);
 export const spriteLauncher = '/opt/propr/launcher.py';
 const python = ['/usr/bin/python3', '-I', spriteLauncher];
 type Bind = Extract<AgentRunMount, { type: 'bind' }>;
@@ -25,10 +37,13 @@ export function extensionSkillPath(relative: string): string {
 }
 
 export function unsupportedMount(mount: Bind): string | undefined {
-    if (mount.credentialStore?.perRun && mount.credentialStore.store === 'config') return;
+    const store = mount.credentialStore;
+    if (store?.perRun && liveStorePath(store.provider, store.store)) return;
     if (mount.target === SEED && mount.readOnly && mount.purpose === 'credential') return;
     if (['logs', 'scratch'].includes(mount.purpose) && mount.target.startsWith('/tmp/') && path.normalize(mount.target) === mount.target) return;
-    return `cannot provide the ${mount.purpose} mount at ${mount.target}`;
+    // Vibe's prompt file and runtime home.
+    if (store) return `cannot provide the ${mount.purpose} mount at ${mount.target}`;
+    return unsupportedRemoteRunMount(mount);
 }
 
 function supportedBinds(spec: AgentRunSpec) {
@@ -105,13 +120,18 @@ export function validateSpriteRun(launch: SpriteLaunch, defaults: EnvDefaults = 
     const { spec, options, token } = launch;
     const clone = writableClone(spec);
     const provider = spec.profile.agentType;
-    if (!Object.hasOwn(stores, provider)) throw new Error(`Unsupported Sprites provider: ${provider}`);
+    if (!isSpriteProvider(provider)) throw new Error(`Unsupported Sprites provider: ${provider}`);
     const binds = supportedBinds(spec);
     const { env, transportToken } = runEnvironment(launch, defaults, true);
+    // Each store of the agent configuration (OpenCode has a config and a data store), copied per run.
     const credentials = binds.filter(m => m.credentialStore).map(m => {
+        const { store } = m.credentialStore!;
         if (m.credentialStore!.provider !== provider) throw new Error('Mismatched Sprite credential store');
-        return { id: 'config', provider, store: 'config' as const, canonicalRoot: m.source };
+        return { id: store, provider, store, canonicalRoot: m.source };
     });
+    if (new Set(credentials.map(c => c.id)).size !== credentials.length) throw new Error('Mismatched Sprite credential store');
+    const prompts = binds.filter(isRemotePromptMount);
+    const runtimeHomes = binds.map(remoteRuntimeHome).filter((home): home is RemoteRuntimeHome => !!home);
     const argv = spec.repoSetup
         ? ['/bin/bash', '-c', spec.repoSetup.script, `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args]
         : [spec.entrypoint ?? `/opt/propr/entrypoints/${provider}-entrypoint.sh`, ...spec.args];
@@ -119,9 +139,9 @@ export function validateSpriteRun(launch: SpriteLaunch, defaults: EnvDefaults = 
         [E.branch]: clone.branch, [E.baseRef]: clone.baseRef, [E.baseCommit]: clone.baseCommit,
         [E.resultRef]: clone.resultRef ?? '', [E.resultDir]: '/opt/propr/result' };
     const stdin = options.stdinData ?? '';
-    const directories = binds.filter(m => ['logs', 'scratch'].includes(m.purpose)).map(m => m.target);
+    const directories = binds.filter(m => ['logs', 'scratch', 'runtime-home'].includes(m.purpose)).map(m => m.target);
     checkPayload(JSON.stringify({ argv, directories, transportEnv, transportToken, stdin, env: Object.fromEntries(env) }), token);
-    return { provider, binds, credentials, argv, directories, transportEnv, stdin };
+    return { provider, binds, credentials, prompts, runtimeHomes, argv, directories, transportEnv, stdin };
 }
 
 function checkPayload(payload: string, token: string) {
@@ -139,14 +159,20 @@ export function prepareSpriteRun(launch: SpriteLaunch,
         .forEach(([key, value]) => env.set(key, value));
     const broker = new CredentialBroker({ lock: { lockRoot: path.join(credentialRunRoot(), '.locks') } });
     const bundle = broker.materialize(credentials, { definedEnv: [...env].filter(([, value]) => value).map(([key]) => key) });
-    const store = bundle.stores[0];
-    const files = store?.files.map(f => {
+    // Store i's files are uploaded under source/<i>/ and copied to its live path by the node user.
+    const liveStores = bundle.stores.map(store => liveStorePath(provider, store.store)!);
+    const files = bundle.stores.flatMap((store, index) => store.files.map(f => {
         if (f.content.includes(token)) throw new Error('Sprites org credential found in provider store');
-        return [f.path, f.content.toString('base64'), Boolean(f.mode & 0o111)];
-    }) ?? [];
-    const liveStore = stores[provider as keyof typeof stores];
+        return [`${index}/${f.path}`, f.content.toString('base64'), Boolean(f.mode & 0o111)];
+    }));
+    const outputs = bundle.stores.flatMap((store, index) => store.outputs.map(relative => ({ store, relative, live: path.join(liveStores[index], relative) })));
     const directories = [home, ...validated.directories,
-        ...(store?.directories.map(dir => path.join(liveStore, dir)) ?? [])];
+        ...bundle.stores.flatMap((store, index) => store.directories.map(dir => path.join(liveStores[index], dir)))];
+    const prompts = validated.prompts.map(mount => {
+        const content = readRemotePromptFile(mount);
+        if (content.includes(token)) throw new Error('Sprites org credential found in a prompt file');
+        return [mount.target, content.toString('base64')];
+    });
     const environment = { ...Object.fromEntries(env), ...bundle.secretEnv };
     const extensions = (launch.skillFiles ?? []).map(file => {
         if (file.content.includes(token)) throw new Error('Sprites org credential found in an extension skill bundle');
@@ -155,32 +181,58 @@ export function prepareSpriteRun(launch: SpriteLaunch,
     const upload = JSON.stringify({
         transport: ['/bin/bash', '-c', WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, ...python, 'agent'],
         transportEnv: { ...validated.transportEnv, [WORKSPACE_TRANSPORT_TOKEN_ENV]: transportToken },
-        stdin: validated.stdin, files, extensions,
+        stdin: validated.stdin, files, extensions, prompts,
         agent: { env: environment, argv, directories, claudeSeed: claudeSeed(binds, token),
-            store: store ? liveStore : null, outputs: store?.outputs ?? [] },
+            stores: liveStores, outputs: outputs.map(output => output.live) },
     });
     checkPayload(upload, token);
     return {
         environment,
         markerArgs: env.get('PROPR_REPO_SETUP') === '0' ? [] : argv,
         upload: (sprite: Sprite) => sprite.filesystem().writeFile(inputPath, upload, { mode: 0o600 }),
-        commit,
+        commit, collect,
     };
     async function commit(sprite: Sprite) {
-        if (!store?.outputs.length) return;
+        if (!outputs.length) return;
         // The SDK stat/read calls follow links. Run the descriptor-based reader on
         // the Sprite. Only the launcher's unprivileged child reads the live credentials.
         const limits = {
-            cwd: '/', timeout: 30_000, maxBuffer: 2 * MAX_RETURNED_CREDENTIAL_BYTES * store.outputs.length,
+            cwd: '/', timeout: 30_000, maxBuffer: 2 * MAX_RETURNED_CREDENTIAL_BYTES * outputs.length,
         };
         await sprite.execFile('sudo', ['-n', ...python, 'export'], limits);
-        const { stdout } = await sprite.execFile(python[0], [...python.slice(1), 'read-export', String(store.outputs.length)], limits);
+        const { stdout } = await sprite.execFile(python[0], [...python.slice(1), 'read-export', String(outputs.length)], limits);
         const records: Array<{ index: number; content: string; mtimeMs: number }> = JSON.parse(stdout.toString());
         await broker.commit(bundle, records.map(record => {
             const content = Buffer.from(record.content, 'base64');
-            if (!Number.isInteger(record.index) || !store.outputs[record.index] || !Number.isFinite(record.mtimeMs) || content.length > MAX_RETURNED_CREDENTIAL_BYTES)
+            const output = Number.isInteger(record.index) ? outputs[record.index] : undefined;
+            if (!output || !Number.isFinite(record.mtimeMs) || content.length > MAX_RETURNED_CREDENTIAL_BYTES)
                 throw new Error('Invalid Sprite credential export');
-            return { storeId: store.id, path: store.outputs[record.index], content, mtimeMs: record.mtimeMs };
+            return { storeId: output.store.id, path: output.relative, content, mtimeMs: record.mtimeMs };
         }));
+    }
+    /**
+     * Copy the run's runtime home results (Vibe's usage export) back to the worker
+     * before the Sprite is restored. Read by the node user without following links;
+     * best effort, the run's outcome does not depend on it.
+     */
+    async function collect(sprite: Sprite) {
+        for (const home of validated.runtimeHomes) {
+            for (const relative of home.returnFiles) {
+                const file = path.posix.join(home.target, relative);
+                // The run saw its private /tmp, which is the launcher's run directory outside it.
+                const onSprite = file.startsWith('/tmp/') ? runTmp + file.slice('/tmp'.length) : file;
+                try {
+                    const { stdout } = await sprite.execFile('sudo', ['-n', 'su-exec', 'node', ...python, 'read-file', onSprite],
+                        { cwd: '/', timeout: 30_000, maxBuffer: 2 * MAX_RETURNED_CREDENTIAL_BYTES });
+                    const record: { content: string } | null = JSON.parse(stdout.toString());
+                    if (!record) continue;
+                    const content = Buffer.from(record.content, 'base64');
+                    if (content.length > MAX_RETURNED_CREDENTIAL_BYTES) throw new Error('oversized run file');
+                    writeReturnedRuntimeFile(home, relative, content);
+                } catch (error) {
+                    logger.warn({ run: launch.spec.name, file, err: error }, 'Could not collect a Sprite run file');
+                }
+            }
+        }
     }
 }

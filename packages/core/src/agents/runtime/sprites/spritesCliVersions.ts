@@ -16,6 +16,8 @@ export function spritesProvidedCliVersion(type: AgentType, pins: SpritesCliPins 
     if (type === 'claude') return pins.CLAUDE_CLI_VERSION;
     if (type === 'codex') return pins.CODEX_CLI_VERSION;
     if (type === 'antigravity') return pins.ANTIGRAVITY_CLI_VERSION;
+    if (type === 'opencode') return pins.OPENCODE_CLI_VERSION;
+    if (type === 'vibe') return pins.VIBE_CLI_VERSION;
     return undefined;
 }
 

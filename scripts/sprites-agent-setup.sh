@@ -39,6 +39,49 @@ pin_npm_cli() {
     installed_version "$bin_dir/$bin_name" | grep -qF "$version" || die "$bin_name is not at the pinned version $version"
 }
 
+# Installs uv <version> (Dockerfile.agent's uv image pin) into $bin_dir from its
+# release archive, checked against the release's published SHA-256.
+pin_uv() {
+    local version="$1" arch work archive url
+    if installed_version "$bin_dir/uv" | grep -qF "uv $version"; then return 0; fi
+    case "$(uname -m)" in
+        x86_64|amd64) arch=x86_64 ;;
+        aarch64|arm64) arch=aarch64 ;;
+        *) die "no uv release for $(uname -m)" ;;
+    esac
+    log "installing uv $version"
+    work="$(mktemp -d)"
+    archive="uv-$arch-unknown-linux-gnu.tar.gz"
+    url="https://github.com/astral-sh/uv/releases/download/$version/$archive"
+    curl --fail --show-error --silent --location --connect-timeout 20 --max-time 300 --retry 5 --retry-all-errors -o "$work/$archive" "$url"
+    curl --fail --show-error --silent --location --connect-timeout 20 --max-time 60 --retry 5 --retry-all-errors -o "$work/$archive.sha256" "$url.sha256"
+    (cd "$work" && sha256sum -c "$archive.sha256" >&2) || die "uv $version archive checksum mismatch"
+    tar -xzf "$work/$archive" -C "$work"
+    install -m 0755 "$work/uv-$arch-unknown-linux-gnu/uv" "$work/uv-$arch-unknown-linux-gnu/uvx" "$bin_dir/"
+    rm -rf "$work"
+    installed_version "$bin_dir/uv" | grep -qF "uv $version" || die "uv is not at the pinned version $version"
+}
+
+# Installs mistral-vibe <version> on uv-managed Python <python> (mistral-vibe
+# publishes only cp312 wheels), as Dockerfile.agent's vibe-cli stage does.
+# The tool and the interpreter live under /opt/uv, readable by node, at the
+# image's paths (the prompt-file adapter's shebang names the tool's Python).
+pin_vibe() {
+    local version="$1" python="$2"
+    export UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR="$bin_dir" UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_CACHE_DIR=/opt/uv/cache
+    if ! installed_version "$bin_dir/vibe" | grep -qF "$version"; then
+        log "installing mistral-vibe $version on Python $python"
+        "$bin_dir/uv" tool install --force --python "$python" "mistral-vibe==$version" >&2
+        "$bin_dir/uv" cache clean >&2 || true
+        rm -rf "$UV_CACHE_DIR"
+    fi
+    chmod -R a+rX /opt/uv
+    if [ ! -e "$bin_dir/vibe-acp" ]; then ln -s "$bin_dir/vibe" "$bin_dir/vibe-acp"; fi
+    ln -sf "$bin_dir/vibe" /usr/local/bin/vibe
+    ln -sf "$bin_dir/vibe-acp" /usr/local/bin/vibe-acp
+    installed_version su-exec node "$bin_dir/vibe" | grep -qF "$version" || die "vibe is not at the pinned version $version"
+}
+
 # su-exec compatible shim over setpriv: like su-exec and gosu, it sets HOME
 # to the target user's home (setpriv alone keeps the caller's, e.g. /root).
 write_privilege_shim() {
@@ -124,6 +167,10 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 source_dir="${1:?usage: sprites-agent-setup.sh <directory with the entrypoint scripts>}"
 : "${CLAUDE_CLI_VERSION:?CLAUDE_CLI_VERSION is required}"
 : "${CODEX_CLI_VERSION:?CODEX_CLI_VERSION is required}"
+: "${OPENCODE_CLI_VERSION:?OPENCODE_CLI_VERSION is required}"
+: "${VIBE_CLI_VERSION:?VIBE_CLI_VERSION is required}"
+: "${VIBE_PYTHON_VERSION:?VIBE_PYTHON_VERSION is required}"
+: "${UV_VERSION:?UV_VERSION is required}"
 
 
 [ "$(id -u)" = "0" ] || die "must run as root (sudo -n)"
@@ -164,6 +211,9 @@ command -v gosu >/dev/null 2>&1 || ln -sf "$(command -v su-exec)" /usr/local/bin
 # --- pinned CLIs ---------------------------------------------------------
 pin_npm_cli @anthropic-ai/claude-code "$CLAUDE_CLI_VERSION" claude
 pin_npm_cli @openai/codex "$CODEX_CLI_VERSION" codex
+pin_npm_cli opencode-ai "$OPENCODE_CLI_VERSION" opencode
+pin_uv "$UV_VERSION"
+pin_vibe "$VIBE_CLI_VERSION" "$VIBE_PYTHON_VERSION"
 
 if [ "$(installed_version "$bin_dir/agy")" != "$ANTIGRAVITY_CLI_VERSION" ]; then
     log "installing Antigravity CLI $ANTIGRAVITY_CLI_VERSION"
@@ -183,9 +233,12 @@ ln -sf "$bin_dir/agy" /usr/local/bin/agy
 
 # These entrypoints and the repository hook are invoked only after the privilege drop.
 install -d -m 0755 /opt/propr/entrypoints
-for script in claude-entrypoint.sh codex-entrypoint.sh antigravity-entrypoint.sh; do
+for script in claude-entrypoint.sh codex-entrypoint.sh antigravity-entrypoint.sh opencode-entrypoint.sh vibe-entrypoint.sh; do
     install -m 0755 "$source_dir/$script" "/opt/propr/entrypoints/$script"
 done
+# The OpenCode stdin prompt runner and the Vibe prompt-file adapter, at the image's paths.
+install -m 0755 "$source_dir/opencode-run.sh" /usr/local/bin/opencode-run
+install -m 0755 "$source_dir/vibe-prompt-file-runner.py" /usr/local/bin/propr-vibe-prompt-file
 install -m 0755 "$source_dir/gh-wrapper.sh" /usr/local/bin/gh-wrapper
 install -m 0755 "$source_dir/sprites-launcher.py" /opt/propr/launcher.py
 # Package and catalog stdio MCP servers run through the same bridge as in the Docker task image.

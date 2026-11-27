@@ -8,6 +8,13 @@ on:
         type: choice
         options: [sprites, fly-machines]
         default: sprites
+      agent:
+        description: >-
+          Agent the fixture issue runs on (its pinned CLI version is in the step summary). Its credentials come from
+          FLY_E2E_APP_ENV like Claude's (CLAUDE_SETTINGS_B64, CODEX_AUTH_B64, VIBE_ENV_B64 or OPENCODE_CONFIG_B64); without them the run says so and skips
+        type: choice
+        options: [claude, codex, vibe, opencode]
+        default: claude
       extensions:
         description: >-
           Also verify Extension Library items on the remote runtime: a skill bundle, a pinned npm MCP server and four
@@ -43,6 +50,10 @@ jobs:
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/fly-e2e
       - id: check
         env:
           AGENT_RUNTIME: ${{ inputs.agent_runtime || 'sprites' }}
@@ -53,7 +64,18 @@ jobs:
           FLY_E2E_GITHUB_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN != '' }}
           FLY_E2E_GH_OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID != '' }}
           FLY_E2E_GH_OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET != '' }}
+          AGENT: ${{ inputs.agent || 'claude' }}
+          APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
         run: |
+          source .github/fly-e2e/agent-credentials.sh
+          # The agent is configured from the ProPR config in FLY_E2E_APP_ENV, as Claude always was. No
+          # credentials for it there: say so and skip, rather than fail later for a reason hard to see.
+          key=$(agent_credential_key "$AGENT") || { echo "::error::Unknown agent $AGENT"; exit 1; }
+          if [[ -n $APP_ENV ]] && ! grep -q "^${key}=." <<< "$APP_ENV"; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping live smoke for agent \`$AGENT\`: the ProPR config in FLY_E2E_APP_ENV has no \`$key\` with its credentials." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           missing=()
           required=(FLY_E2E_TOKEN FLY_E2E_APP_ENV FLY_E2E_GITHUB_TOKEN FLY_E2E_GH_OAUTH_CLIENT_ID FLY_E2E_GH_OAUTH_CLIENT_SECRET)
           # Fly Machines runs host the extensions mode's OAuth fixture on a Sprite (Sprites runs use a Fly Machine).
@@ -85,6 +107,8 @@ jobs:
       IDLE_AFTER: 2m
       # The nightly schedule has no inputs, so it always runs on Sprites.
       AGENT_RUNTIME: ${{ inputs.agent_runtime || 'sprites' }}
+      # The nightly schedule runs Claude Code. Each agent's issue label is llm-<agent>.
+      AGENT: ${{ inputs.agent || 'claude' }}
       # Fly Machines start agents in a separate app with their own image and token.
       AGENT_APP: propr-e2e-agents-${{ github.run_id }}-${{ github.run_attempt }}
       # A small instance runtime package absent from Dockerfile.agent's explicit apt
@@ -130,6 +154,18 @@ jobs:
         run: |
           : "${ORG:?Set FLY_E2E_ORG}" "${REPO:?Set FLY_E2E_REPO}"
           [[ $AGENT_RUNTIME == sprites || $AGENT_RUNTIME == fly-machines ]]
+          [[ $AGENT =~ ^(claude|codex|vibe|opencode)$ ]]
+          source .github/fly-e2e/agent-credentials.sh
+          # The CLI version both runtimes run: the Dockerfile.agent pin (the Fly image and the Sprite setup install it).
+          cli_arg=$(tr '[:lower:]' '[:upper:]' <<< "$AGENT")_CLI_VERSION
+          cli_version=$(sed -nE "s/^ARG ${cli_arg}=([a-zA-Z0-9.+_-]+)\$/\1/p" Dockerfile.agent | head -n 1)
+          [[ -n $cli_version ]] || { echo "::error::No $cli_arg pin in Dockerfile.agent"; exit 1; }
+          {
+            echo "AGENT_CREDENTIAL_KEY=$(agent_credential_key "$AGENT")"
+            echo "AGENT_CREDENTIAL_FILE=$(agent_credential_file "$AGENT")"
+            echo "AGENT_CLI_VERSION=$cli_version"
+          } >> "$GITHUB_ENV"
+          echo "- Agent: \`$AGENT\` CLI $cli_version (Dockerfile.agent pin) on \`$AGENT_RUNTIME\`" >> "$GITHUB_STEP_SUMMARY"
           # ProPR MCP mode checks the Sprites SSH reverse forward, so it needs the Sprites runtime.
           [[ $MCP != true || $AGENT_RUNTIME == sprites ]] || { echo "::error::MCP mode requires agent_runtime=sprites"; exit 1; }
           [[ $CAPACITY != true || $AGENT_RUNTIME == fly-machines ]] ||
@@ -206,9 +242,16 @@ jobs:
           umask 077
           echo "::add-mask::$OAUTH_CLIENT_SECRET"
           printf '%s\n' "$APP_ENV" > "$ENV_FILE"
-          for key in PROPR_ADMIN_USERS GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 CLAUDE_SETTINGS_B64; do
+          for key in PROPR_ADMIN_USERS GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 "$AGENT_CREDENTIAL_KEY"; do
             grep -q "^${key}=." "$ENV_FILE" || { echo "Missing $key"; exit 1; }
           done
+          # The agent's credential values, masked here and searched for in the worker log and the agent image later.
+          source .github/fly-e2e/agent-credentials.sh
+          sed -n "s/^${AGENT_CREDENTIAL_KEY}=//p" "$ENV_FILE" | head -n 1 | base64 -d > "$OUT/agent-credential"
+          agent_credential_values "$OUT/agent-credential" > "$OUT/credential-values"
+          rm -f "$OUT/agent-credential"
+          while IFS= read -r value; do echo "::add-mask::$value"; done < "$OUT/credential-values"
+          [[ -s $OUT/credential-values ]] || echo "::warning::$AGENT_CREDENTIAL_KEY holds no credential value to search the logs for"
           if [[ $EXTENSIONS == true ]]; then
             # The Extension Library API needs a durable instance administrator. The
             # fixture token's user becomes a bootstrap administrator and claims the role.
@@ -276,7 +319,7 @@ jobs:
           status=$(curl --fail --retry 8 --retry-all-errors -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/health")
           [[ $status == 200 ]]
 
-      - name: Configure the fixture Claude agent and runtime package before idle shutdown
+      - name: Configure the fixture agent and runtime package before idle shutdown
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: |
@@ -284,16 +327,21 @@ jobs:
           [[ $RUNTIME_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ && $SPRITE_DISTRO_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ ]]
           packages=$(jq -cn --arg pkg "$RUNTIME_PACKAGE" --arg distro "$SPRITE_DISTRO_PACKAGE" --arg runtime "$AGENT_RUNTIME" \
             '[$pkg] + (if $runtime == "sprites" then [$distro] else [] end) | sort')
-          setup=$(sed -e "s/__RUNTIME_PACKAGES__/$packages/" -e "s/__AGENT_RUNTIME__/$AGENT_RUNTIME/" <<'JS' | base64 -w0
+          setup=$(sed -e "s/__RUNTIME_PACKAGES__/$packages/" -e "s/__AGENT_RUNTIME__/$AGENT_RUNTIME/" -e "s/__AGENT__/$AGENT/" <<'JS' | base64 -w0
           const {
             saveAgents, closeConnection, AGENT_DEFAULTS, agentRuntimePackagesDigest,
             requestAgentRuntimePackageBuild, buildAgentRuntimePackageProfile,
           } = await import('@propr/core');
           const { getManagedAgentConfigPath } = await import('@propr/shared');
-          const { dockerImage, defaultModels } = AGENT_DEFAULTS.claude;
-          await saveAgents([{ id: 'claude', type: 'claude', alias: 'claude', enabled: true,
-            configPath: getManagedAgentConfigPath('claude', 'claude'), dockerImage,
-            supportedModels: defaultModels, defaultModel: 'claude-sonnet-5-5' }]);
+          // The selected agent, with its id and alias the agent type, on the managed credential directory.
+          const type = '__AGENT__';
+          const { dockerImage, defaultModels, defaultCliVersion } = AGENT_DEFAULTS[type];
+          const defaultModel = process.env[`PROPR_E2E_${type.toUpperCase()}_MODEL`]?.trim()
+            || (type === 'claude' ? 'claude-sonnet-5-5' : defaultModels[0]);
+          await saveAgents([{ id: type, type, alias: type, enabled: true,
+            configPath: getManagedAgentConfigPath(type, type), dockerImage,
+            supportedModels: [...new Set([...defaultModels, defaultModel])], defaultModel }]);
+          console.log('PROPR_E2E_AGENT ' + JSON.stringify({ type, defaultModel, cliVersion: defaultCliVersion }));
           // Settings → Agent runtime packages → Apply: the API records the list
           // (requestAgentRuntimePackageBuild) and the worker's build job applies it.
           // The runtime accepts the list once it passes its own package index check (Sprites: the Sprite base's).
@@ -324,11 +372,43 @@ jobs:
           digest=$(jq -er '.packagesDigest | strings | select(test("^[0-9a-f]{16}$"))' <<< "$applied")
           echo "RUNTIME_PACKAGES_DIGEST=$digest" >> "$GITHUB_ENV"
           echo "Configured runtime packages $packages (packagesDigest $digest) before the idle stop"
-          # Install and verify the settings over SSH after the volume is mounted.
-          awk '/^```bash title="Install headless Claude settings"$/{copy=1; next}
-               copy && /^```$/{exit} copy' docs/docs/tutorials/setup-fly.md > "$OUT/claude-settings.sh"
-          test -s "$OUT/claude-settings.sh"
-          bash -eu "$OUT/claude-settings.sh"
+          configured=$(sed -n 's/^PROPR_E2E_AGENT //p' "$OUT/runtime-packages.log" | tr -d '\r' | tail -n 1)
+          echo "- Agent configuration: \`$AGENT\`, default model \`$(jq -r .defaultModel <<< "$configured")\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ $AGENT == claude ]]; then
+            # Install and verify the settings over SSH after the volume is mounted.
+            awk '/^```bash title="Install headless Claude settings"$/{copy=1; next}
+                 copy && /^```$/{exit} copy' docs/docs/tutorials/setup-fly.md > "$OUT/claude-settings.sh"
+            test -s "$OUT/claude-settings.sh"
+            bash -eu "$OUT/claude-settings.sh"
+          else
+            # The same install for the other agents: their credential file, into their managed credential
+            # directory on the volume. Every runtime then copies it to the run as that agent configuration's store.
+            install=$(sed -e "s/__AGENT__/$AGENT/" -e "s/__KEY__/$AGENT_CREDENTIAL_KEY/" -e "s/__FILE__/$AGENT_CREDENTIAL_FILE/" <<'JS' | base64 -w0
+          import { chmod, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+          import { randomUUID } from 'node:crypto';
+          import { join } from 'node:path';
+          import { getManagedAgentConfigPath, getManagedAgentConfigRelativePath } from '@propr/shared';
+          const config = getManagedAgentConfigPath('__AGENT__', '__AGENT__');
+          const dir = join(process.env.PROPR_MANAGED_CREDENTIALS_DIR, getManagedAgentConfigRelativePath(config));
+          const content = Buffer.from(process.env.__KEY__ || '', 'base64');
+          if (!content.length) throw new Error('__KEY__ decoded to an empty file');
+          await mkdir(dir, { recursive: true, mode: 0o700 });
+          await chmod(dir, 0o700);
+          const file = join(dir, '__FILE__');
+          const temp = join(dir, `.credential-${randomUUID()}`);
+          try {
+            await writeFile(temp, content, { flag: 'wx', mode: 0o600 });
+            await rename(temp, file);
+          } finally {
+            await rm(temp, { force: true });
+          }
+          const { size } = await stat(file);
+          if (!size) throw new Error('Installed __FILE__ is empty');
+          console.log(size);
+          JS
+            )
+            flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $install | base64 -d | node --input-type=module'"
+          fi
 
       - name: Start the OAuth MCP fixture on a disposable Sprite
         if: env.EXTENSIONS == 'true' && env.OAUTH_FIXTURE_HOST == 'sprite'
@@ -644,12 +724,12 @@ jobs:
 
           Open a PR resolving this issue."
           fi
-          issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" -F 'labels[]=llm-claude' \
+          issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" -F "labels[]=llm-$AGENT" \
             -f body="$body" --jq .number)
           echo "ISSUE=$issue" >> "$GITHUB_ENV"
           if [[ $CAPACITY == true ]]; then
             # The queued run: with PROPR_FLY_MACHINES_MAX=1 it may create its Machine only after the first one is destroyed.
-            issue2=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP queued" -F 'labels[]=llm-claude' \
+            issue2=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP queued" -F "labels[]=llm-$AGENT" \
               -f body="Create $APP-queued.txt containing exactly one line: $APP-queued. Open a PR resolving this issue." --jq .number)
             echo "ISSUE2=$issue2" >> "$GITHUB_ENV"
           fi
@@ -780,6 +860,7 @@ jobs:
             sleep 15
           done
           [[ $pr =~ ^[0-9]+$ ]] || { echo "No unique linked PR for $REPO#$ISSUE"; exit 1; }
+          echo "- Linked PR: $REPO#$pr from \`$AGENT\` CLI $AGENT_CLI_VERSION on \`$AGENT_RUNTIME\`" >> "$GITHUB_STEP_SUMMARY"
           sha=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
           token=$(bash "$OUT/installation-token.sh")
           echo "::add-mask::$token"
@@ -1186,6 +1267,31 @@ jobs:
           echo "OAuth fixture counters: $(curl --silent --show-error --max-time 20 "$OAUTH_FIXTURE_ORIGIN/stats" | jq -c 'del(.echoes)' 2>/dev/null || echo unavailable)"
           exit 0
 
+      - name: Check that the agent credentials stayed out of the agent images
+        # Credentials travel per run as the agent configuration's store files, never in an image: search the
+        # Fly Machines agent image this run built and the derived image the runtime built from it. A Sprite has
+        # no image; its clean checkpoint is taken at provisioning, before any run's credentials are uploaded.
+        if: always() && env.AGENT_RUNTIME == 'fly-machines' && env.AGENT_CLI_VERSION != ''
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -s ${OUT}/credential-values ]] || { echo "No credential values to search for"; exit 0; }
+          images=("propr/agent:$GITHUB_SHA")
+          if [[ -n ${DERIVED_IMAGE:-} ]]; then
+            flyctl auth docker > /dev/null
+            docker pull --quiet "$DERIVED_IMAGE" > /dev/null
+            images+=("$DERIVED_IMAGE")
+          fi
+          for image in "${images[@]}"; do
+            container=$(docker create "$image")
+            found=0
+            docker export "$container" | grep -aqF -f "$OUT/credential-values" && found=1
+            docker rm "$container" > /dev/null
+            (( found == 0 )) || { echo "::error::$image contains a $AGENT credential value"; exit 1; }
+            echo "- No $AGENT credential value in \`$image\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+
       - name: Redact the worker log for upload
         id: worker-log
         if: always()
@@ -1201,9 +1307,22 @@ jobs:
           redact_fly_tokens < "$OUT/app-logs.jsonl" |
             sed -E '/^::error::/d; s/(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/[redacted GitHub token]/g' > "$dir/app-logs.jsonl" ||
             status=$?
+          # The agent's own credentials (from FLY_E2E_APP_ENV) must not reach the worker log either.
+          leaked=0
+          if [[ -s ${OUT}/credential-values ]]; then
+            leaked=$(grep -cF -f "$OUT/credential-values" "$OUT/app-logs.jsonl" || true)
+            if (( leaked > 0 )); then
+              awk 'NR == FNR { if (length) secrets[++n] = $0; next }
+                { for (i = 1; i <= n; i++) while ((at = index($0, secrets[i])) > 0)
+                    $0 = substr($0, 1, at - 1) "[redacted agent credential]" substr($0, at + length(secrets[i])); print }' \
+                "$OUT/credential-values" "$dir/app-logs.jsonl" > "$dir/app-logs.redacted" && mv "$dir/app-logs.redacted" "$dir/app-logs.jsonl"
+            fi
+          fi
           echo "path=$dir/app-logs.jsonl" >> "$GITHUB_OUTPUT"
           echo "Redacted $(wc -l < "$dir/app-logs.jsonl") worker log lines"
           (( status == 0 )) || { echo "::error::The worker log held a Fly token fragment (redacted in the uploaded copy)"; exit 1; }
+          (( leaked == 0 )) || { echo "::error::$leaked worker log line(s) held a $AGENT credential value (redacted in the uploaded copy)"; exit 1; }
+          echo "- No Fly token fragment or $AGENT credential value in the worker log" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the redacted worker log
         if: always() && steps.worker-log.outputs.path != ''
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -1262,6 +1381,32 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
         run: if [[ -f $OUT/destroy-oauth-app ]]; then flyctl apps destroy "$OAUTH_FIXTURE_NAME" --yes; fi
+      - name: Verify that no app, Machine or Sprite is left behind
+        if: always() && steps.app.outcome == 'success'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+        run: |
+          set -euo pipefail
+          apps=$(flyctl apps list --org "$ORG" --json | jq -r '.[] | (.Name // .name // empty)')
+          left=()
+          for app in "$APP" "$AGENT_APP" "$OAUTH_FIXTURE_NAME"; do
+            ! grep -qxF "$app" <<< "$apps" || left+=("$app")
+          done
+          (( ${#left[@]} == 0 )) || { echo "::error::Fly apps left behind: ${left[*]}"; exit 1; }
+          if [[ -n $SPRITES_TOKEN ]]; then
+            node --import tsx --input-type=module <<'JS'
+          import { createHash } from 'node:crypto';
+          import { SpritesClient } from '@fly/sprites';
+          import { spritePoolKey } from './packages/shared/src/statusKeys.ts';
+          const marker = createHash('sha256').update(spritePoolKey(process.env.APP)).digest('hex').slice(0, 16);
+          const client = new SpritesClient(process.env.SPRITES_TOKEN);
+          const names = [...await client.listAllSprites('propr-' + marker + '-'), ...await client.listAllSprites(process.env.OAUTH_FIXTURE_NAME)]
+            .map(sprite => sprite.name).filter(name => name.startsWith('propr-' + marker + '-') || name === process.env.OAUTH_FIXTURE_NAME);
+          if (names.length) throw new Error(`Sprites left behind: ${names.join(', ')}`);
+          JS
+          fi
+          echo "- No app, Machine or Sprite of this run is left behind" >> "$GITHUB_STEP_SUMMARY"
       - name: Close fixture work
         if: always() && env.ISSUE != ''
         env:

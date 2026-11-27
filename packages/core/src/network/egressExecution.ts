@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import logger from '../utils/logger.js';
 import type { AgentType } from '../agents/types.js';
-import { AGENT_EGRESS_PROXY_SUPPORT, AGENT_EGRESS_RESTRICTED_ENV, baseEgressAllowlist, compileEgressAllowlist } from './egressAllowlist.js';
+import { AGENT_EGRESS_PROXY_SUPPORT, AGENT_EGRESS_RESTRICTED_ENV, agentCommandModel, baseEgressAllowlist, compileEgressAllowlist } from './egressAllowlist.js';
 import { EgressDenialRecorder, startEgressProxy, upstreamProxiesFromEnv, type EgressProxy, type EgressProxyStats } from './egressProxy.js';
 import type { AgentNetworkMode, ResolvedNetworkPolicy } from './networkPolicy.js';
 
@@ -386,7 +386,7 @@ export async function prepareDockerRunNetwork(command: string, args: string[], e
         }));
         proxy = await startEgressProxy({
             socketPath: path.join(directory, SOCKET_NAME),
-            allowlist: compileEgressAllowlist([...baseEgressAllowlist(agentType as AgentType), ...context.policy.allow]),
+            allowlist: compileEgressAllowlist([...baseEgressAllowlist(agentType as AgentType, agentCommandModel(args)), ...context.policy.allow]),
             // Only the administrator's own IP literals open loopback, private or link-local addresses.
             addressAllowlist: compileEgressAllowlist(context.policy.instanceAllow ?? []),
             recorder: context.recorder,

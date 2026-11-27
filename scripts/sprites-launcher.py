@@ -16,6 +16,8 @@ LIMIT = 1024 * 1024
 PYTHON = '/usr/bin/python3'
 LAUNCHER = '/opt/propr/launcher.py'
 EXTENSIONS = Path('/opt/propr/extensions')
+# Prompt files (Vibe's --prompt-file) land at these worker-validated paths.
+PROMPT_ROOTS = ('/home/node', '/tmp')
 
 
 def write_json(path, value):
@@ -46,6 +48,21 @@ def install_extensions(files):
         os.chmod(directory, 0o555)
 
 
+def install_prompts(prompts):
+    # Root-owned and read-only for the agent, like Docker's read-only bind. The
+    # checkpoint was just restored and no node process has run, so nothing can
+    # stand at the path; O_EXCL and O_NOFOLLOW refuse anything that does.
+    for target, content in prompts:
+        name = os.path.basename(target)
+        if os.path.dirname(target) not in PROMPT_ROOTS or name in ('', '.', '..'):
+            raise ValueError('Invalid prompt file path')
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+        with os.fdopen(fd, 'wb') as file:
+            file.write(base64.b64decode(content))
+            os.fchown(file.fileno(), 0, 0)
+            os.fchmod(file.fileno(), 0o444)
+
+
 def install_and_launch(upload):
     # This phase runs exactly once on a restored filesystem, before the first
     # process running as node. No path supplied by the repository is installed.
@@ -73,6 +90,7 @@ def install_and_launch(upload):
         os.chown(directory, 0, node.pw_gid)
         os.chmod(directory, 0o750)
     install_extensions(run.get('extensions', []))
+    install_prompts(run.get('prompts', []))
     export = ROOT / 'export'
     export.mkdir()
     os.chown(export, int(os.environ['SUDO_UID']), -1)
@@ -110,9 +128,14 @@ def agent():
     data = json.loads((ROOT / 'agent.json').read_bytes())
     for directory in data['directories']:
         Path(directory).mkdir(parents=True, exist_ok=True)
-    if data['store']:
-        shutil.copytree(ROOT / 'source', data['store'], dirs_exist_ok=True)
-        for directory, _, files in os.walk(data['store']):
+    # Store i of the agent configuration was uploaded under source/<i>/.
+    for index, store in enumerate(data['stores']):
+        source = ROOT / 'source' / str(index)
+        if source.is_dir():
+            shutil.copytree(source, store, dirs_exist_ok=True)
+        else:
+            Path(store).mkdir(parents=True, exist_ok=True)
+        for directory, _, files in os.walk(store):
             os.chmod(directory, 0o700)
             for name in files:
                 file = Path(directory) / name
@@ -159,7 +182,7 @@ def credentials(action):
         dest = ROOT / 'export' / str(index)
         if action == 'export':
             with subprocess.Popen(
-                    ['su-exec', 'node', PYTHON, '-I', LAUNCHER, 'read-live', str(Path(data['store']) / output)],
+                    ['su-exec', 'node', PYTHON, '-I', LAUNCHER, 'read-live', str(Path(output))],
                     cwd='/', stdout=subprocess.PIPE) as child:
                 payload = child.stdout.read(LIMIT + 9)
                 if len(payload) > LIMIT + 8:
@@ -196,12 +219,25 @@ def read_live(path):
     sys.stdout.buffer.write(stamp.to_bytes(8, 'big', signed=True) + content)
 
 
+def read_file(path):
+    # A run result file the worker copies back (Vibe's usage export), read as node.
+    assert os.geteuid() != 0
+    try:
+        content, stamp = regular(path)
+    except FileNotFoundError:
+        print('null')
+        return
+    print(json.dumps(dict(content=base64.b64encode(content).decode(), mtimeMs=stamp / 1e6)))
+
+
 if __name__ == '__main__':
     action = sys.argv[1]
     if action == 'launch':
         sys.exit(install_and_launch(Path(sys.argv[2])))
     elif action == 'read-live':
         read_live(Path(sys.argv[2]))
+    elif action == 'read-file':
+        read_file(Path(sys.argv[2]))
     elif action == 'agent':
         agent()
     elif action in ('export', 'read-export'):
