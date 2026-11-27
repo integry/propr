@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import logger from '../utils/logger.js';
-import { ExtensionUpstreamUnauthorizedError, requestExtensionMcp, type ExtensionMcpExchange, type ExtensionMcpSend, type ExtensionPinnedConnection } from './endpointPolicy.js';
+import { ExtensionUpstreamUnauthorizedError, extensionPinnedConnection, requestExtensionMcp, type ExtensionMcpExchange, type ExtensionMcpSend, type ExtensionPinnedConnection } from './endpointPolicy.js';
 
 /**
  * Upstream MCP sessions of URL servers, owned by the gateway.
@@ -79,10 +79,21 @@ export class ExtensionUpstreamHandshakeUnauthorizedError extends ExtensionUpstre
  * The upstream assigned a session but did not accept the initialized
  * notification (an error status, a timeout, a dropped connection). The session
  * is not initialized, so it is never kept: the caller closes the session that
- * travels with the error, and the next call opens a new one.
+ * travels with the error, and the next call opens a new one. An upstream that
+ * assigned no session is not held to this: its calls need no initialized state.
  */
 export class ExtensionUpstreamHandshakeIncompleteError extends Error {
   constructor(readonly pending: HandshakeOutcome & { state: UpstreamSessionState }) { super('MCP session initialization incomplete'); }
+}
+
+/**
+ * A stateless upstream keeps the address vetted at the handshake but not its one-socket connection: its concurrent
+ * calls get a pool to the same address and proceed in parallel.
+ */
+function pooled(connection: ExtensionPinnedConnection | undefined): ExtensionPinnedConnection | undefined {
+  if (!connection) return undefined;
+  connection.agent.destroy();
+  return extensionPinnedConnection(connection.address, connection.family, 'pool');
 }
 
 /**
@@ -113,7 +124,11 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
     try { await charged(notification.body, notification.exchange); }
     catch (error) {
       const pending = { state, reply, requestBytes };
-      throw isUnauthorized(error) ? new ExtensionUpstreamHandshakeUnauthorizedError(pending) : new ExtensionUpstreamHandshakeIncompleteError(pending);
+      if (isUnauthorized(error)) throw new ExtensionUpstreamHandshakeUnauthorizedError(pending);
+      // A stateless upstream (no session id) that mishandles the notification (a 400/405, an empty or non-JSON 200)
+      // still serves calls, as it did before the gateway sent one: keep the stateless state.
+      if (!state.id) return pending;
+      throw new ExtensionUpstreamHandshakeIncompleteError(pending);
     }
     return { state, reply, requestBytes };
   };
@@ -135,11 +150,14 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
   try { reply = await send(initialize, opening); }
   catch (error) { await abandon(opening); throw error; }
   const initialized = resultOf(reply);
-  if (initialized) {
-    const offered = initialized.protocolVersion;
-    const protocolVersion = MCP_2025_REVISIONS.find(version => version === offered) ?? '2025-03-26';
+  // A revision the gateway does not speak is as unsupported as a refused `initialize`; a reply naming none is taken
+  // as the legacy 2025-03-26 revision.
+  const offered = initialized?.protocolVersion ?? '2025-03-26';
+  const protocolVersion = MCP_2025_REVISIONS.find(version => version === offered);
+  if (initialized && protocolVersion) {
     const id = opening.assignedSessionId;
-    const state: UpstreamSessionState = { mode: id ? 'stateful' : 'stateless', era: '2025', protocolVersion, ...(id ? { id } : {}), ...(opening.connection ? { connection: opening.connection } : {}) };
+    const connection = id ? opening.connection : pooled(opening.connection);
+    const state: UpstreamSessionState = { mode: id ? 'stateful' : 'stateless', era: '2025', protocolVersion, ...(id ? { id } : {}), ...(connection ? { connection } : {}) };
     return notify(state, reply);
   }
   await abandon(opening);
@@ -148,11 +166,15 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
   try { discovered = resultOf(await send({ jsonrpc: '2.0', id: 'propr-gateway-discover', method: 'server/discover', params: { _meta: MCP_2026_META } }, discovering)); }
   catch (error) { discovering.connection?.agent.destroy(); throw error; }
   if (discovered && Array.isArray(discovered.supportedVersions) && discovered.supportedVersions.includes(MCP_2026_REVISION)) {
-    return { state: { mode: 'stateless', era: '2026', protocolVersion: MCP_2026_REVISION, ...(discovering.connection ? { connection: discovering.connection } : {}) }, reply, requestBytes };
+    const connection = pooled(discovering.connection);
+    return { state: { mode: 'stateless', era: '2026', protocolVersion: MCP_2026_REVISION, ...(connection ? { connection } : {}) }, reply, requestBytes };
   }
   discovering.connection?.agent.destroy();
   return { reply, requestBytes };
 }
+
+/** Every session slot is held by a call in flight: a new session is refused rather than closing one of them. */
+export class ExtensionUpstreamSessionCapacityError extends Error { constructor() { super('MCP session capacity reached'); } }
 
 const closedSessions = new WeakSet<UpstreamSessionState>();
 /** End an upstream session: `DELETE` with its id (best effort), then close its pinned connection. Later calls for the same state are no-ops. */
@@ -174,6 +196,8 @@ export interface UpstreamSessionEntry {
   /** A session initialized before the upstream refused the credential on the initialized notification; the next handshake resumes it. */
   pending?: HandshakeOutcome & { state: UpstreamSessionState };
   lastUsed: number;
+  /** Gateway calls using this entry now (from `entry()` to `release()`); an entry with any is never evicted for capacity or idleness. */
+  active: number;
   /** Gateway calls, successful upstream tool calls, OAuth credential changes and re-initializations after a lost session. */
   calls: number; toolCalls: number; refreshes: number; reinitialized: number;
   /** Digest of the last credential used, to count OAuth refreshes without keeping the token. */
@@ -191,20 +215,39 @@ export class ExtensionUpstreamSessions {
   private timer?: NodeJS.Timeout;
   constructor(private readonly limits = UPSTREAM_SESSION_LIMITS, private readonly now: () => number = Date.now) {}
 
-  /** The entry for (grant, server), created on first use. Over a cap, the least recently used session is closed. */
+  /**
+   * Begin a call: the entry for (grant, server), created on first use, counted as in use until `release()`. Over a
+   * cap, the least recently used idle session is closed; a session with a call in flight never is (its socket would
+   * be destroyed mid-request, after a write may already have happened), so when every candidate is busy the new
+   * session is refused instead.
+   */
   entry(init: Pick<UpstreamSessionEntry, 'grant' | 'server' | 'taskId' | 'authentication' | 'remove' | 'alive'>): UpstreamSessionEntry {
     const key = `${init.grant}\0${init.server}`;
     let entry = this.entries.get(key);
     if (!entry) {
-      const grantEntries = [...this.entries.values()].filter(e => e.grant === init.grant);
-      if (grantEntries.length >= this.limits.perGrant) void this.drop(this.leastRecent(grantEntries)!, 'capacity');
-      if (this.entries.size >= this.limits.total) void this.drop(this.leastRecent([...this.entries.values()])!, 'capacity');
-      entry = { ...init, lastUsed: this.now(), calls: 0, toolCalls: 0, refreshes: 0, reinitialized: 0 };
+      // Pick every eviction before closing any, so a refused session closes nothing.
+      const evicted: UpstreamSessionEntry[] = [];
+      const evict = (candidates: UpstreamSessionEntry[]) => {
+        const idle = this.leastRecent(candidates.filter(e => !evicted.includes(e)));
+        if (!idle) throw new ExtensionUpstreamSessionCapacityError();
+        evicted.push(idle);
+      };
+      const all = [...this.entries.values()];
+      if (all.filter(e => e.grant === init.grant).length >= this.limits.perGrant) evict(all.filter(e => e.grant === init.grant));
+      if (all.length - evicted.length >= this.limits.total) evict(all);
+      for (const e of evicted) void this.drop(e, 'capacity');
+      entry = { ...init, lastUsed: this.now(), active: 0, calls: 0, toolCalls: 0, refreshes: 0, reinitialized: 0 };
       this.entries.set(key, entry);
       this.schedule();
     }
-    entry.remove = init.remove; entry.alive = init.alive; entry.lastUsed = this.now();
+    entry.remove = init.remove; entry.alive = init.alive; entry.lastUsed = this.now(); entry.active++;
     return entry;
+  }
+
+  /** End a call begun with `entry()`. */
+  release(entry: UpstreamSessionEntry): void {
+    entry.active = Math.max(0, entry.active - 1);
+    entry.lastUsed = this.now();
   }
 
   /**
@@ -263,7 +306,7 @@ export class ExtensionUpstreamSessions {
     for (const [, entries] of grants) {
       let alive = true;
       try { alive = await entries[0].alive(); } catch { /* unknown: keep until idle expiry */ }
-      for (const entry of entries) if (!alive || now - entry.lastUsed > this.limits.idleMs) await this.drop(entry, alive ? 'idle' : 'grant_ended');
+      for (const entry of entries) if (!alive || (!entry.active && now - entry.lastUsed > this.limits.idleMs)) await this.drop(entry, alive ? 'idle' : 'grant_ended');
     }
   }
 
@@ -282,8 +325,9 @@ export class ExtensionUpstreamSessions {
     if (!this.entries.size && this.timer) { clearInterval(this.timer); this.timer = undefined; }
   }
 
+  /** The least recently used entry without a call in flight. */
   private leastRecent(entries: UpstreamSessionEntry[]): UpstreamSessionEntry | undefined {
-    return entries.reduce<UpstreamSessionEntry | undefined>((oldest, e) => (!oldest || e.lastUsed < oldest.lastUsed ? e : oldest), undefined);
+    return entries.filter(e => !e.active).reduce<UpstreamSessionEntry | undefined>((oldest, e) => (!oldest || e.lastUsed < oldest.lastUsed ? e : oldest), undefined);
   }
 
   private schedule(): void {
@@ -293,8 +337,30 @@ export class ExtensionUpstreamSessions {
   }
 }
 
-/** This process's upstream sessions. */
-export const extensionUpstreamSessions = new ExtensionUpstreamSessions();
+/**
+ * This process's upstream sessions: one registry per process, even when this module is loaded twice (the API loads
+ * the gateway from Core's sources, while run launch and shutdown may load Core's build), so a grant's end and the
+ * API's shutdown reach the sessions the gateway opened.
+ */
+const REGISTRY = Symbol.for('propr.extensionUpstreamSessions');
+export const extensionUpstreamSessions: ExtensionUpstreamSessions = (globalThis as Record<symbol, ExtensionUpstreamSessions | undefined>)[REGISTRY] ??= new ExtensionUpstreamSessions();
+
+/** Close every session within `timeoutMs` (graceful shutdown); a DELETE still in flight then is abandoned. */
+export async function closeExtensionUpstreamSessions(reason = 'shutdown', timeoutMs = 5_000, sessions = extensionUpstreamSessions): Promise<void> {
+  await bounded(sessions.closeAll(reason), timeoutMs);
+}
+
+/** End a run grant's sessions within `timeoutMs`, ahead of the sweep (which stays the fallback). */
+export async function closeExtensionGrantSessions(grant: string, reason = 'grant_ended', timeoutMs = 5_000, sessions = extensionUpstreamSessions): Promise<void> {
+  await bounded(sessions.closeGrant(grant, reason), timeoutMs);
+}
+
+async function bounded(work: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([work.catch(() => undefined), new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); timer.unref(); })]);
+  } finally { clearTimeout(timer); }
+}
 
 export interface ExtensionMcpProbe {
   /** The upstream completed a handshake (or answered `initialize`). */

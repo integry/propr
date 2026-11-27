@@ -10,7 +10,7 @@ import { ExtensionLibraryStore, extensionTokenHash, type ExtensionLaunchContext 
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, type ExtensionMcpExchange, type ExtensionMcpSend } from '../src/extensions/endpointPolicy.js';
-import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessions, MCP_2026_REVISION, openUpstreamSession, probeExtensionMcp } from '../src/extensions/mcpUpstreamSessions.js';
+import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessionCapacityError, ExtensionUpstreamSessions, MCP_2026_REVISION, UPSTREAM_SESSION_LIMITS, closeExtensionGrantSessions, closeExtensionUpstreamSessions, extensionUpstreamSessions, openUpstreamSession, probeExtensionMcp } from '../src/extensions/mcpUpstreamSessions.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
@@ -201,6 +201,7 @@ test('sessions are capped in total and expire when idle', async t => {
   const open = async (grant: string, name: string) => {
     const entry = sessions.entry({ grant, server: name, taskId: grant, authentication: 'none', remove: async exchange => { removed.push(exchange.sessionId!); return null; }, alive: async () => true });
     await sessions.open(entry, async () => ({ state: { mode: 'stateful', era: '2025', protocolVersion: '2025-06-18', id: `${grant}-${name}` }, requestBytes: 0 }));
+    sessions.release(entry);
     now += 10;
   };
   await open('a', 'one'); await open('a', 'two'); await open('a', 'three');
@@ -729,4 +730,181 @@ test('responses to answered server-to-client requests share the call\'s reservat
   await assert.rejects(g.call(callEcho(2, 'flood')), /connection failed/);
   assert.equal(await g.bytes() - before, EXTENSION_LIMITS.responseBytes);
   assert.equal(await g.connections(), 0);
+});
+
+test('a session with a call in flight is never evicted: the cap closes an idle one, or refuses the new session', async t => {
+  let now = 1_000;
+  const sessions = new ExtensionUpstreamSessions({ perGrant: 2, total: 3, idleMs: 1_000, sweepMs: 60_000 }, () => now);
+  t.after(() => sessions.closeAll('test'));
+  const removed: string[] = [];
+  const begin = async (grant: string, name: string) => {
+    const entry = sessions.entry({ grant, server: name, taskId: grant, authentication: 'none', remove: async exchange => { removed.push(exchange.sessionId!); return null; }, alive: async () => true });
+    await sessions.open(entry, async () => ({ state: { mode: 'stateful', era: '2025', protocolVersion: '2025-06-18', id: `${grant}-${name}` }, requestBytes: 0 }));
+    now += 10;
+    return entry;
+  };
+  // a-one is the least recently used, but its long call is still in flight.
+  const longCall = await begin('a', 'one');
+  sessions.release(await begin('b', 'one'));
+  sessions.release(await begin('c', 'one'));
+  const fourth = await begin('d', 'one');
+  assert.deepEqual(removed, ['b-one'], 'the least recently used idle session closes, not the busy one');
+  assert.equal(longCall.state?.id, 'a-one');
+  // Every remaining slot is busy: the new session is refused and nothing is closed.
+  const third = sessions.peek('c', 'one')!; sessions.entry({ ...third });
+  assert.throws(() => sessions.entry({ grant: 'e', server: 'one', taskId: 'e', authentication: 'none', remove: async () => null, alive: async () => true }), ExtensionUpstreamSessionCapacityError);
+  assert.equal(sessions.size(), 3); assert.deepEqual(removed, ['b-one']);
+  // The per-grant cap follows the same rule.
+  const perGrant = new ExtensionUpstreamSessions({ perGrant: 1, total: 10, idleMs: 1_000, sweepMs: 60_000 }, () => now);
+  t.after(() => perGrant.closeAll('test'));
+  perGrant.entry({ grant: 'a', server: 'one', taskId: 'a', authentication: 'none', remove: async () => null, alive: async () => true });
+  assert.throws(() => perGrant.entry({ grant: 'a', server: 'two', taskId: 'a', authentication: 'none', remove: async () => null, alive: async () => true }), /MCP session capacity reached/);
+  // Idle expiry skips busy sessions too; a released one expires.
+  now += 2_000;
+  sessions.release(fourth); sessions.release(third);
+  now += 2_000;
+  await sessions.sweep();
+  assert.equal(sessions.size(), 1, 'the session with a call in flight survives idle expiry');
+  assert.equal(sessions.peek('a', 'one'), longCall);
+  sessions.release(longCall); now += 2_000;
+  await sessions.sweep();
+  assert.equal(sessions.size(), 0);
+});
+
+test('the gateway refuses a new session with a clear error when every slot has a call in flight, and releases its own', async t => {
+  const f = await fixture(t);
+  const sessions = new ExtensionUpstreamSessions({ ...UPSTREAM_SESSION_LIMITS, total: 1 });
+  t.after(() => sessions.closeAll('test'));
+  const upstream = statefulUpstream();
+  const first = await f.launch('busy-slot-run');
+  const second = await f.launch('refused-slot-run');
+  // The first run's call is held in flight upstream.
+  let finishCall!: () => void; let arrived!: () => void;
+  const held = new Promise<void>(resolve => { finishCall = resolve; });
+  const reached = new Promise<void>(resolve => { arrived = resolve; });
+  const send: ExtensionMcpSend = async (endpoint, body, bearer, policy, exchange) => {
+    if ((body as { method?: string } | null)?.method === 'tools/call' && (body as { params: { arguments: { message: string } } }).params.arguments.message === 'hold') { arrived(); await held; }
+    return upstream.send(endpoint, body, bearer, policy, exchange);
+  };
+  const inFlight = extensionGatewayCall(f.store, first, 'echo', callEcho(1, 'hold'), send, sessions);
+  await reached;
+  await assert.rejects(extensionGatewayCall(f.store, second, 'echo', callEcho(1, 'x'), send, sessions), (error: { status?: number; message: string }) => error.status === 503 && error.message === 'MCP session capacity reached');
+  assert.deepEqual(upstream.state.deleted, [], 'the busy session was not closed under its call');
+  finishCall();
+  assert.match(JSON.stringify(await inFlight), /hold session=\[REDACTED\]/);
+  assert.equal(sessions.peek(extensionTokenHash(first), 'echo')?.active, 0);
+  // Now idle, the first run's session gives way to the second run.
+  assert.match(JSON.stringify(await extensionGatewayCall(f.store, second, 'echo', callEcho(2, 'y'), send, sessions)), /y session=\[REDACTED\]/);
+  assert.deepEqual(upstream.state.deleted, ['upstream-session-1']);
+});
+
+test('a stateless upstream that mishandles the initialized notification keeps serving calls in the stateless state', async t => {
+  const f = await fixture(t);
+  const token = await f.launch('stateless-notification-run');
+  const upstream = statefulUpstream({ sessionless: true });
+  // A 400/405, or a 200 with an empty or non-JSON body: the transport fails the notification.
+  const send: typeof upstream.send = async (endpoint, body, bearer, policy, exchange = {}) => {
+    if ((body as { method?: string })?.method === 'notifications/initialized') { await upstream.send(endpoint, body, bearer, policy, exchange); throw new Error('MCP connection failed'); }
+    return upstream.send(endpoint, body, bearer, policy, exchange);
+  };
+  const call = (id: number, message: string) => extensionGatewayCall(f.store, token, 'echo', callEcho(id, message), send, f.sessions);
+  assert.match(JSON.stringify(await call(1, 'URL-STATELESS-OK')), /URL-STATELESS-OK session=none/);
+  const entry = f.sessions.peek(extensionTokenHash(token), 'echo')!;
+  assert.equal(entry.state?.mode, 'stateless');
+  assert.match(JSON.stringify(await call(2, 'again')), /again session=none/);
+  assert.deepEqual(upstream.state.requests.map(r => r.method), ['initialize', 'notifications/initialized', 'tools/call', 'tools/call'], 'the handshake is not repeated');
+  // Settings' check reports it reachable and stateless as well.
+  const probe = await probeExtensionMcp('https://8.8.8.8/mcp', secret, {}, send);
+  assert.deepEqual([probe.reachable, probe.session], [true, 'stateless']);
+});
+
+test('an initialize reply with a revision the gateway does not speak is unsupported, not mapped to 2025-03-26', async t => {
+  const deleted: string[] = []; const methods: string[] = [];
+  const send: ExtensionMcpSend = async (_endpoint, body, _token, _policy, exchange = {}) => {
+    if (exchange.method === 'DELETE') { deleted.push(exchange.sessionId!); return null; }
+    const rpc = body as { id?: string | number; method: string };
+    methods.push(rpc.method);
+    if (rpc.method === 'initialize') { exchange.assignedSessionId = 'future-session'; return { jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2099-01-01', capabilities: {} } }; }
+    return { jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: 'unknown method' } };
+  };
+  const outcome = await openUpstreamSession((body, exchange) => send('https://8.8.8.8/mcp', body, undefined, {}, exchange));
+  assert.equal(outcome.state, undefined);
+  assert.deepEqual(methods, ['initialize', 'server/discover'], 'no initialized notification; the 2026 revision is tried');
+  assert.deepEqual(deleted, ['future-session'], 'the assigned session is ended');
+  t.diagnostic('unsupported revision handled');
+});
+
+test('the real transport runs a stateless server\'s calls in parallel, and a stateful session\'s queued call is not timed out by its wait', async t => {
+  const limits = EXTENSION_LIMITS as { timeoutMs: number };
+  const timeoutMs = limits.timeoutMs;
+  // Each request's own time stays under the timeout; a queued call's wait plus its own time does not.
+  limits.timeoutMs = 600;
+  t.after(() => { limits.timeoutMs = timeoutMs; });
+  let stateful = false; let inFlight = 0; let peak = 0; const sockets = new Set<unknown>();
+  let release!: () => void; let barrier = new Promise<void>(resolve => { release = resolve; });
+  await tlsUpstream(t, async (req, res, raw) => {
+    if (req.method === 'DELETE') { res.writeHead(204).end(); return; }
+    const rpc = JSON.parse(raw);
+    sockets.add(req.socket);
+    if (rpc.method === 'initialize') {
+      res.writeHead(200, { 'content-type': 'application/json', ...(stateful ? { 'mcp-session-id': 'one-socket' } : {}) }).end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { protocolVersion: '2025-06-18', capabilities: {} } }));
+      return;
+    }
+    if (rpc.id === undefined) { res.writeHead(202).end(); return; }
+    inFlight++; peak = Math.max(peak, inFlight);
+    if (stateful) await new Promise(resolve => setTimeout(resolve, 400));
+    else {
+      if (inFlight === 4) release();
+      // Serialized calls never reach four at once; the bounded wait then fails the assertion below, not the test run.
+      await Promise.race([barrier, new Promise(resolve => setTimeout(resolve, 300))]);
+    }
+    inFlight--;
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id, result: { content: [{ type: 'text', text: `${rpc.params.arguments.message} done` }] } }));
+  });
+  const f = await fixture(t);
+  const parallel = async (run: string, count: number) => {
+    const token = await f.launch(run);
+    // One call opens the session; then `count` calls at once.
+    await extensionGatewayCall(f.store, token, 'echo', callEcho(0, 'open'), undefined, f.sessions);
+    sockets.clear(); peak = 0;
+    const replies = await Promise.all(Array.from({ length: count }, (_, i) => extensionGatewayCall(f.store, token, 'echo', callEcho(i + 1, `call-${i + 1}`), undefined, f.sessions)));
+    return { token, replies: replies.map(reply => (reply as { result: { content: { text: string }[] } }).result.content[0].text) };
+  };
+  const stateless = await parallel('stateless-parallel-run', 4);
+  assert.deepEqual(stateless.replies, ['call-1 done', 'call-2 done', 'call-3 done', 'call-4 done']);
+  assert.equal(peak, 4, 'all four calls were in flight upstream at once');
+  assert.ok(sockets.size >= 2, 'a stateless server is not held to one connection');
+  assert.equal(f.sessions.peek(extensionTokenHash(stateless.token), 'echo')?.state?.mode, 'stateless');
+
+  stateful = true; barrier = Promise.resolve();
+  // Two 400 ms calls on the session's one connection: the second waits 400 ms, longer than 600 ms in total.
+  const session = await parallel('stateful-queued-run', 2);
+  assert.deepEqual(session.replies, ['call-1 done', 'call-2 done']);
+  assert.equal(peak, 1, 'a stateful session keeps one request at a time on its connection');
+  assert.equal(sockets.size, 1);
+});
+
+test('a grant\'s end and shutdown DELETE sessions at once, bounded when an upstream does not answer', async t => {
+  const sessions = new ExtensionUpstreamSessions();
+  t.after(() => sessions.closeAll('test'));
+  const removed: string[] = [];
+  // The silent upstream holds its DELETE far past the shutdown bound (a referenced timer, as a live socket would be).
+  let silent: NodeJS.Timeout | undefined;
+  t.after(() => clearTimeout(silent));
+  const open = async (grant: string, hang = false) => {
+    const entry = sessions.entry({ grant, server: 'echo', taskId: grant, authentication: 'none', alive: async () => true,
+      remove: async exchange => { removed.push(exchange.sessionId!); if (hang) await new Promise(resolve => { silent = setTimeout(resolve, 30_000); }); return null; } });
+    await sessions.open(entry, async () => ({ state: { mode: 'stateful', era: '2025', protocolVersion: '2025-06-18', id: `${grant}-session` }, requestBytes: 0 }));
+    sessions.release(entry);
+  };
+  await open('ended'); await open('other'); await open('silent', true);
+  await closeExtensionGrantSessions('ended', 'grant_ended', 1_000, sessions);
+  assert.deepEqual(removed, ['ended-session'], 'only the ended grant\'s session, without waiting for the sweep');
+  const started = Date.now();
+  await closeExtensionUpstreamSessions('shutdown', 100, sessions);
+  assert.ok(Date.now() - started < 1_000, 'an upstream that never answers the DELETE does not hold shutdown');
+  assert.deepEqual(removed.sort(), ['ended-session', 'other-session', 'silent-session']);
+  assert.equal(sessions.size(), 0);
+  // One registry per process, however often the module is loaded.
+  assert.equal((globalThis as Record<symbol, unknown>)[Symbol.for('propr.extensionUpstreamSessions')], extensionUpstreamSessions);
 });

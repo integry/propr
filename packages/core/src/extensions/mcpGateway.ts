@@ -1,7 +1,7 @@
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { ExtensionError, ExtensionLibraryStore, extensionTokenHash } from './extensionProfileStore.js';
-import { ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, requestExtensionMcp, extensionResponseWireBytes, resolveExtensionEndpoint, type ExtensionMcpExchange, type ExtensionMcpSend } from './endpointPolicy.js';
-import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, closeUpstreamSession, extensionUpstreamSessions, openUpstreamSession, sessionRequest, type ExtensionUpstreamSessions, type HandshakeOutcome, type UpstreamSessionState } from './mcpUpstreamSessions.js';
+import { ExtensionUpstreamSessionBusyError, ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, requestExtensionMcp, extensionResponseWireBytes, resolveExtensionEndpoint, type ExtensionMcpExchange, type ExtensionMcpSend } from './endpointPolicy.js';
+import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessionCapacityError, closeUpstreamSession, extensionUpstreamSessions, openUpstreamSession, sessionRequest, type ExtensionUpstreamSessions, type HandshakeOutcome, type UpstreamSessionState } from './mcpUpstreamSessions.js';
 import { extensionOAuth } from './extensionOAuthStore.js';
 import { redactExtensionOutput } from './extensionOutput.js';
 export { redactExtensionOutput } from './extensionOutput.js';
@@ -10,6 +10,12 @@ export { redactExtensionOutput } from './extensionOutput.js';
 const initializeProjection = (name: string) => ({ protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name, version: '1' } });
 /** An agent `initialize` answered by the gateway itself, the upstream session already open. */
 const LOCAL_INITIALIZE = Symbol('local initialize');
+/** Transport failures the agent should be told apart from a failed connection; anything else is 'MCP connection failed'. */
+const gatewayError = (error: unknown): ExtensionError | undefined => {
+  if (error instanceof ExtensionError) return error;
+  if (error instanceof ExtensionUpstreamSessionBusyError) return new ExtensionError(503, 'MCP session busy: earlier calls in this session are still running; the call was not sent');
+  return undefined;
+};
 
 /** Whether a run grant is still active and unexpired (not merely over its concurrency or budget limits). */
 const extensionGrantAlive = async (store: ExtensionLibraryStore, grant: string) =>
@@ -53,6 +59,8 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   const oauthTokens: string[] = [];
   /** Upstream session ids, redacted too: a tool may echo request headers. */
   const sessionIds: string[] = [];
+  /** Ends this call's use of its upstream session entry, so the entry may be evicted again. */
+  let releaseSession: (() => void) | undefined;
   try {
   const server = snapshot.servers.find(s => s.enabled && s.name === serverName);
   if (!server || !body || typeof body !== 'object' || Array.isArray(body)) throw new ExtensionError(403, 'MCP capability unavailable');
@@ -105,12 +113,20 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   };
   const grant = extensionTokenHash(token);
   let latest: string | undefined;
-  const session = sessions.entry({
-    grant, server: serverName, taskId, authentication: server.kind === 'https' ? server.authentication : operatorToken ? 'bearer' : 'none',
-    // The DELETE at grant end needs no telemetry: the grant row may already be gone.
-    remove: exchange => send(endpoint, null, latest, transportPolicy, exchange),
-    alive: () => extensionGrantAlive(store, grant),
-  });
+  let session: ReturnType<ExtensionUpstreamSessions['entry']>;
+  try {
+    session = sessions.entry({
+      grant, server: serverName, taskId, authentication: server.kind === 'https' ? server.authentication : operatorToken ? 'bearer' : 'none',
+      // The DELETE at grant end needs no telemetry: the grant row may already be gone.
+      remove: exchange => send(endpoint, null, latest, transportPolicy, exchange),
+      alive: () => extensionGrantAlive(store, grant),
+    });
+  } catch (error) {
+    // Every session slot has a call in flight; none is closed under it.
+    if (error instanceof ExtensionUpstreamSessionCapacityError) throw new ExtensionError(503, 'MCP session capacity reached');
+    throw error;
+  }
+  releaseSession = () => sessions.release(session);
   session.calls++;
   lateCharge = async bytes => { await store.database('extension_run_grants').where({ token_hash: grant }).increment('bytes', bytes).catch(() => undefined); };
   // Every upstream response of this call (handshakes, recovery handshakes, server-to-client answers, the call itself)
@@ -135,6 +151,8 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   };
   const call = async (state: UpstreamSessionState | undefined, used: string | undefined) => {
     const request = sessionRequest(state, forwarded);
+    // Redact the id actually sent: a concurrent re-initialization may replace the entry's session meanwhile.
+    if (request.exchange.sessionId) sessionIds.push(request.exchange.sessionId);
     let metered = false;
     const reply = await send(endpoint, request.body, used, policy, answering(used, { ...request.exchange, maxBytes: remaining(), onResponseBytes: bytes => { metered = true; return meter(bytes); } }));
     // A reply without transport accounting (an injected transport) is charged the full reservation, as before.
@@ -177,7 +195,8 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   const used = await credential();
   try { upstream = await attempt(used); }
   catch (error) {
-    if (error instanceof ExtensionError) throw error;
+    const known = gatewayError(error);
+    if (known) throw known;
     if (!oauth || !(error instanceof ExtensionUpstreamUnauthorizedError) || !used) throw new ExtensionError(502, 'MCP connection failed');
     // One refresh and one retry after the upstream refused the token.
     let retried: string;
@@ -185,7 +204,7 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
     catch { throw new ExtensionError(502, 'MCP connection failed'); }
     await store.database('extension_run_grants').where({ token_hash: extensionTokenHash(token) }).increment('request_bytes', requestBytes);
     try { upstream = await attempt(retried); }
-    catch (retryError) { if (retryError instanceof ExtensionError) throw retryError; throw new ExtensionError(502, 'MCP connection failed'); }
+    catch (retryError) { throw gatewayError(retryError) ?? new ExtensionError(502, 'MCP connection failed'); }
   }
   if (session.state?.id) sessionIds.push(session.state.id);
   const received = Math.min(EXTENSION_LIMITS.responseBytes, inbound);
@@ -219,6 +238,7 @@ export async function extensionGatewayCall(store: ExtensionLibraryStore, token: 
   if (Buffer.byteLength(JSON.stringify(redacted)) > EXTENSION_LIMITS.responseBytes) throw new ExtensionError(502, 'MCP response too large');
   return redacted;
   } finally {
+    releaseSession?.();
     // Settle the charge with every byte read so far; a chunk still arriving is charged to the grant directly.
     accounting = false;
     if (responseBytes < EXTENSION_LIMITS.responseBytes) responseBytes = Math.min(EXTENSION_LIMITS.responseBytes, Math.max(responseBytes, inbound));

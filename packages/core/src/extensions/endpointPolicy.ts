@@ -22,6 +22,8 @@ additional.addAddress('168.63.129.16', 'ipv4');
 export class ExtensionUpstreamUnauthorizedError extends Error { constructor() { super('MCP credential refused'); } }
 /** The upstream no longer knows the session the gateway sent (HTTP 404 with `Mcp-Session-Id`). */
 export class ExtensionUpstreamSessionNotFoundError extends Error { constructor() { super('MCP session not found'); } }
+/** A request waited too long for its session's one connection, busy with earlier calls; it was never sent. */
+export class ExtensionUpstreamSessionBusyError extends Error { constructor() { super('MCP session busy'); } }
 export function extensionPublicAddress(address: string): boolean {
   return !isNonPublicAddress(address) && !additional.check(address, isIP(address) === 6 ? 'ipv6' : 'ipv4');
 }
@@ -81,9 +83,21 @@ export interface ExtensionPinnedConnection { address: string; family: number; ag
 const PINNED_SOCKET_IDLE_MS = 60_000;
 /** How long a settled response may keep the pinned socket before it is ended, so the session's next request can proceed. */
 const PINNED_RELEASE_GRACE_MS = 1_000;
-export function extensionPinnedConnection(address: string, family: number): ExtensionPinnedConnection {
-  // One socket: servers with sticky sessions lose the session on a new connection.
-  return { address, family, agent: new https.Agent({ keepAlive: true, maxSockets: 1, maxFreeSockets: 1, timeout: PINNED_SOCKET_IDLE_MS, lookup: pinnedLookup(address, family) }) };
+/**
+ * How long a request may wait for a connection of its pinned agent. The request timeout (`EXTENSION_LIMITS.timeoutMs`)
+ * starts only once a connection is assigned, so calls queued behind a long call in a one-connection session are not
+ * timed out by their wait; past this bound they fail with `ExtensionUpstreamSessionBusyError`, unsent.
+ */
+export const PINNED_QUEUE_WAIT_MS = 30_000;
+/** Idle keep-alive connections a stateless upstream's pool keeps; it opens as many as there are concurrent calls (a grant admits four). */
+const PINNED_POOL_FREE_SOCKETS = 4;
+/**
+ * `session`: one socket, since servers with sticky sessions lose the session on a new connection; concurrent calls in
+ * the session queue for it. `pool`: a stateless upstream, whose concurrent calls proceed in parallel.
+ */
+export function extensionPinnedConnection(address: string, family: number, sharing: 'session' | 'pool' = 'session'): ExtensionPinnedConnection {
+  const sockets = sharing === 'session' ? { maxSockets: 1, maxFreeSockets: 1 } : { maxFreeSockets: PINNED_POOL_FREE_SOCKETS };
+  return { address, family, agent: new https.Agent({ keepAlive: true, ...sockets, timeout: PINNED_SOCKET_IDLE_MS, lookup: pinnedLookup(address, family) }) };
 }
 /**
  * Gateway-side session state for one upstream request. Nothing here reaches
@@ -174,6 +188,7 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
     const finish = (value: unknown) => { if (!settled) { settled = true; resolve(value); } };
     const fail = (error: Error) => { if (!settled) { settled = true; reject(error); } };
     const unavailable = () => fail(new Error('MCP connection failed'));
+    let timer: NodeJS.Timeout | undefined;
     const request = https.request(destination, {
       method: remove ? 'DELETE' : 'POST', agent: exchange.connection?.agent ?? false,
       servername: isIP(host) ? undefined : host,
@@ -256,7 +271,13 @@ export async function requestExtensionMcp(endpoint: string, body: unknown, token
         try { const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (parsed !== null && typeof parsed === 'object') responseWireBytes.set(parsed, bytes); finish(parsed); } catch { unavailable(); }
       });
     });
-    const timer = setTimeout(() => { request.destroy(); unavailable(); }, EXTENSION_LIMITS.timeoutMs);
-    request.on('close', () => { clearTimeout(timer); unavailable(); }); request.on('error', unavailable); request.end(payload);
+    // The request timeout runs from the moment a connection is assigned; before that the request is queued on its
+    // pinned agent behind earlier calls (a fresh connection is assigned at once) and has its own bounded wait.
+    const queued = setTimeout(() => { request.destroy(); fail(new ExtensionUpstreamSessionBusyError()); }, PINNED_QUEUE_WAIT_MS);
+    request.once('socket', () => {
+      clearTimeout(queued);
+      if (!settled) timer = setTimeout(() => { request.destroy(); unavailable(); }, EXTENSION_LIMITS.timeoutMs);
+    });
+    request.on('close', () => { clearTimeout(queued); clearTimeout(timer); unavailable(); }); request.on('error', unavailable); request.end(payload);
   });
 }

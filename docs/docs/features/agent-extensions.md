@@ -218,10 +218,13 @@ The gateway, not the agent, owns each URL server's upstream MCP session:
   an id the server is *stateless*. If the upstream refuses `initialize`, Core
   tries the stateless 2026-07-28 revision (`server/discover`, then every request
   carries its `_meta` and `Mcp-Method` headers). The mode comes only from the
-  upstream's answers, never from configuration. A session counts as open only
-  once the upstream accepts the initialized notification; if it does not, Core
-  ends the session it was assigned, the call fails, and the next call starts a
-  new handshake. The agent's own `initialize` and
+  upstream's answers, never from configuration. A stateful session counts as
+  open only once the upstream accepts the initialized notification; if it does
+  not, Core ends the session it was assigned, the call fails, and the next call
+  starts a new handshake. A stateless server that mishandles the notification
+  (for example a `400`/`405` or an empty reply) is still used statelessly. An
+  `initialize` reply naming a revision Core does not speak counts as a refusal.
+  The agent's own `initialize` and
   initialized notification are answered by the gateway with the same fixed
   projection as before.
 - **Nothing upstream reaches the agent.** The session id never leaves Core, and
@@ -231,21 +234,30 @@ The gateway, not the agent, owns each URL server's upstream MCP session:
   a call's event stream are dropped. The per-tool allowlist, read/write
   capability, egress policy, byte accounting and credential redaction apply to
   every request, including the handshake.
-- **Pinned connection.** Each session keeps one keep-alive connection to the
-  address vetted when it opened, because some servers lose a session when a
-  request arrives on a new connection. DNS and policy are still checked on
-  every request.
+- **Pinned connection.** Each stateful session keeps one keep-alive connection
+  to the address vetted when it opened, because some servers lose a session when
+  a request arrives on a new connection. Concurrent calls in that session take
+  turns on it; the 10-second request timeout starts only when a call gets the
+  connection, and a call that waits more than 30 seconds fails unsent with
+  "MCP session busy". A stateless server's concurrent calls run in parallel over
+  a pool of connections to the same vetted address. DNS and policy are still
+  checked on every request.
 - **Lost sessions.** When the upstream answers `404` to a request with the
   session id, Core re-initializes once and replays the call for `read` servers.
   A `write` server's call is never replayed: it fails with a tool error.
-- **End of run.** When the grant is revoked or expires, Core sends `DELETE` with
-  each session id (best effort), closes the connection and forgets the session;
-  the API process checks its sessions every 15 seconds. Sessions are also
-  capped (8 per run, 256 per API process, least recently used closed first) and
-  expire after 10 idle minutes. A closed session is reopened on the next call.
+- **End of run.** When the run ends, or its grant is revoked or expires, Core
+  sends `DELETE` with each session id (best effort), closes the connection and
+  forgets the session. A run that ends in the gateway's process closes its
+  sessions at once; otherwise the API process checks its sessions every 15
+  seconds. Sessions are also capped (8 per run, 256 per API process) and expire
+  after 10 idle minutes. Over a cap the least recently used *idle* session is
+  closed; a session with a call in flight never is, and when every session has
+  one the new session is refused with "MCP session capacity reached". A closed
+  session is reopened on the next call.
 
-Sessions live in the API process that serves the gateway: restarting it ends
-them, and the next call opens a new one.
+Sessions live in the API process that serves the gateway. A graceful shutdown
+sends their `DELETE`s (waiting at most 5 seconds); after any restart the next
+call opens a new session.
 
 Endpoints must use port 443 and have no credentials, query parameters or fragments.
 Core resolves and checks all DNS answers on every connection, then dials only a
