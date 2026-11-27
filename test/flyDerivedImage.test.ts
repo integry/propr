@@ -809,6 +809,76 @@ test('a Machine create refused for a cached derived image re-checks the registry
     await second.release!();
 });
 
+test('concurrent rechecks that both find the tag deleted share one replacement build', async () => {
+    class GatedRegistry extends Registry {
+        /** While set, derived-tag lookups wait for it; `waiting` counts the lookups held. */
+        resolveGate?: Promise<void>;
+        waiting = 0;
+        override async resolve(repository: string, tag: string) {
+            if (this.resolveGate) { this.waiting++; await this.resolveGate; }
+            return super.resolve(repository, tag);
+        }
+    }
+    const api = new Machines();
+    const registry = new GatedRegistry();
+    const fly = runtime(api, registry, 'recheck-race', ['figlet'], {}, { ...FAST, recheckAfterMs: 0 });
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    assert.equal(api.launches.filter(isBuild).length, 1);
+    registry.tags.clear(); // the operator deleted the propr-packages-* tag
+    let open!: () => void;
+    registry.resolveGate = new Promise<void>(resolve => { open = resolve; });
+    // Both runs capture the same cached entry and recheck it before either sees the tag is gone.
+    const runs = ['a', 'b'].map(name => fly.start(spec(name)));
+    while (registry.waiting < 2) await delay(5);
+    registry.resolveGate = undefined;
+    await delay(2); // a rebuilt image gets another creation time, so another digest
+    open();
+    for (const run of runs) assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(api.launches.filter(isBuild).length, 2, 'exactly one replacement build');
+    const rebuilt = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet']));
+    assert.deepEqual(api.launches.slice(-2).map(launch => launch.config.image), [rebuilt, rebuilt]);
+    await Promise.all(runs.map(run => run.release!()));
+});
+
+test('a refused create under PROPR_FLY_MACHINES_MAX=1 gives up its slot to rebuild the image, then takes it again', { timeout: 15_000 }, async () => {
+    class Refusing extends Machines {
+        refuse?: string;
+        override async create(launch: MachineLaunch) {
+            if (!isBuild(launch) && launch.config.image === this.refuse) {
+                this.refuse = undefined;
+                this.events.push('refused launch');
+                throw new MachinesHttpError('POST', 422, 'image not found');
+            }
+            return super.create(launch);
+        }
+    }
+    const api = new Refusing();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'refused-capped', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' });
+    const plain = runtime(api, registry, 'refused-capped', () => [], { PROPR_FLY_MACHINES_MAX: '1' });
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    api.refuse = api.launches.at(-1)!.config.image;
+    registry.tags.clear();
+    await delay(2); // a rebuilt image gets another creation time, so another digest
+    api.events.length = 0;
+    const second = fly.start(spec('second'));
+    const result = await second.wait();
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(api.events, ['refused launch', 'create build', 'destroy build', 'create launch', 'destroy launch']);
+    assert.equal(api.launches.filter(isBuild).length, 2, 'the missing tag was rebuilt');
+    assert.equal(api.peak, 1);
+    assert.equal(typeof result.computeUsage?.queueMs, 'number');
+    await second.release!();
+    // The slot was freed exactly once: another run gets it.
+    const third = plain.start(spec('third'));
+    assert.equal((await third.wait()).exitCode, 0);
+    await third.release!();
+});
+
 test('a rebuild after a refused create that outlasts the boot timeout still gives the replacement Machine its boot window', async () => {
     const registry = new Registry();
     class Refusing extends Machines {

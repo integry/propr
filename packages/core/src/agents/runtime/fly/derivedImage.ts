@@ -125,7 +125,9 @@ export class FlyPackageImages {
         const { key, configured } = start;
         let cached = images.get(key);
         if (cached?.derived && Date.now() - cached.checkedAt >= this.timings.recheckAfterMs && !await this.stillPublished(cached, cached.derived, options.signal)) {
-            images.delete(key);
+            // Another run may have found the same tag missing during the recheck and already started the
+            // replacement: remove only the entry this run checked, and adopt the replacement below.
+            if (images.get(key) === cached) images.delete(key);
             cached = undefined;
         }
         for (;;) {
@@ -332,6 +334,11 @@ interface AgentMachineCreate {
     options: SelectOptions;
     /** The current selection and the time spent waiting for it; updated when a retry selects again. */
     state: { selection: FlyPackageSelection; imageWaitMs: number };
+    /**
+     * The run's capacity slot. A refused create (no Machine exists) gives it up before preparing the
+     * replacement image, whose build Machine may need that slot, and takes it again before the next create.
+     */
+    slot: { release(): void; reacquire(): Promise<void> };
     /** False once the run is stopping: no second create. */
     mayRetry(): boolean;
     /** Called immediately before each create request: the boot window of that attempt starts here. */
@@ -345,7 +352,7 @@ interface AgentMachineCreate {
  * registry is checked once more and the create retried with what that selects, a rebuilt image or the
  * start-time install. The same image selected again fails the run with Fly's error.
  */
-export async function createAgentMachine({ api, images, prepared, options, state, mayRetry, onAttempt, onBootStart }: AgentMachineCreate) {
+export async function createAgentMachine({ api, images, prepared, options, state, slot, mayRetry, onAttempt, onBootStart }: AgentMachineCreate) {
     try {
         onAttempt();
         return await api.create(prepared.launch, onBootStart);
@@ -356,10 +363,15 @@ export async function createAgentMachine({ api, images, prepared, options, state
         images.invalidate(derived);
         if (!createRejected(error) || !mayRetry()) throw error;
         logger.warn({ run: options.run, image: derived, err: error }, 'Fly refused the Machine for the derived image; checking the registry again');
+        // Fly refused the create, so this run has no Machine: its slot is free for the rebuild's build Machine.
+        // Holding it here would deadlock a rebuild under PROPR_FLY_MACHINES_MAX.
+        slot.release();
         const waiting = Date.now();
         state.selection = await selectFlyPackageImage(images, prepared, options);
         state.imageWaitMs += Date.now() - waiting;
         if (state.selection.derived === derived || !mayRetry()) throw error;
+        await slot.reacquire();
+        if (!mayRetry()) throw error;
         // The image preparation above may outlast the boot timeout: the replacement Machine gets its own window.
         onAttempt();
         return api.create(prepared.launch, onBootStart);

@@ -21,9 +21,14 @@ export interface FlyDispatch {
     selectOptions: SelectOptions;
     /** The image selection and the time spent waiting for it; a retried create may update both. */
     image: { selection: FlyPackageSelection; imageWaitMs: number };
-    /** Frees the run's `PROPR_FLY_MACHINES_MAX` slot (a no-op without the cap). */
+    /** Frees the run's `PROPR_FLY_MACHINES_MAX` slot, whichever one it holds now (idempotent; a no-op without the cap). */
     release: () => void;
-    /** Time spent waiting for that slot. */
+    /**
+     * Takes the slot again after a refused create gave it up to prepare a replacement image; the wait adds to
+     * `queueMs`. A no-op while a slot is held.
+     */
+    reacquire: () => Promise<void>;
+    /** Time spent waiting for the slot, including any wait to take it again. */
     queueMs: number;
 }
 
@@ -44,9 +49,22 @@ export async function dispatchFlyRun({ images, loadPackages, api, config, prepar
     const selection = await selectFlyPackageImage(images, prepared, selectOptions);
     const image = { selection, imageWaitMs: Date.now() - startedAt };
     // Over PROPR_FLY_MACHINES_MAX the run queues here; the slot is held until its agent Machine is destroyed or confirmed gone.
-    const queuedAt = Date.now();
-    const release = await acquireFlyMachineSlot(config.app, config.maxMachines, signal, run);
-    return { configured, selectOptions, image, release, queueMs: Date.now() - queuedAt };
+    // The slot holder: release() frees whichever slot is held now, so cleanup stays idempotent across a refused
+    // create that gave the slot up to rebuild its image and took a new one afterwards.
+    let held: (() => void) | undefined;
+    const take = async () => {
+        const queuedAt = Date.now();
+        const release = await acquireFlyMachineSlot(config.app, config.maxMachines, signal, run);
+        dispatch.queueMs += Date.now() - queuedAt;
+        held = release;
+    };
+    const dispatch: FlyDispatch = {
+        configured, selectOptions, image, queueMs: 0,
+        release: () => { const release = held; held = undefined; release?.(); },
+        reacquire: async () => { if (!held) await take(); },
+    };
+    await take();
+    return dispatch;
 }
 
 interface AgentCreate {
@@ -64,7 +82,8 @@ interface AgentCreate {
 /** Creates the agent Machine from the selected image (see `createAgentMachine`), reporting an unconfirmed create. */
 export async function createFlyAgentMachine({ api, images, prepared, dispatch, mayRetry, onAttempt, onBootStart, onUnconfirmed }: AgentCreate) {
     try {
-        return await createAgentMachine({ api, images, prepared, options: dispatch.selectOptions, state: dispatch.image, mayRetry, onAttempt, onBootStart });
+        return await createAgentMachine({ api, images, prepared, options: dispatch.selectOptions, state: dispatch.image,
+            slot: { release: dispatch.release, reacquire: dispatch.reacquire }, mayRetry, onAttempt, onBootStart });
     } catch (error) {
         if (error instanceof MachineCreateUnconfirmedError || error instanceof MachineNotFoundAfterCreateError) onUnconfirmed();
         throw error;
