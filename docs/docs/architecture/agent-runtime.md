@@ -105,7 +105,7 @@ docker inspect <container>
 
 ### Authentication Issues
 
-For a direct-login account, check that the managed credential root is mounted and that the agent's generated path is still `~/.propr/agent-credentials/<agent-id>/…`. For reused host credentials, check that the CLI is authenticated and the expected directory is mounted into the agent's container path. For example, Claude Code expects its selected directory at `/home/node/.claude`, while Codex expects its selected directory at `/home/node/.codex`.
+For a direct-login account, check that the managed credential root is mounted and that the agent's generated path is still `~/.propr/agent-credentials/<agent-id>/…`. For reused host credentials, check that the CLI is authenticated and the expected directory is mounted into the agent's container path. For example, Claude Code expects its selected directory at `/home/node/.claude`, while Codex expects its selected directory at `/home/node/.codex`. For an Antigravity login kept in the OS keyring, see [Antigravity troubleshooting](#troubleshooting-run-agy-to-log-in-although-you-are-signed-in).
 
 ### Docker Permission Issues
 
@@ -180,9 +180,28 @@ ANTIGRAVITY_CONFIG_PATH=/home/your-user/.gemini
 ANTIGRAVITY_TIMEOUT_MS=86400000
 ```
 
-The entrypoint prepares Antigravity runtime directories under the mounted config path and looks for auth, OAuth, credential, or token files. The agent CLI is `agy`; ProPR passes the selected model with `--model <id>` after translating ProPR model IDs into Antigravity CLI model IDs.
+The entrypoint prepares Antigravity runtime directories under the mounted config path and looks for auth, OAuth, credential, or token files. Disposable runs copy only `antigravity-cli/antigravity-oauth-token` and `antigravity-cli/settings.json` from it. The agent CLI is `agy`; ProPR passes the selected model with `--model <id>` after translating ProPR model IDs into Antigravity CLI model IDs.
 
 ProPR also passes `--print-timeout` set to the run's timeout (`ANTIGRAVITY_TIMEOUT_MS` for tasks). From Antigravity CLI 1.5.0, a run that hits that deadline exits with code `3`, prints an `AGY_ERROR` line and writes `[agy] print timeout after ...` to stderr. ProPR records such a task as timed out, with the CLI's explanation as the error, and does not accept the partial answer of an analysis run.
+
+#### Troubleshooting: "Run 'agy' to log in" although you are signed in
+
+On macOS and on a Linux desktop with a Secret Service keyring (gnome-keyring, KWallet), `agy` 1.5.x saves its sign-in token in the OS keyring. It writes only a marker, `~/.config/antigravity/credential-user-scope`, and no `~/.gemini/antigravity-cli/antigravity-oauth-token`. Agent containers have no keyring, so a task that reuses that `~/.gemini` stops after a few seconds with `Error: authentication required. Run 'agy' to log in, then retry.`, even though `agy models` works on the host.
+
+ProPR reports this case with an actionable reason instead:
+
+- The Settings agent card, `propr check` (`Agent login: antigravity (file token)`), `propr check agents` and the MCP `get_agent_configuration` tool (`credentialStates`) report the agent as not ready when its credential directory has no file token. The check looks only for the file; it never reads the token or the keyring. If the worker can see the host home, the message names the keyring marker it found.
+- A task that fails because the entrypoint found no auth file, or because `agy` printed `authentication required`, carries the same reason. The raw CLI output stays in the task logs.
+
+Fix it in one of two ways:
+
+1. Sign in once on the host with file storage forced. This writes the file token next to your keyring login, which keeps working:
+
+   ```bash
+   AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy
+   ```
+
+2. Use ProPR's managed login (**Log in to a new account** in Settings, or `propr agent login antigravity`). It runs `agy` inside a container with no keyring, so it always writes the file token.
 
 ### OpenCode
 

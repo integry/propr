@@ -418,6 +418,13 @@ export interface Agent {
      * Verifies the agent is ready (e.g. docker image exists).
      */
     healthCheck(): Promise<boolean>;
+
+    /**
+     * Actionable reason the configured credentials cannot work in the agent
+     * container, from a cheap local check (no provider call). `undefined`
+     * when no problem is visible.
+     */
+    credentialProblem?(): string | undefined;
 }
 
 // Re-export types that are commonly needed with agent types
