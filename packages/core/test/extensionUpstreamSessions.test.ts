@@ -383,6 +383,56 @@ test('every abandoned handshake closes the connection it pinned and ends an assi
   assert.deepEqual(removed, ['dropped-session']);
 });
 
+test('a session assigned to a failed initialize response is DELETEd once before the fallback, and never kept', async t => {
+  // The upstream assigns a session, then its initialize reply fails: unreadable (malformed, oversized, timed out:
+  // the transport throws after recording the header) or a JSON-RPC answer that is not a result.
+  for (const failure of ['unreadable', 'not a result', 'delete fails']) {
+    const log: string[] = [];
+    const agents: { destroyed: boolean }[] = [];
+    const outcome = await openUpstreamSession(async (body, exchange) => {
+      if (exchange.method === 'DELETE') {
+        log.push(`DELETE ${exchange.sessionId} ${exchange.connection ? 'pinned' : 'fresh'}`);
+        assert.equal(agents[0].destroyed, false, 'the DELETE goes out before the connection is closed');
+        if (failure === 'delete fails') throw new Error('MCP connection failed');
+        return null;
+      }
+      const rpc = body as { id: string; method: string };
+      log.push(rpc.method);
+      if (exchange.pin) {
+        const agent = { destroyed: false, destroy() { this.destroyed = true; } };
+        agents.push(agent);
+        exchange.connection = { address: '8.8.8.8', family: 4, agent: agent as unknown as import('node:https').Agent };
+      }
+      if (rpc.method === 'initialize') {
+        exchange.assignedSessionId = 'abandoned-session';
+        if (failure !== 'not a result') throw new Error('MCP connection failed');
+      }
+      return { jsonrpc: '2.0', id: rpc.id, error: { code: -32600, message: 'unsupported' } };
+    });
+    assert.deepEqual(log, ['initialize', 'DELETE abandoned-session pinned', 'server/discover'], failure);
+    assert.equal(outcome.state, undefined, failure);
+    assert.ok(agents.length === 2 && agents.every(a => a.destroyed), failure);
+  }
+
+  // Through the gateway: the call falls back without a session, nothing is cached, and the next call opens a new one.
+  const f = await fixture(t);
+  const token = await f.launch('failed-initialize-run');
+  const upstream = statefulUpstream();
+  let fail = true;
+  const send: typeof upstream.send = async (endpoint, body, bearer, policy, exchange = {}) => {
+    const reply = await upstream.send(endpoint, body, bearer, policy, exchange);
+    if ((body as { method?: string } | null)?.method === 'initialize' && fail) { fail = false; throw new Error('MCP connection failed'); }
+    return reply;
+  };
+  await extensionGatewayCall(f.store, token, 'echo', callEcho(1, 'x'), send, f.sessions).catch(() => undefined);
+  const entry = f.sessions.peek(extensionTokenHash(token), 'echo')!;
+  assert.equal(entry.state, undefined); assert.equal(entry.pending, undefined);
+  assert.deepEqual(upstream.state.deleted, ['upstream-session-1']);
+  assert.deepEqual([...upstream.state.sessions], []);
+  assert.match(JSON.stringify(await extensionGatewayCall(f.store, token, 'echo', callEcho(2, 'fresh'), send, f.sessions)), /fresh session=\[REDACTED\]/);
+  assert.equal(entry.state?.id, 'upstream-session-2');
+});
+
 test('the real transport frees the pinned connection after an event-stream response the upstream leaves open', async t => {
   const https = (await import('node:https')).default;
   const { execFileSync } = await import('node:child_process');

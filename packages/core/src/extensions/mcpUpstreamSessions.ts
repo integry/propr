@@ -118,11 +118,22 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
     return { state, reply, requestBytes };
   };
   if (resume) return notify(resume.state, resume.reply);
+  /**
+   * Abandon an `initialize` exchange: a session the upstream assigned before its reply failed (malformed, oversized,
+   * timed out) or was not a result is never kept, so end it with a best-effort `DELETE` through the same transport
+   * (a gateway call meters its response), then close the exchange's connection.
+   */
+  const abandon = async (exchange: ExtensionMcpExchange) => {
+    const id = exchange.assignedSessionId;
+    try { if (id) await post(null, { method: 'DELETE', sessionId: id, protocolVersion: MCP_2025_REVISIONS[0], ...(exchange.connection ? { connection: exchange.connection } : {}) }); }
+    catch { /* best effort: the upstream expires it */ }
+    finally { exchange.connection?.agent.destroy(); }
+  };
   const initialize = { jsonrpc: '2.0', id: initializeId, method: 'initialize', params: { protocolVersion: MCP_2025_REVISIONS[0], capabilities: {}, clientInfo: { name: 'propr-extension-gateway', version: '1' } } };
   const opening: ExtensionMcpExchange = { protocolVersion: MCP_2025_REVISIONS[0], pin: true };
   let reply: unknown;
   try { reply = await send(initialize, opening); }
-  catch (error) { opening.connection?.agent.destroy(); throw error; }
+  catch (error) { await abandon(opening); throw error; }
   const initialized = resultOf(reply);
   if (initialized) {
     const offered = initialized.protocolVersion;
@@ -131,7 +142,7 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
     const state: UpstreamSessionState = { mode: id ? 'stateful' : 'stateless', era: '2025', protocolVersion, ...(id ? { id } : {}), ...(opening.connection ? { connection: opening.connection } : {}) };
     return notify(state, reply);
   }
-  opening.connection?.agent.destroy();
+  await abandon(opening);
   const discovering: ExtensionMcpExchange = { protocolVersion: MCP_2026_REVISION, headers: { 'Mcp-Method': 'server/discover' }, pin: true };
   let discovered: Record<string, unknown> | undefined;
   try { discovered = resultOf(await send({ jsonrpc: '2.0', id: 'propr-gateway-discover', method: 'server/discover', params: { _meta: MCP_2026_META } }, discovering)); }
