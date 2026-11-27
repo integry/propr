@@ -145,6 +145,7 @@ export function agentResultToMetricsResult(result: AgentExecutionResult): Claude
         error: result.error,
         tokenUsage: result.tokenUsage,
         finalResult: result.cost ? { total_cost_usd: result.cost } : null,
+        ...(result.providerCostUsd !== undefined && { providerCostUsd: result.providerCostUsd }),
     };
 }
 

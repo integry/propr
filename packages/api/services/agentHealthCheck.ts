@@ -10,6 +10,7 @@ const PROBE_MODELS: Record<AgentConfig['type'], string[]> = {
   antigravity: AGENT_MODELS.antigravity.map(model => model.id).filter(id => id.includes('flash')),
   opencode: ['opencode-deepseek-v4.1-flash-free', 'opencode-nemotron-3.5-lightning-free', 'opencode-big-pickle', ...AGENT_MODELS.opencode.map(model => model.id)],
   vibe: ['mistral-medium-3.5'],
+  pi: ['pi-anthropic/claude-haiku-5-5', 'pi-anthropic/claude-sonnet-5-5'],
 };
 
 export function agentHealthModel(config: AgentConfig): string | undefined {

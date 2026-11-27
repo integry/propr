@@ -66,12 +66,27 @@ export function resolveClaudeReasoningLevel(level: ModelReasoningLevel): ClaudeR
     return level;
 }
 
+/** Thinking levels `pi --thinking` accepts. */
+export type PiThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/**
+ * Maps a ProPR reasoning level to `pi --thinking`. Unset and `auto` leave the
+ * model's own default; levels above Pi's range run at `max`. Pi clamps the
+ * level to what the selected model supports.
+ */
+export function resolvePiReasoningLevel(level: ModelReasoningLevel): Extract<PiThinkingLevel, ReasoningLevel> | null {
+    if (level === '' || level === 'auto') return null;
+    if (level === 'ultra' || level === 'ultracode') return 'max';
+    return level;
+}
+
 export function resolveRuntimeModelReasoningLevel(
     agentType: AgentType,
     level: ModelReasoningLevel
 ): RuntimeReasoningLevel | null {
     if (agentType === 'codex') return resolveCodexReasoningLevel(level);
     if (agentType === 'claude') return resolveClaudeReasoningLevel(level);
+    if (agentType === 'pi') return resolvePiReasoningLevel(level);
     return null;
 }
 

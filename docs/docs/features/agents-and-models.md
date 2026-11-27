@@ -35,12 +35,19 @@ For virtual routing across several configured direct agents, see [Synthetic Pool
 | Antigravity (Google, multi-model) | `antigravity` | `propr/agent` | `HOST_ANTIGRAVITY_DIR` → `~/.gemini` (authenticate with `agy login`) |
 | OpenCode | `opencode` | `propr/agent` | `HOST_OPENCODE_XDG_DIR` → `~/.config/opencode` (plus data dir; see below) |
 | Mistral Vibe | `vibe` | `propr/agent` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
+| Pi coding agent | `pi` | `propr/agent` | `HOST_PI_DIR` → `~/.pi/agent` (or provider API keys such as `OPENROUTER_API_KEY` in the agent's environment variables) |
 
 When adding Claude, Codex, Antigravity, or OpenCode in the Web UI, choose either **Log in to a new account** or **Use existing config**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config.
 
 Direct-login accounts use the portable saved path `~/.propr/agent-credentials/<agent-id>/…`. ProPR maps it automatically to `~/.propr/agent-credentials` for native and Compose installs, or to `PROPR_DATA_DIR/agent-credentials` for the launcher container. You do not enter a host path. The generated provider subdirectory is mounted read-write so its CLI can refresh auth state, and the agent image normalizes ownership before dropping to its unprivileged runtime user.
 
 To reuse an account that is already authenticated on the host, select **Use existing config** and provide its config path. Launcher deployments also expose that path with the matching `HOST_*` setting. You can authenticate existing paths with a host CLI or `propr agent login <type>`; both CLI and Web login actions run the configured agent image, avoiding host/image CLI version drift. Gemini CLI was discontinued upstream; Gemini models route through Antigravity.
+
+### Pi
+
+Pi routes to many providers, so its model IDs name the provider: `pi-<provider>/<model>` runs as `pi --model <provider>/<model>` (for example `pi-openrouter/mistralai/devstral-2512`). Add any provider/model Pi knows to the agent's supported models; an optional `:<thinking>` suffix (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) pins a thinking level, and a configured ProPR reasoning level overrides it (`ultra` and `ultracode` run at `max`). PR titles show the underlying model.
+
+Each run is `pi -p --mode json --no-approve` with the prompt on stdin, so repository `.pi/` extensions, settings and prompts are never trusted; `AGENTS.md` and `CLAUDE.md` still load. Sessions go to a disposable directory inside the container. ProPR records the full event stream (messages, thinking, tool calls and tool results) as the task's execution events, sums token usage over every response, and uses the provider-reported cost when every response carries one.
 
 ## Goal sessions
 
@@ -52,7 +59,7 @@ Keep Antigravity's mounted configuration directory across goal attempts, since i
 
 The Web UI includes a Coding agents page for configuring coding agents. Each agent entry defines:
 
-- Agent type (claude, codex, antigravity, opencode, vibe)
+- Agent type (claude, codex, antigravity, opencode, vibe, pi)
 - A unique alias (lowercase alphanumeric and hyphens)
 - An enable toggle
 - The Docker image (predefined per agent type)
