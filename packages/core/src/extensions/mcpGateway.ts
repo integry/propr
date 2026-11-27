@@ -1,7 +1,7 @@
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { ExtensionError, ExtensionLibraryStore, extensionTokenHash } from './extensionProfileStore.js';
 import { ExtensionUpstreamSessionBusyError, ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, requestExtensionMcp, extensionResponseWireBytes, resolveExtensionEndpoint, type ExtensionMcpExchange, type ExtensionMcpSend } from './endpointPolicy.js';
-import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessionCapacityError, closeUpstreamSession, extensionUpstreamSessions, openUpstreamSession, sessionRequest, type ExtensionUpstreamSessions, type HandshakeOutcome, type UpstreamSessionState } from './mcpUpstreamSessions.js';
+import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessionCapacityError, ExtensionUpstreamSessionEndedError, closeUpstreamSession, extensionUpstreamSessions, openUpstreamSession, sessionRequest, type ExtensionUpstreamSessions, type HandshakeOutcome, type UpstreamSessionState } from './mcpUpstreamSessions.js';
 import { extensionOAuth } from './extensionOAuthStore.js';
 import { redactExtensionOutput } from './extensionOutput.js';
 export { redactExtensionOutput } from './extensionOutput.js';
@@ -14,6 +14,9 @@ const LOCAL_INITIALIZE = Symbol('local initialize');
 const gatewayError = (error: unknown): ExtensionError | undefined => {
   if (error instanceof ExtensionError) return error;
   if (error instanceof ExtensionUpstreamSessionBusyError) return new ExtensionError(503, 'MCP session busy: earlier calls in this session are still running; the call was not sent');
+  // The session entry was dropped during this call: no new upstream session is opened for it.
+  if (error instanceof ExtensionUpstreamSessionEndedError) return new ExtensionError(401, 'Extension grant expired or exhausted');
+  if (error instanceof ExtensionUpstreamSessionCapacityError) return new ExtensionError(503, 'MCP session capacity reached');
   return undefined;
 };
 

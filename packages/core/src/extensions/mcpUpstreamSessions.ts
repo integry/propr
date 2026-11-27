@@ -175,6 +175,8 @@ export async function openUpstreamSession(post: Post, initializeId: string | num
 
 /** Every session slot is held by a call in flight: a new session is refused rather than closing one of them. */
 export class ExtensionUpstreamSessionCapacityError extends Error { constructor() { super('MCP session capacity reached'); } }
+/** The entry was dropped (its grant ended, or shutdown): it never opens an upstream session again. */
+export class ExtensionUpstreamSessionEndedError extends Error { constructor(readonly reason: string) { super('MCP session ended with the run grant'); } }
 
 const closedSessions = new WeakSet<UpstreamSessionState>();
 /** End an upstream session: `DELETE` with its id (best effort), then close its pinned connection. Later calls for the same state are no-ops. */
@@ -212,6 +214,8 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 
 export class ExtensionUpstreamSessions {
   private readonly entries = new Map<string, UpstreamSessionEntry>();
+  /** Why each dropped entry was dropped. A call still holding one is refused, never given a new upstream session. */
+  private readonly dropped = new WeakMap<UpstreamSessionEntry, string>();
   private timer?: NodeJS.Timeout;
   constructor(private readonly limits = UPSTREAM_SESSION_LIMITS, private readonly now: () => number = Date.now) {}
 
@@ -254,23 +258,30 @@ export class ExtensionUpstreamSessions {
    * The open session, or a new one. Concurrent callers share one handshake; a
    * failed handshake is not kept, except a session the upstream assigned before
    * refusing the credential: the entry keeps it and the next handshake resumes it.
-   * A session whose initialized notification failed otherwise is closed.
+   * A session whose initialized notification failed otherwise is closed. A dropped entry (grant end, capacity,
+   * shutdown) is refused, also when it is dropped during the handshake: the new session is closed and the call fails.
    */
   async open(entry: UpstreamSessionEntry, handshake: (resume?: HandshakeOutcome & { state: UpstreamSessionState }) => Promise<HandshakeOutcome>): Promise<HandshakeOutcome & { own: boolean }> {
+    this.fence(entry);
     if (entry.state) return { state: entry.state, requestBytes: 0, own: false };
-    if (entry.opening) { const shared = await entry.opening; return { state: shared.state, requestBytes: 0, own: false }; }
+    if (entry.opening) { const shared = await entry.opening; this.fence(entry); return { state: shared.state, requestBytes: 0, own: false }; }
     const resume = entry.pending; entry.pending = undefined;
     const opening = handshake(resume);
     entry.opening = opening;
-    const current = () => this.entries.get(`${entry.grant}\0${entry.server}`) === entry;
+    const current = () => !this.dropped.has(entry);
     try {
       const outcome = await opening;
-      if (outcome.state && current()) {
+      if (!current()) {
+        if (outcome.state) await closeUpstreamSession(outcome.state, entry.remove);
+        this.fence(entry);
+      }
+      if (outcome.state) {
         entry.state = outcome.state;
         logger.info({ taskId: entry.taskId, server: entry.server, sessionMode: outcome.state.mode, protocolVersion: outcome.state.protocolVersion, authentication: entry.authentication, reinitialized: entry.reinitialized }, 'Opened extension URL MCP upstream session');
-      } else if (outcome.state) await closeUpstreamSession(outcome.state, entry.remove);
+      }
       return { ...outcome, own: true };
     } catch (error) {
+      if (error instanceof ExtensionUpstreamSessionEndedError || error instanceof ExtensionUpstreamSessionCapacityError) throw error;
       if (error instanceof ExtensionUpstreamHandshakeUnauthorizedError) {
         if (current()) entry.pending = error.pending;
         else await closeUpstreamSession(error.pending.state, entry.remove);
@@ -318,11 +329,18 @@ export class ExtensionUpstreamSessions {
   private async drop(entry: UpstreamSessionEntry, reason: string): Promise<void> {
     const key = `${entry.grant}\0${entry.server}`;
     if (this.entries.get(key) !== entry) return;
-    this.entries.delete(key);
+    this.entries.delete(key); this.dropped.set(entry, reason);
     const state = entry.state ?? entry.pending?.state; entry.state = undefined; entry.pending = undefined;
     const deleted = state ? await closeUpstreamSession(state, entry.remove) : false;
     logger.info({ taskId: entry.taskId, server: entry.server, sessionMode: state?.mode ?? null, authentication: entry.authentication, reason, calls: entry.calls, toolCalls: entry.toolCalls, refreshes: entry.refreshes, reinitialized: entry.reinitialized, deleted }, 'Closed extension URL MCP upstream session');
     if (!this.entries.size && this.timer) { clearInterval(this.timer); this.timer = undefined; }
+  }
+
+  /** Refuse a dropped entry with the error of its drop. */
+  private fence(entry: UpstreamSessionEntry): void {
+    const reason = this.dropped.get(entry);
+    if (reason === undefined) return;
+    throw reason === 'capacity' ? new ExtensionUpstreamSessionCapacityError() : new ExtensionUpstreamSessionEndedError(reason);
   }
 
   /** The least recently used entry without a call in flight. */

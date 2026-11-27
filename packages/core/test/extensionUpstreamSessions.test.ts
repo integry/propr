@@ -10,7 +10,7 @@ import { ExtensionLibraryStore, extensionTokenHash, type ExtensionLaunchContext 
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
 import { EXTENSION_LIMITS } from '@propr/shared';
 import { ExtensionUpstreamSessionNotFoundError, ExtensionUpstreamUnauthorizedError, type ExtensionMcpExchange, type ExtensionMcpSend } from '../src/extensions/endpointPolicy.js';
-import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessionCapacityError, ExtensionUpstreamSessions, MCP_2026_REVISION, UPSTREAM_SESSION_LIMITS, closeExtensionGrantSessions, closeExtensionUpstreamSessions, extensionUpstreamSessions, openUpstreamSession, probeExtensionMcp } from '../src/extensions/mcpUpstreamSessions.js';
+import { ExtensionUpstreamHandshakeIncompleteError, ExtensionUpstreamHandshakeUnauthorizedError, ExtensionUpstreamSessionCapacityError, ExtensionUpstreamSessionEndedError, ExtensionUpstreamSessions, MCP_2026_REVISION, UPSTREAM_SESSION_LIMITS, closeExtensionGrantSessions, closeExtensionUpstreamSessions, extensionUpstreamSessions, openUpstreamSession, probeExtensionMcp } from '../src/extensions/mcpUpstreamSessions.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
 import { up as libraryMigration } from '../src/db/migrations/20261113000000_extension_library.js';
@@ -110,6 +110,75 @@ test('a gateway session is created once, reused, re-initialized after a 404 and 
   assert.deepEqual(upstream.state.deleted, ['upstream-session-2']);
   assert.equal(f.sessions.size(), 0);
   await assert.rejects(call(callEcho(4, 'late')), /expired or exhausted/);
+});
+
+test('a grant that ends during the initial handshake fails the call and closes the new session', async t => {
+  const f = await fixture(t);
+  const token = await f.launch('ended-handshake-run');
+  const grant = extensionTokenHash(token);
+  const upstream = statefulUpstream();
+  // The run's grant ends (R3 closeGrant) while the upstream answers initialize.
+  const send: ExtensionMcpSend = async (...args) => {
+    const reply = await upstream.send(...args);
+    if ((args[1] as { method?: string } | null)?.method === 'initialize') await f.sessions.closeGrant(grant, 'grant_ended');
+    return reply;
+  };
+  await assert.rejects(extensionGatewayCall(f.store, token, 'echo', callEcho(1, 'x'), send, f.sessions), /expired or exhausted/);
+  assert.deepEqual(upstream.state.requests.map(r => r.method), ['initialize', 'notifications/initialized'], 'the call was never sent');
+  assert.deepEqual(upstream.state.deleted, ['upstream-session-1']);
+  assert.equal(f.sessions.size(), 0, 'nothing is kept for the ended grant');
+});
+
+test('a grant that ends during the 404 re-initialize fails the call and opens no further session', async t => {
+  const f = await fixture(t);
+  const token = await f.launch('ended-reinitialize-run');
+  const grant = extensionTokenHash(token);
+  const upstream = statefulUpstream();
+  let endOnInitialize = false;
+  const send: ExtensionMcpSend = async (...args) => {
+    const reply = await upstream.send(...args);
+    if (endOnInitialize && (args[1] as { method?: string } | null)?.method === 'initialize') await f.sessions.closeGrant(grant, 'grant_ended');
+    return reply;
+  };
+  await extensionGatewayCall(f.store, token, 'echo', callEcho(1, 'x'), send, f.sessions);
+  upstream.state.sessions.clear(); endOnInitialize = true;
+  await assert.rejects(extensionGatewayCall(f.store, token, 'echo', callEcho(2, 'y'), send, f.sessions), /expired or exhausted/);
+  assert.deepEqual(upstream.state.requests.map(r => [r.method, r.sessionId ?? null]), [
+    ['initialize', null], ['notifications/initialized', 'upstream-session-1'], ['tools/call', 'upstream-session-1'],
+    ['tools/call', 'upstream-session-1'], ['initialize', null], ['notifications/initialized', 'upstream-session-2'],
+  ], 'the read call is not replayed in the closed session');
+  assert.deepEqual(upstream.state.deleted, ['upstream-session-2']);
+  assert.equal(f.sessions.size(), 0);
+});
+
+test('a dropped entry never opens an upstream session again', async t => {
+  const sessions = new ExtensionUpstreamSessions({ ...UPSTREAM_SESSION_LIMITS, perGrant: 1 });
+  t.after(() => sessions.closeAll('test'));
+  const init = (server: string) => ({ grant: 'g', server, taskId: 't', authentication: 'none' as const, remove: async () => null, alive: async () => true });
+  let handshakes = 0;
+  const handshake = async () => { handshakes++; return { state: { mode: 'stateless' as const, era: '2025' as const, protocolVersion: '2025-06-18' }, requestBytes: 0 }; };
+  // Grant end: a call still holding the entry (the 404 recovery, an OAuth retry) is refused.
+  const ended = sessions.entry(init('a'));
+  await sessions.closeGrant('g', 'grant_ended');
+  await assert.rejects(sessions.open(ended, handshake), ExtensionUpstreamSessionEndedError);
+  // Capacity eviction: the evicted entry is refused with the capacity error.
+  const evicted = sessions.entry(init('b'));
+  sessions.release(evicted);
+  sessions.release(sessions.entry(init('c')));
+  await assert.rejects(sessions.open(evicted, handshake), ExtensionUpstreamSessionCapacityError);
+  assert.equal(handshakes, 0);
+  // A caller sharing a handshake whose entry is dropped meanwhile is refused too, and the session is closed.
+  const closed: string[] = [];
+  const shared = sessions.entry({ ...init('d'), remove: async exchange => { closed.push(exchange.sessionId!); return null; } });
+  let finish!: () => void;
+  const opening = sessions.open(shared, async () => { await new Promise<void>(resolve => { finish = resolve; }); return { state: { mode: 'stateful', era: '2025', protocolVersion: '2025-06-18', id: 'shared-session' }, requestBytes: 0 }; });
+  const joined = sessions.open(shared, handshake);
+  await sessions.closeGrant('g', 'grant_ended');
+  finish();
+  await assert.rejects(opening, ExtensionUpstreamSessionEndedError);
+  await assert.rejects(joined, ExtensionUpstreamSessionEndedError);
+  assert.deepEqual(closed, ['shared-session']);
+  assert.equal(shared.state, undefined);
 });
 
 test('a revoked grant closes its sessions on the next call, and expired grants close in the sweep', async t => {
