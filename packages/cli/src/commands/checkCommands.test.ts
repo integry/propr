@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -226,4 +226,22 @@ test("propr check reports an Antigravity login without a file token as not ready
 
   writeFileSync(join(gemini, "antigravity-cli", "antigravity-oauth-token"), "file-token");
   assert.equal(antigravityLoginCheck({ hostAntigravityDir: gemini }, home)?.status, "ok");
+});
+
+test("propr check does not report an Antigravity file token it cannot inspect as missing", { skip: process.getuid?.() === 0 && "root bypasses directory permissions" }, () => {
+  const home = mkdtempSync(join(tmpdir(), "propr-check-agy-eacces-"));
+  const gemini = join(home, ".gemini");
+  const tokenDir = join(gemini, "antigravity-cli");
+  mkdirSync(tokenDir, { recursive: true });
+  writeFileSync(join(tokenDir, "antigravity-oauth-token"), "file-token");
+  chmodSync(tokenDir, 0o000); // e.g. owned by root with mode 0700
+  try {
+    const row = antigravityLoginCheck({ hostAntigravityDir: gemini }, home);
+    assert.equal(row?.status, "warn");
+    assert.match(row?.detail ?? "", /could not be inspected/);
+    assert.doesNotMatch(`${row?.detail} ${row?.fix}`, /not found|OS keyring|AGY_CLI_FORCE_FILE_TOKEN_STORAGE/);
+    assert.match(row?.fix ?? "", /propr check agents --agents antigravity/);
+  } finally {
+    chmodSync(tokenDir, 0o755);
+  }
 });

@@ -30,7 +30,7 @@
  *   - Core images pull by default; the agent image pulls when an agent is selected.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize, resolve } from "node:path";
 import {
@@ -572,6 +572,20 @@ export interface SetupRunResult {
   errors: SetupStructuredError[];
 }
 
+/**
+ * Whether the Antigravity file token is confirmed absent. A token path this
+ * process cannot inspect (permission denied) is not reported as missing: the
+ * root-started container may still read it.
+ */
+function antigravityFileTokenAbsent(configDir: string): boolean {
+  try {
+    return !statSync(join(configDir, ANTIGRAVITY_TOKEN_FILE)).isFile();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR";
+  }
+}
+
 async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult> {
   const { prompts = {}, reporter = {}, skipRemoteImageCheck, actions } = options;
   const catalog = agentCatalog();
@@ -1099,7 +1113,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
           actions.prepareAgentCredentialDir(effectiveDir);
           vars[cred.envKey] = effectiveDir;
           // An existing ~/.gemini from a keyring login has no file token the container can read.
-          if (cred.envKey === "HOST_ANTIGRAVITY_DIR" && existsSync(effectiveDir) && !existsSync(join(effectiveDir, ANTIGRAVITY_TOKEN_FILE))) antigravityFileTokenMissing = true;
+          if (cred.envKey === "HOST_ANTIGRAVITY_DIR" && existsSync(effectiveDir) && antigravityFileTokenAbsent(effectiveDir)) antigravityFileTokenMissing = true;
         }
       }
       const applied = actions.applyEnvSelection(rootDir, vars, { overwrite: false });

@@ -16,8 +16,20 @@ export interface AntigravityCredentialState {
     reason?: string;
 }
 
-function isFile(filePath: string): boolean {
-    try { return fs.statSync(filePath).isFile(); } catch { return false; }
+/** Stat errors that confirm the path does not exist; any other error means it could not be inspected. */
+const ABSENT_PATH_ERRORS = new Set(['ENOENT', 'ENOTDIR']);
+
+/**
+ * Whether a file exists, separating confirmed absence from an inspection
+ * failure: a token under a directory this process cannot search (another
+ * owner, mode 0700) may still be readable by the root-started container.
+ */
+function probeFile(filePath: string): 'present' | 'absent' | 'inaccessible' {
+    try {
+        return fs.statSync(filePath).isFile() ? 'present' : 'absent';
+    } catch (error) {
+        return ABSENT_PATH_ERRORS.has((error as NodeJS.ErrnoException).code ?? '') ? 'absent' : 'inaccessible';
+    }
 }
 
 function isDirectory(dirPath: string): boolean {
@@ -55,13 +67,18 @@ export function hasAntigravityAlternativeAuth(environment: Record<string, string
  * Checks the Antigravity credential directory for the file token the
  * container runtime copies. Only file presence is checked: token and keyring
  * contents are never read. A directory the worker cannot see is `unknown`,
- * because the container may still receive it through a host bind mount.
+ * because the container may still receive it through a host bind mount; so is
+ * a token path the worker cannot inspect (for example an `antigravity-cli`
+ * directory owned by another user), because the container starts as root.
  * When `environment` (the agent's configured container environment) selects
  * an alternative sign-in, a missing file token is not a problem: `unknown`.
  */
 export function inspectAntigravityCredentials(configDir: string, environment?: Record<string, string>): AntigravityCredentialState {
     if (!configDir || !isDirectory(configDir)) return { status: 'unknown', keyringMarkerDetected: false };
-    if (isFile(path.join(configDir, ANTIGRAVITY_TOKEN_FILE))) return { status: 'present', keyringMarkerDetected: false };
+    const token = probeFile(path.join(configDir, ANTIGRAVITY_TOKEN_FILE));
+    if (token === 'present') return { status: 'present', keyringMarkerDetected: false };
+    // An unsearchable token directory is not evidence of a missing login: leave it to the container probe.
+    if (token === 'inaccessible') return { status: 'unknown', keyringMarkerDetected: false };
     const home = visibleHostHome(configDir);
     const keyringMarkerDetected = !!home && fs.existsSync(path.join(home, ANTIGRAVITY_KEYRING_MARKER_FILE));
     if (hasAntigravityAlternativeAuth(environment)) return { status: 'unknown', keyringMarkerDetected };

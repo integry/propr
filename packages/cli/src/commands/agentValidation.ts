@@ -19,7 +19,7 @@
 
 import { localSetupSearchPath } from "../utils/localSetupPlatform.js";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import {
@@ -562,6 +562,21 @@ export function agentRowsToChecks(rows: AgentValidationRow[]): CheckResult[] {
  * Validate configured agents by default — version (host vs image), host CLI
  * call, image call. Explicit --agents can still request any known agent.
  */
+/**
+ * Whether the Antigravity file token exists under `hostDir`. A permission
+ * error is `inaccessible`, not `absent`: an `antigravity-cli` directory owned
+ * by another user (mode 0700) can still hold a token the root-started
+ * container reads. Checks presence only; the token is never read.
+ */
+export function probeAntigravityToken(hostDir: string): "present" | "absent" | "inaccessible" {
+  try {
+    return statSync(join(hostDir, ANTIGRAVITY_TOKEN_FILE)).isFile() ? "present" : "absent";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "inaccessible";
+  }
+}
+
 export async function validateAgents(
   orch: OrchestratorModule,
   cfg: OrchestratorConfig,
@@ -627,7 +642,7 @@ export async function validateAgents(
     // agy keeps desktop logins in the OS keyring; without the file token the
     // container cannot sign in, so skip the billable run and name the fix.
     const antigravityKeyringLogin = d.type === "antigravity" && existsSync(join(home, ANTIGRAVITY_KEYRING_MARKER_FILE));
-    if (d.type === "antigravity" && !existsSync(join(hostDir, ANTIGRAVITY_TOKEN_FILE))) {
+    if (d.type === "antigravity" && probeAntigravityToken(hostDir) === "absent") {
       return {
         status: "fail",
         detail: `${join(hostDir, ANTIGRAVITY_TOKEN_FILE)} not found — the container has no Antigravity login`,

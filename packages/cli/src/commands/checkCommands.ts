@@ -32,7 +32,7 @@ import { getHostConfig, loadOrchestrator } from "../orchestrator/index.js";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import { upsertEnvVars } from "../utils/envFile.js";
 import { printOutput } from "../utils/index.js";
-import { localImagePresent, validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
+import { localImagePresent, validateAgents, validateAgentFilter, validAgentTypes, agentRowsToChecks, probeAntigravityToken, getAgentTankUsage, type AgentCell, type AgentValidationRow, type AgentTankUsage } from "./agentValidation.js";
 
 export type CheckStatus = "ok" | "warn" | "fail";
 export type CheckGroup = "CLI" | "Docker" | "Stack" | "Images" | "Agents" | "GitHub" | "Configuration";
@@ -132,7 +132,17 @@ export function antigravityLoginCheck(
   if (!dir || !existsSync(dir)) return undefined;
   const name = "Agent login: antigravity (file token)";
   const tokenFile = join(dir, ANTIGRAVITY_TOKEN_FILE);
-  if (existsSync(tokenFile)) return { name, status: "ok", detail: `${tokenFile} found`, group: "Agents" };
+  const token = probeAntigravityToken(dir);
+  if (token === "present") return { name, status: "ok", detail: `${tokenFile} found`, group: "Agents" };
+  if (token === "inaccessible") {
+    return {
+      name,
+      status: "warn",
+      detail: `${tokenFile} could not be inspected by this user (permission denied); the agent container may still read it`,
+      group: "Agents",
+      fix: "Run `propr check agents --agents antigravity` to verify the login inside the container.",
+    };
+  }
   const keyringMarkerDetected = existsSync(join(home, ANTIGRAVITY_KEYRING_MARKER_FILE));
   return {
     name,

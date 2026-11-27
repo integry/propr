@@ -156,3 +156,16 @@ test('a failed analysis (and so the Settings health probe) carries the actionabl
     assert.equal(result.success, false);
     assert.equal(result.error, `Analysis failed: ${ANTIGRAVITY_KEYRING_LOGIN_GUIDANCE}`);
 });
+
+test('a file token under a directory the worker cannot search is unknown, not missing', { skip: process.getuid?.() === 0 && 'root bypasses directory permissions' }, async () => {
+    const gemini = hostHome({ token: true, keyringMarker: true });
+    const tokenDir = path.join(gemini, 'antigravity-cli');
+    fs.chmodSync(tokenDir, 0o000); // e.g. owned by root with mode 0700
+    try {
+        assert.deepEqual(inspectAntigravityCredentials(gemini), { status: 'unknown', keyringMarkerDetected: false });
+        assert.equal(agent(gemini).credentialProblem(), undefined);
+        assert.equal(await agent(gemini).healthCheck(), true);
+    } finally {
+        fs.chmodSync(tokenDir, 0o755);
+    }
+});
