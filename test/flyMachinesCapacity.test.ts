@@ -10,6 +10,7 @@ import { machineLimitRetry } from '../packages/core/src/agents/runtime/fly/machi
 import { RUN } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
+import logger from '../packages/core/src/utils/logger.ts';
 
 after(closeConnection);
 
@@ -421,16 +422,16 @@ test('a Machine that disappears while its deletion keeps failing frees its slot 
 /** Fly refuses the first `refusals` creates with its organization machine-limit 422; the Machine list is recorded on each refusal. */
 class MachineLimit extends Machines {
     attempts: string[] = [];
-    listed: string[] = [];
+    listed: Array<{ prefix: string; includeDeleted?: boolean }> = [];
     constructor(public refusals: number) { super(); }
     override async create(launch: MachineLaunch) {
         this.attempts.push(launch.name);
         if (this.refusals-- > 0) throw new MachinesHttpError('POST', 422, 'Your organization has reached its machine limit.');
         return super.create(launch);
     }
-    async list(prefix: string) {
-        this.listed.push(prefix);
-        return [{ id: 'old', name: 'propr-leaving', state: 'destroying' }];
+    async list(prefix: string, options?: { includeDeleted?: boolean }) {
+        this.listed.push({ prefix, includeDeleted: options?.includeDeleted });
+        return [{ id: 'old', name: 'propr-leaving', state: 'destroyed' }];
     }
 }
 
@@ -440,8 +441,20 @@ const shortMachineLimitRetry = (totalMs: number) => {
     return () => Object.assign(machineLimitRetry, saved);
 };
 
+/** The machine-limit records logged at warn and error level, as [message, fields]. */
+function machineLimitLogs(t: { mock: { method: typeof import('node:test').mock.method } }) {
+    const records: Array<[string, Record<string, unknown>]> = [];
+    for (const level of ['warn', 'error'] as const) {
+        t.mock.method(logger, level, (fields: Record<string, unknown>, message?: string) => {
+            if (typeof message === 'string' && message.startsWith('Fly organization machine limit reached')) records.push([message, fields]);
+        });
+    }
+    return records;
+}
+
 test('a create refused for the organization machine limit keeps its slot and retries the same launch', async t => {
     t.after(shortMachineLimitRetry(5_000));
+    const logs = machineLimitLogs(t);
     const api = new MachineLimit(2);
     const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'org-limit', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
     const first = runtime.start(spec('first'));
@@ -450,7 +463,17 @@ test('a create refused for the organization machine limit keeps its slot and ret
     assert.equal(api.attempts.length, 3, 'two refusals, then the create that succeeds');
     assert.equal(new Set(api.attempts).size, 1, 'every retry posts the same launch name');
     assert.deepEqual(api.created, ['m0'], 'one Machine launched');
-    assert.deepEqual(api.listed, ['', ''], 'each refusal lists the agent app\'s Machines');
+    assert.deepEqual(api.listed, [{ prefix: '', includeDeleted: true }, { prefix: '', includeDeleted: true }],
+        'each refusal lists the agent app\'s Machines, destroyed ones included');
+    const listedRecords = logs.filter(([message]) => message.endsWith('; Machines in the agent app'));
+    assert.deepEqual(listedRecords.map(([, fields]) => [fields.attempt, fields.machines]),
+        [[1, [{ id: 'old', state: 'destroyed', name: 'propr-leaving' }]], [2, [{ id: 'old', state: 'destroyed', name: 'propr-leaving' }]]]);
+    const accepted = logs.filter(([message]) => message.endsWith('; create accepted after retries'));
+    assert.equal(accepted.length, 1, 'the retried create logs its outcome once');
+    assert.equal(accepted[0][1].attempts, 3);
+    assert.equal(accepted[0][1].machine, 'm0');
+    assert.ok(typeof accepted[0][1].waitedMs === 'number' && accepted[0][1].waitedMs >= 0);
+    assert.ok(!logs.some(([message]) => message.endsWith('; create given up')));
     api.destroys.shift()!();
     assert.equal((await first.wait()).exitCode, 0);
     await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
@@ -462,11 +485,17 @@ test('a create refused for the organization machine limit keeps its slot and ret
 
 test('a create still refused for the machine limit after the bound fails the run and frees its slot', async t => {
     t.after(shortMachineLimitRetry(100));
+    const logs = machineLimitLogs(t);
     const api = new MachineLimit(Infinity);
     const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'org-limit-bound', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
     const failed = runtime.start(spec('failed'));
     await assert.rejects(failed.wait(), /Fly organization machine limit reached: Fly refused the Machine create \d+ times over \d+s \(Fly Machines API POST returned HTTP 422: Your organization has reached its machine limit\.\)/);
     assert.ok(api.attempts.length >= 3, 'retried until the bound');
+    const givenUp = logs.filter(([message]) => message.endsWith('; create given up'));
+    assert.equal(givenUp.length, 1);
+    assert.equal(givenUp[0][1].attempts, api.attempts.length);
+    assert.equal(givenUp[0][1].reason, 'bound');
+    assert.ok(!logs.some(([message]) => message.endsWith('; create accepted after retries')));
     api.refusals = 0;
     const next = runtime.start(spec('next'));
     await until('the next run, admitted after the failed one freed its slot, is deleting its Machine', () => api.destroys.length === 1);

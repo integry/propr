@@ -31,38 +31,53 @@ interface LimitedCreate {
 /**
  * Creates the Machine, retrying the same launch (the same unique name, so a retry never adds a second Machine)
  * while Fly refuses it for the organization's machine limit. The caller keeps its capacity slot meanwhile. Each
- * refusal logs the app's Machines (ID, state and name only), so the log shows what Fly counted.
+ * refusal logs the app's Machines (ID, state and name only, destroyed ones included), so the log shows what Fly
+ * counted. A create that was refused logs its outcome once: `… create accepted after retries` or `… create given up`,
+ * each with the number of create requests (`attempts`) and the time since the first refusal (`waitedMs`).
  */
 export async function createWithinMachineLimit(api: MachinesApi, launch: MachineLaunch, { signal, context, onBootStart, onAttempt, mayRetry }: LimitedCreate) {
     let firstRefusal: number | undefined;
     let wait = machineLimitRetry.firstDelayMs;
     for (let attempt = 1; ; attempt++) {
         onAttempt?.();
-        try { return await api.create(launch, onBootStart); }
+        let machine: string;
+        try { machine = await api.create(launch, onBootStart); }
         catch (error) {
             if (!machineLimitRefusal(error)) throw error;
             firstRefusal ??= Date.now();
             await logAppMachines(api, { ...context, attempt });
             const remaining = firstRefusal + machineLimitRetry.totalMs - Date.now();
-            if (mayRetry && !mayRetry()) throw error;
+            const waitedMs = Date.now() - firstRefusal;
+            if (mayRetry && !mayRetry()) {
+                logger.warn({ ...context, attempts: attempt, waitedMs, reason: 'stopping' }, 'Fly organization machine limit reached; create given up');
+                throw error;
+            }
             if (remaining <= 0) {
+                logger.error({ ...context, attempts: attempt, waitedMs, reason: 'bound' }, 'Fly organization machine limit reached; create given up');
                 throw new FlyMachineLimitError(`Fly organization machine limit reached: Fly refused the Machine create ${attempt} times`
-                    + ` over ${Math.round((Date.now() - firstRefusal) / 1000)}s (${error.message}). Delete Machines in the Fly organization or raise its limit, then retry the run.`,
+                    + ` over ${Math.round(waitedMs / 1000)}s (${error.message}). Delete Machines in the Fly organization or raise its limit, then retry the run.`,
                 { cause: error });
             }
             const delayMs = Math.min(wait, remaining);
             logger.warn({ ...context, attempt, delayMs }, 'Fly organization machine limit reached; retrying create');
             await delay(delayMs, undefined, { signal });
             wait = Math.min(wait * 2, machineLimitRetry.maxDelayMs);
+            continue;
         }
+        if (firstRefusal !== undefined)
+            logger.warn({ ...context, machine, attempts: attempt, waitedMs: Date.now() - firstRefusal }, 'Fly organization machine limit reached; create accepted after retries');
+        return machine;
     }
 }
 
-/** Diagnostics for a machine-limit refusal: the agent app's Machines, without their configuration or env. */
+/**
+ * Diagnostics for a machine-limit refusal: the agent app's Machines, without their configuration or env. Destroyed
+ * Machines are included: Fly may still count one it has just destroyed, and the default list leaves those out.
+ */
 async function logAppMachines(api: MachinesApi, context: Record<string, unknown>) {
     if (!api.list) return;
     try {
-        const machines = (await api.list('')).map(({ id, state, name }) => ({ id, state, name }));
+        const machines = (await api.list('', { includeDeleted: true })).map(({ id, state, name }) => ({ id, state, name }));
         logger.warn({ ...context, machines }, 'Fly organization machine limit reached; Machines in the agent app');
     } catch (err) {
         logger.warn({ ...context, err }, 'Fly organization machine limit reached; listing the agent app\'s Machines failed');

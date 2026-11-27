@@ -45,8 +45,9 @@ export interface MachinesApi {
     /**
      * Every Machine of the app whose name starts with `prefix`, with its state and creation time.
      * Optional for test doubles; without it Machines an earlier worker process left are not found.
+     * `includeDeleted` adds destroyed Machines, which Fly leaves out by default (diagnostics only).
      */
-    list?(prefix: string): Promise<{ id: string; name: string; state?: string; createdAt?: number }[]>;
+    list?(prefix: string, options?: { includeDeleted?: boolean }): Promise<{ id: string; name: string; state?: string; createdAt?: number }[]>;
     logs(id: string, publish: (message: string) => void, signal: AbortSignal): Promise<void>;
 }
 
@@ -182,8 +183,8 @@ export class MachinesClient implements MachinesApi {
         return machines.find(m => m.name === name && /^[a-zA-Z0-9-]+$/.test(m.id));
     }
 
-    async list(prefix: string) {
-        const response = await this.request('GET', this.url);
+    async list(prefix: string, { includeDeleted = false }: { includeDeleted?: boolean } = {}) {
+        const response = await this.request('GET', this.url + (includeDeleted ? '?include_deleted=true' : ''));
         const machines = await response.json() as MachineRecord[];
         return machines.filter(m => typeof m.name === 'string' && m.name.startsWith(prefix) && /^[a-zA-Z0-9-]+$/.test(m.id))
             .map(m => ({ id: m.id, name: m.name, state: m.state, createdAt: m.created_at ? Date.parse(m.created_at) || undefined : undefined }));

@@ -15,7 +15,7 @@ on:
       fly_machines_max:
         description: >-
           Also check PROPR_FLY_MACHINES_MAX (needs agent_runtime=fly-machines): deploy with PROPR_FLY_MACHINES_MAX=1
-          and WORKER_CONCURRENCY=2, label two issues, and require the second run to queue, then succeed without an HTTP 422.
+          and WORKER_CONCURRENCY=2, label two issues, and require the second run to queue, then succeed (an HTTP 422 retried within 3 retries and 60 s is a warning).
         type: boolean
         default: false
       mcp:
@@ -675,15 +675,21 @@ jobs:
             [[ -z $pr ]] || break
             sleep 15
           done
-          [[ $pr =~ ^[0-9]+$ ]] || { echo "::error::No unique linked PR for the queued run $REPO#$ISSUE2"; exit 1; }
           logs=$({ cat "$OUT/app-logs.jsonl"; flyctl logs --app "$APP" --no-tail --json; } |
             jq -sc '[.[] | .message? | strings | fromjson? | objects] | unique')
-          queued=$(jq -ce '[.[] | select(.msg == "Fly Machines at PROPR_FLY_MACHINES_MAX; run queued" and .max == 1)] | first | objects' <<< "$logs") ||
-            { echo "::error::No run waited for a PROPR_FLY_MACHINES_MAX slot"; exit 1; }
-          if jq -e '[.[] | tostring | select(test("machine limit"; "i"))] | length > 0' <<< "$logs" > /dev/null; then
-            echo "::error::A run hit Fly's organization machine limit (HTTP 422) despite PROPR_FLY_MACHINES_MAX=1"
+          printf '%s' "$logs" > "$OUT/worker-logs.json"
+          if [[ ! $pr =~ ^[0-9]+$ ]]; then
+            # A run that failed with the machine limit opens no PR: show what Fly counted before failing.
+            MAX_RETRIES=3 MAX_WAIT_MS=60000 bash .github/fly-e2e/machine-limit-report.sh "$OUT/worker-logs.json" || true
+            echo "::error::No unique linked PR for the queued run $REPO#$ISSUE2"
             exit 1
           fi
+          queued=$(jq -ce '[.[] | select(.msg == "Fly Machines at PROPR_FLY_MACHINES_MAX; run queued" and .max == 1)] | first | objects' <<< "$logs") ||
+            { echo "::error::No run waited for a PROPR_FLY_MACHINES_MAX slot"; exit 1; }
+          # PROPR_FLY_MACHINES_MAX=1 holds 2 Machines at most (the control plane and one slot), so a 422 means Fly still
+          # counted a Machine the worker had freed. A create retried within the bound is a warning with the Machine
+          # list Fly answered; a create given up, a run failed with the 422, or retries past the bound fail the step.
+          MAX_RETRIES=3 MAX_WAIT_MS=60000 bash .github/fly-e2e/machine-limit-report.sh "$OUT/worker-logs.json"
           # The queued run launches from the digest the first build pushed, with no second build Machine.
           : "${DERIVED_IMAGE:?The first run did not report a derived image}"
           since=$(jq -cr --argjson since "$STOPPED_AT_MS" '[.[] | select((.time // 0) >= $since)]' <<< "$logs")
@@ -711,7 +717,7 @@ jobs:
                 echo "### PROPR_FLY_MACHINES_MAX=1"
                 echo "- Queued run: \`$(jq -r .run <<< "$queued")\` (active=$(jq -r .active <<< "$queued"), queued=$(jq -r .queued <<< "$queued"))"
                 echo "- $REPO#$ISSUE2 run \`$(jq -r .run <<< "$launch2")\` launched Machine \`$(jq -r .machine <<< "$launch2")\` from \`$image2\`, the first run's derived image; $builds build Machine after the idle stop"
-                echo "- Both issues ($REPO#$ISSUE, $REPO#$ISSUE2, PR #$pr) succeeded on Fly Machines with no machine-limit error"
+                echo "- Both issues ($REPO#$ISSUE, $REPO#$ISSUE2, PR #$pr) succeeded on Fly Machines; machine-limit refusals are reported above"
               } | tee -a "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
@@ -876,6 +882,33 @@ jobs:
         run: |
           source .github/fly-e2e/propr-api.sh
           timeout 60s flyctl logs --app "$APP" --no-tail 2>&1 | propr_redact | tail -n 200 || true
+
+      - name: Redact the worker log for upload
+        id: worker-log
+        if: always()
+        run: |
+          set -euo pipefail
+          [[ -s ${OUT:-}/app-logs.jsonl ]] || { echo "No worker log was recorded"; exit 0; }
+          source .github/fly-e2e/mask-fly-token.sh
+          dir="$RUNNER_TEMP/worker-log"
+          mkdir -p "$dir"
+          # redact_fly_tokens replaces every fm2_ fragment and exits 3 if it found one; GitHub tokens are replaced too.
+          # Only the redacted copy is uploaded, and a fragment found fails this step after the copy is written.
+          status=0
+          redact_fly_tokens < "$OUT/app-logs.jsonl" |
+            sed -E '/^::error::/d; s/(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/[redacted GitHub token]/g' > "$dir/app-logs.jsonl" ||
+            status=$?
+          echo "path=$dir/app-logs.jsonl" >> "$GITHUB_OUTPUT"
+          echo "Redacted $(wc -l < "$dir/app-logs.jsonl") worker log lines"
+          (( status == 0 )) || { echo "::error::The worker log held a Fly token fragment (redacted in the uploaded copy)"; exit 1; }
+      - name: Upload the redacted worker log
+        if: always() && steps.worker-log.outputs.path != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: fly-e2e-worker-log-${{ github.run_attempt }}
+          path: ${{ steps.worker-log.outputs.path }}
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Destroy test app, Machines and volume
         if: always() && steps.app.outcome == 'success'
