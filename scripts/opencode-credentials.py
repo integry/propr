@@ -70,11 +70,16 @@ def sync_auth_json(runtime, host_auth):
         changed = True
     if not changed:
         return
-    # Write atomically next to the original and keep its permissions.
+    # Write atomically next to the original and keep its permissions. Create
+    # the temp file owner-only so the tokens are never readable by others,
+    # whatever the umask or data dir mode.
     temporary = host_auth.with_name(f"{host_auth.name}.propr-tmp-{os.getpid()}")
+    mode = host_auth.stat().st_mode & 0o7777
     try:
-        temporary.write_text(json.dumps(current, indent=2))
-        os.chmod(temporary, host_auth.stat().st_mode & 0o7777)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode & 0o600 or 0o600)
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(current, indent=2))
+        os.chmod(temporary, mode)
         os.replace(temporary, host_auth)
     finally:
         temporary.unlink(missing_ok=True)

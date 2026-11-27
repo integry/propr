@@ -161,7 +161,12 @@ describe('opencode-credentials.py', () => {
 
     // One container run: the entrypoint copies auth.json into the disposable
     // data dir, OpenCode imports it, then seed, the task, and sync.
-    function containerRun(dirs: { sourceDb: string; runtimeDir: string; authJson: string }, run: number, task: (runtimeDb: string) => void): string {
+    function containerRun(
+        dirs: { sourceDb: string; runtimeDir: string; authJson: string },
+        run: number,
+        task: (runtimeDb: string) => void,
+        sync: (sourceDb: string, runtimeDb: string) => void = (sourceDb, runtimeDb) => runCredentials('sync', sourceDb, runtimeDb)
+    ): string {
         const runDir = path.join(dirs.runtimeDir, `run-${run}`);
         fs.mkdirSync(runDir);
         const runtimeDb = path.join(runDir, 'opencode.db');
@@ -169,9 +174,35 @@ describe('opencode-credentials.py', () => {
         importAuthJson(runtimeDb, path.join(runDir, 'auth.json'), run);
         runCredentials('seed', dirs.sourceDb, runtimeDb);
         task(runtimeDb);
-        runCredentials('sync', dirs.sourceDb, runtimeDb);
+        sync(dirs.sourceDb, runtimeDb);
         return runtimeDb;
     }
+
+    // Runs `sync` under the container umask (0022) and records the temp
+    // file's mode whenever the script changes its mode or renames it.
+    const observeTempModes = `
+import json, os, runpy, stat, sys
+os.umask(0o022)
+script, log = sys.argv[1], sys.argv[2]
+modes = []
+def record(path):
+    if "propr-tmp" in os.fspath(path):
+        modes.append(stat.S_IMODE(os.lstat(path).st_mode))
+real_chmod, real_replace = os.chmod, os.replace
+def chmod(path, *args, **kwargs):
+    record(path)
+    return real_chmod(path, *args, **kwargs)
+def replace(src, dst, *args, **kwargs):
+    record(src)
+    return real_replace(src, dst, *args, **kwargs)
+os.chmod, os.replace = chmod, replace
+sys.argv = [script, *sys.argv[3:]]
+try:
+    runpy.run_path(script, run_name="__main__")
+finally:
+    with open(log, "w") as handle:
+        json.dump(modes, handle)
+`;
 
     function hostSchema(sourceDb: string): unknown[] {
         return fs.existsSync(sourceDb) ? querySql(sourceDb, "SELECT name FROM sqlite_master ORDER BY name") : [];
@@ -204,6 +235,20 @@ describe('opencode-credentials.py', () => {
                 });
                 assert.ok(fs.existsSync(next));
                 assert.strictEqual(JSON.parse(fs.readFileSync(dirs.authJson, 'utf8')).openai.refresh, 'refresh-3');
+            });
+        });
+
+        test(`never exposes refreshed tokens in a group- or world-readable temp file for a host with ${shape}`, () => {
+            withAuthJsonHost(shape, (dirs) => {
+                const log = path.join(dirs.runtimeDir, 'temp-modes.json');
+                containerRun(dirs, 1, (runtimeDb) => refreshOpenAi(runtimeDb, 'refresh-2'), (sourceDb, runtimeDb) => {
+                    execFileSync('python3', ['-I', '-c', observeTempModes, credentialsScript, log, 'sync', sourceDb, runtimeDb], { encoding: 'utf8' });
+                });
+                const modes = JSON.parse(fs.readFileSync(log, 'utf8')) as number[];
+                assert.ok(modes.length > 0, 'sync wrote auth.json through a temp file');
+                for (const mode of modes) assert.strictEqual(mode & 0o077, 0, `temp file mode ${mode.toString(8)}`);
+                assert.strictEqual(JSON.parse(fs.readFileSync(dirs.authJson, 'utf8')).openai.refresh, 'refresh-2');
+                assert.strictEqual(fs.statSync(dirs.authJson).mode & 0o777, 0o600);
             });
         });
 
