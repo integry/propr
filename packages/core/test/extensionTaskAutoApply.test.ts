@@ -12,6 +12,7 @@ import { executeWithExtensions, currentExtensionLaunch, type ExtensionLaunchHook
 import { taskRunExtensionRequest } from '../src/extensions/extensionRunResolution.js';
 import { codexAutoApplyConflict, codexConfigDefinesProviderOrProfile } from '../src/agents/impl/utils/codexExtensionConflict.js';
 import { vibeToolPolicyArgs } from '../src/agents/mcpLaunch/vibeMcpLaunch.js';
+import { openCodeMcpConfig, openCodeToolPolicyArgs } from '../src/agents/mcpLaunch/openCodeMcpLaunch.js';
 import type { AgentConfig, AgentExtensionRequest, AgentTaskOptions, AgentToolPolicy } from '../src/agents/types.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
@@ -102,6 +103,16 @@ test('a Vibe run registers its skill bundles natively and reaches gateway server
   assert.deepEqual(docs, { name: 'docs', transport: 'streamable-http', url: 'http://api:4000/api/extensions/mcp/docs', auth: { type: 'static', api_key_env: 'PROPR_EXTENSION_MCP_0_TOKEN' } });
   assert.equal(env.PROPR_EXTENSION_MCP_0_TOKEN, vibe.policy.mcpServers![0].bearerToken);
   assert.ok(!env.VIBE_MCP_SERVERS.includes(vibe.policy.mcpServers![0].bearerToken), 'the token is referenced by name only');
+  // OpenCode 2.x registers the same bundles through `skills.paths` and reads the token through `{env:VAR}`.
+  const openCode = await policyFor({ ...claude, type: 'opencode', alias: 'opencode-main', cliVersionResolved: '2.4.2' });
+  assert.deepEqual(openCode.policy.skills?.map(skill => skill.name), ['release-notes']);
+  assert.equal(openCode.policy.exclusiveMcp, true);
+  assert.match(openCode.prompt, /\/opt\/propr\/extensions\/.+\/SKILL\.md for release-notes/, 'the prompt pointer stays');
+  const openCodeConfig = openCodeMcpConfig(openCode.policy)!;
+  assert.deepEqual(openCodeConfig.skills, { paths: ['/opt/propr/extensions'] });
+  assert.deepEqual((openCodeConfig.mcp as { servers: Record<string, unknown> }).servers.docs, { type: 'remote', url: 'http://api:4000/api/extensions/mcp/docs', headers: { Authorization: 'Bearer {env:PROPR_EXTENSION_MCP_0_TOKEN}' } });
+  assert.ok(!JSON.stringify(openCodeConfig).includes(openCode.policy.mcpServers![0].bearerToken), 'the token is referenced by name only');
+  assert.equal(openCodeToolPolicyArgs(openCode.policy).env.PROPR_EXTENSION_MCP_0_TOKEN, openCode.policy.mcpServers![0].bearerToken);
   // Prompt-pointer runtimes do not get native registration.
   assert.equal((await policyFor(claude)).policy.skills, undefined);
 });

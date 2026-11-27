@@ -472,6 +472,7 @@ export { OpenCodeAgent } from './agents/impl/OpenCodeAgent.js';
 export { buildOpenCodeDockerArgs, buildOpenCodePrompt, hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeCliModelName, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId } from './agents/impl/openCodeUtils.js';
 export { shortHash, buildDynamicLlmLabel, buildAgentModelLlmLabel, MAX_GITHUB_LABEL_LENGTH } from '@propr/shared';
 export { normalizeOpenCodeTimestamp } from './agents/impl/openCodeTimestamp.js';
+export { OPENCODE_CODE_MODE_TOOL, openCodeCodeModeToolCalls, openCodeCodeModeToolDisplay, type OpenCodeCodeModeToolCall } from './agents/impl/openCodeCodeMode.js';
 export { toAntigravityCliModelId } from './agents/impl/antigravityModelIds.js';
 
 export {

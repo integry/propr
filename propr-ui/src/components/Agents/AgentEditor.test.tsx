@@ -7,7 +7,7 @@ import {
   getAutomationDefinition, triggerAutomationRun, updateAutomationDefinition, uploadAutomationAttachment, type AutomationDefinitionRecord,
 } from '../../api/automationDefinitionsApi';
 import { getInstanceCatalog } from '../../api/proprApi';
-import { useAgentEditor } from './useAgentEditor';
+import { proprMcpSupportFor, useAgentEditor } from './useAgentEditor';
 
 vi.mock('../../api/automationDefinitionsApi', async importOriginal => ({
   ...(await importOriginal<typeof import('../../api/automationDefinitionsApi')>()),
@@ -42,7 +42,7 @@ describe('AgentEditor', () => {
     vi.mocked(getInstanceCatalog).mockResolvedValue({
       agents: [
         { alias: 'claude-main', type: 'claude', enabled: true, supportedModels: ['claude-opus-4-5'], defaultModel: 'claude-opus-4-5' },
-        { alias: 'opencode-main', type: 'opencode', enabled: true, supportedModels: ['opencode-model'] },
+        { alias: 'opencode-main', type: 'opencode', enabled: true, supportedModels: ['opencode-model'], cliVersion: '1.19.6' },
       ],
       repositories: [],
     } as unknown as Awaited<ReturnType<typeof getInstanceCatalog>>);
@@ -64,7 +64,7 @@ describe('AgentEditor', () => {
     })));
   });
 
-  it('disables the propr_mcp toggle and acting autonomy for an OpenCode agent', async () => {
+  it('disables the propr_mcp toggle and acting autonomy for an OpenCode 1.x agent', async () => {
     renderEditor();
     const agentSelect = await screen.findByTitle('Select AI agent');
     await waitFor(() => expect(screen.getByRole('option', { name: 'OpenCode' })).toBeInTheDocument());
@@ -90,7 +90,7 @@ describe('AgentEditor', () => {
     expect(mergeToggle).toBeDisabled();
     expect(mergeToggle).not.toBeChecked();
     expect(screen.getByTestId('agent-capability-merge-hint')).toHaveTextContent('merging happens in the action step');
-    expect(screen.getByTestId('agent-capability-propr_mcp-hint')).toHaveTextContent('Not available for OpenCode: only Claude, Codex and Vibe');
+    expect(screen.getByTestId('agent-capability-propr_mcp-hint')).toHaveTextContent('Not available for OpenCode: ProPR tools need Claude, Codex, Antigravity, Vibe or OpenCode 2.x');
     expect(screen.getByTestId('agent-capability-web-hint')).toHaveTextContent('Best effort on OpenCode');
     expect(screen.getByRole('radio', { name: /^Auto/ })).toBeDisabled();
   });
@@ -443,5 +443,19 @@ describe('AgentEditor', () => {
     await act(async () => { fail(new Error('Upload failed')); });
     expect(await screen.findByText('Upload failed')).toBeInTheDocument();
     expect(runButton).toBeEnabled();
+  });
+});
+
+describe('proprMcpSupportFor', () => {
+  it('reads the OpenCode CLI version from the catalog', () => {
+    const agents = [
+      { alias: 'oc1', type: 'opencode' as const, enabled: true, supportedModels: [], cliVersion: '1.19.6' },
+      { alias: 'oc2', type: 'opencode' as const, enabled: true, supportedModels: [], cliVersion: '2.4.2' },
+      { alias: 'oc', type: 'opencode' as const, enabled: true, supportedModels: [] },
+    ];
+    expect(proprMcpSupportFor(agents, 'oc1').support).toBe('unsupported');
+    expect(proprMcpSupportFor(agents, 'oc2').support).toBe('supported');
+    // Without a known version the capability map entry applies.
+    expect(proprMcpSupportFor(agents, 'oc').support).toBe('supported');
   });
 });

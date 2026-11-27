@@ -70,23 +70,23 @@ describe('agent version management', () => {
         assert.ok(AGENT_TYPES.includes('opencode'));
         assert.strictEqual(CONTAINER_CONFIG_PATHS.opencode, '/home/node/.config/opencode');
         assert.strictEqual(AGENT_DEFAULTS.opencode.configPath, '~/.config/opencode');
-        assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, 'opencode-ai');
-        assert.strictEqual(AGENT_CLI_PACKAGES.opencode, 'opencode-ai');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.npmPackage, '@opencode/cli');
+        assert.strictEqual(AGENT_CLI_PACKAGES.opencode, '@opencode/cli');
         assert.deepStrictEqual(AGENT_CLI_TAGS.opencode, ['latest', 'beta', 'dev']);
-        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '1.19.6');
-        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '1.19.6');
+        assert.strictEqual(AGENT_DEFAULTS.opencode.defaultCliVersion, '2.4.2');
+        assert.strictEqual(AGENT_DEFAULT_VERSIONS.opencode, '2.4.2');
         assert.strictEqual(AGENT_IMAGE_NAME, 'propr/agent');
         assert.strictEqual(DEFAULT_AGENT_DOCKER_IMAGES.opencode, 'propr/agent:latest');
     });
 
-    test('resolves OpenCode dist tags against the opencode-ai npm package', async () => {
+    test('resolves OpenCode dist tags against the @opencode/cli npm package', async () => {
         let fetchedUrl = '';
         globalThis.fetch = (async (input: string | URL | Request) => {
             fetchedUrl = input.toString();
             return new Response(JSON.stringify({
-                name: 'opencode-ai',
+                name: '@opencode/cli',
                 'dist-tags': { latest: '9.8.7' },
-                versions: { '9.8.7': { name: 'opencode-ai', version: '9.8.7' } },
+                versions: { '9.8.7': { name: '@opencode/cli', version: '9.8.7' } },
                 time: { '9.8.7': '2026-05-29T00:00:00.000Z' }
             }), {
                 status: 200,
@@ -97,7 +97,7 @@ describe('agent version management', () => {
         const resolved = await resolveVersion('opencode', 'tag', 'latest');
 
         assert.strictEqual(resolved, '9.8.7');
-        assert.match(fetchedUrl, /\/opencode-ai$/);
+        assert.match(fetchedUrl, /\/@opencode%2Fcli$/);
     });
 
     test('reports conflicting CLI versions among enabled aliases of one agent type', () => {
@@ -123,7 +123,7 @@ describe('agent version management', () => {
 
     test('generates unified bundle image tags', () => {
         const versions = getDefaultAgentCliVersionMatrix();
-        versions.opencode = '1.19.6';
+        versions.opencode = '2.4.2';
         assert.match(generateAgentBundleImageTag(versions, 'abc123'), /^propr\/agent:bundle-[0-9a-f]{12}-abc123$/);
     });
 
@@ -242,7 +242,7 @@ describe('agent version management', () => {
         assert.doesNotMatch(agentDockerfile, /\bNOPASSWD\b/);
         assert.match(agentDockerfile, /link_npm_bin @anthropic-ai\/claude-code claude/);
         assert.match(agentDockerfile, /link_npm_bin @openai\/codex codex/);
-        assert.match(agentDockerfile, /link_npm_bin opencode-ai opencode/);
+        assert.match(agentDockerfile, /ln -sf \/opt\/opencode\/bin\/opencode \/usr\/local\/bin\/opencode/);
         assert.match(agentDockerfile, /ln -sf \/home\/node\/\.local\/bin\/agy \/usr\/local\/bin\/agy/);
         assert.match(agentDockerfile, /FROM agent-base AS claude-cli/);
         assert.match(agentDockerfile, /FROM agent-base AS codex-cli/);
@@ -288,15 +288,15 @@ describe('agent version management', () => {
 
     test('returns OpenCode package tags and default version metadata', async () => {
         globalThis.fetch = (async () => new Response(JSON.stringify({
-            name: 'opencode-ai',
-            'dist-tags': { latest: '1.17.10', beta: '1.18.0-beta.1', dev: '1.18.0-dev.1' },
+            name: '@opencode/cli',
+            'dist-tags': { latest: '2.4.2', beta: '0.0.0-beta-19507', dev: '0.0.0-dev-1359' },
             versions: {
-                '1.17.10': { name: 'opencode-ai', version: '1.17.10' },
-                '1.17.9': { name: 'opencode-ai', version: '1.17.9' }
+                '2.4.2': { name: '@opencode/cli', version: '2.4.2' },
+                '2.4.1': { name: '@opencode/cli', version: '2.4.1' }
             },
             time: {
-                '1.17.10': '2026-06-25T00:00:00.000Z',
-                '1.17.9': '2026-06-24T00:00:00.000Z'
+                '2.4.2': '2026-06-25T00:00:00.000Z',
+                '2.4.1': '2026-06-24T00:00:00.000Z'
             }
         }), {
             status: 200,
@@ -306,12 +306,12 @@ describe('agent version management', () => {
         const metadata = await getAvailableVersions('opencode');
 
         assert.strictEqual(metadata.agentType, 'opencode');
-        assert.strictEqual(metadata.packageName, 'opencode-ai');
-        assert.strictEqual(metadata.defaultVersion, '1.19.6');
+        assert.strictEqual(metadata.packageName, '@opencode/cli');
+        assert.strictEqual(metadata.defaultVersion, '2.4.2');
         assert.deepStrictEqual(metadata.availableTags, [
-            { tag: 'latest', version: '1.17.10' },
-            { tag: 'beta', version: '1.18.0-beta.1' },
-            { tag: 'dev', version: '1.18.0-dev.1' }
+            { tag: 'latest', version: '2.4.2' },
+            { tag: 'beta', version: '0.0.0-beta-19507' },
+            { tag: 'dev', version: '0.0.0-dev-1359' }
         ]);
     });
 });

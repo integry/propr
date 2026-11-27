@@ -68,7 +68,7 @@ export interface AgentToolPolicy {
     localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
     /**
      * Skill bundles staged read-only at `/opt/propr/extensions/<id>`, set for
-     * runtimes whose capability map entry has native skills (Antigravity, Vibe),
+     * runtimes whose capability map entry has native skills (Antigravity, OpenCode, Vibe),
      * which also register them through their own skill mechanism.
      */
     skills?: { id: string; name: string }[];
