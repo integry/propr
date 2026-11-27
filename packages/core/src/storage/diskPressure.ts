@@ -111,8 +111,24 @@ export function worktreeDiskPressureDetails(error: unknown): string | null {
   const measurement = worktreeDiskPressureMeasurementOf(error);
   if (measurement) return formatWorktreeDiskPressure(measurement);
   if (!(error instanceof Error) || !isWorktreeDiskPressureError(error)) return null;
-  const match = /\((filesystem .+ this job [^)]+)\)$/.exec(error.message);
-  return match ? match[1] : null;
+  return measurementFromMessage(error.message);
+}
+
+/**
+ * The trailing `(filesystem … this job <size>)` of a refusal message. Parsed
+ * with plain string searches rather than a regular expression: the message can
+ * come back from the queue with arbitrary content, and a backtracking pattern
+ * over it is polynomial in its length.
+ */
+function measurementFromMessage(message: string): string | null {
+  if (!message.endsWith(')')) return null;
+  const start = message.indexOf('(filesystem ');
+  if (start < 0) return null;
+  const inner = message.slice(start + 1, -1);
+  const jobAt = inner.lastIndexOf(' this job ');
+  if (jobAt <= 'filesystem'.length) return null;
+  const size = inner.slice(jobAt + ' this job '.length);
+  return size.length > 0 && !size.includes(')') ? inner : null;
 }
 
 /** Log fields of a refusal: the raw numbers and the readable sentence. */

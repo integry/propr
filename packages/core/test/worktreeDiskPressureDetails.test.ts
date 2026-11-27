@@ -32,6 +32,17 @@ const MEASUREMENT = {
 };
 const EXPECTED = 'filesystem /tmp/git-processor: free 6.2 GiB < required 7.0 GiB = reserve 2.0 GiB + 4 other claims × 1.0 GiB + this job 1.0 GiB';
 
+test('recovering details from a hostile message stays linear', () => {
+  const prefix = 'Worktree disk pressure: admission reserve unavailable; data retained ';
+  const started = Date.now();
+  assert.equal(worktreeDiskPressureDetails(new Error(`${prefix}${'(filesystem '.repeat(100_000)}`)), null);
+  assert.equal(worktreeDiskPressureDetails(new Error(`${prefix}(filesystem a this job ${'( this job '.repeat(100_000)})`)), null);
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started}ms`);
+  // A path with parentheses still round-trips.
+  const odd = formatWorktreeDiskPressure({ ...MEASUREMENT, filesystem: '/mnt/data (ssd)' });
+  assert.equal(worktreeDiskPressureDetails(new Error(`${prefix}(${odd})`)), odd);
+});
+
 test('the refusal message states every measured number in readable units', () => {
   assert.equal(formatWorktreeDiskPressure(MEASUREMENT), EXPECTED);
   const error = new WorktreeDiskPressureError(MEASUREMENT);
