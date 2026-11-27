@@ -5,7 +5,8 @@ import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachi
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { acquireFlyMachineSlot, flyMachinesMax, retainedMachineChecks } from '../packages/core/src/agents/runtime/fly/capacity.ts';
 import { flyConfig } from '../packages/core/src/agents/runtime/fly/config.ts';
-import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, MachinesClient, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { MachineCreateUnconfirmedError, MachineNotFoundAfterCreateError, MachinesClient, MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { machineLimitRetry } from '../packages/core/src/agents/runtime/fly/machineLimit.ts';
 import { RUN } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import { closeConnection } from '../packages/core/src/db/connection.ts';
@@ -415,4 +416,61 @@ test('a Machine that disappears while its deletion keeps failing frees its slot 
     assert.equal(api.attempts, 2, 'no retry after Fly confirmed the Machine is gone');
     assert.equal(api.peak, 1);
     await Promise.all([first, queued].map(run => run.release!()));
+});
+
+/** Fly refuses the first `refusals` creates with its organization machine-limit 422; the Machine list is recorded on each refusal. */
+class MachineLimit extends Machines {
+    attempts: string[] = [];
+    listed: string[] = [];
+    constructor(public refusals: number) { super(); }
+    override async create(launch: MachineLaunch) {
+        this.attempts.push(launch.name);
+        if (this.refusals-- > 0) throw new MachinesHttpError('POST', 422, 'Your organization has reached its machine limit.');
+        return super.create(launch);
+    }
+    async list(prefix: string) {
+        this.listed.push(prefix);
+        return [{ id: 'old', name: 'propr-leaving', state: 'destroying' }];
+    }
+}
+
+const shortMachineLimitRetry = (totalMs: number) => {
+    const saved = { ...machineLimitRetry };
+    Object.assign(machineLimitRetry, { firstDelayMs: 10, maxDelayMs: 40, totalMs });
+    return () => Object.assign(machineLimitRetry, saved);
+};
+
+test('a create refused for the organization machine limit keeps its slot and retries the same launch', async t => {
+    t.after(shortMachineLimitRetry(5_000));
+    const api = new MachineLimit(2);
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'org-limit', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const first = runtime.start(spec('first'));
+    const queued = runtime.start(spec('queued'));
+    await until('the first run is deleting its Machine', () => api.destroys.length === 1);
+    assert.equal(api.attempts.length, 3, 'two refusals, then the create that succeeds');
+    assert.equal(new Set(api.attempts).size, 1, 'every retry posts the same launch name');
+    assert.deepEqual(api.created, ['m0'], 'one Machine launched');
+    assert.deepEqual(api.listed, ['', ''], 'each refusal lists the agent app\'s Machines');
+    api.destroys.shift()!();
+    assert.equal((await first.wait()).exitCode, 0);
+    await until('the queued run is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await queued.wait()).exitCode, 0);
+    assert.equal(api.peak, 1, 'the queued run never created a Machine while the first held the slot');
+    await Promise.all([first, queued].map(run => run.release!()));
+});
+
+test('a create still refused for the machine limit after the bound fails the run and frees its slot', async t => {
+    t.after(shortMachineLimitRetry(100));
+    const api = new MachineLimit(Infinity);
+    const runtime = new FlyMachinesRuntime(api, { ...base, PROPR_FLY_APP: 'org-limit-bound', PROPR_FLY_MACHINES_MAX: '1' }, async () => []);
+    const failed = runtime.start(spec('failed'));
+    await assert.rejects(failed.wait(), /Fly organization machine limit reached: Fly refused the Machine create \d+ times over \d+s \(Fly Machines API POST returned HTTP 422: Your organization has reached its machine limit\.\)/);
+    assert.ok(api.attempts.length >= 3, 'retried until the bound');
+    api.refusals = 0;
+    const next = runtime.start(spec('next'));
+    await until('the next run, admitted after the failed one freed its slot, is deleting its Machine', () => api.destroys.length === 1);
+    api.destroys.shift()!();
+    assert.equal((await next.wait()).exitCode, 0);
+    await Promise.all([failed, next].map(run => run.release!().catch(() => {})));
 });

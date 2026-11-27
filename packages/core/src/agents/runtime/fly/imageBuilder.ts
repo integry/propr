@@ -9,6 +9,7 @@ import type { AgentRuntimePackageAvailabilityCheck } from '../agentRuntimePackag
 import { AGENT_RUNTIME_PACKAGE_INSTALL_TIMEOUT_MS, agentRuntimePackagesLogFields } from '../agentRuntimePackageProfile.js';
 import { createRejected, type MachineLaunch, type MachinesApi } from './api.js';
 import { deleteFlyMachine, FlyMachineSlot } from './capacity.js';
+import { createWithinMachineLimit, FlyMachineLimitError } from './machineLimit.js';
 import type { FlyConfig } from './config.js';
 import { scanFile } from './files.js';
 import { helper } from './launch.js';
@@ -148,7 +149,9 @@ async function runBuilder({ options, timings, baseImage, target, name }: Builder
     } };
     // Boot, install, snapshot and transfer; the build is shared, so no single run's cancellation stops it.
     const deadline = Date.now() + buildDeadlineMs(config);
-    const id = await api.create(launch).catch(error => settleLostBuilder(api, name, error, timings));
+    // A machine-limit refusal is retried with the slot held; the build is shared, so no run's signal ends that wait.
+    const id = await createWithinMachineLimit(api, launch, { context: { app: config.app, builder: name } })
+        .catch(error => settleLostBuilder(api, name, error, timings));
     try {
         const state = await waitForBuild(api, id, { bootDeadline: Date.now() + config.bootTimeout, deadline, timings });
         // The rest of the build deadline bounds the result read and the layer download: the build Machine and its slot are held meanwhile.
@@ -181,7 +184,8 @@ async function runBuilder({ options, timings, baseImage, target, name }: Builder
  * the Machine is confirmed gone or absent, and fails the run when that cannot be confirmed.
  */
 async function settleLostBuilder(api: MachinesApi, name: string, error: unknown, timings: FlyPackageImageTimings): Promise<never> {
-    if (createRejected(error)) throw error; // Fly refused the request: nothing of this name exists.
+    // Fly refused the request (or kept refusing it for the machine limit): nothing of this name exists.
+    if (createRejected(error) || error instanceof FlyMachineLimitError) throw error;
     const unconfirmed = (cause: unknown) => new FlyBuilderCleanupError('Fly image build Machine creation could not be confirmed', { name }, { cause });
     const deadline = Date.now() + timings.lostCreateWindowMs;
     let lookupError: unknown;
@@ -265,18 +269,25 @@ async function download(api: MachinesApi, id: string, { layer, target, signal }:
 }
 
 /**
- * Returns once Fly confirms the build Machine gone; the run must not create its agent Machine before then.
- * The same rule as for agent Machines (`deleteFlyMachine`): a 404, or Fly reporting the Machine gone after a
- * failed deletion, counts as deleted, so a build Machine deleted outside ProPR frees its slot. The delete has
- * its own window, so a transient failure near the end of a long build is still retried.
+ * Returns once Fly confirms the build Machine gone (`api.gone`); the run must not create its agent Machine, and the
+ * build's capacity slot is not freed, before then. A deletion that returned is not enough: Fly may still count a
+ * Machine it is destroying against the organization's machine limit. As for agent Machines (`deleteFlyMachine`),
+ * a 404, or Fly reporting the Machine gone after a failed deletion, counts as deleted, so a build Machine deleted
+ * outside ProPR frees its slot. The delete has its own window, so a transient failure near the end of a long build
+ * is still retried; past it the Machine is unresolved and keeps its slot (`FlyBuilderCleanupError`).
  */
 async function removeBuilder(api: MachinesApi, { name, id }: { name: string; id: string }, { removalWindowMs, pollMs }: FlyPackageImageTimings) {
     const deadline = Date.now() + removalWindowMs;
+    let deleted = false;
     for (;;) {
-        try { await deleteFlyMachine(api, id, { name }); return; } catch (error) {
-            if (Date.now() >= deadline)
-                throw new FlyBuilderCleanupError(`Could not confirm deletion of Fly image build Machine ${id}`, { name, id }, { cause: error });
-        }
+        let failure: unknown;
+        try {
+            if (!deleted) { await deleteFlyMachine(api, id, { name }); deleted = true; }
+            if (await api.gone(id)) return;
+            failure = new Error(`Fly still lists image build Machine ${id} after its deletion`);
+        } catch (error) { failure = error; }
+        if (Date.now() >= deadline)
+            throw new FlyBuilderCleanupError(`Could not confirm deletion of Fly image build Machine ${id}`, { name, id }, { cause: failure });
         await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())));
     }
 }

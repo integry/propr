@@ -809,13 +809,17 @@ test('a lost build Machine create is looked up by name until it appears, and del
             events.push('DELETE late1');
             return new Response(null, { status: 200 });
         }
+        if (method === 'GET' && url.pathname === '/v1/apps/lost/machines/late1') {
+            events.push('GONE late1'); // the build Machine's slot is freed only once Fly confirms it gone
+            return new Response(null, { status: 404 });
+        }
         throw new Error('unexpected ' + method + ' ' + url);
     }) as typeof fetch;
     const fly = new FlyMachinesRuntime(undefined, env('lost'), async () => ['figlet'], new FlyPackageImages(() => registry, { ...FAST, lostCreateWindowMs: 5000 }));
     const run = fly.start(spec());
     await assert.rejects(run.wait(), /HTTP 422: end of test/);
     await run.release?.().catch(() => {});
-    assert.deepEqual(events, ['POST build', 'GET 1', 'GET 2', 'GET 3', 'GET 4', 'DELETE late1', 'POST launch']);
+    assert.deepEqual(events, ['POST build', 'GET 1', 'GET 2', 'GET 3', 'GET 4', 'DELETE late1', 'GONE late1', 'POST launch']);
 });
 
 /** Build Machine creates lose their response; `find` answers the lookups by name. */
@@ -1214,6 +1218,37 @@ test('an unconfirmed build Machine delete keeps its slot until a background retr
     await plain.release!();
 });
 
+const until = async (what: string, check: () => boolean, timeoutMs = 5_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!check()) {
+        if (Date.now() >= deadline) assert.fail(`timed out after ${timeoutMs} ms waiting until ${what}`);
+        await delay(5);
+    }
+};
+
+/** The build Machine's deletion returns, but Fly lists it (destroying, still counted) until the test says otherwise. */
+class LingeringBuilder extends Machines {
+    lingering = true;
+    override async gone(id: string) { return id === 'm0' && this.lingering ? false : super.gone(id); }
+}
+
+test('a build Machine whose deletion returned keeps its slot until Fly confirms it gone', async () => {
+    const api = new LingeringBuilder();
+    const timings = { ...FAST, removalWindowMs: 5000 };
+    const derive = runtime(api, new Registry(), 'capped-lingering', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' }, timings).start(spec('derive'));
+    await until('the build Machine deletion returned', () => api.events.includes('destroy build'));
+    // A run for no packages needs only the slot: it waits for the build Machine to be gone, not for the build's end.
+    const plain = runtime(api, new Registry(), 'capped-lingering', () => [], { PROPR_FLY_MACHINES_MAX: '1' }, timings).start(spec('plain'));
+    await delay(150);
+    assert.deepEqual(api.events, ['create build', 'destroy build'], 'no agent Machine while Fly still lists the build Machine');
+    api.lingering = false;
+    assert.equal((await plain.wait()).exitCode, 0);
+    assert.equal((await derive.wait()).exitCode, 0);
+    assert.deepEqual(api.events.slice(0, 3), ['create build', 'destroy build', 'create launch']);
+    assert.equal(api.peak, 1);
+    await Promise.all([derive, plain].map(run => run.release!()));
+});
+
 /** Every deletion of the build Machine fails; whether it still exists is answered by the real Machines client's GET. */
 class DeletedOutsideBuilder extends UndeletableBuilder {
     client = new MachinesClient(flyConfig(env('capped-outside')));
@@ -1266,7 +1301,7 @@ class LeftoverMachines extends Machines {
         return super.destroy(id);
     }
     override async gone(id: string) {
-        if (id === 'young1') return this.youngGone;
+        if (id === 'young1') return this.youngGone || !this.leftovers.has(id);
         if (this.leftovers.has(id)) return false;
         return super.gone(id);
     }
@@ -1345,7 +1380,7 @@ test('a build Machine that dies mid-build fails the build after a few failed pro
     const registry = new Registry();
     const run = runtime(api, registry, 'dying-builder', ['figlet']).start(spec());
     assert.equal((await run.wait()).exitCode, 0);
-    assert.equal(api.goneChecks, 1, 'Fly is asked once three probes in a row failed');
+    assert.equal(api.goneChecks, 2, 'Fly is asked once three probes in a row failed, then once more to confirm the deletion');
     assert.equal(registry.tags.size, 0);
     assert.ok(api.file(api.launches[1], RUN + '/packages.json'), 'the run falls back to the start-time install');
     await run.release!();

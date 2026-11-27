@@ -9,6 +9,7 @@ import { startupStep } from '../startupStep.js';
 import { createRejected, type MachineLaunch, type MachinesApi } from './api.js';
 import { acquireFlyMachineSlot } from './capacity.js';
 import type { FlyConfig } from './config.js';
+import { createWithinMachineLimit, FlyMachineLimitError, machineLimitRefusal } from './machineLimit.js';
 import {
     activeBuilders, builderLifetimeMs, buildLayer, DEFAULT_FLY_PACKAGE_IMAGE_TIMINGS, FLY_BUILDER_PREFIX, FlyBuilderCleanupError,
     FlyPackageImageError, FlyPackageInstallFailure, pushDerived, resolveBuilder,
@@ -403,10 +404,11 @@ interface AgentMachineCreate {
  */
 export async function createAgentMachine({ api, images, prepared, options, state, slot, mayRetry, onAttempt, onBootStart }: AgentMachineCreate) {
     try {
-        onAttempt();
-        return await launched(await api.create(prepared.launch, onBootStart));
+        return await launched(await create());
     }
     catch (error) {
+        // The organization's machine limit says nothing about the image: keep it, and fail with the limit error.
+        if (error instanceof FlyMachineLimitError || machineLimitRefusal(error)) throw error;
         const derived = state.selection.derived;
         if (!derived || !images) throw error;
         images.invalidate(derived);
@@ -422,8 +424,13 @@ export async function createAgentMachine({ api, images, prepared, options, state
         await slot.reacquire();
         if (!mayRetry()) throw error;
         // The image preparation above may outlast the boot timeout: the replacement Machine gets its own window.
-        onAttempt();
-        return launched(await api.create(prepared.launch, onBootStart));
+        return launched(await create());
+    }
+
+    /** One create, retried while Fly refuses it for the organization's machine limit; each attempt gets its own boot window. */
+    function create() {
+        return createWithinMachineLimit(api, prepared.launch, { signal: options.signal, context: { app: options.config.app, run: options.run },
+            onBootStart, onAttempt, mayRetry });
     }
 
     /**
