@@ -343,10 +343,16 @@ export function createSetupWizard(options: SetupWizardOptions): SetupWizard {
         access.close();
         done = true;
         log(`fly-launch: setup complete (idle shutdown ${idle ? 'on' : 'off'}); starting ProPR`);
-        response.once('finish', () => finish(final));
+        // Setup is complete once `completedAt` is stored, whatever happens to this answer:
+        // settle when it is sent, when its connection closes, or now if the browser already
+        // left (a destroyed response emits neither 'finish' nor 'close' again).
+        const settle = (): void => finish(final);
+        response.once('finish', settle);
+        response.once('close', settle);
         // The wizard server closes after this answer; the browser must not reuse the connection.
         response.shouldKeepAlive = false;
         send(response, 200, startingPage(instance));
+        if (response.destroyed || response.closed) settle();
     };
 
     const routes: Record<string, Route> = {

@@ -48,6 +48,9 @@ interface RelayFake {
     /** Held until resolved, before POST /v1/relay-tokens answers. */
     holdEnroll?: Promise<void>;
     enrollStarted?: () => void;
+    /** Held until resolved, before PUT /v1/wake-target answers. */
+    holdWake?: Promise<void>;
+    wakeStarted?: () => void;
     enrolled: Array<{ installation_id: number; label: string }>;
     revoked: Array<{ installation_id: number; token_id: string }>;
     wake: Array<{ url: string }>;
@@ -88,6 +91,8 @@ async function relayRoute(relay: RelayFake, key: string, init: RequestInit | und
             return failed('mint') || json({ token: 'ghs_relay_installation', expires_at: new Date(Date.now() + 3600_000).toISOString() });
         case 'PUT webhook.propr.dev/v1/wake-target':
             record('wake');
+            relay.wakeStarted?.();
+            await relay.holdWake;
             if (failed('wake')) return failed('wake') as Response;
             relay.wake.push(body);
             return json({ wake_target: { token_id: 'tok-1', url: body.url, secret: 'pws_generated' } });
@@ -166,7 +171,7 @@ interface Harness {
     calls: string[];
     logs: string[];
     code: string;
-    request(path: string, options?: { method?: string; form?: Record<string, string>; cookie?: string; origin?: string }): Promise<Response>;
+    request(path: string, options?: { method?: string; form?: Record<string, string>; cookie?: string; origin?: string; signal?: AbortSignal }): Promise<Response>;
 }
 
 /**
@@ -238,7 +243,7 @@ async function startWizard(overrides: WizardOverrides = {}): Promise<Harness> {
             if (options.form) headers['Content-Type'] = 'application/x-www-form-urlencoded';
             if (options.method === 'POST') headers.Origin = options.origin ?? PUBLIC_URL;
             return fetch(`${base}${path}`, {
-                method: options.method ?? 'GET', headers, redirect: 'manual',
+                method: options.method ?? 'GET', headers, redirect: 'manual', signal: options.signal,
                 body: options.form ? new URLSearchParams(options.form).toString() : undefined,
             });
         },
@@ -736,6 +741,46 @@ test('an enrollment still running when the own App is stored is refused under th
     assert.equal(stored.env.PROPR_GH_RELAY_TOKEN, undefined);
     assert.equal(existsSync(h.store.path(GITHUB_APP_KEY_FILE)), true);
     assert.deepEqual(readdirSync(h.store.dir).filter(name => name.endsWith('.tmp')), [], 'every write was a complete rename');
+});
+
+test('a Finish whose browser disconnects while the wake URL registers still completes setup and closes the wizard', async () => {
+    let wakeStarted!: () => void;
+    const started = new Promise<void>(resolve => { wakeStarted = resolve; });
+    let releaseWake!: () => void;
+    const holdWake = new Promise<void>(resolve => { releaseWake = resolve; });
+    cleanups.push(() => releaseWake());
+    const relay = relayFake({ holdWake, wakeStarted });
+    // The real runSetupWizard lifecycle; the grace is far longer than the test may take, so only settling completion can end it.
+    const h = await startWizard({ run: true, closeGraceMs: 60_000, relay });
+    const cookie = await claim(h);
+    await connectThroughAdministrator(h, cookie);
+    assert.equal((await h.request('/setup/runtime', { method: 'POST', cookie, form: { runtime: 'none' } })).status, 303);
+
+    // Finish with idle shutdown; the browser goes away while Connect registers the wake URL.
+    const abort = new AbortController();
+    const finishing = h.request('/setup/finish', { method: 'POST', cookie, form: { idleShutdown: 'on' }, signal: abort.signal });
+    finishing.catch(() => undefined);
+    await started;
+    abort.abort();
+    await assert.rejects(finishing);
+    // Let the server see the closed connection before the handler resumes.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(await isPending(h.completed), 'nothing completes before the wake URL is registered');
+
+    const released = Date.now();
+    releaseWake();
+    let timer: NodeJS.Timeout | undefined;
+    const final = await Promise.race([
+        h.completed,
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('the wizard never closed after Finish')), 5_000); }),
+    ]).finally(() => clearTimeout(timer));
+    assert.ok(Date.now() - released < 5_000, 'the wizard closes once completion is stored, not at the grace deadline');
+    assert.ok(final.completedAt);
+    assert.equal(final.env.PROPR_IDLE_SHUTDOWN, 'on');
+    assert.equal(final.connect?.wakeTarget, `${PUBLIC_URL}/wake`);
+    assert.deepEqual(readLaunchConfig(h.store), final, 'the returned config is the stored one');
+    assert.equal(setupRequired(final, {}), false);
+    assert.equal(await refused(h.port), true, 'the port is free for the control plane');
 });
 
 test('idle shutdown on the ProPR App path needs the wake URL registered: a failure keeps the wizard open', async () => {
