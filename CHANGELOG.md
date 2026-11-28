@@ -7,7 +7,160 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in idle shutdown for the control plane** (#3770)
+  - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`
+    (for example `15m`), or Settings → Maintenance → Idle shutdown, stops the
+    control plane with exit code 0 after it has been idle for the window, so a
+    supervisor with an `on-failure` restart policy leaves the host stopped.
+    On a Fly Machine (`FLY_MACHINE_ID` set) it first has the Machines API
+    (`_api.internal:4280`) stop the whole Machine, with the app-scoped token in
+    `PROPR_FLY_MACHINE_STOP_TOKEN`: an exit alone leaves Redis and the other
+    containers keeping a multi-container Machine started, unreachable and
+    billed. A stop the API refuses or does not answer within 10 seconds exits
+    1, so the app starts again. A Fly Machine without the token never stops
+    idle.
+  - With `propr deploy fly --legacy-docker` the app container no longer waits
+    for the `docker` container to be healthy, so the request that wakes a
+    stopped Machine is served while `dockerd` starts (it took ~34 s, past
+    Fly's ~45 s proxy timeout once the app started after it). The worker
+    waits for the Docker API instead (`PROPR_DOCKER_STARTUP_WAIT_SECONDS`).
+    The docker boot script skips `e2fsck` and `resize2fs` for a cleanly
+    unmounted, full-size image and logs the time each step took.
+  - Only the single-process control plane (`propr all-in-one`, the `minimal`
+    profile) stops, with the indexing worker inline or off. A standalone
+    daemon, or an API, worker or indexing worker process outside the
+    all-in-one process, keeps the instance awake (blocker
+    `separate_processes`): a called-off stop restarts only the process that
+    exits 1, so a separate process that had already exited 0 would stay
+    stopped.
+  - Idle means no queued or running BullMQ job in any queue, no active agent
+    run, goal, follow-up handoff, Ultrafix loop or Connect delivery, no open
+    Web UI session or in-flight MCP/HTTP request, no scheduled work due
+    within the window, and no polling intake. A setting that cannot be read
+    prevents the stop and restarts the idle period. Without Connect intake,
+    any scheduled work keeps the instance awake unless
+    `PROPR_IDLE_SCHEDULED_WAKE=external` says your own scheduler starts it at
+    the wake hint file's `nextDueAt`.
+  - With Connect intake the relay must acknowledge the wake hint
+    (`wake_hint_ack`) or the instance stays up; the current relay does not, so
+    Connect instances need propr-routing#335. The daemon quiesces Connect, the
+    API and its own work-queuing sweeps (schedules, retries, auto-merge, merge
+    conflicts) before its last check, aborts (and resumes intake and the
+    sweeps) if the wake hint file cannot be written, and exits only after the
+    API, worker and inline indexing worker have acknowledged the stop. A stop
+    whose acknowledgements are not read in time for the wake arranged for the
+    next scheduled work, whose last check for work is not over in time, or
+    during which work was queued, is called off: the process exits with code
+    1 so the supervisor starts the control plane again. So does a shutdown
+    still running when that wake comes. On the next
+    start it asks Connect to replay deliveries cached since intake
+    disconnected for the drain, keeping that obligation in the hint file,
+    written before intake disconnects so a crash mid-drain keeps it, until
+    the relay acknowledges it (`replay_ack`); an aborted drain asks for the same replay once it
+    reconnects. It also records the wake source and cold-start duration. `POST /wake` is the Connect wake ping.
+  - An API or worker process whose heartbeat or activity record is missing,
+    stale or malformed keeps the instance awake until it is confirmed stopped.
+  - `propr check`, `GET /api/status` (`idleShutdown`) and
+    `GET/PUT /api/admin/idle-shutdown` report what keeps the instance awake,
+    the last idle shutdown and the last wake. See
+    [Idle shutdown](docs/docs/operations/idle-shutdown.md).
+  - The all-in-one shutdown (SIGTERM and idle stop) now always exits. Before,
+    a component that never finished starting, such as a worker waiting for an
+    agent image, kept it running after "shutting down gracefully". It now
+    waits up to 10 seconds for such a component and exits with code 0 within
+    `PROPR_SHUTDOWN_TIMEOUT_MS` (default 50 seconds). An idle stop still
+    closing then exits 1 instead, without stopping the host, since the API
+    may still have answered a request or wake ping.
+- **`propr deploy fly`: the control plane on one Fly Machine** (#3768)
+  - Runs the all-in-one app container and Redis in one Machine
+    (multi-container), with SQLite and the Redis AOF on an encrypted Fly
+    volume. Deploys the launcher manifest's `propr/app` image directly, with
+    no build and no Docker-in-Docker. Default size: shared-cpu-1x, 1 GB.
+  - Uses flyctl when installed, otherwise the Machines API with `--token` or
+    `FLY_API_TOKEN`. Every step can be rerun; `--dry-run` writes `fly.toml` and
+    the machine config only.
+  - Uploads the stack `.env` as Fly secrets and generates `SESSION_SECRET`
+    once. Enrolls a GitHub relay token, and ProPR Connect with
+    `--tunnel-token`/`--tunnel-url`. Agents default to Sprites.
+  - Refuses Sprites and Fly Machines agents (the default included) before
+    creating anything on Fly: this release's worker only runs Docker agents
+    and would never take a task without a Docker daemon. Use
+    `--legacy-docker` until those runtimes land.
+  - Refuses an explicit `GH_AUTH_MODE` whose credentials are missing (App id,
+    private key and installation id for `app`, a relay token for `relay`),
+    whatever the intake mode, before any secret is uploaded.
+  - Needs a browser sign-in: ProPR Connect (the tunnel flags), a GitHub OAuth
+    client in the stack `.env`, or demo mode. Without one it stops before
+    creating anything on Fly, `--dry-run` included.
+  - Writes `GH_AUTH_MODE` on every run that brings GitHub credentials: `app`
+    for an own GitHub App unless `--relay` or the `.env` chooses, `relay` for
+    relay credentials. Fly secrets are never removed, so a redeploy that adds
+    an own App does not keep an earlier deploy's relay mode, and a redeploy
+    without a key keeps an earlier deploy's GitHub App key wired into the
+    Machine.
+  - Writes `GITHUB_EVENT_INTAKE_MODE` on every run: `direct_webhook` in
+    demo mode, `routing_websocket` with a relay token, and `direct_webhook`
+    or `polling` for an own GitHub App, and `polling` when the app holds both
+    kinds of credentials next to an earlier, unreadable `GH_AUTH_MODE` (an
+    earlier intake, such as a demo deploy's, is not kept). Demo and `--no-relay` deploys
+    therefore no longer crash-loop on the relay WebSocket. A deploy with no
+    GitHub credentials stops before it sets secrets.
+  - The app container lists every Fly secret name (including ones left by
+    earlier deploys), and the tunnel container lists `TUNNEL_TOKEN`, because
+    a multi-container Machine passes secrets only to containers that list
+    them. `fly.toml` points at `propr-machine.json` by absolute path, and
+    flyctl runs from the `--out` directory, so the command works from any
+    working directory.
+  - Runs the Machine always on unless `--idle-shutdown [after]` is given.
+    With it, the Machine stops itself when idle (#3770) with an app-scoped
+    deploy token stored as `PROPR_FLY_MACHINE_STOP_TOKEN`. flyctl creates
+    that token on the first idle-shutdown deploy; with `--backend api` pass
+    it with `--machine-stop-token`.
+  - `--legacy-docker` runs a Docker daemon in the Machine. On every boot it
+    loop-mounts an ext4 image at `/var/lib/docker` for overlay2 and removes
+    stale `/var/run/docker*` and `/run/containerd` PID files.
+    A larger `--rootfs-size` grows the existing image in place on the next
+    boot, keeping pulled images. Clones, worktrees and egress sockets are
+    shared with the daemon under `/usr/src/app/data/propr-shared` on the Fly
+    volume. The `temp_dir` scratch volume used before never mounted on a live
+    Machine and crash-looped the `docker` container. Boot now stops with an
+    error if the volume is missing from the `docker` container. Use
+    `--rootfs-size` 20 or more: 10 leaves less than the 12 GiB agent image
+    build reserve.
+  - Fits the Fly Free plan (#3785). `--legacy-docker` keeps Docker images on a
+    persistent root filesystem (`rootfs.size_gb`, default 20 GB, set with
+    `--rootfs-size`; `rootfs.persist: "always"`) instead of the volume, which stays
+    at the 1 GB default for SQLite and Redis. Boot removes the image an
+    earlier release left on the volume. A `--volume-size` over 5 GB is refused
+    before anything is created when Fly reports the org owning the app (an
+    existing app's own org, else `--org`) on the Free plan, which caps volumes
+    at 5 GB. The plan output, `--dry-run` included, shows the rootfs size and
+    its cost while stopped ($0.15/GB-month).
+    Legacy mode now accepts `--memory 1024` (default still 2048 MB):
+    `dockerd` ran next to the app and Redis on a 1 GB Machine.
+  - A flyctl redeploy removes Machine config an earlier layout left behind.
+    `flyctl deploy` merges `machine_config` into the live Machine and keeps
+    keys it leaves out, so a Machine from the `temp_dir` layout kept its
+    `volumes` and container `mounts` and the `docker` container crash-looped.
+    `propr-machine.json` now sends both as `[]`. After deploying, the command
+    compares the Machine with the plan; if stale keys remain, it destroys the
+    Machine, waits for the data volume to detach and deploys again on the same
+    volume.
+
 ### Changed
+
+- **Server and service images run on Node 24** (#3864)
+  - The app (`propr/app`), launcher, Node service, API, UI and docs images
+    move from `node:22-*` to the same `node:24-alpine` / `node:24-slim`
+    variants. Node 24 is the Active LTS, and `@fly/sprites` 0.2.5, which the
+    Sprites runtime uses, requires Node `>=24.0.0`, so the app image build no
+    longer warns `EBADENGINE`.
+  - `.nvmrc` is `24`, so CI jobs that read it build and test on Node 24.
+  - The CLI and the other npm packages keep their `engines` ranges: Node 22
+    users are unaffected, and the CLI compatibility matrix still covers 22
+    and 24. The agent images keep their Node version.
 
 - **Extensions and ProPR MCP for OpenCode 2.x** (#3844)
   - OpenCode 2.x runs now receive extension library MCP servers and skill
@@ -120,6 +273,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/model` beside Gemini 4 Neon and Argon.
 
 ### Fixed
+
+- **The all-in-one process exits on SIGTERM** (#3768). Shutdown waited
+  for the worker to finish starting, and without a Docker daemon (for example
+  with Sprites agents) the worker waits for the agent image forever. Shutdown
+  now aborts that wait. Draining is also capped by `PROPR_SHUTDOWN_TIMEOUT_MS`
+  (default 50 s, below Fly's 60 s stop timeout), after which the process exits
+  0, so an `on-failure` restart policy leaves a stopped Machine stopped.
 
 - **Antigravity explains keyring-only `agy` logins** (#3837)
   - On macOS and Linux desktops with gnome-keyring or KWallet, `agy` 1.5.x

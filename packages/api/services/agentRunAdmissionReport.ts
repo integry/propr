@@ -8,23 +8,31 @@
  * Subscription usage (Agent Tank, `get_provider_usage`, the automation
  * `/capacity` routes) is a different thing and is deliberately not included.
  *
+ * `runtime` says what the default agent runtime can enforce: admission
+ * refuses a run whose spec needs a capability its runtime lacks (restricted
+ * networking above all), and this section reports that refusal before a run
+ * hits it.
+ *
  * Redaction: no holder token, container ID, daemon identity, instance ID or
  * environment value other than the limits. Task IDs and repository names
  * appear only when the caller's `access` says it may see them; the counts
  * always cover everything.
  */
+import { readSpritePoolStatus } from './spritePoolStatus.js';
 import type { Queue } from 'bullmq';
 import type { RedisClientType } from 'redis';
-import { readAgentRunAdmissionSnapshot, type AgentRunAdmissionSnapshot } from '@propr/core';
+import { readAgentRunAdmissionSnapshot, readAgentRuntimeCapabilityReport, type AgentRunAdmissionSnapshot, type AgentRuntimeCapabilityReport } from '@propr/core';
 
 const WORKER_SET_KEY = 'system:status:workers';
 const WORKER_CAPACITY_KEY = 'system:status:worker-capacity';
 
 export interface AgentRunAdmissionReportDeps {
   taskQueue: Pick<Queue, 'getActiveCount'> & { opts?: { prefix?: string } };
-  redisClient: Pick<RedisClientType, 'sMembers' | 'hGetAll'>;
+  redisClient: Pick<RedisClientType, 'sMembers' | 'hGetAll' | 'eval'>;
   /** Test hook; defaults to the core snapshot over a short-lived Redis connection. */
   readSnapshot?: () => Promise<AgentRunAdmissionSnapshot>;
+  /** Test hook; defaults to the default agent runtime's capabilities against the instance network policy. */
+  readRuntime?: () => Promise<AgentRuntimeCapabilityReport>;
 }
 
 export interface AgentRunAdmissionReportAccess {
@@ -37,6 +45,12 @@ export interface AgentRunAdmissionReportAccess {
 export const QUEUE_WORKERS_LABEL = 'Queue worker concurrency: jobs the worker processes run at once (WORKER_CONCURRENCY per worker). A job holds its worker slot while it waits for admission; a deferred job does not.';
 export const REPOSITORY_SLOTS_LABEL = 'Repository workflow slots: runs of one repository at once (limits.max_parallel_tasks in .propr/workflow.yml). Every repository with a limit and running work is listed.';
 export const SUBSCRIPTION_USAGE_NOTE = 'Subscription usage (provider quota through Agent Tank) is not part of this report; read it with get_provider_usage or the automation capacity routes.';
+
+/** Only a runtime selection error is specific enough to show; anything else stays generic. */
+function runtimeUnavailable(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  return /^Unknown agent runtime "[a-z0-9-]{1,64}"/.test(message) ? message : 'The agent runtime capabilities could not be read.';
+}
 
 async function queueWorkers(deps: AgentRunAdmissionReportDeps) {
   const [inUse, workers] = await Promise.all([deps.taskQueue.getActiveCount(), deps.redisClient.sMembers(WORKER_SET_KEY)]);
@@ -53,9 +67,12 @@ async function queueWorkers(deps: AgentRunAdmissionReportDeps) {
 
 export async function buildAgentRunAdmissionReport(deps: AgentRunAdmissionReportDeps, access: AgentRunAdmissionReportAccess) {
   const read = deps.readSnapshot ?? (() => readAgentRunAdmissionSnapshot({ queuePrefix: deps.taskQueue.opts?.prefix }));
-  const [snapshot, workers] = await Promise.all([
+  const [snapshot, workers, runtime, spritePool] = await Promise.all([
     read(),
     queueWorkers(deps).catch(() => ({ label: QUEUE_WORKERS_LABEL, inUse: null, total: null, workers: null })),
+    (deps.readRuntime ?? (() => readAgentRuntimeCapabilityReport()))()
+      .then(report => ({ report }), (error: unknown) => ({ unavailable: runtimeUnavailable(error) })),
+    readSpritePoolStatus(deps.redisClient).catch(() => undefined),
   ]);
   const taskIds = [...new Set(snapshot.agents.flatMap(agent => agent.tasks.map(task => task.taskId)))];
   const [visibleTasks, visibleRepositories] = await Promise.all([
@@ -74,12 +91,15 @@ export async function buildAgentRunAdmissionReport(deps: AgentRunAdmissionReport
     },
     agents: snapshot.agents.map(agent => ({ ...agent, tasks: agent.tasks.filter(task => visibleTasks.has(task.taskId)) })),
     queueWorkers: workers,
+    ...(spritePool && { spritePool }),
     repositoryWorkflowSlots: {
       label: REPOSITORY_SLOTS_LABEL,
       repositories: snapshot.repositoryWorkflowSlots.filter(slot => visibleRepositories.has(slot.repository)),
       // Present when usage could not be read: the empty list then means unknown, not idle.
       ...(snapshot.repositoryWorkflowSlotsUnavailable ? { unavailable: snapshot.repositoryWorkflowSlotsUnavailable } : {}),
     },
+    runtime: 'report' in runtime ? runtime.report : null,
+    ...('unavailable' in runtime ? { runtimeUnavailable: runtime.unavailable } : {}),
     subscriptionUsage: SUBSCRIPTION_USAGE_NOTE,
   };
 }

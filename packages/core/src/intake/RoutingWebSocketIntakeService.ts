@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- connection lifecycle, dispatch and the idle wake/replay frames share one socket state */
 /**
  * Routing WebSocket intake service (daemon side).
  *
@@ -98,6 +99,7 @@ import {
 import { ConnectAccountStatusTracker, parseRoutingFrame } from './routingConnectAccountStatus.js';
 import { DeliveryInterestAnnouncer } from './routingDeliveryInterest.js';
 import { cacheTokenFrame } from './routingTokenFrame.js';
+import { IDLE_FRAME_ACK_TIMEOUT_MS, RoutingIdleWake, type IdleWakeSupport } from './routingIdleFrames.js';
 
 export type {
     DeliveryAckBilling,
@@ -160,6 +162,8 @@ export class RoutingWebSocketIntakeService {
      * than cutting it off mid-flight and relying on relay redelivery.
      */
     private readonly inFlightWork = new Set<Promise<void>>();
+    /** Idle shutdown's wake hint / replay exchange; each frame must be acknowledged by the relay. */
+    private readonly idleWake: RoutingIdleWake;
 
     /** Tracks in-flight vs. accepted deliveries to keep ACKing safe under redelivery. */
     private readonly deliveries: DeliveryTracker;
@@ -180,6 +184,7 @@ export class RoutingWebSocketIntakeService {
         this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30_000;
         this.pullTimeoutMs = options.pullTimeoutMs ?? DEFAULT_PULL_TIMEOUT_MS;
         this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 10_000;
+        this.idleWake = new RoutingIdleWake((frame, socket) => this.send(frame, socket), options.idleFrameAckTimeoutMs ?? IDLE_FRAME_ACK_TIMEOUT_MS);
         this.webSocketFactory = options.webSocketFactory;
         this.fetchImpl = options.fetchImpl;
         this.now = options.now ?? Date.now;
@@ -284,6 +289,7 @@ export class RoutingWebSocketIntakeService {
             logger.info('Routing WebSocket connected. Receiving GitHub events over routing relay.');
             this.keepalive.start(socket);
             this.accountStatus.open(socket, this.deliveryInterest.open(socket), frame => this.send(frame, socket));
+            this.idleWake.opened(socket);
             this.notifyStatusChange();
         });
 
@@ -304,6 +310,7 @@ export class RoutingWebSocketIntakeService {
         socket.on('close', (code: number) => {
             // A delayed close from an older socket must not tear down a newer
             // connection created by a stop/start cycle or reconnect.
+            this.idleWake.closed(socket);
             if (socket !== this.socket) return;
             this.keepalive.stop();
             this.socket = null;
@@ -362,6 +369,7 @@ export class RoutingWebSocketIntakeService {
                 this.send({ type: 'pong', nonce: frame.nonce }, socket);
                 return;
             default:
+                if (this.idleWake.handle(frame, socket)) return;
                 logger.debug({ type: frame.type }, 'Ignoring routing frame with unknown type');
         }
     }
@@ -594,6 +602,35 @@ export class RoutingWebSocketIntakeService {
         this.currentReconnectDelayMs = Math.min(this.currentReconnectDelayMs * 2, this.maxReconnectDelayMs);
     }
 
+    /** Deliveries received and still being handled (not yet ACKed). */
+    getInFlightCount(): number {
+        return this.inFlightWork.size;
+    }
+
+    /**
+     * Idle shutdown: tell Connect when scheduled work is next due, before
+     * {@link stop}. Resolves true only when the relay acknowledged the hint
+     * (`wake_hint_ack`) on the open socket; a relay without idle wake support
+     * never does, and the daemon must not stop then.
+     */
+    sendWakeHint(nextDueAt: string | null): Promise<boolean> {
+        return this.idleWake.sendWakeHint(this.connected ? this.socket : null, nextDueAt);
+    }
+
+    /** `rejected` once the relay on this connection did not acknowledge a wake hint. */
+    getIdleWakeSupport(): IdleWakeSupport {
+        return this.idleWake.wakeSupport;
+    }
+
+    /**
+     * Idle wake: ask for deliveries cached while stopped, now or on the next
+     * connection. Resolves true once the relay acknowledged it (`replay_ack`),
+     * false when it did not answer or the service stopped.
+     */
+    requestReplay(since: string | null): Promise<boolean> {
+        return this.idleWake.requestReplay(this.connected ? this.socket : null, since);
+    }
+
     /**
      * Stop the service and release all resources (socket, reconnect timer,
      * keepalive timer). Safe to call multiple times. Used by the daemon's
@@ -602,6 +639,7 @@ export class RoutingWebSocketIntakeService {
     async stop(): Promise<void> {
         this.stopped = true;
         this.connected = false;
+        this.idleWake.stopped();
         this.accountStatus.clear();
         this.deliveryInterest.clear();
         // Clear the start guard so a deliberate stop()/start() cycle can reconnect.

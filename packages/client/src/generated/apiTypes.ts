@@ -72,6 +72,14 @@ export interface AgentRunAdmissionReport {
     unavailable?: string;
   };
   agents: AgentRunAdmissionAgent[];
+  spritePool?: {
+    cap: number;
+    inUse: number;
+    idle: number;
+    provisioning: number;
+    orphansDeleted: number;
+    awaitingCleanup: number;
+  };
   queueWorkers: {
     label: string;
     inUse: number | null;
@@ -91,8 +99,52 @@ export interface AgentRunAdmissionReport {
     /** Why repository usage could not be read; `repositories` is then empty and means unknown, not idle. */
     unavailable?: string;
   };
+  /** Null when the runtime selection could not be resolved; see `runtimeUnavailable`. */
+  runtime: AgentRunAdmissionRuntime | null;
+  runtimeUnavailable?: string;
   /** Subscription usage is reported elsewhere; this says where. */
   subscriptionUsage: string;
+}
+
+/** What the default agent runtime can enforce. Admission refuses a run whose spec needs a capability its runtime lacks. */
+export interface AgentRunAdmissionRuntime {
+  /** Default agent runtime (an agent's own `runtime` setting can select another, checked the same way at launch). */
+  runtime: string;
+  selectedBy: "PROPR_AGENT_RUNTIME" | "default";
+  /** Runtimes this process can launch. */
+  registered: string[];
+  capabilities: {
+    bindMounts: boolean;
+    /** Outbound traffic can be confined to the run's host/port allowlist. */
+    restrictedNetwork: boolean;
+    /** Runs can join the private network that reaches ProPR MCP. */
+    mcpPrivateNetwork: boolean;
+    /** Runs can reach ProPR MCP at a reachable URL with a per-run token (the fallback without private networking). */
+    mcpReachableUrl: boolean;
+    reattach: boolean;
+  };
+  network: {
+    /** Instance network mode; null when the policy could not be read (runs then fail closed). */
+    instanceMode: "open" | "restricted" | null;
+    enforced: boolean | null;
+    /** enforced: restricted runs are confined; refused: admission refuses them before launch instead of running them open. */
+    restrictedRuns: "enforced" | "refused";
+    /** How the runtime confines restricted runs. */
+    enforcement: {
+      method: string;
+      description: string;
+    } | null;
+    /** The error a restricted run gets on this runtime. */
+    refusal?: string;
+    /** The instance mode is restricted and enforced, and this runtime cannot enforce it: runs are being refused now. False for a restricted default that is not enforced: only runs whose effective policy remains restricted are refused. */
+    refusingRuns: boolean;
+    unavailable?: string;
+  };
+  mcp: {
+    /** How runs granted ProPR MCP reach it on this runtime. */
+    transport: "private-network" | "reachable-url" | "ssh-reverse-forward" | "unavailable";
+    reason: string;
+  };
 }
 
 /** Admitted executions by state. */
@@ -742,6 +794,78 @@ export interface FollowupHandoffStatus {
 /** Liveness probe result. */
 export interface Health {
   status: "ok";
+}
+
+/** Idle shutdown setting and live status. */
+export interface IdleShutdownSettings {
+  /** Effective switch. Off unless an operator turns it on. */
+  enabled: boolean;
+  afterMs: number;
+  /** The window in `.env` form, for example `15m`. */
+  after: string;
+  source: "environment" | "settings" | "default";
+  /** `PROPR_IDLE_SHUTDOWN` or `PROPR_IDLE_SHUTDOWN_AFTER` is set, so the setting cannot be changed here. */
+  environmentManaged: boolean;
+  environment: {
+    [key: string]: string | null;
+  };
+  warnings: string[];
+  /** Null until the daemon has published a status. */
+  status: IdleShutdownStatus | null;
+}
+
+/** Change the idle shutdown instance setting. */
+export interface IdleShutdownSettingsRequest {
+  enabled: boolean;
+  /** Duration between `1m` and `24h`, for example `15m` or `1h30m`. Keeps the saved value when omitted. */
+  after?: string;
+}
+
+/** The daemon's idle detector status, refreshed every 30 seconds. */
+export interface IdleShutdownStatus {
+  enabled: boolean;
+  afterMs: number;
+  source: "environment" | "settings" | "default";
+  /** Whether every signal is quiet and nothing is due within the window. */
+  idle: boolean;
+  idleSince: string | null;
+  /** When the instance stops if nothing changes; null while not idle or when disabled. */
+  shutdownAt: string | null;
+  /** What keeps the instance awake right now. */
+  blockers: Array<{
+    signal: "queue_jobs" | "agent_runs" | "ui_sessions" | "mcp_requests" | "http_requests" | "followup_handoffs" | "connect_deliveries" | "goals" | "ultrafix_loops" | "scheduled_work" | "separate_processes" | "unavailable";
+    detail: string;
+  }>;
+  /** Next due time of scheduled work: the wake hint published before an idle exit. */
+  nextDueAt: string | null;
+  checkedAt: string;
+  lastShutdown: {
+    shutdownAt: string;
+    reason: string;
+    idleForMs: number;
+    nextDueAt: string | null;
+  } | null;
+  lastWake: {
+    webhookRecovery?: {
+      scanned: number;
+      failed: number;
+      redelivered: number;
+      skipped: number;
+      error?: string;
+    };
+    wokeAt: string;
+    source: "http" | "connect_ping" | "schedule" | "unknown";
+    /** Process start to daemon ready. */
+    coldStartMs: number;
+    sleptMs: number | null;
+    shutdownAt: string | null;
+  } | null;
+  [key: string]: unknown;
+}
+
+/** The instance is running. */
+export interface IdleWakeAccepted {
+  status: "awake";
 }
 
 export interface InstanceDatabaseExport {

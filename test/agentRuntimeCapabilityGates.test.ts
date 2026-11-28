@@ -80,7 +80,7 @@ describe('runtime capability map drives every gate', () => {
         if (enabled) assert.deepEqual((await launch).set.servers.map(s => s.name), ['docs']);
         else await assert.rejects(launch, (error: Error & { status?: number }) => error.status === 400 && /Extensions require/.test(error.message));
         // Worker network-scope decision.
-        assert.equal(launchCarriesExtensions({ agent: { config } }, { extensions: { autoApply: true, servers: [], skills: [] } } as never), enabled);
+        assert.equal(launchCarriesExtensions({ agent: { config } }), enabled);
         // Agent definitions and automations: added items and ProPR MCP.
         const added = await validateAgentDefinitionRuntime(definition(type, { extensions: { servers: ['docs'], skills: [] } }), deps);
         assert.equal(added === null, enabled, String(added));
@@ -117,7 +117,7 @@ describe('runtime capability map drives every gate', () => {
     // Without a concrete version the mapped entry applies.
     assert.equal(agentRuntimeCapabilities('opencode', 'latest').extensions, true);
     assert.equal(agentRuntimeCapabilities('opencode').proprMcp, true);
-    assert.equal(launchCarriesExtensions({ agent: { config: { type: 'opencode', cliVersionResolved: '1.9.0' } } }, { extensions: { autoApply: true, servers: [], skills: [] } } as never), false);
+    assert.equal(launchCarriesExtensions({ agent: { config: { type: 'opencode', cliVersionResolved: '1.9.0' } } }), false);
     assert.equal(agentRuntimeCapabilities('unknown-runtime').extensions, false);
     // Automation checks read the agent's pinned version too.
     const legacy = { ...agent('opencode'), cliVersion: '1.19.6' };

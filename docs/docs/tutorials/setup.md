@@ -36,6 +36,23 @@ Docker Compose is required only for the [Source Development Setup](./setup-sourc
 Access to `/var/run/docker.sock` is root-equivalent control of the host. Limit it to trusted administrators and ProPR's trusted control-plane services, and protect the Web UI and API accordingly.
 :::
 
+### Control-plane footprint
+
+The control plane is separate from agent work: each task's coding agent runs in its own container, and those containers, not the control plane, dominate RAM on a busy host. The capacity row above covers both. To shrink the control plane itself on a small VPS, a laptop, or Desktop, start the `minimal` profile:
+
+```bash
+propr start --profile minimal      # or PROPR_PROFILE=minimal in the stack .env
+```
+
+It runs Redis plus one all-in-one container (daemon, worker and API in one Node process, with the API serving the Web UI at `http://localhost:4000`). `PROPR_INDEXING=inline|separate|off` places the repository indexing worker. The multi-container `full` profile remains the default. See [Configuration Reference → Slim Control Plane](../operations/configuration-reference.md#slim-control-plane-all-in-one).
+
+| Profile | Control-plane containers | Measured control-plane RSS | Host fit |
+| --- | --- | --- | --- |
+| `full` (default) | redis, daemon, worker, indexing-worker, api, ui | ~450 MB idle on a 1 GB Fly Machine: api ~170 MB, worker ~115 MB, indexing-worker ~90 MB, ui (`serve`) ~35 MB, plus the daemon | 1 GB works with ~366 MB free; 512 MB is not viable |
+| `minimal` | redis, all-in-one | One Node process. Module-load baseline on the same x86_64 host, Node 22: ~254 MB for all four components together versus ~800 MB summed over the four separate processes (daemon ~190, worker ~192, indexing ~187, api ~233 MB); no UI container | Comfortable in 1 GB; 512 MB is the stretch target |
+
+The module-load figures come from importing each compiled entry with startup disabled and measuring RSS after a forced GC, so both columns use the same method. Absolute RSS depends on the host (V8 sizes its heap from available memory), so compare the ratio rather than mixing rows from different hosts. Steady-state usage grows with active tasks, Socket.IO clients and indexing runs.
+
 ## Which Page Should You Follow?
 
 | Where you are running | Follow | Why |
@@ -43,6 +60,7 @@ Access to `/var/run/docker.sock` is root-equivalent control of the host. Limit i
 | Your Linux laptop or workstation | [Local Setup](./setup-local.md) | The shortest path: localhost URLs, no proxy, no public endpoint. |
 | A shared or production Linux server | [Server Setup](./setup-server.md) | Adds stable paths, public URLs, TLS behind a reverse proxy, and the advanced intake options (polling, own-App webhook). |
 | A brand-new Linux VPS | [Secure VPS Deployment](./setup-vps.md) | Start-to-finish host hardening plus the install: SSH lockdown, firewall, localhost port binding, TLS. [Advanced VPS Hardening](./setup-vps-hardening.md) optionally removes all public inbound traffic with a Cloudflare Tunnel and an SSO gate. |
+| A small Fly.io Machine, agents on Sprites or Fly Machines | [Deploy to Fly](../operations/deploy-fly.md) | `propr deploy fly` runs the all-in-one control plane and Redis on one 1 GB Machine with SQLite on a volume. The host needs no Docker. |
 | Apple Silicon Mac with Docker Desktop | [Local Setup](./setup-local.md) | Runs the published Linux `amd64` images under emulation for local evaluation; native `arm64` images are not yet available. |
 | A source checkout, changing ProPR itself | [Source Development Setup](./setup-source.md) | Development Compose, direct service commands, tests, docs validation, and image builds. |
 

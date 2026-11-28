@@ -1,3 +1,4 @@
+import type { SpritePoolStatus } from '@propr/shared';
 /**
  * System Status API
  *
@@ -11,6 +12,7 @@ import { ApiClient, createApiClient } from "./index.js";
  * System status response from the backend.
  */
 export interface SystemStatus {
+  spritePool?: SpritePoolStatus;
   /**
    * API health status.
    */
@@ -58,6 +60,8 @@ export interface SystemStatus {
    * path is active and the daemon has published its connection state.
    */
   routing?: RoutingState;
+  /** Opt-in idle shutdown status the daemon publishes (see @propr/shared IdleShutdownStatus). */
+  idleShutdown?: unknown;
 
   /**
    * Claude authentication status ('connected' | 'disconnected' |

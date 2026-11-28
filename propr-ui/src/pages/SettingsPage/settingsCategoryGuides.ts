@@ -107,10 +107,12 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
       'Database exports and repository cache cleanup recheck your administrator authority on every request. A cleanup confirmation expires after five minutes.',
       'Cache cleanup only removes eligible repository caches, which are refetched on next use. Worktrees are always protected.',
       'Held follow-ups that settle on their own, for example when the pull request closes, move to Show released.',
+      'Idle shutdown is off by default. When on, the control plane stops after the idle window and starts again on a request, a Connect wake ping or due scheduled work.',
     ],
     links: [
       { label: 'Instance data', href: `${DOCS}/architecture/instance-storage-v1#native-instance-data-management-3013` },
       { label: 'Stuck follow-ups', href: `${DOCS}/operations/maintenance#stuck-follow-ups-settle-themselves` },
+      { label: 'Idle shutdown', href: `${DOCS}/operations/idle-shutdown` },
     ],
   },
   experimental: {

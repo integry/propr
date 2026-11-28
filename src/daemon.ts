@@ -26,8 +26,6 @@ import {
     getCurrentPRHead,
     getCheckRunsStatusForRepo,
     AgentRegistry,
-    sweepConflictedPullRequests,
-    getMergeConflictSweepIntervalMs,
     runMigrations
 } from '@propr/core';
 import type { CommentPayload, CommentEventConfig, CommentEventType, DeliveryDisposition } from '@propr/core';
@@ -52,6 +50,8 @@ import { scheduleUltrafixResumeSweep } from './daemon/ultrafixResumeSweep.js';
 import { scheduleEpicMergeProgressRetrySweep } from './daemon/epicMergeProgressRetrySweep.js';
 import { scheduleNoChangeCompletionRecoverySweep } from './daemon/noChangeCompletionRecoverySweep.js';
 import { scheduleAutoMergeSweep } from './daemon/autoMergeSweep.js';
+import { scheduleMergeConflictSweep } from './daemon/mergeConflictSweep.js';
+import { createDaemonWorkProducers } from './daemon/workProducers.js';
 import { createUltrafixDeps } from './jobs/ultrafixBootstrap.js';
 import { processDetectedIssue, fetchIssuesForRepo } from './daemon/issueDetection.js';
 import type { DetectedIssue } from './daemon/issueDetection.js';
@@ -59,6 +59,7 @@ import { setCheckRunDeps, resumeDeferredContinuation } from './jobs/ultrafixLoop
 import { parseArgs } from './daemon/cliArgs.js';
 import { startRoutingStatusPublisher, type RoutingStatusPublisher } from './daemon/routingStatusPublisher.js';
 import { startEventIntake } from './daemon/eventIntakeStartup.js';
+import { recoverFromIdleWake, startDaemonIdleShutdown, type DaemonIdleShutdown } from './daemon/idleShutdown.js';
 
 process.on('uncaughtException', (error: Error) => {
     logger.fatal({ error: error.message, stack: error.stack }, 'Uncaught exception in daemon');
@@ -156,27 +157,6 @@ async function pollForIssues(): Promise<DetectedIssue[]> {
     return allDetectedIssues;
 }
 
-// Safety net for merge-conflict auto-resolution: polling intake never sees push
-// events, and webhook deliveries can be missed. Only repositories whose effective
-// setting is on cost GitHub calls.
-function scheduleMergeConflictSweep(intakeMode: string): NodeJS.Timeout {
-    const intervalMs = getMergeConflictSweepIntervalMs(intakeMode);
-    let running = false;
-    const sweep = async (): Promise<void> => {
-        if (running) return;
-        running = true;
-        try {
-            await sweepConflictedPullRequests({ repositories: getRepos(), redisClient });
-        } catch (error) {
-            logger.error({ error: (error as Error).message }, 'Merge conflict sweep failed');
-        } finally {
-            running = false;
-        }
-    };
-    logger.info({ intakeMode, intervalMs }, 'Scheduled merge conflict sweep');
-    return setInterval(() => { void sweep(); }, intervalMs);
-}
-
 interface DaemonOptions {
     reset?: boolean;
 }
@@ -200,7 +180,28 @@ function schedulePushRescueSweep(): NodeJS.Timeout {
     return setInterval(() => { void sweepPushRescues(); }, PUSH_RESCUE_SWEEP_INTERVAL_MS);
 }
 
-async function startDaemon(options: DaemonOptions = {}): Promise<void> {
+export interface StartedDaemon {
+    /** Stops intake, sweeps and the daemon's Redis clients. Never exits the process. */
+    close(): Promise<void>;
+}
+
+export interface DaemonStartOptions extends DaemonOptions {
+    /** Install the standalone SIGINT/SIGTERM handlers that close and exit (default true). */
+    installSignalHandlers?: boolean;
+    /**
+     * Close the process-wide task queue connection on close (default true). A
+     * composed process (all-in-one) keeps it open until its worker has drained.
+     */
+    closeSharedQueue?: boolean;
+    /**
+     * Composed process (all-in-one): an idle shutdown ends in this coordinated close of every component, exiting with
+     * at least `exitCode`, and with at least 1 when it is still running at `exitBy` (the wake arranged for scheduled work).
+     * Given, idle shutdown can stop the instance; a standalone daemon reports that it needs the composed process.
+     */
+    idleShutdownStop?: (exitCode?: number, options?: { exitBy?: number | null; activitySince?: number | null }) => void;
+}
+
+async function startDaemon(options: DaemonStartOptions = {}): Promise<StartedDaemon> {
     // No config, queue, or event intake may start against a partially migrated schema.
     await runMigrations();
 
@@ -223,12 +224,14 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         const log = logger.withCorrelation(generateCorrelationId());
         await resumeDeferredContinuation({ owner, repo, pr: prNumber }, redisClient, log as unknown as Logger);
     });
+    // The sweeps that queue work, create runs or act on GitHub: an idle drain pauses them before its last check.
+    const producers = createDaemonWorkProducers(logger);
     // Retry obligations and deferred reviews are swept here too, so a daemon
     // without the API server and with polling off does not wait for a webhook.
-    const ultrafixResumeSweepInterval = scheduleUltrafixResumeSweep(redisClient);
-    const epicMergeProgressRetryInterval = scheduleEpicMergeProgressRetrySweep();
-    const noChangeCompletionRecoveryInterval = scheduleNoChangeCompletionRecoverySweep(redisClient);
-    const autoMergeSweepInterval = scheduleAutoMergeSweep();
+    producers.add('Ultrafix resume sweep', () => scheduleUltrafixResumeSweep(redisClient));
+    producers.add('epic merge progress retry sweep', () => scheduleEpicMergeProgressRetrySweep());
+    producers.add('no-change completion recovery sweep', () => scheduleNoChangeCompletionRecoverySweep(redisClient));
+    producers.add('auto-merge sweep', () => scheduleAutoMergeSweep());
 
     const repos = getRepos();
     await reconcileTaskIntentsSafely(redisClient, repos);
@@ -275,7 +278,7 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
     const worktreeSweepInterval = scheduleWorktreeSweep();
     // Fires scheduled agents, retries runs the cost gate deferred, fails runs
     // whose worker stopped, and revokes leftover run-scoped MCP grants.
-    const stopAgentRunSweeps = scheduleAgentRunSweeps();
+    producers.add('agent run sweeps', () => scheduleAgentRunSweeps());
     const stopManagedDiagnostics = scheduleManagedDiagnostics();
 
     let intervalId: NodeJS.Timeout | null = null;
@@ -444,38 +447,56 @@ async function startDaemon(options: DaemonOptions = {}): Promise<void> {
         routingUrl: process.env.PROPR_ROUTING_URL,
     });
     intervalId = intakeStartup.intervalId;
-    const mergeConflictSweepInterval = scheduleMergeConflictSweep(EVENT_INTAKE_MODE);
+    producers.add('merge conflict sweep', () => scheduleMergeConflictSweep(EVENT_INTAKE_MODE, redisClient));
     routingService = intakeStartup.routingService;
     routingStatusPublisher = intakeStartup.routingStatusPublisher;
 
+    // In all-in-one the API is listening before the daemon starts. Finish direct
+    // recovery before arming idle shutdown so a long batch cannot itself be drained.
+    const recovery = recoverFromIdleWake({ redis: redisClient, routingService, intakeMode: EVENT_INTAKE_MODE, processStartedAt: performance.timeOrigin })
+        .catch((error: unknown) => logger.warn({ error: (error as Error).message }, 'Idle wake recovery failed'));
+    let closing = false;
+    let idleShutdown: DaemonIdleShutdown | null = null;
     const close = async (): Promise<void> => {
+        closing = true;
+        await idleShutdown?.stop();
         if (intervalId) clearInterval(intervalId);
         clearInterval(configReloadInterval);
-        clearInterval(ultrafixResumeSweepInterval);
-        for (const interval of [heartbeatInterval, draftContextSweepInterval, pushRescueSweepInterval, worktreeSweepInterval, epicMergeProgressRetryInterval,
-            noChangeCompletionRecoveryInterval, autoMergeSweepInterval, mergeConflictSweepInterval]) if (interval) clearInterval(interval);
+        for (const interval of [heartbeatInterval, draftContextSweepInterval, pushRescueSweepInterval, worktreeSweepInterval]) if (interval) clearInterval(interval);
         stopManagedDiagnostics();
-        await stopAgentRunSweeps();
+        await producers.stop();
         // Stop the routing service first so it can drain in-flight deliveries and
         // send their ACKs while the connection is still up, THEN stop the publisher
         // (which clears the published routing state). Clearing first would report the
         // routing path as down in Redis while it is still actively draining.
-        if (routingService) {
-            await routingService.stop();
-        }
+        if (routingService) await routingService.stop();
         if (routingStatusPublisher) await routingStatusPublisher.stop();
         await subscriberRedis.quit();
         await heartbeatRedis.quit();
         await redisClient.quit();
-        await shutdownQueue();
+        if (options.closeSharedQueue !== false) await shutdownQueue();
     };
-    const shutdown = async (signal: string): Promise<void> => {
-        logger.info(`Received ${signal}, shutting down gracefully...`);
-        await close();
-        process.exit(0);
-    };
-    process.on('SIGINT', () => { void shutdown('SIGINT'); });
-    process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+    // Composed (all-in-one), an idle stop closes every component together. Standalone, idle shutdown only reports
+    // its status: separate processes could not all be started again if a stop were called off, so it never stops.
+    if (options.installSignalHandlers !== false || options.idleShutdownStop) {
+        const startIdleController = () => {
+            if (closing) return;
+            idleShutdown = startDaemonIdleShutdown({ redis: redisClient, intakeMode: EVENT_INTAKE_MODE,
+                getRoutingService: () => routingService, producers, close, stopProcess: options.idleShutdownStop });
+        };
+        if (EVENT_INTAKE_MODE === 'direct_webhook') void recovery.then(startIdleController);
+        else startIdleController();
+    }
+    if (options.installSignalHandlers !== false) {
+        const shutdown = async (signal: string): Promise<void> => {
+            logger.info(`Received ${signal}, shutting down gracefully...`);
+            await close();
+            process.exit(0);
+        };
+        process.on('SIGINT', () => { void shutdown('SIGINT'); });
+        process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+    }
+    return { close };
 }
 
 const processCommentEventWrapper = (payload: CommentPayload, eventType: CommentEventType, correlationId: string): Promise<void | DeliveryDisposition> =>

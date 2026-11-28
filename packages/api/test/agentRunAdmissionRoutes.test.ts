@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, afterEach, test } from 'node:test';
 import type { Request, Response } from 'express';
-import { closeConnection, type AgentRunAdmissionSnapshot } from '@propr/core';
+import { closeConnection, type AgentRunAdmissionSnapshot, type AgentRuntimeCapabilityReport } from '@propr/core';
 import { configureDemoMode, resetConfiguredDemoMode } from '../demoMode.js';
 import { McpError } from '../mcp/config.js';
 import { presentResult } from '../mcp/presentation.js';
@@ -54,6 +54,7 @@ const taskQueue = { getActiveCount: async () => 3 } as never;
 const redisClient = {
   sMembers: async () => ['worker-a', 'worker-b'],
   hGetAll: async () => ({ 'worker-a': '2', 'worker-b': '3' }),
+  eval: async () => ['cap', '2', 'orphansDeleted', '7', 'propr-test-private', 'inUse'],
 } as never;
 
 function recorder() {
@@ -155,6 +156,8 @@ test('MCP shows task IDs and repositories only within the grant the policy allow
   const principal = { user: { id: 'u' }, grant: { repositories: ['acme/public', 'acme/private'] } } as unknown as McpPrincipal;
   const result = await tool.run({ principal, args: {} } as never);
   const body = AgentRunAdmissionReport.parse(result.data) as Report;
+  assert.deepEqual(body.spritePool, { cap: 2, idle: 0, inUse: 1, provisioning: 0, orphansDeleted: 7, awaitingCleanup: 0 });
+  assert.ok(!JSON.stringify(result.data).includes('propr-test-private'));
   assert.deepEqual(body.agents[0].tasks.map(task => task.taskId), ['public-task'], 'a task in a repository the policy refuses stays hidden');
   assert.deepEqual(body.repositoryWorkflowSlots.repositories.map(slot => slot.repository), ['acme/public']);
   const narrow = { user: { id: 'u' }, grant: { repositories: [] } } as unknown as McpPrincipal;
@@ -199,4 +202,64 @@ test('admission contract qualifies generation recovery by protocol compatibility
   assert.match(guidance, /Rolling restarts with mixed versions/);
   assert.match(guidance, /stop every execution process, confirm Redis holders and physical Docker work are empty, then reset only the admission configuration key/);
   assert.match(guidance, /never clear holder records/);
+});
+
+function refusingRuntime(): AgentRuntimeCapabilityReport {
+  return {
+    runtime: 'remote', selectedBy: 'PROPR_AGENT_RUNTIME', registered: ['docker', 'remote'],
+    capabilities: { bindMounts: true, restrictedNetwork: false, mcpPrivateNetwork: false, mcpReachableUrl: true, reattach: true },
+    network: {
+      instanceMode: 'restricted', enforced: true, restrictedRuns: 'refused', enforcement: null, refusingRuns: true,
+      refusal: 'Agent runtime "remote" cannot enforce the restricted network policy: restricted runs are refused instead of running with open networking.',
+    },
+    mcp: { transport: 'reachable-url', reason: 'Agent runtime "remote" cannot join a private network; runs reach ProPR MCP at a reachable URL with their per-run grant token.' },
+  };
+}
+
+test('the report shows which runs the default runtime refuses, in REST and the MCP summary', async () => {
+  const { record, response } = recorder();
+  await createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => enabledSnapshot(), readRuntime: async () => refusingRuntime() })
+    .getAgentRunAdmission(member, response);
+  const body = AgentRunAdmissionReport.parse(record.body) as Report;
+  assert.equal(body.runtime?.network.restrictedRuns, 'refused');
+  assert.equal(body.runtime?.network.refusingRuns, true);
+  assert.equal(body.runtime?.mcp.transport, 'reachable-url');
+
+  const tools: McpTool[] = [];
+  addAdmissionTools(tools, {
+    db, taskQueue, redisClient, policy: { repository: async () => undefined },
+    agentRunAdmissionSnapshot: async () => enabledSnapshot(), agentRuntimeCapabilityReport: async () => refusingRuntime(),
+  } as unknown as ToolDeps);
+  const tool = tools.find(candidate => candidate.name === AGENT_RUN_ADMISSION_TOOL)!;
+  const principal = { user: { id: 'u' }, grant: { repositories: [] } } as unknown as McpPrincipal;
+  const summary = presentResult(tool, {}, (await tool.run({ principal, args: {} } as never)).data as never, { instanceId: 'example', origin: 'https://propr.example' }).summary;
+  assert.match(summary, /Restricted networking is enforced, but agent runtime "remote" cannot enforce it: runs are refused\.$/);
+
+  const notEnforced = refusingRuntime();
+  notEnforced.network = { ...notEnforced.network, enforced: false, refusingRuns: false };
+  const conditional: McpTool[] = [];
+  addAdmissionTools(conditional, {
+    db, taskQueue, redisClient, policy: { repository: async () => undefined },
+    agentRunAdmissionSnapshot: async () => enabledSnapshot(), agentRuntimeCapabilityReport: async () => notEnforced,
+  } as unknown as ToolDeps);
+  const conditionalTool = conditional.find(candidate => candidate.name === AGENT_RUN_ADMISSION_TOOL)!;
+  const conditionalSummary = presentResult(conditionalTool, {}, (await conditionalTool.run({ principal, args: {} } as never)).data as never, { instanceId: 'example', origin: 'https://propr.example' }).summary;
+  assert.match(conditionalSummary, /Restricted networking is the default \(not enforced\), but agent runtime "remote" cannot enforce it: runs whose effective policy remains restricted will be refused\.$/);
+  assert.doesNotMatch(conditionalSummary, /runs are refused\./);
+});
+
+test('an unresolvable runtime selection is reported without failing the report; other errors stay generic', async () => {
+  const unknown = recorder();
+  await createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => enabledSnapshot(),
+    readRuntime: async () => { throw new Error('Unknown agent runtime "sprites" (set by PROPR_AGENT_RUNTIME); available: docker'); } })
+    .getAgentRunAdmission(member, unknown.response);
+  const body = AgentRunAdmissionReport.parse(unknown.record.body) as Report;
+  assert.equal(body.runtime, null);
+  assert.match(body.runtimeUnavailable ?? '', /^Unknown agent runtime "sprites"/);
+
+  const opaque = recorder();
+  await createAgentRunAdmissionRoutes({ db, taskQueue, redisClient, readSnapshot: async () => enabledSnapshot(),
+    readRuntime: async () => { throw new Error('redis://secret@host'); } })
+    .getAgentRunAdmission(member, opaque.response);
+  assert.equal((opaque.record.body as Report).runtimeUnavailable, 'The agent runtime capabilities could not be read.');
 });

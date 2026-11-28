@@ -28,7 +28,7 @@ const entries = (...names: string[]): CommandGroupEntry[] => names.map((name) =>
 
 export const COMMAND_GROUPS: readonly CommandGroup[] = [
   { label: "Setup", commands: entries("setup", "init", "connect", "github-app") },
-  { label: "Control Plane", commands: entries("check", "images", "start", "status", "stop", "ui", "docs", "tunnel", "tank", "runtime") },
+  { label: "Control Plane", commands: entries("check", "images", "start", "status", "stop", "ui", "docs", "tunnel", "tank", "runtime", "deploy") },
   { label: "GitHub Relay", commands: entries("relay") },
   { label: "Configuration", commands: entries("config", "remote", "use", "login", "logout") },
   { label: "Plans", commands: entries("plan") },

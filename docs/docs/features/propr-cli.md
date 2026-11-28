@@ -67,6 +67,7 @@ The full-screen wizard requires an interactive terminal. Over SSH or in shells w
 - `propr init stack [--root <dir>]` creates `data/`, `logs/`, `repos/`, writes `.env` from the bundled template, and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`).
 - `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally verifies GitHub App access (minting an installation token) and runs an image/CLI smoke test per agent. GitHub transport failures are warnings.
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
+- `propr start --profile minimal` starts the slim control plane — Redis plus one all-in-one container whose API also serves the Web UI — instead of the default multi-container `full` profile. `PROPR_PROFILE` in the stack `.env` sets the same choice persistently. See [Control-plane footprint](../tutorials/setup.md#control-plane-footprint).
 - `propr tank [bundled|external|off] [--url <url>]` configures [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the mode to print the current one). `bundled` runs Agent Tank inside the agent image with nothing to install; `external` needs `--url` pointing at a daemon you run. `on` remains a deprecated alias for `external`.
 
 ### Agent Skill
@@ -162,6 +163,10 @@ The hosted ProPR UI at `https://app.propr.dev` can drive a locally-running stack
 | `propr connect status --json --root <explicit-root>` | Emit the bounded secret-free desktop discovery contract and verify that the remote API origin and public stack identity match |
 
 Architecture, the full configuration, enablement semantics, verification, and troubleshooting live on the dedicated [Hosted UI Tunnel](../operations/hosted-ui-tunnel.md) page — including the two facts that catch operators most often: `PROPR_UI_TUNNEL_TOKEN` is a live Cloudflare credential to keep out of source control and logs, and enabling the tunnel on an already-running stack requires `propr start --restart` (or `propr tunnel setup --start`) before OAuth redirects and cookies use the hosted URLs.
+
+## Deploy to Fly
+
+`propr deploy fly --app <name>` runs the control plane (the all-in-one app container plus Redis) on one Fly Machine, with SQLite and Redis on a volume. It uses flyctl when installed, or the Fly Machines API with `--token`/`FLY_API_TOKEN`. It sets secrets from the stack `.env`, enrolls the GitHub relay (and ProPR Connect with `--tunnel-token`/`--tunnel-url`), and deploys the manifest's `propr/app` image directly. Agents are meant to run on Sprites by default, but this release only runs Docker agents, so the command refuses Sprites and Fly Machines and needs `--legacy-docker`. Browsers sign in through ProPR Connect (the tunnel flags) or a GitHub OAuth client in the stack `.env`; without either the command stops before creating anything. The Machine runs always on: this release cannot stop an idle Machine, so `--idle-shutdown` is refused too. `--legacy-docker` runs a Docker daemon in the Machine and keeps Docker images on a persistent root filesystem (`--rootfs-size`, default 20 GB), so the volume stays at 1 GB and fits the Fly Free plan, and `--dry-run` only writes `fly.toml` and the machine config. See [Deploy to Fly](../operations/deploy-fly.md).
 
 ## Connect and Authenticate
 

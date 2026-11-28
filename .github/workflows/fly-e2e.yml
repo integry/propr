@@ -1,0 +1,1490 @@
+name: Fly end-to-end smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent_runtime:
+        description: Agent runtime the control plane runs the fixture issue on
+        type: choice
+        options: [sprites, fly-machines]
+        default: sprites
+      agent:
+        description: >-
+          Agent the fixture issue runs on (its pinned CLI version is in the step summary). Its credentials come from
+          FLY_E2E_APP_ENV like Claude's (CLAUDE_SETTINGS_B64, CODEX_AUTH_B64, VIBE_ENV_B64 or OPENCODE_CONFIG_B64), or from the optional
+          FLY_E2E_APP_ENV_EXTRA appended to it (same KEY=value lines); without them the run says so and skips
+        type: choice
+        options: [claude, codex, vibe, opencode]
+        default: claude
+      extensions:
+        description: >-
+          Also verify Extension Library items on the remote runtime: a skill bundle, a pinned npm MCP server and four
+          URL MCP servers (stateful, stateless, Bearer and a disposable OAuth server: a Fly Machine on Sprites runs, a Sprite on Fly Machines runs)
+        type: boolean
+        default: false
+      fly_machines_max:
+        description: >-
+          Also check PROPR_FLY_MACHINES_MAX (needs agent_runtime=fly-machines): deploy with PROPR_FLY_MACHINES_MAX=1
+          and WORKER_CONCURRENCY=2, label two issues, and require the second run to queue, then succeed (an HTTP 422 retried within 3 retries and 60 s is a warning).
+        type: boolean
+        default: false
+      mcp:
+        description: >-
+          Also check ProPR MCP from Sprites: deploy with PROPR_SPRITES_MCP_TRANSPORT=forward
+          and run one automation that calls a ProPR MCP tool over the SSH reverse forward.
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fly-e2e-fixture
+  cancel-in-progress: false
+
+jobs:
+  fixture:
+    if: github.event_name == 'workflow_dispatch' || vars.FLY_E2E_NIGHTLY == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/fly-e2e
+      - id: check
+        env:
+          AGENT_RUNTIME: ${{ inputs.agent_runtime || 'sprites' }}
+          EXTENSIONS: ${{ (github.event_name == 'workflow_dispatch' && inputs.extensions) || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_EXTENSIONS == 'true') }}
+          FLY_E2E_TOKEN: ${{ secrets.FLY_E2E_TOKEN != '' }}
+          FLY_E2E_SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN != '' }}
+          FLY_E2E_APP_ENV: ${{ secrets.FLY_E2E_APP_ENV != '' }}
+          FLY_E2E_GITHUB_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN != '' }}
+          FLY_E2E_GH_OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID != '' }}
+          FLY_E2E_GH_OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET != '' }}
+          AGENT: ${{ inputs.agent || 'claude' }}
+          APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
+          APP_ENV_EXTRA: ${{ secrets.FLY_E2E_APP_ENV_EXTRA }}
+        run: |
+          source .github/fly-e2e/agent-credentials.sh
+          # The agent is configured from the ProPR config in FLY_E2E_APP_ENV (plus FLY_E2E_APP_ENV_EXTRA), as
+          # Claude always was. No credentials for it there: say so and skip, rather than fail later for a reason hard to see.
+          key=$(agent_credential_key "$AGENT") || { echo "::error::Unknown agent $AGENT"; exit 1; }
+          app_env=$(app_env_with_extra) || exit 1
+          if [[ -n $APP_ENV ]] && ! grep -q "^${key}=." <<< "$app_env"; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping live smoke for agent \`$AGENT\`: the ProPR config in FLY_E2E_APP_ENV and FLY_E2E_APP_ENV_EXTRA has no \`$key\` with its credentials." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          missing=()
+          required=(FLY_E2E_TOKEN FLY_E2E_APP_ENV FLY_E2E_GITHUB_TOKEN FLY_E2E_GH_OAUTH_CLIENT_ID FLY_E2E_GH_OAUTH_CLIENT_SECRET)
+          # Fly Machines runs host the extensions mode's OAuth fixture on a Sprite (Sprites runs use a Fly Machine).
+          [[ $AGENT_RUNTIME != sprites && $EXTENSIONS != true ]] || required+=(FLY_E2E_SPRITES_TOKEN)
+          for name in "${required[@]}"; do
+            [[ ${!name} == true ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} )); then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping live smoke because fixture secrets are missing: ${missing[*]}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  smoke:
+    needs: fixture
+    if: needs.fixture.outputs.enabled == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ (inputs.mcp || vars.FLY_E2E_NIGHTLY_MCP == 'true' || inputs.fly_machines_max) && 140 || 100 }}
+    env:
+      APP: propr-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+      # ProPR MCP mode: on when dispatched with mcp, and nightly only when FLY_E2E_NIGHTLY_MCP=true.
+      MCP: ${{ (github.event_name == 'workflow_dispatch' && inputs.mcp) || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_MCP == 'true') }}
+      # PROPR_FLY_MACHINES_MAX mode: manual runs only, on the Fly Machines runtime.
+      CAPACITY: ${{ github.event_name == 'workflow_dispatch' && inputs.fly_machines_max }}
+      ORG: ${{ vars.FLY_E2E_ORG }}
+      REPO: ${{ vars.FLY_E2E_REPO }}
+      REGION: iad
+      IDLE_AFTER: 2m
+      # The nightly schedule has no inputs, so it always runs on Sprites.
+      AGENT_RUNTIME: ${{ inputs.agent_runtime || 'sprites' }}
+      # The nightly schedule runs Claude Code. Each agent's issue label is llm-<agent>.
+      AGENT: ${{ inputs.agent || 'claude' }}
+      # Fly Machines start agents in a separate app with their own image and token.
+      AGENT_APP: propr-e2e-agents-${{ github.run_id }}-${{ github.run_attempt }}
+      # A small instance runtime package absent from Dockerfile.agent's explicit apt
+      # set, so the fixture file can only contain its banner if the runtime installed it.
+      RUNTIME_PACKAGE: figlet
+      RUNTIME_PACKAGE_COMMAND: figlet -v | head -1
+      RUNTIME_PACKAGE_BANNER: '^FIGlet Copyright \(C\) [0-9]'
+      # Sprites run Fly's Ubuntu base, not Dockerfile.agent's Debian: an Ubuntu-only name (bookworm has
+      # libssl3 instead) must pass the Sprite base's package check rather than be refused by the Debian one.
+      SPRITE_DISTRO_PACKAGE: libssl3t64
+      # Manual runs follow the input; nightly runs opt in with the repository variable.
+      # The extensions mode runs on the selected agent runtime (Sprites or Fly Machines).
+      EXTENSIONS: ${{ (github.event_name == 'workflow_dispatch' && inputs.extensions) || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_EXTENSIONS == 'true') }}
+      RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
+      # A small, well-known npm MCP server with a deterministic `echo` tool, pinned to an exact version and integrity.
+      EXT_PACKAGE: '@modelcontextprotocol/server-everything'
+      EXT_PACKAGE_VERSION: 2.3.1
+      EXT_PACKAGE_INTEGRITY: sha512-fOONra8VnAjlVp5xO+dWWoKGkZYg8sBEg52txVoLT0N43B3F5nX3UmsgHch79DM0L+nVCi/w5d/WV6UfhBH7kA==
+      # URL MCP servers. mcptest.io's echo fixture is stateful (2025 sessions) and takes `message`;
+      # DeepWiki answers without a session; the Bearer fixture publishes its token in its 401 reply.
+      URL_STATEFUL: https://mcptest.io/fixtures/echo/mcp
+      URL_STATELESS: https://mcp.deepwiki.com/mcp
+      URL_STATELESS_TOOL: read_wiki_structure
+      URL_BEARER: https://mcptest.io/fixtures/auth-bearer/mcp
+      URL_BEARER_TOKEN: mcptest-public-token
+      # The OAuth fixture runs in the pool the run's agents don't use: the Free plan allows three Sprites and three
+      # Machines per org. Sprites runs host it on a Fly Machine in its own disposable app (with the control plane,
+      # 2 of 3 Machines); Fly Machines runs host it on a disposable Sprite, leaving the Machines to the agents.
+      OAUTH_FIXTURE_HOST: ${{ (inputs.agent_runtime || 'sprites') == 'sprites' && 'fly-machine' || 'sprite' }}
+      # The Sprite's or Fly app's name.
+      OAUTH_FIXTURE_NAME: propr-e2e-oauth-${{ github.run_id }}-${{ github.run_attempt }}
+      # Core refreshes one minute before expiry, so a 90 s token forces refreshes during the run.
+      OAUTH_ACCESS_TTL: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+      - uses: superfly/flyctl-actions/setup-flyctl@98172f70657cb3e15db199af139be99bd3e61200
+      - name: Prepare the fixture and build this checkout
+        run: |
+          : "${ORG:?Set FLY_E2E_ORG}" "${REPO:?Set FLY_E2E_REPO}"
+          [[ $AGENT_RUNTIME == sprites || $AGENT_RUNTIME == fly-machines ]]
+          [[ $AGENT =~ ^(claude|codex|vibe|opencode)$ ]]
+          source .github/fly-e2e/agent-credentials.sh
+          # The CLI version both runtimes run: the Dockerfile.agent pin (the Fly image and the Sprite setup install it).
+          cli_arg=$(tr '[:lower:]' '[:upper:]' <<< "$AGENT")_CLI_VERSION
+          cli_version=$(sed -nE "s/^ARG ${cli_arg}=([a-zA-Z0-9.+_-]+)\$/\1/p" Dockerfile.agent | head -n 1)
+          [[ -n $cli_version ]] || { echo "::error::No $cli_arg pin in Dockerfile.agent"; exit 1; }
+          {
+            echo "AGENT_CREDENTIAL_KEY=$(agent_credential_key "$AGENT")"
+            echo "AGENT_CREDENTIAL_FILE=$(agent_credential_file "$AGENT")"
+            echo "AGENT_CLI_VERSION=$cli_version"
+          } >> "$GITHUB_ENV"
+          echo "- Agent: \`$AGENT\` CLI $cli_version (Dockerfile.agent pin) on \`$AGENT_RUNTIME\`" >> "$GITHUB_STEP_SUMMARY"
+          # ProPR MCP mode checks the Sprites SSH reverse forward, so it needs the Sprites runtime.
+          [[ $MCP != true || $AGENT_RUNTIME == sprites ]] || { echo "::error::MCP mode requires agent_runtime=sprites"; exit 1; }
+          [[ $CAPACITY != true || $AGENT_RUNTIME == fly-machines ]] ||
+            { echo "::error::fly_machines_max mode requires agent_runtime=fly-machines"; exit 1; }
+          # The package must be missing from the agent image, or the smoke proves nothing.
+          ! grep -Eq "(^|[^a-z0-9.+-])${RUNTIME_PACKAGE}([^a-z0-9.+-]|$)" Dockerfile.agent scripts/sprites-agent-setup.sh
+          [[ "$REPO" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ && "${REPO,,}" != "${GITHUB_REPOSITORY,,}" ]]
+          npm ci
+          npm run test:prepare
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -s "$GITHUB_WORKSPACE/packages/cli/dist/index.js" "$RUNNER_TEMP/bin/propr"
+          chmod +x packages/cli/dist/index.js
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          image="registry.fly.io/$APP:control-plane-$GITHUB_SHA"
+          docker build -f docker/Dockerfile.app.prod -t "$image" .
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "ENV_FILE=$RUNNER_TEMP/fly.env" >> "$GITHUB_ENV"
+
+      - name: Create disposable app
+        id: app
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: flyctl apps create "$APP" --org "$ORG"
+
+      - name: Create the disposable agent app, image and token for Fly Machines
+        if: env.AGENT_RUNTIME == 'fly-machines'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          flyctl apps create "$AGENT_APP" --org "$ORG"
+          touch "$OUT/destroy-agent-app"
+          DOCKERHUB_NS=propr GIT_SHA="$GITHUB_SHA" ./scripts/build-images.sh --sha-only --only agent --platform linux/amd64
+          ref="registry.fly.io/$AGENT_APP:agent-$GITHUB_SHA"
+          docker tag "propr/agent:$GITHUB_SHA" "$ref"
+          flyctl auth docker
+          docker push "$ref"
+          image=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" |
+            grep -m1 -E "^registry\.fly\.io/$AGENT_APP@sha256:[0-9a-f]{64}$")
+          # Org tokens can't create tokens, so derive one locally from FLY_E2E_TOKEN, scoped to the agent
+          # app only: read (images, logs), write, create, delete and control (start/stop) Machines, for 2 h.
+          # Fly's Apps caveat uses the internal numeric ID. Zero would grant access to all apps.
+          agent_app_id=$(curl --fail --silent --show-error -H "Authorization: $FLY_API_TOKEN" \
+            "https://api.machines.dev/v1/apps/$AGENT_APP" | jq -er '.internal_numeric_id | numbers | select(. > 0)')
+          [[ $agent_app_id =~ ^[1-9][0-9]*$ ]]
+          agent_token=$(jq -n --arg id "$agent_app_id" '[
+            {type: "Apps", body: {apps: {($id): "rwcdC"}}},
+            {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
+          ]' | flyctl tokens attenuate)
+          [[ -n $agent_token ]]
+          source .github/fly-e2e/mask-fly-token.sh
+          mask_fly_token "$agent_token"
+          {
+            echo "PROPR_FLY_APP=$AGENT_APP"
+            echo "PROPR_FLY_IMAGE=$image"
+            echo "PROPR_FLY_REGION=$REGION"
+            echo "PROPR_FLY_API_TOKEN=$agent_token"
+          } > "$OUT/agent-runtime.env"
+          echo "Fly Machines agent image: $image"
+
+      - name: Run propr deploy fly with the selected agent runtime and idle shutdown
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
+          APP_ENV_EXTRA: ${{ secrets.FLY_E2E_APP_ENV_EXTRA }}
+          SPRITES_TOKEN: ${{ (inputs.agent_runtime || 'sprites') == 'sprites' && secrets.FLY_E2E_SPRITES_TOKEN || '' }}
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+          OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET }}
+          OWNER_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          umask 077
+          echo "::add-mask::$OAUTH_CLIENT_SECRET"
+          source .github/fly-e2e/agent-credentials.sh
+          # FLY_E2E_APP_ENV_EXTRA, when set, is appended (its values masked); unset, this is FLY_E2E_APP_ENV alone.
+          app_env_with_extra > "$ENV_FILE"
+          for key in PROPR_ADMIN_USERS GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 "$AGENT_CREDENTIAL_KEY"; do
+            grep -q "^${key}=." "$ENV_FILE" || { echo "Missing $key"; exit 1; }
+          done
+          # The agent's credential values, masked here and searched for in the worker log and the agent image later.
+          sed -n "s/^${AGENT_CREDENTIAL_KEY}=//p" "$ENV_FILE" | head -n 1 | base64 -d > "$OUT/agent-credential"
+          agent_credential_values "$OUT/agent-credential" > "$OUT/credential-values"
+          rm -f "$OUT/agent-credential"
+          while IFS= read -r value; do echo "::add-mask::$value"; done < "$OUT/credential-values"
+          [[ -s $OUT/credential-values ]] || echo "::warning::$AGENT_CREDENTIAL_KEY holds no credential value to search the logs for"
+          if [[ $EXTENSIONS == true ]]; then
+            # The Extension Library API needs a durable instance administrator. The
+            # fixture token's user becomes a bootstrap administrator and claims the role.
+            login=$(gh api user --jq .login)
+            [[ $login =~ ^[A-Za-z0-9-]+$ ]]
+            echo "EXT_ADMIN=$login" >> "$GITHUB_ENV"
+            if ! grep -E "^PROPR_ADMIN_USERS=" "$ENV_FILE" | tr ',=' '\n\n' | grep -qixF "$login"; then
+              sed -i "s/^PROPR_ADMIN_USERS=.*/&,$login/" "$ENV_FILE"
+            fi
+          fi
+          openssl rand -hex 32 > "$OUT/hook-secret"
+          {
+            echo "GH_OAUTH_CLIENT_ID=$OAUTH_CLIENT_ID"
+            echo "GH_OAUTH_CLIENT_SECRET=$OAUTH_CLIENT_SECRET"
+            echo "GITHUB_REPOS_TO_MONITOR=$REPO"
+            # Capacity mode: two runs at once against a one-Machine cap, so the second must queue.
+            if [[ $CAPACITY == true ]]; then echo "WORKER_CONCURRENCY=2"; else echo "WORKER_CONCURRENCY=1"; fi
+            [[ $AGENT_RUNTIME != sprites ]] || echo "PROPR_SPRITES_MAX=1"
+            echo "GH_WEBHOOK_SECRET=$(cat "$OUT/hook-secret")"
+          } >> "$ENV_FILE"
+          # PROPR_FLY_API_TOKEN is "FlyV1 fm2_…", unquoted and with a space. That's safe here: the CLI
+          # parses this file with dotenv (the rest of the line after the first "=" is the value, inner
+          # spaces kept) and passes it to `flyctl secrets import` as NAME=VALUE lines, which also take
+          # the rest of the line. Nothing evaluates it as shell; never `source` either env file.
+          [[ $AGENT_RUNTIME != fly-machines ]] || cat "$OUT/agent-runtime.env" >> "$ENV_FILE"
+          if [[ $CAPACITY == true ]]; then
+            sed -i -E '/^PROPR_FLY_MACHINES_MAX=/d' "$ENV_FILE"
+            echo "PROPR_FLY_MACHINES_MAX=1" >> "$ENV_FILE"
+          fi
+          # propr deploy fly generates SYSTEM_TASK_SECRET; one from the fixture env would hide a deploy that does not.
+          sed -i '/^SYSTEM_TASK_SECRET=/d' "$ENV_FILE"
+          if [[ $MCP == true ]]; then
+            # The automation's owner is the fixture token's user; ProPR MCP grants need an admitted user.
+            owner=$(GH_TOKEN="$OWNER_TOKEN" gh api user --jq .login)
+            sed -n 's/^PROPR_ADMIN_USERS=//p' "$ENV_FILE" | tr ',' '\n' | tr -d ' ' | grep -qixF "$owner" ||
+              { echo "::error::MCP mode needs the FLY_E2E_GITHUB_TOKEN user ($owner) in PROPR_ADMIN_USERS"; exit 1; }
+            # MCP itself (MCP_ENABLED, origin, instance id, key, internal API URL) is the deploy's default,
+            # so drop any fixture MCP settings. The forward relays to the in-Machine API, so the Sprites
+            # never use the app's public origin.
+            mcp_keys='MCP_ENABLED|MCP_PUBLIC_ORIGIN|MCP_INSTANCE_ID|MCP_ENCRYPTION_KEY|PROPR_SPRITES_MCP_TRANSPORT|PROPR_SPRITES_MCP_FORWARD|PROPR_SPRITES_MCP_URL|PROPR_INTERNAL_API_URL|PROPR_E2E_MCP_OWNER_TOKEN'
+            sed -i -E "/^($mcp_keys)=/d" "$ENV_FILE"
+            {
+              echo "PROPR_SPRITES_MCP_TRANSPORT=forward"
+              # Read once over SSH to record the owner's GitHub grant, as a browser sign-in would.
+              echo "PROPR_E2E_MCP_OWNER_TOKEN=$OWNER_TOKEN"
+            } >> "$ENV_FILE"
+          fi
+          # Fly's Apps caveat uses the internal numeric ID. Zero would grant access to all apps.
+          app_id=$(curl --fail --silent --show-error -H "Authorization: $FLY_API_TOKEN" \
+            "https://api.machines.dev/v1/apps/$APP" | jq -er '.internal_numeric_id | numbers | select(. > 0)')
+          [[ $app_id =~ ^[1-9][0-9]*$ ]]
+          stop_token=$(jq -n --arg id "$app_id" '[
+            {type: "Apps", body: {apps: {($id): "rwC"}}},
+            {type: "ValidityWindow", body: {not_after: ((now | floor) + 7200)}}
+          ]' | flyctl tokens attenuate)
+          [[ -n $stop_token ]]
+          source .github/fly-e2e/mask-fly-token.sh
+          mask_fly_token "$stop_token"
+          flyctl auth docker
+          docker push "$IMAGE"
+          propr deploy fly --app "$APP" --org "$ORG" --region "$REGION" --image "$IMAGE" \
+            --backend flyctl --agent-runtime "$AGENT_RUNTIME" --idle-shutdown "$IDLE_AFTER" \
+            --machine-stop-token "$stop_token" --env-file "$ENV_FILE" --no-relay --out "$OUT/propr-fly" 2>&1 |
+            redact_fly_tokens
+          status=$(curl --fail --retry 8 --retry-all-errors -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/health")
+          [[ $status == 200 ]]
+
+      - name: Configure the fixture agent and runtime package before idle shutdown
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ $RUNTIME_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ && $SPRITE_DISTRO_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ ]]
+          packages=$(jq -cn --arg pkg "$RUNTIME_PACKAGE" --arg distro "$SPRITE_DISTRO_PACKAGE" --arg runtime "$AGENT_RUNTIME" \
+            '[$pkg] + (if $runtime == "sprites" then [$distro] else [] end) | sort')
+          # agent-credential-store.mjs resolves the agent's configPath the way the credential install does.
+          setup=$({ cat .github/fly-e2e/agent-credential-store.mjs
+            sed -e "s/__RUNTIME_PACKAGES__/$packages/" -e "s/__AGENT_RUNTIME__/$AGENT_RUNTIME/" -e "s/__AGENT__/$AGENT/" <<'JS'
+          const {
+            saveAgents, closeConnection, AGENT_DEFAULTS, agentRuntimePackagesDigest,
+            requestAgentRuntimePackageBuild, buildAgentRuntimePackageProfile,
+          } = await import('@propr/core');
+          // The selected agent, with its id and alias the agent type, on the managed credential directory.
+          const type = '__AGENT__';
+          const store = await agentCredentialStore(type);
+          const { dockerImage, defaultModels, defaultCliVersion } = AGENT_DEFAULTS[type];
+          const defaultModel = store.env.get(`PROPR_E2E_${type.toUpperCase()}_MODEL`)?.trim()
+            || (type === 'claude' ? 'claude-sonnet-5-5' : defaultModels[0]);
+          await saveAgents([{ id: type, type, alias: type, enabled: true,
+            configPath: store.configPath, dockerImage,
+            supportedModels: [...new Set([...defaultModels, defaultModel])], defaultModel }]);
+          console.log('PROPR_E2E_AGENT ' + JSON.stringify({ type, defaultModel, cliVersion: defaultCliVersion }));
+          // Settings → Agent runtime packages → Apply: the API records the list
+          // (requestAgentRuntimePackageBuild) and the worker's build job applies it.
+          // The runtime accepts the list once it passes its own package index check (Sprites: the Sprite base's).
+          const packages = __RUNTIME_PACKAGES__;
+          const job = await requestAgentRuntimePackageBuild(packages, [dockerImage]);
+          const state = await buildAgentRuntimePackageProfile(job);
+          await closeConnection();
+          const accepted = state.remote?.['__AGENT_RUNTIME__'];
+          const summary = { status: state.status, packages: state.activePackages,
+            packagesDigest: agentRuntimePackagesDigest(state.activePackages), appliedBy: state.appliedBy, error: state.error,
+            accepted: accepted?.packages, base: accepted?.base, warning: accepted?.warning };
+          console.log('PROPR_RUNTIME_PACKAGES ' + JSON.stringify(summary));
+          if (state.status !== 'ready' || !state.appliedBy || state.activePackages.join() !== packages.join()
+            || accepted?.packages.join() !== packages.join()) process.exit(1);
+          JS
+          } | base64 -w0)
+          flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'" |
+            tee "$OUT/runtime-packages.log"
+          applied=$(sed -n 's/^PROPR_RUNTIME_PACKAGES //p' "$OUT/runtime-packages.log" | tr -d '\r' | tail -n 1)
+          expected=$([[ $AGENT_RUNTIME == sprites ]] && echo 'when Sprites are provisioned' || echo 'in a derived Fly Machine image')
+          jq -e --argjson pkgs "$packages" --arg expected "$expected" \
+            '.status == "ready" and .packages == $pkgs and .accepted == $pkgs and (.appliedBy | contains($expected))' <<< "$applied" > /dev/null || {
+            echo "::error::Runtime packages $packages were not applied for $AGENT_RUNTIME: $applied"
+            exit 1
+          }
+          echo "RUNTIME_PACKAGE_COUNT=$(jq length <<< "$packages")" >> "$GITHUB_ENV"
+          jq -r '"Accepted for \(.base // "unknown base"): \(.accepted | join(" "))\(if .warning then " (" + .warning + ")" else "" end)"' <<< "$applied"
+          digest=$(jq -er '.packagesDigest | strings | select(test("^[0-9a-f]{16}$"))' <<< "$applied")
+          echo "RUNTIME_PACKAGES_DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "Configured runtime packages $packages (packagesDigest $digest) before the idle stop"
+          configured=$(sed -n 's/^PROPR_E2E_AGENT //p' "$OUT/runtime-packages.log" | tr -d '\r' | tail -n 1)
+          echo "- Agent configuration: \`$AGENT\`, default model \`$(jq -r .defaultModel <<< "$configured")\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ $AGENT == claude ]]; then
+            # Install and verify the settings over SSH after the volume is mounted.
+            awk '/^```bash title="Install headless Claude settings"$/{copy=1; next}
+                 copy && /^```$/{exit} copy' docs/docs/tutorials/setup-fly.md > "$OUT/claude-settings.sh"
+            test -s "$OUT/claude-settings.sh"
+            bash -eu "$OUT/claude-settings.sh"
+          else
+            # The same install for the other agents: their credential file, into their managed credential
+            # directory on the volume. Every runtime then copies it to the run as that agent configuration's store.
+            # The store and the managed credential directory resolve as in the agent save above (vibe's
+            # store has no managed login layout, so it gets an absolute path in the same directory).
+            install=$(cat .github/fly-e2e/agent-credential-store.mjs .github/fly-e2e/install-agent-credential.mjs |
+              sed -e "s/__AGENT__/$AGENT/g" -e "s/__KEY__/$AGENT_CREDENTIAL_KEY/g" -e "s/__FILE__/$AGENT_CREDENTIAL_FILE/g" | base64 -w0)
+            flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $install | base64 -d | node --input-type=module'"
+          fi
+
+      - name: Start the OAuth MCP fixture on a disposable Sprite
+        if: env.EXTENSIONS == 'true' && env.OAUTH_FIXTURE_HOST == 'sprite'
+        timeout-minutes: 8
+        env:
+          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Marker first: teardown deletes the Sprite even if creation's response is lost.
+          touch "$OUT/delete-oauth-sprite"
+          node --input-type=module <<'JS'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          import { SpritesClient } from '@fly/sprites';
+          const client = new SpritesClient(process.env.SPRITES_TOKEN);
+          const name = process.env.OAUTH_FIXTURE_NAME;
+          // A public URL: ProPR's gateway and OAuth client reach it like any provider, over HTTPS on 443.
+          await client.createSprite(name, { urlSettings: { auth: 'public' } });
+          const sprite = await client.getSprite(name);
+          if (!sprite.url?.startsWith('https://')) throw new Error(`Sprite ${name} has no public HTTPS URL`);
+          const origin = new URL(sprite.url).origin;
+          const home = (await sprite.execFile('sh', ['-c', 'mkdir -p ~/oauth-fixture && cd ~/oauth-fixture && pwd'])).stdout.toString().trim();
+          await sprite.filesystem().writeFile(`${home}/fixture.mjs`, readFileSync('.github/fly-e2e/oauth-mcp-fixture.mjs'), { mode: 0o755 });
+          // Sprites ship Node through a login-shell shim; a service survives the Sprite sleeping and waking.
+          const started = await sprite.createService('oauth-mcp', {
+            cmd: 'bash', args: ['-lc', `exec node ${home}/fixture.mjs`], dir: home, httpPort: 8080,
+            env: { PUBLIC_URL: origin, PORT: '8080', ACCESS_TTL: process.env.OAUTH_ACCESS_TTL, STATE_FILE: `${home}/state.json`, REQUEST_LOG: `${home}/requests.jsonl` },
+          });
+          started.close();
+          for (let attempt = 0; ; attempt++) {
+            try { const health = await fetch(`${origin}/health`); if (health.ok) break; } catch { /* not up yet */ }
+            if (attempt >= 60) throw new Error('The OAuth fixture did not answer /health');
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+          const metadata = await (await fetch(`${origin}/.well-known/oauth-protected-resource/mcp`)).json();
+          if (metadata.resource !== `${origin}/mcp`) throw new Error('The OAuth fixture names another resource');
+          appendFileSync(process.env.GITHUB_ENV, `OAUTH_FIXTURE_ORIGIN=${origin}\nOAUTH_FIXTURE_LOG=${home}/requests.jsonl\n`);
+          console.log(`OAuth MCP fixture at ${origin}/mcp on a Sprite (access tokens ${process.env.OAUTH_ACCESS_TTL} s)`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- OAuth MCP fixture host: Sprite \`${name}\` (${origin}/mcp)\n`);
+          JS
+
+      - name: Start the OAuth MCP fixture on a Fly Machine in a disposable app
+        if: env.EXTENSIONS == 'true' && env.OAUTH_FIXTURE_HOST == 'fly-machine'
+        timeout-minutes: 8
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Marker first: teardown destroys the app even if creation's response is lost.
+          touch "$OUT/destroy-oauth-app"
+          flyctl apps create "$OAUTH_FIXTURE_NAME" --org "$ORG"
+          origin="https://$OAUTH_FIXTURE_NAME.fly.dev"
+          dir="$OUT/oauth-fixture-app"
+          mkdir -p "$dir"
+          cp .github/fly-e2e/oauth-mcp-fixture.mjs "$dir/fixture.mjs"
+          # One Machine that never auto-stops: OAuth registrations, tokens and sessions stay in its memory and
+          # STATE_FILE for the whole run. The Fly proxy terminates HTTPS on 443 for the *.fly.dev name.
+          cat > "$dir/fly.toml" <<TOML
+          app = "$OAUTH_FIXTURE_NAME"
+          primary_region = "$REGION"
+
+          [build]
+            image = "node:22-slim"
+
+          [env]
+            PUBLIC_URL = "$origin"
+            PORT = "8080"
+            ACCESS_TTL = "$OAUTH_ACCESS_TTL"
+            STATE_FILE = "/tmp/oauth-mcp-fixture.json"
+            REQUEST_LOG = "/tmp/oauth-mcp-fixture.requests.jsonl"
+
+          [processes]
+            app = "node /oauth-fixture/fixture.mjs"
+
+          [[files]]
+            guest_path = "/oauth-fixture/fixture.mjs"
+            local_path = "$dir/fixture.mjs"
+
+          [http_service]
+            internal_port = 8080
+            force_https = true
+            auto_stop_machines = "off"
+            auto_start_machines = true
+            min_machines_running = 1
+            processes = ["app"]
+
+          [[vm]]
+            size = "shared-cpu-1x"
+            memory = "256mb"
+          TOML
+          # --ha=false: one Machine, not the default two, so the org stays within its three.
+          flyctl deploy --config "$dir/fly.toml" --app "$OAUTH_FIXTURE_NAME" --ha=false --yes --wait-timeout 5m
+          # Deploy allocates public IPs for an http_service; allocate them here if it did not.
+          if flyctl ips list --app "$OAUTH_FIXTURE_NAME" --json | jq -e 'length == 0' > /dev/null; then
+            flyctl ips allocate-v4 --shared --app "$OAUTH_FIXTURE_NAME"
+            flyctl ips allocate-v6 --app "$OAUTH_FIXTURE_NAME"
+          fi
+          machines=$(flyctl machines list --app "$OAUTH_FIXTURE_NAME" --json | jq length)
+          [[ $machines == 1 ]] || { echo "::error::The OAuth fixture app has $machines Machines, expected 1"; exit 1; }
+          for attempt in $(seq 0 60); do
+            curl --fail --silent --show-error --max-time 10 -o /dev/null "$origin/health" && break
+            [[ $attempt -lt 60 ]] || { echo "::error::The OAuth fixture did not answer /health"; exit 1; }
+            sleep 5
+          done
+          curl --fail --silent --show-error "$origin/.well-known/oauth-protected-resource/mcp" |
+            jq -e --arg resource "$origin/mcp" '.resource == $resource' > /dev/null ||
+            { echo "::error::The OAuth fixture names another resource"; exit 1; }
+          { echo "OAUTH_FIXTURE_ORIGIN=$origin"; echo "OAUTH_FIXTURE_LOG=/tmp/oauth-mcp-fixture.requests.jsonl"; } >> "$GITHUB_ENV"
+          echo "OAuth MCP fixture at $origin/mcp on a Fly Machine (access tokens $OAUTH_ACCESS_TTL s)"
+          echo "- OAuth MCP fixture host: Fly Machine in the disposable app \`$OAUTH_FIXTURE_NAME\` ($origin/mcp)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Add Extension Library items before idle shutdown
+        if: env.EXTENSIONS == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The same API the Settings → Extensions page uses, authenticated with the
+          # fixture user's GitHub token as a bearer.
+          base="https://$APP.fly.dev"
+          api() {
+            local path=$1; shift
+            curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/json' "$base$path" "$@"
+          }
+          # Only reads retry; a repeated save would fail on the expected library revision.
+          get() { api "$1" --retry 4 --retry-all-errors; }
+          post() { api "$1" -X POST -H 'Content-Type: application/json' -H 'X-ProPR-Extensions: 1' --data-binary @- "${@:2}"; }
+          # Wake the Machine if the proxy stopped it, then store the bootstrap administrator role.
+          get /health > /dev/null
+          echo '{}' | api /api/admin/members/claim -X POST -H 'Content-Type: application/json' --data-binary @- |
+            jq -e --arg login "$EXT_ADMIN" '.member.role == "admin" and (.member.githubUsername | ascii_downcase) == ($login | ascii_downcase)' > /dev/null
+
+          # Skill bundle: one SKILL.md with a token unique to this run, uploaded as a ustar archive.
+          skill="$OUT/fixture-skill"
+          mkdir -p "$skill"
+          cat > "$skill/SKILL.md" <<MD
+          ---
+          name: fixture-token
+          description: Gives the fixture skill token. Use it whenever a task asks for the fixture skill token.
+          ---
+
+          When asked for the fixture skill token, answer exactly \`SKILL-OK-$RUN_TOKEN\` and nothing else.
+          MD
+          tar --format=ustar --owner=0 --group=0 --numeric-owner -cf "$OUT/fixture-skill.tar" -C "$skill" SKILL.md
+          bundle=$(jq -n --rawfile archive <(base64 -w0 "$OUT/fixture-skill.tar") '{archive: $archive, filename: "fixture-skill.tar"}' |
+            post /api/instance/extensions/v1/skills/archive | jq -er '.bundle.id | strings')
+
+          # Package server: Settings' "Check" resolves the registry integrity; it must match the pin.
+          resolved=$(jq -n --arg package "$EXT_PACKAGE" --arg version "$EXT_PACKAGE_VERSION" \
+            '{ecosystem: "npm", package: $package, version: $version, bin: "mcp-server-everything"}' |
+            post /api/instance/extensions/v1/packages/resolve)
+          jq -e --arg integrity "$EXT_PACKAGE_INTEGRITY" '.package.integrity == $integrity' <<< "$resolved" > /dev/null ||
+            { echo "::error::$EXT_PACKAGE@$EXT_PACKAGE_VERSION no longer resolves to the pinned integrity"; exit 1; }
+
+          current=$(get /api/instance/extensions/v1)
+          # The OAuth sign-in needs the instance's public callback URL.
+          jq -e '.oauth.redirectUri | strings | startswith("https://")' <<< "$current" > /dev/null ||
+            { echo "::error::The deployment has no public base URL, so OAuth sign-in is unavailable"; exit 1; }
+          # The Bearer server is saved with a wrong token first: Test connections must refuse it promptly.
+          jq -n --argjson current "$current" --arg bundle "$bundle" --arg repo "$REPO" \
+            --arg package "$EXT_PACKAGE" --arg version "$EXT_PACKAGE_VERSION" \
+            --arg stateful "$URL_STATEFUL" --arg stateless "$URL_STATELESS" --arg statelessTool "$URL_STATELESS_TOOL" \
+            --arg bearer "$URL_BEARER" --arg oauth "$OAUTH_FIXTURE_ORIGIN/mcp" --arg wrong "wrong-token-$RUN_TOKEN" '
+            def url($name; $url; $tool; $auth): {kind: "https", name: $name, url: $url, enabled: true, tools: [$tool], capability: "read",
+              authentication: $auth, repositories: [$repo], agents: [], autoApply: true};
+            {
+              expectedRevision: $current.library.revision,
+              secrets: {"url-bearer": $wrong},
+              input: {
+                version: $current.contract.version,
+                servers: ($current.library.servers + [{
+                  kind: "package", name: "fixture-echo", enabled: true, tools: ["echo"], capability: "read",
+                  ecosystem: "npm", package: $package, version: $version, bin: "mcp-server-everything", args: ["stdio"],
+                  env: [], secretEnv: [], repositories: [$repo], agents: [], autoApply: true
+                },
+                  url("url-stateful"; $stateful; "echo"; "none"),
+                  url("url-stateless"; $stateless; $statelessTool; "none"),
+                  url("url-bearer"; $bearer; "echo"; "bearer"),
+                  url("url-oauth"; $oauth; "echo"; "oauth")
+                ]),
+                skills: ($current.library.skills + [{bundleId: $bundle, enabled: true, repositories: [$repo], agents: [], autoApply: true}])
+              }
+            }' | post /api/instance/extensions/v1/library > "$OUT/library.json"
+          jq -e --arg bundle "$bundle" --arg integrity "$EXT_PACKAGE_INTEGRITY" '
+            (.library.skills | any(.bundleId == $bundle and .enabled and .autoApply)) and
+            (.library.servers | any(.name == "fixture-echo" and .enabled and .autoApply and .integrity == $integrity)) and
+            ([.library.servers[] | select(.kind == "https" and .enabled and .autoApply) | .name] | sort == ["url-bearer", "url-oauth", "url-stateful", "url-stateless"])
+          ' "$OUT/library.json" > /dev/null
+
+          # Test connections with the wrong Bearer token: a clean, prompt "not reachable", not a hang.
+          started=$(date +%s)
+          echo '{}' | post /api/instance/extensions/v1/validate > "$OUT/validate-wrong.json"
+          elapsed=$(( $(date +%s) - started ))
+          jq -e '.results[] | select(.name == "url-bearer") | .reachable == false and .status == "unavailable" and .authentication == "bearer"' "$OUT/validate-wrong.json" > /dev/null ||
+            { echo "::error::A wrong Bearer token was not refused: $(jq -c '.results[] | select(.name == "url-bearer")' "$OUT/validate-wrong.json")"; exit 1; }
+          (( elapsed < 60 )) || { echo "::error::Test connections took ${elapsed}s with a wrong Bearer token"; exit 1; }
+          echo "Wrong Bearer token refused in ${elapsed}s ($(jq -r '.results[] | select(.name == "url-bearer") | .reason // "no reason"' "$OUT/validate-wrong.json"))"
+          revision=$(jq -r .library.revision "$OUT/library.json")
+          jq -n --arg secret "$URL_BEARER_TOKEN" --argjson revision "$revision" '{name: "url-bearer", secret: $secret, expectedRevision: $revision}' |
+            post /api/instance/extensions/v1/secrets > "$OUT/library.json"
+
+          # OAuth sign-in through the Settings API, no browser: Check, Connect, the provider's consent
+          # (the fixture approves at once) and ProPR's callback, in one cookie session as a browser would.
+          # A failed call prints ProPR's error body: its `reason` names the address families tried and how each failed.
+          oauth_failed() { echo "::error::OAuth $1 failed: $(jq -c '{error, reason}' "$2" 2>/dev/null || echo 'no response body')"; exit 1; }
+          jq -n --arg url "$OAUTH_FIXTURE_ORIGIN/mcp" '{url: $url}' | post /api/instance/extensions/v1/oauth/check > "$OUT/oauth-check.json" ||
+            oauth_failed Check "$OUT/oauth-check.json"
+          jq -e --arg issuer "$OAUTH_FIXTURE_ORIGIN" '.check.authorizationRequired and .check.registration == "dynamic" and .check.issuer == $issuer' "$OUT/oauth-check.json" > /dev/null ||
+            { echo "::error::OAuth discovery of the fixture failed: $(jq -c .check "$OUT/oauth-check.json")"; exit 1; }
+          jar="$OUT/oauth-cookies"
+          echo '{"name":"url-oauth"}' | post /api/instance/extensions/v1/oauth/start -c "$jar" -b "$jar" > "$OUT/oauth-start.json" ||
+            oauth_failed Connect "$OUT/oauth-start.json"
+          authorization=$(jq -er '.authorizationUrl | strings' "$OUT/oauth-start.json")
+          [[ $authorization == "$OAUTH_FIXTURE_ORIGIN/authorize?"* ]]
+          callback=$(curl --silent --show-error -o /dev/null -w '%{redirect_url}' "$authorization")
+          [[ $callback == "$base/api/instance/extensions/v1/oauth/callback?"* ]] ||
+            { echo "::error::The fixture's consent did not redirect to ProPR's callback"; exit 1; }
+          api "${callback#"$base"}" -c "$jar" -b "$jar" > "$OUT/oauth-callback.html"
+          grep -q 'is connected' "$OUT/oauth-callback.html" || { echo "::error::The OAuth callback did not connect url-oauth"; exit 1; }
+          rm -f "$jar" "$OUT/oauth-start.json"
+          get /api/instance/extensions/v1 | jq -e '.oauth.connections["url-oauth"].state == "connected"' > /dev/null
+
+          # The fixture answers right before Test connections, so an unreachable url-oauth is not a cold host.
+          health_started=$(date +%s)
+          for attempt in $(seq 0 24); do
+            curl --fail --silent --show-error --max-time 10 -o /dev/null "$OAUTH_FIXTURE_ORIGIN/health" && break
+            [[ $attempt -lt 24 ]] || { echo "::error::The OAuth fixture did not answer /health before Test connections"; exit 1; }
+            sleep 5
+          done
+          echo "OAuth fixture /health answered after $(( $(date +%s) - health_started ))s"
+          # Counters only (no tokens): whether Test connections' requests reached the fixture.
+          fixture_stats() { curl --silent --show-error --max-time 10 "$OAUTH_FIXTURE_ORIGIN/stats" | jq -c '{sessionsOpened, sessionsDeleted, unauthorized, refreshes, sessionNotFound}' || echo '"stats unavailable"'; }
+          echo "OAuth fixture before Test connections: $(fixture_stats)"
+          # Test connections again: every URL server is reached and reports its session mode and authentication.
+          started=$(date +%s)
+          echo '{}' | post /api/instance/extensions/v1/validate > "$OUT/validate.json"
+          echo "Test connections took $(( $(date +%s) - started ))s; OAuth fixture after: $(fixture_stats)"
+          # Each URL server's result; an unavailable one names why (HTTP status, timeout, token refresh failed ...).
+          jq -r '.results[] | select(.name | startswith("url-")) | "  \(.name): \(.status)\(if .reason then " (\(.reason))" else "" end)"' "$OUT/validate.json"
+          jq -e '[.results[] | select(.name | startswith("url-")) | {key: .name, value: [.reachable, .session, .authentication]}] | from_entries == {
+              "url-stateful": [true, "stateful", "none"], "url-stateless": [true, "stateless", "none"],
+              "url-bearer": [true, "stateful", "bearer"], "url-oauth": [true, "stateful", "oauth"]
+            }' "$OUT/validate.json" > /dev/null ||
+            { echo "::error::Test connections: $(jq -r '[.results[] | select(.name | startswith("url-")) | select(.reachable != true) | "\(.name) \(.status): \(.reason // "no reason")"] | join("; ")' "$OUT/validate.json") — $(jq -c '[.results[] | select(.name | startswith("url-"))]' "$OUT/validate.json")"; exit 1; }
+          {
+            echo "### Extension Library (revision $(jq -r .library.revision "$OUT/library.json"))"
+            echo "- Skill bundle \`fixture-token\` ($bundle), auto-applied to $REPO"
+            echo "- Package MCP server \`fixture-echo\`: \`$EXT_PACKAGE@$EXT_PACKAGE_VERSION\` ($EXT_PACKAGE_INTEGRITY), auto-applied to $REPO"
+            echo "- URL MCP servers after Test connections (a wrong Bearer token was refused in ${elapsed}s first):"
+            jq -r --arg stateful "$URL_STATEFUL" --arg stateless "$URL_STATELESS" --arg bearer "$URL_BEARER" --arg oauth "$OAUTH_FIXTURE_ORIGIN/mcp" '
+              {"url-stateful": $stateful, "url-stateless": $stateless, "url-bearer": $bearer, "url-oauth": $oauth} as $urls
+              | .results[] | select(.name | startswith("url-"))
+              | "  - `\(.name)` \($urls[.name]): \(.session), auth \(.authentication)"' "$OUT/validate.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configure the signed App webhook and create the agent-labeled issue
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Cleanup can run after the JWT expires, so mint on each invocation.
+          cat > "$OUT/app-jwt.sh" <<'BASH'
+          set -euo pipefail
+          umask 077
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          sed -n 's/^PROPR_GH_PRIVATE_KEY_B64=//p' "$ENV_FILE" | base64 -d > "$key"
+          app_id=$(sed -n 's/^GH_APP_ID=//p' "$ENV_FILE")
+          [[ $app_id =~ ^[0-9]+$ ]]
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          header=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)
+          now=$(date +%s)
+          payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now-60))" "$((now+540))" "$app_id" | b64url)
+          signature=$(printf '%s' "$header.$payload" | openssl dgst -sha256 -sign "$key" | b64url)
+          printf '%s' "$header.$payload.$signature"
+          BASH
+          cat > "$OUT/installation-token.sh" <<'BASH'
+          set -euo pipefail
+          installation_id=$(sed -n 's/^GH_INSTALLATION_ID=//p' "$ENV_FILE")
+          [[ $installation_id =~ ^[0-9]+$ ]]
+          jwt=$(bash "$OUT/app-jwt.sh")
+          echo "::add-mask::$jwt" >&2
+          curl --fail --silent --show-error -X POST -H "Authorization: Bearer $jwt" \
+            -H 'Accept: application/vnd.github+json' "https://api.github.com/app/installations/$installation_id/access_tokens" |
+            jq -er '.token | strings | select(length > 0)'
+          BASH
+          jwt=$(bash "$OUT/app-jwt.sh")
+          echo "::add-mask::$jwt"
+          app_api() { curl --fail --silent --show-error -H "Authorization: Bearer $jwt" "https://api.github.com/app$1" "${@:2}"; }
+          registration=$(app_api '')
+          if ! jq -e '.events | contains(["issues","pull_request"])' <<< "$registration" > /dev/null; then
+            echo "::error::Activate the fixture App webhook and subscribe to Issues and Pull request under Permissions & events."
+            exit 1
+          fi
+          # Mark before PATCH so teardown also handles a lost configuration response.
+          touch "$OUT/reset-app-hook"
+          jq -n --rawfile secret "$OUT/hook-secret" --arg url "https://$APP.fly.dev/webhook" \
+            '{url:$url,content_type:"json",insecure_ssl:"0",secret:($secret|rtrimstr("\n"))}' |
+            app_api /hook/config -X PATCH -H 'Content-Type: application/json' --data-binary @- > /dev/null
+          bash "$OUT/installation-token.sh" > /dev/null
+
+          body="Create $APP.txt with exactly two lines. The first line is exactly $APP. The second line is the output of running \`$RUNTIME_PACKAGE_COMMAND\` in your shell, copied verbatim; do not install anything or edit that output. Open a PR resolving this issue."
+          if [[ $EXTENSIONS == true ]]; then
+            body="Create $APP.txt containing exactly eight lines and nothing else:
+          1. \`$APP\`
+          2. the output of running \`$RUNTIME_PACKAGE_COMMAND\` in your shell, copied verbatim; do not install anything or edit that output
+          3. the fixture skill token (the \`fixture-token\` skill tells you what it is)
+          4. the exact text returned by the \`echo\` tool of the \`fixture-echo\` MCP server when called with message \`MCP-OK-$RUN_TOKEN\`
+          5. the exact text returned by the \`echo\` tool of the \`url-stateful\` MCP server when called with message \`URL-STATEFUL-OK-$RUN_TOKEN\`
+          6. \`URL-STATELESS-OK-$RUN_TOKEN\` if the \`$URL_STATELESS_TOOL\` tool of the \`url-stateless\` MCP server, called with repoName \`modelcontextprotocol/modelcontextprotocol\`, returned a non-empty result; otherwise \`URL-STATELESS-FAILED\`
+          7. the exact text returned by the \`echo\` tool of the \`url-bearer\` MCP server when called with message \`URL-BEARER-OK-$RUN_TOKEN\`
+          8. the exact text returned by the \`echo\` tool of the \`url-oauth\` MCP server when called with message \`URL-OAUTH-OK-$RUN_TOKEN\`
+
+          Open a PR resolving this issue."
+          fi
+          issue=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP" -F "labels[]=llm-$AGENT" \
+            -f body="$body" --jq .number)
+          echo "ISSUE=$issue" >> "$GITHUB_ENV"
+          if [[ $CAPACITY == true ]]; then
+            # The queued run: with PROPR_FLY_MACHINES_MAX=1 it may create its Machine only after the first one is destroyed.
+            issue2=$(gh api "repos/$REPO/issues" -f title="Fly smoke $APP queued" -F "labels[]=llm-$AGENT" \
+              -f body="Create $APP-queued.txt containing exactly one line: $APP-queued. Open a PR resolving this issue." --jq .number)
+            echo "ISSUE2=$issue2" >> "$GITHUB_ENV"
+          fi
+          # GET /app does not expose the Active checkbox. Verify the actual delivery of every opened issue.
+          # The list omits payloads and is newest first, so look up each successful issues/opened delivery
+          # and match it on the issue number (cap mode opens two issues back to back).
+          missing=("$issue"); [[ $CAPACITY != true ]] || missing+=("$issue2")
+          declare -A delivered_issue=()
+          for _ in {1..12}; do
+            ids=$(app_api '/hook/deliveries?per_page=20' |
+              jq -r '.[] | select(.event == "issues" and .action == "opened" and .status_code == 200) | .id') || ids=
+            for id in $ids; do
+              [[ -z ${delivered_issue[$id]+set} ]] || continue
+              number=$(app_api "/hook/deliveries/$id" | jq -r --arg repo "$REPO" \
+                '.request.payload | select(.repository.full_name == $repo) | .issue.number // empty') || continue
+              delivered_issue[$id]=$number
+            done
+            still_missing=()
+            for wanted in "${missing[@]}"; do
+              found=false
+              for number in "${delivered_issue[@]}"; do [[ $number != "$wanted" ]] || { found=true; break; }; done
+              [[ $found == true ]] || still_missing+=("$wanted")
+            done
+            missing=("${still_missing[@]}")
+            (( ${#missing[@]} > 0 )) || exit 0
+            sleep 5
+          done
+          for wanted in "${missing[@]}"; do
+            echo "::error::No successful App webhook delivery for $REPO#$wanted. Check Webhook → Active in the fixture App settings and its recent deliveries."
+          done
+          exit 1
+
+      - name: Observe idle stop and labeled-issue wake
+        timeout-minutes: 12
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          machine=$(flyctl machine list --app "$APP" --json | jq -er 'select(length == 1) | .[0].id')
+          wait_state() {
+            for _ in {1..55}; do
+              state=$(flyctl machine list --app "$APP" --json | jq -er --arg id "$machine" '.[] | select(.id == $id) | .state')
+              [[ $state != "$1" ]] || return 0
+              sleep 5
+            done
+            echo "Machine $machine remained $state waiting for $1"
+            return 1
+          }
+          wait_state stopped
+          # Anything the runtime installs after this point ran for the post-wake run.
+          echo "STOPPED_AT_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
+          # Keep the worker log from the wake on: `flyctl logs --no-tail` only returns the latest lines (about a
+          # minute of them while two runs are busy), so a record from the start of a run can be gone by its end.
+          nohup flyctl logs --app "$APP" --json > "$OUT/app-logs.jsonl" 2> "$OUT/app-logs.err" &
+          gh issue edit "$ISSUE" --repo "$REPO" --add-label AI
+          wait_state started
+          # Labeled after the first, so with PROPR_FLY_MACHINES_MAX=1 this run queues behind it.
+          [[ $CAPACITY != true ]] || { sleep 10; gh issue edit "$ISSUE2" --repo "$REPO" --add-label AI; }
+
+      - name: Start an automation run that uses ProPR MCP
+        if: env.MCP == 'true'
+        timeout-minutes: 10
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          status=$(curl --fail --retry 12 --retry-all-errors -o /dev/null -w '%{http_code}' "https://$APP.fly.dev/health")
+          [[ $status == 200 ]]
+          # Record the owner's GitHub grant (a browser sign-in does this); agent-run MCP grants require it.
+          seed=$(base64 -w0 <<'JS'
+          const { githubUserGrantService } = await import('/usr/src/app/dist/packages/api/githubUserGrantService.js');
+          const { closeConnection } = await import('@propr/core');
+          const token = process.env.PROPR_E2E_MCP_OWNER_TOKEN;
+          const response = await fetch('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'propr-fly-e2e' } });
+          if (!response.ok) throw new Error(`GitHub /user returned ${response.status}`);
+          const { id, login } = await response.json();
+          const captured = await githubUserGrantService.capture({ id: String(id), login, username: login, displayName: login,
+            email: null, avatarUrl: null, accessToken: token, oauthSource: 'github' });
+          if (!captured) throw new Error('The GitHub user grant was not recorded');
+          console.log(`Recorded the GitHub grant for ${login}`);
+          // No repository seed: the daemon seeds the stored list from GITHUB_REPOS_TO_MONITOR at startup.
+          await closeConnection();
+          process.exit(0);
+          JS
+          )
+          flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $seed | base64 -d | node --input-type=module'"
+          source .github/fly-e2e/propr-api.sh
+          # The same payload test/flyE2eMcpAutomation.test.ts pushes through the real route handlers,
+          # on the agent the configure step saved (its alias is the agent type).
+          definition=$(jq --arg repo "$REPO" --arg agent "$AGENT" '.repositories = [$repo] | .agentId = $agent' \
+            .github/fly-e2e/mcp-automation-definition.json |
+            propr_api POST /automation-definitions --data-binary @- | jq -er '.definition.id | strings')
+          echo "Created automation definition $definition"
+          echo "MCP_TRIGGERED_AT=$(( $(date +%s) * 1000 ))" >> "$GITHUB_ENV"
+          run=$(propr_api POST "/automation-definitions/$definition/runs" -H "Idempotency-Key: $APP-mcp" --data '{"source":"fly-e2e"}' |
+            jq -er '.run.id | strings')
+          echo "Started automation run $run"
+          echo "AUTOMATION_RUN=$run" >> "$GITHUB_ENV"
+
+      - name: Verify the linked PR, its runtime package and its agent execution
+        timeout-minutes: 40
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -o pipefail
+          if [[ $EXTENSIONS == true ]]; then
+            # The no-tail buffer holds only recent lines; keep the whole run's log for the extension records.
+            flyctl logs --app "$APP" --json > "$OUT/app-logs.json" 2> /dev/null &
+            log_stream=$!
+          fi
+          for _ in {1..24}; do
+            if recovery=$(flyctl logs --app "$APP" --no-tail --json |
+              jq -sce '[.[] | .message | fromjson? | select(.msg == "Woke from idle shutdown")]
+                | max_by(.wokeAt).webhookRecovery | objects'); then
+              break
+            fi
+            sleep 5
+          done
+          [[ -n $recovery ]] || { echo "::error::Missing idle-wake webhookRecovery record"; exit 1; }
+          redelivered=$(jq -er '.redelivered | numbers' <<< "$recovery")
+          echo "Idle wake webhookRecovery.redelivered=$redelivered"
+          jq -e '.error == null' <<< "$recovery" > /dev/null || { echo "::error::App webhook recovery reported an error"; exit 1; }
+
+          # The issue's newest task and its latest timeline entry. A task that failed opens no PR, so stop
+          # waiting at once and show its error as the worker recorded it (quota and plan errors included).
+          task_state=$(base64 -w0 <<JS
+          const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
+          const row = db.prepare(\`SELECT t.task_id, h.state, h.reason, h.metadata FROM tasks t
+            JOIN task_history h ON h.history_id = (SELECT history_id FROM task_history
+              WHERE task_id = t.task_id ORDER BY timestamp DESC, history_id DESC LIMIT 1)
+            WHERE t.repository = ? COLLATE NOCASE AND t.issue_number = ?
+            ORDER BY t.created_at DESC LIMIT 1\`).get('$REPO', $ISSUE);
+          if (row) {
+            let m = {};
+            try { m = JSON.parse(row.metadata || '{}') || {}; } catch {}
+            console.log('PROPR_E2E_TASK ' + JSON.stringify({ taskId: row.task_id, state: row.state, reason: row.reason,
+              status: m.prResult?.status ?? null, error: m.error?.message ?? null, terminalReason: m.terminalReason ?? null }));
+          }
+          JS
+          )
+          pr= task=
+          # About 37 minutes, as before the task probe; a deadline keeps the probe's SSH time inside the step timeout.
+          deadline=$((SECONDS + 2220))
+          while (( SECONDS < deadline )); do
+            pr=$(gh pr list --repo "$REPO" --json number,closingIssuesReferences,isCrossRepository |
+              jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | .number')
+            [[ -z $pr ]] || break
+            task=$(timeout 60s flyctl ssh console --app "$APP" --container app \
+              -C "node -e \"eval(Buffer.from('$task_state','base64').toString())\"" 2> /dev/null |
+              tr -d '\r' | sed -n 's/^PROPR_E2E_TASK //p' | tail -n 1 || true)
+            if [[ -n $task ]] && jq -e '.state == "failed" or .state == "claude_processing_failed"
+                or .status == "claude_processing_failed"' <<< "$task" > /dev/null 2>&1; then
+              source .github/fly-e2e/propr-api.sh
+              error=$(jq -r '.error // .reason // "no error recorded"' <<< "$task" | propr_redact)
+              outcome=$(jq -r '[.state, .status, .terminalReason] | map(strings) | unique | join(", ")' <<< "$task")
+              echo "::error::Task $(jq -r .taskId <<< "$task") for $REPO#$ISSUE failed ($outcome) before opening a PR: $error"
+              {
+                echo "- Task \`$(jq -r .taskId <<< "$task")\` for $REPO#$ISSUE on \`$AGENT_RUNTIME\` failed (\`$outcome\`); no PR was opened."
+                echo "- Task error:"
+                echo '  ```'
+                sed 's/^/  /' <<< "$error"
+                echo '  ```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            sleep 15
+          done
+          if [[ ! $pr =~ ^[0-9]+$ ]]; then
+            echo "No unique linked PR for $REPO#$ISSUE (last task state: $(jq -c '{taskId, state, status}' <<< "${task:-null}" 2> /dev/null || echo unknown))"
+            exit 1
+          fi
+          echo "- Linked PR: $REPO#$pr from \`$AGENT\` CLI $AGENT_CLI_VERSION on \`$AGENT_RUNTIME\`" >> "$GITHUB_STEP_SUMMARY"
+          sha=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
+          token=$(bash "$OUT/installation-token.sh")
+          echo "::add-mask::$token"
+          GH_TOKEN="$token" gh api "repos/$REPO/contents/$APP.txt?ref=$sha" --jq .content | base64 -d > "$OUT/fixture.txt"
+          mapfile -t lines < <(tr -d '\r' < "$OUT/fixture.txt")
+          expected_lines=$([[ $EXTENSIONS == true ]] && echo 8 || echo 2)
+          for i in $(seq 0 $((expected_lines - 1))); do printf 'Fixture file line %s: %s\n' $((i + 1)) "${lines[i]-}"; done
+          [[ ${#lines[@]} == "$expected_lines" && ${lines[0]} == "$APP" ]] ||
+            { echo "::error::$APP.txt must have exactly $expected_lines lines, the first being $APP"; exit 1; }
+          if [[ -z ${lines[1]// } || ${lines[1]} == *"not found"* ]] || ! grep -Eq -- "$RUNTIME_PACKAGE_BANNER" <<< "${lines[1]}"; then
+            echo "::error::Line 2 of $APP.txt is not the $RUNTIME_PACKAGE version banner, so the runtime package was not installed for the run"
+            exit 1
+          fi
+          # Evidence: the runtime installed the configured list after the idle stop (Sprite provisioning, or the
+          # derived Fly Machine image built by the first run; a fallback install at Machine start does not count).
+          # Read from the log streamed since the idle stop, not only the short --no-tail buffer: with
+          # PROPR_FLY_MACHINES_MAX=1 the build happens minutes before this run's PR, and the queued run's
+          # records push it out of the buffer.
+          worker_logs=$({ cat "$OUT/app-logs.jsonl" 2> /dev/null; flyctl logs --app "$APP" --no-tail --json; } |
+            jq -sc --argjson since "$STOPPED_AT_MS" '[.[] | .message? | strings | fromjson? | objects
+              | select((.time // 0) >= $since)] | unique | sort_by(.time)')
+          expected_log=$([[ $AGENT_RUNTIME == sprites ]] && echo 'Installed agent runtime packages on Sprite' ||
+            echo 'Installed agent runtime packages in a derived Fly Machine image')
+          install=$(jq -c --arg msg "$expected_log" '[.[] | select(.msg == $msg)] | last // empty' <<< "$worker_logs")
+          [[ -n $install ]] || { echo "::error::Missing '$expected_log' log after the idle stop"; exit 1; }
+          jq -r '"\(.msg): packagesDigest=\(.packagesDigest) packageCount=\(.packageCount) installMs=\(.installMs)"' <<< "$install"
+          jq -e --arg digest "$RUNTIME_PACKAGES_DIGEST" --argjson count "$RUNTIME_PACKAGE_COUNT" \
+            '.packagesDigest == $digest and .packageCount == $count and (.installMs | numbers) >= 0' \
+            <<< "$install" > /dev/null || { echo "::error::Runtime package install log does not match packagesDigest $RUNTIME_PACKAGES_DIGEST"; exit 1; }
+          if [[ $AGENT_RUNTIME == fly-machines ]]; then
+            # The first run built the derived image: the build log names the digest every later run launches.
+            derived=$(jq -er --arg app "$AGENT_APP" '.image | strings | select(startswith("registry.fly.io/" + $app + "@sha256:"))' <<< "$install") ||
+              { echo "::error::The derived image build log names no registry.fly.io/$AGENT_APP digest"; exit 1; }
+            echo "DERIVED_IMAGE=$derived" >> "$GITHUB_ENV"
+            echo "Derived Fly Machine image: $derived (layerBytes=$(jq -r .layerBytes <<< "$install"), verifiedFiles=$(jq -r .verifiedFiles <<< "$install"))"
+            # The build is shared, so its record may name the other cap-mode run. Tie this issue's run to the image
+            # by its run name (<agent>-issue-<number>-<task id>), whatever the timing.
+            launch=$(jq -ce --arg issue "$ISSUE" '[.[] | select(.msg == "Launched the agent Fly Machine from the derived image"
+              and ((.run // "") | test("(^|-)issue-" + $issue + "-")))] | first | objects' <<< "$worker_logs") ||
+              { echo "::error::No 'Launched the agent Fly Machine from the derived image' record for the run of $REPO#$ISSUE"; exit 1; }
+            [[ $(jq -r .image <<< "$launch") == "$derived" ]] ||
+              { echo "::error::The run of $REPO#$ISSUE launched $(jq -r .image <<< "$launch"), not the derived image $derived"; exit 1; }
+            echo "Run $(jq -r .run <<< "$launch") launched Machine $(jq -r .machine <<< "$launch") from $derived (build record run: $(jq -r .run <<< "$install"))"
+          fi
+          if [[ $EXTENSIONS == true ]]; then
+            expected=("SKILL-OK-$RUN_TOKEN" "Echo: MCP-OK-$RUN_TOKEN" "URL-STATEFUL-OK-$RUN_TOKEN"
+              "URL-STATELESS-OK-$RUN_TOKEN" "URL-BEARER-OK-$RUN_TOKEN" "URL-OAUTH-OK-$RUN_TOKEN")
+            for i in "${!expected[@]}"; do
+              [[ ${lines[i + 2]:-} == "${expected[i]}" ]] && continue
+              echo "::error::$APP.txt line $((i + 3)) is '${lines[i + 2]:-}', expected '${expected[i]}'"
+              # Lines 5-8 are the URL servers, reached through ProPR's gateway: on Fly Machines print the gateway
+              # URL the run used and whether an agent-app Machine reaches it, so the failure explains itself.
+              if (( i >= 2 )) && [[ $AGENT_RUNTIME == fly-machines ]]; then
+                kill "$log_stream" 2> /dev/null || true
+                bash .github/fly-e2e/fly-gateway-diagnostics.sh "$OUT/app-logs.json"
+              fi
+              exit 1
+            done
+            kill "$log_stream" 2> /dev/null || true
+            logs=$({ cat "$OUT/app-logs.json"; flyctl logs --app "$APP" --no-tail --json; } |
+              jq -sc '[.[] | .message? | strings | fromjson? | objects] | unique')
+            applied=$(jq -ce --arg runtime "$AGENT_RUNTIME" '[.[] | select(.msg == "Extension Library items applied to this run"
+              and .runtime == $runtime and .skills >= 1 and .packageServers >= 1 and .urlServers == 4)] | max_by(.time) | objects' <<< "$logs") ||
+              { echo "::error::No 'Extension Library items applied to this run' record for $AGENT_RUNTIME with skills>=1, packageServers>=1 and urlServers=4"; exit 1; }
+            installed=$(jq -ce --arg digest "$(jq -r .packageServersDigest <<< "$applied")" '[.[] | select(
+              (.msg == "Installed package MCP servers on Sprite" or .msg == "Installed package MCP servers at Fly Machine start")
+              and .packageServersDigest == $digest)] | max_by(.time) | objects' <<< "$logs") ||
+              { echo "::error::No 'Installed package MCP servers' record for the applied package-server digest"; exit 1; }
+            {
+              echo "### Extension Library on the remote runtime ($AGENT_RUNTIME)"
+              echo "- extensionDigest: \`$(jq -r .extensionDigest <<< "$applied")\`"
+              echo "- packageServersDigest: \`$(jq -r .packageServersDigest <<< "$applied")\`"
+              echo "- skills=$(jq -r .skills <<< "$applied"), packageServers=$(jq -r .packageServers <<< "$applied"), urlServers=$(jq -r .urlServers <<< "$applied")"
+              echo "- $(jq -r .msg <<< "$installed"): installMs=$(jq -r .installMs <<< "$installed")"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            # The gateway's upstream sessions for this run: opened while the agent ran, closed (with a DELETE
+            # for stateful ones) once the grant ended. The API sweeps ended grants every 15 s.
+            task=$(jq -r .taskId <<< "$applied")
+            servers='["url-bearer","url-oauth","url-stateful","url-stateless"]'
+            for _ in {1..12}; do
+              logs=$({ cat "$OUT/app-logs.json"; timeout 60s flyctl logs --app "$APP" --no-tail --json; } |
+                jq -sc '[.[] | .message? | strings | fromjson? | objects] | unique')
+              closed=$(jq -c --arg task "$task" '[.[] | select(.msg == "Closed extension URL MCP upstream session" and .taskId == $task)]
+                | group_by(.server) | map(max_by(.time))' <<< "$logs")
+              jq -e --argjson servers "$servers" '[.[].server] | sort == $servers' <<< "$closed" > /dev/null && break
+              sleep 10
+            done
+            opened=$(jq -c --arg task "$task" '[.[] | select(.msg == "Opened extension URL MCP upstream session" and .taskId == $task)]' <<< "$logs")
+            jq -e --argjson servers "$servers" '[.[].server] | unique == $servers' <<< "$opened" > /dev/null ||
+              { echo "::error::Missing 'Opened extension URL MCP upstream session' records: $(jq -c '[.[] | {server, sessionMode}]' <<< "$opened")"; exit 1; }
+            jq -e '[.[] | {key: .server, value: [.sessionMode, .authentication]}] | from_entries == {
+                "url-stateful": ["stateful", "none"], "url-stateless": ["stateless", "none"],
+                "url-bearer": ["stateful", "bearer"], "url-oauth": ["stateful", "oauth"]
+              }' <<< "$opened" > /dev/null ||
+              { echo "::error::Unexpected session or auth modes: $(jq -c '[.[] | {server, sessionMode, authentication}]' <<< "$opened")"; exit 1; }
+            jq -e --argjson servers "$servers" '([.[].server] | sort == $servers) and all(.toolCalls >= 1)
+              and all(if .sessionMode == "stateful" then .deleted else true end)' <<< "$closed" > /dev/null ||
+              { echo "::error::The run's URL MCP sessions were not all used and closed: $(jq -c '[.[] | {server, toolCalls, deleted, reason}]' <<< "$closed")"; exit 1; }
+            stats=$(curl --fail --silent --show-error --retry 4 --retry-all-errors "$OAUTH_FIXTURE_ORIGIN/stats")
+            jq -e --arg token "URL-OAUTH-OK-$RUN_TOKEN" '.refreshes >= 1 and (.echoes | index($token)) != null and .sessionsDeleted >= 1' <<< "$stats" > /dev/null ||
+              { echo "::error::The OAuth fixture saw no refresh, echo or DELETE: $(jq -c '{refreshes, sessionsOpened, sessionsDeleted, sessionNotFound, unauthorized}' <<< "$stats")"; exit 1; }
+            {
+              echo "### URL MCP servers through the gateway ($AGENT_RUNTIME)"
+              echo "| Server | Session | Auth | Tool calls | Token refreshes | Re-initialized | Closed |"
+              echo "| --- | --- | --- | --- | --- | --- | --- |"
+              jq -r '.[] | "| `\(.server)` | \(.sessionMode) | \(.authentication) | \(.toolCalls) | \(.refreshes) | \(.reinitialized) | \(.reason)\(if .deleted then ", DELETE sent" else "" end) |"' <<< "$closed"
+              echo "- OAuth fixture on a $([[ $OAUTH_FIXTURE_HOST == sprite ]] && echo Sprite || echo 'Fly Machine') (\`$OAUTH_FIXTURE_NAME\`, access tokens ${OAUTH_ACCESS_TTL}s): $(jq -r '"\(.refreshes) refreshes, \(.sessionsOpened) sessions opened, \(.sessionsDeleted) deleted, \(.sessionNotFound) session-not-found replies"' <<< "$stats")"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          # Read the worker's measurement for this issue AND PR, after wake was observed.
+          check=$(base64 -w0 <<JS
+          const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
+          const run = db.prepare(\`SELECT e.compute_runtime, e.compute_wall_time_ms, e.compute_cost_usd
+            FROM llm_executions e JOIN tasks t USING (task_id)
+            WHERE t.repository = ? COLLATE NOCASE AND t.issue_number = ? AND t.pr_number = ?
+              AND e.success = 1 AND e.compute_runtime = ? LIMIT 1\`).get('$REPO', $ISSUE, $pr, '$AGENT_RUNTIME');
+          if (!run) process.exit(1);
+          console.log(JSON.stringify(run));
+          JS
+          )
+          for _ in {1..12}; do
+            if flyctl ssh console --app "$APP" --container app -C "node -e \"eval(Buffer.from('$check','base64').toString())\""; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Missing successful compute_runtime: $AGENT_RUNTIME execution for $REPO#$ISSUE, PR #$pr"
+          exit 1
+
+      - name: Verify PROPR_FLY_MACHINES_MAX queued the second run until a Machine was free
+        if: env.CAPACITY == 'true'
+        timeout-minutes: 40
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          pr=
+          for _ in {1..150}; do
+            pr=$(gh pr list --repo "$REPO" --json number,closingIssuesReferences,isCrossRepository |
+              jq -r --argjson issue "$ISSUE2" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | .number')
+            [[ -z $pr ]] || break
+            sleep 15
+          done
+          logs=$({ cat "$OUT/app-logs.jsonl"; flyctl logs --app "$APP" --no-tail --json; } |
+            jq -sc '[.[] | .message? | strings | fromjson? | objects] | unique')
+          printf '%s' "$logs" > "$OUT/worker-logs.json"
+          if [[ ! $pr =~ ^[0-9]+$ ]]; then
+            # A run that failed with the machine limit opens no PR: show what Fly counted before failing.
+            MAX_RETRIES=3 MAX_WAIT_MS=60000 bash .github/fly-e2e/machine-limit-report.sh "$OUT/worker-logs.json" || true
+            echo "::error::No unique linked PR for the queued run $REPO#$ISSUE2"
+            exit 1
+          fi
+          queued=$(jq -ce '[.[] | select(.msg == "Fly Machines at PROPR_FLY_MACHINES_MAX; run queued" and .max == 1)] | first | objects' <<< "$logs") ||
+            { echo "::error::No run waited for a PROPR_FLY_MACHINES_MAX slot"; exit 1; }
+          # PROPR_FLY_MACHINES_MAX=1 holds 2 Machines at most (the control plane and one slot), so a 422 means Fly still
+          # counted a Machine the worker had freed. A create retried within the bound is a warning with the Machine
+          # list Fly answered; a create given up, a run failed with the 422, or retries past the bound fail the step.
+          MAX_RETRIES=3 MAX_WAIT_MS=60000 bash .github/fly-e2e/machine-limit-report.sh "$OUT/worker-logs.json"
+          # The queued run launches from the digest the first build pushed, with no second build Machine.
+          : "${DERIVED_IMAGE:?The first run did not report a derived image}"
+          since=$(jq -cr --argjson since "$STOPPED_AT_MS" '[.[] | select((.time // 0) >= $since)]' <<< "$logs")
+          launch2=$(jq -ce --arg issue "$ISSUE2" '[.[] | select(.msg == "Launched the agent Fly Machine from the derived image"
+            and ((.run // "") | test("(^|-)issue-" + $issue + "-")))] | first | objects' <<< "$since") ||
+            { echo "::error::No 'Launched the agent Fly Machine from the derived image' record for the queued run of $REPO#$ISSUE2"; exit 1; }
+          image2=$(jq -r .image <<< "$launch2")
+          [[ $image2 == "$DERIVED_IMAGE" ]] ||
+            { echo "::error::The queued run launched $image2, not the first run's derived image $DERIVED_IMAGE"; exit 1; }
+          builds=$(jq '[.[] | select(.msg == "Installed agent runtime packages in a derived Fly Machine image")] | length' <<< "$since")
+          [[ $builds == 1 ]] || { echo "::error::Expected exactly 1 derived image build after the idle stop, found $builds"; exit 1; }
+          # Both issues must have a successful Fly Machines execution.
+          check=$(base64 -w0 <<JS
+          const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
+          const runs = db.prepare(\`SELECT t.issue_number, e.compute_wall_time_ms FROM llm_executions e JOIN tasks t USING (task_id)
+            WHERE t.repository = ? COLLATE NOCASE AND t.issue_number IN (?, ?) AND e.success = 1 AND e.compute_runtime = 'fly-machines'\`)
+            .all('$REPO', $ISSUE, $ISSUE2);
+          if (new Set(runs.map(r => r.issue_number)).size !== 2) process.exit(1);
+          console.log(JSON.stringify(runs));
+          JS
+          )
+          for _ in {1..12}; do
+            if flyctl ssh console --app "$APP" --container app -C "node -e \"eval(Buffer.from('$check','base64').toString())\""; then
+              {
+                echo "### PROPR_FLY_MACHINES_MAX=1"
+                echo "- Queued run: \`$(jq -r .run <<< "$queued")\` (active=$(jq -r .active <<< "$queued"), queued=$(jq -r .queued <<< "$queued"))"
+                echo "- $REPO#$ISSUE2 run \`$(jq -r .run <<< "$launch2")\` launched Machine \`$(jq -r .machine <<< "$launch2")\` from \`$image2\`, the first run's derived image; $builds build Machine after the idle stop"
+                echo "- Both issues ($REPO#$ISSUE, $REPO#$ISSUE2, PR #$pr) succeeded on Fly Machines; machine-limit refusals are reported above"
+              } | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Missing successful fly-machines executions for both $REPO#$ISSUE and $REPO#$ISSUE2"
+          exit 1
+
+      - name: Verify derived Fly Machine image reuse, rebuild and teardown
+        # The default Fly Machines run only; the PROPR_FLY_MACHINES_MAX mode checks queueing instead.
+        if: env.AGENT_RUNTIME == 'fly-machines' && env.CAPACITY != 'true'
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          : "${DERIVED_IMAGE:?The first run did not report a derived image}"
+          source .github/fly-e2e/mask-fly-token.sh
+          # A fresh process, like another worker or a restart: only the registry tag is shared.
+          # Same list -> the first run's digest with no build Machine; a changed list -> one build and a new digest.
+          # The script reads agent-runtime.env itself as KEY=value data (the token has a space, so the
+          # shell must never evaluate it), and its output goes through redact_fly_tokens.
+          # It runs from a file, not stdin with --input-type: the imported modules start pino's transport
+          # worker, which inherits execArgv, and Node refuses --input-type for a worker's file entry.
+          # Its imports therefore resolve against the checkout (the working directory), not the file.
+          script="$RUNNER_TEMP/derived-image-check.mts"
+          cat > "$script" <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { setTimeout as delay } from 'node:timers/promises';
+          import { pathToFileURL } from 'node:url';
+          const checkout = pathToFileURL(process.cwd() + '/');
+          const fly = (file: string) => import(new URL('packages/core/src/agents/runtime/fly/' + file, checkout).href);
+          const { MachinesClient } = await fly('api.ts');
+          const { flyConfig } = await fly('config.ts');
+          const { FlyPackageImages } = await fly('derivedImage.ts');
+          const fail = message => { console.log('::error::' + message); process.exit(1); };
+          // Only these keys, each exactly KEY=value; anything else is refused without echoing it.
+          const allowed = new Set(['PROPR_FLY_APP', 'PROPR_FLY_IMAGE', 'PROPR_FLY_REGION', 'PROPR_FLY_API_TOKEN']);
+          const runtimeEnv = {};
+          for (const [index, line] of readFileSync(process.env.AGENT_RUNTIME_ENV, 'utf8').split('\n').entries()) {
+            if (!line) continue;
+            const match = /^([A-Z][A-Z0-9_]*)=(.+)$/.exec(line);
+            if (!match || !allowed.has(match[1]) || match[1] in runtimeEnv) fail(`agent-runtime.env line ${index + 1} is not an expected KEY=value`);
+            runtimeEnv[match[1]] = match[2];
+          }
+          if (allowed.size !== Object.keys(runtimeEnv).length) fail('agent-runtime.env is missing a key');
+          const config = flyConfig({ ...process.env, ...runtimeEnv });
+          const api = new MachinesClient(config, [config.token]);
+          const builds = [];
+          const create = api.create.bind(api);
+          api.create = (launch, onBootStart) => {
+            if (launch.config.processes[0].cmd[0] === 'build') builds.push(launch.name);
+            return create(launch, onBootStart);
+          };
+          const images = new FlyPackageImages();
+          const select = packages => images.select({ api, config, packages, signal: AbortSignal.timeout(40 * 60_000), run: 'fly-e2e-derived-check' });
+          const reused = await select(JSON.parse(process.env.RUNTIME_PACKAGES));
+          console.log('Same list: ' + reused + ', build Machines: ' + builds.length);
+          if (reused !== process.env.DERIVED_IMAGE) fail(`The same list selected ${reused}, not the first run's ${process.env.DERIVED_IMAGE}`);
+          if (builds.length) fail('The same list created a build Machine');
+          const changed = await select(JSON.parse(process.env.CHANGED_PACKAGES));
+          console.log('Changed list: ' + changed + ', build Machines: ' + builds.length);
+          if (!changed || !changed.startsWith(`registry.fly.io/${config.app}@sha256:`)) fail('The changed list did not build a derived image');
+          if (changed === reused) fail('The changed list reused the old digest');
+          if (builds.length !== 1) fail(`The changed list created ${builds.length} build Machines, not 1`);
+          // Teardown: every agent and build Machine is gone (auto_destroy may take a moment after exit).
+          let left = [];
+          for (let attempt = 0; attempt < 24; attempt++) {
+            left = (await api.list('')).filter(machine => machine.state !== 'destroyed');
+            if (!left.length) break;
+            await delay(5000);
+          }
+          if (left.length) fail('Machines left in the agent app: ' + left.map(m => `${m.name} (${m.state})`).join(', '));
+          console.log('No Machines left in ' + config.app);
+          JS
+          AGENT_RUNTIME_ENV="$OUT/agent-runtime.env" \
+            RUNTIME_PACKAGES="[\"$RUNTIME_PACKAGE\"]" CHANGED_PACKAGES="[\"$RUNTIME_PACKAGE\",\"cowsay\"]" \
+            node --import tsx "$script" 2>&1 | redact_fly_tokens
+          {
+            echo "### Derived Fly Machine image"
+            echo "- first run built \`$DERIVED_IMAGE\`; the same list reused it with no build Machine"
+            echo "- a changed list built a new digest; no Machines were left in \`$AGENT_APP\`"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the ProPR MCP automation over the SSH reverse forward
+        if: env.MCP == 'true'
+        timeout-minutes: 30
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${AUTOMATION_RUN:?The automation run was not started}"
+          source .github/fly-e2e/propr-api.sh
+          # On any failure, read the run, its task timeline and logs, and the worker lines that name
+          # them while the app is still up: the failure dump only has flyctl's last few minutes.
+          trap 'status=$?; (( status == 0 )) || bash .github/fly-e2e/mcp-run-diagnostics.sh "$AUTOMATION_RUN" "$OUT/app-logs.jsonl"; exit $status' EXIT
+          # 25 minutes, which leaves the step time for the diagnostics.
+          for _ in {1..100}; do
+            run=$(propr_api GET "/automation-runs/$AUTOMATION_RUN" | jq -ec '.run | objects')
+            state=$(jq -r .state <<< "$run")
+            case $state in completed|failed|skipped|rejected|cancelled) break ;; esac
+            sleep 15
+          done
+          echo "Automation run $AUTOMATION_RUN: $state"
+          [[ $state == completed ]] || {
+            echo "::error::Automation run ended $state: $(jq -r '.failureReason // .skipReason // .error // "no reason recorded"' <<< "$run" | propr_redact)"
+            exit 1
+          }
+          task=$(jq -er '.reportTaskId | strings' <<< "$run")
+
+          # 1. The report carries the tool's deterministic result: this fixture's only repository.
+          line=$(jq -r '.report // ""' <<< "$run" | grep -m1 '^PROPR_MCP_' || true)
+          echo "Report: $line"
+          [[ ${line,,} == "propr_mcp_repositories: ${REPO,,}" ]] ||
+            { echo "::error::The automation report does not show list_repositories returning $REPO"; exit 1; }
+
+          # 2. The API recorded that tool call: the report cannot have been guessed.
+          check=$(base64 -w0 <<JS
+          const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
+          const row = db.prepare(\`SELECT COUNT(*) AS calls FROM mcp_access_log
+            WHERE kind = 'tool' AND name = 'list_repositories' AND outcome = 'success' AND occurred_at >= ?\`).get($MCP_TRIGGERED_AT);
+          console.log(JSON.stringify(row));
+          if (!row.calls) process.exit(1);
+          JS
+          )
+          flyctl ssh console --app "$APP" --container app -C "node -e \"eval(Buffer.from('$check','base64').toString())\"" ||
+            { echo "::error::No successful list_repositories call in the MCP access log"; exit 1; }
+
+          # 3. The run's task log line, which the worker also logs with the task id.
+          transport() {
+            jq -c --arg task "$1" '.message | fromjson? | objects
+              | select(.taskId == $task and .mcpTransport == "ssh-reverse-forward"
+                and (.msg | strings | startswith("ProPR MCP transport: ssh-reverse-forward")))' "${@:2}"
+          }
+          found=$(transport "$task" "$OUT/app-logs.jsonl" 2>/dev/null | head -n1 || true)
+          if [[ -z $found ]]; then
+            timeout 60s flyctl logs --app "$APP" --no-tail --json > "$OUT/app-logs-recent.jsonl" || true
+            found=$(transport "$task" "$OUT/app-logs-recent.jsonl" 2>/dev/null | head -n1 || true)
+          fi
+          [[ -n $found ]] || { echo "::error::No 'ProPR MCP transport: ssh-reverse-forward' line for task $task"; exit 1; }
+          echo "Task $task: $(jq -r .msg <<< "$found")"
+          {
+            echo "### ProPR MCP over the SSH reverse forward"
+            echo "- Automation run \`$AUTOMATION_RUN\` completed; report: \`$line\`"
+            echo "- Task \`$task\` log: \`$(jq -r .msg <<< "$found")\`"
+            echo "- Issue-labeled runs get no ProPR MCP grant, so the issue run has no MCP transport line."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Reset the fixture App webhook to its placeholder URL
+        if: always() && steps.app.outcome == 'success'
+        run: |
+          if [[ -f $OUT/reset-app-hook ]]; then
+            jwt=$(bash "$OUT/app-jwt.sh")
+            echo "::add-mask::$jwt"
+            curl --fail --silent --show-error --retry 3 -o /dev/null -X PATCH \
+              -H "Authorization: Bearer $jwt" -H 'Content-Type: application/json' \
+              --data '{"url":"https://example.invalid/webhook"}' https://api.github.com/app/hook/config
+          fi
+      - name: Dump app logs on failure
+        if: failure() && steps.app.outcome == 'success'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          source .github/fly-e2e/propr-api.sh
+          timeout 60s flyctl logs --app "$APP" --no-tail 2>&1 | propr_redact | tail -n 200 || true
+
+      - name: Probe the OAuth fixture path and dump its request log on failure
+        # Secret-free: /health timings from the runner and from ProPR's Machine over each address family, and the
+        # fixture's request log (method, path without query, addresses, status, duration). Runs before teardown.
+        if: failure() && env.EXTENSIONS == 'true' && env.OAUTH_FIXTURE_ORIGIN != ''
+        timeout-minutes: 8
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          SPRITES_TOKEN: ${{ env.OAUTH_FIXTURE_HOST == 'sprite' && secrets.FLY_E2E_SPRITES_TOKEN || '' }}
+          PROPR_APP_UP: ${{ steps.app.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          # Three /health requests per address family; curl prints its timings even when it times out. $1 is the origin.
+          probe=$(cat <<'SH'
+          host=$(echo "$1" | sed -E 's|^https://||; s|/.*||')
+          echo "resolved: $(node -e 'require("dns").lookup(process.argv[1], { all: true }, (e, a) => console.log(e ? e.code : a.map(x => x.address).join(" ")))' "$host" 2>&1)"
+          for family in 4 6; do
+            for attempt in 1 2 3; do
+              curl -$family -sS -o /dev/null --max-time 20 \
+                -w "IPv$family #$attempt: %{remote_ip} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} code=%{http_code}" \
+                "$1/health" 2>/tmp/oauth-probe.err
+              status=$?
+              if [ "$status" -eq 0 ]; then echo " exit=0"; else echo " exit=$status ($(head -c 200 /tmp/oauth-probe.err | tr '\n' ' '))"; fi
+            done
+          done
+          SH
+          )
+          echo "::group::OAuth fixture /health from the runner"
+          sh -c "$probe" probe "$OAUTH_FIXTURE_ORIGIN"
+          echo "::endgroup::"
+          echo "::group::OAuth fixture /health from ProPR's Machine ($APP)"
+          if [[ $PROPR_APP_UP == true ]]; then
+            encoded=$(base64 -w0 <<< "$probe")
+            timeout 180s flyctl ssh console --app "$APP" --container app -C "sh -c 'echo $encoded | base64 -d | sh -s $OAUTH_FIXTURE_ORIGIN'" ||
+              echo "flyctl ssh console to $APP failed (exit $?): the Machine may be stopped"
+          else
+            echo "ProPR's app was not deployed"
+          fi
+          echo "::endgroup::"
+          echo "::group::OAuth fixture request log (last 300 entries)"
+          if [[ $OAUTH_FIXTURE_HOST == sprite ]]; then
+            timeout 120s node --input-type=module <<'JS' || echo "Reading the request log from the Sprite failed"
+          import { SpritesClient } from '@fly/sprites';
+          const sprite = await new SpritesClient(process.env.SPRITES_TOKEN).getSprite(process.env.OAUTH_FIXTURE_NAME);
+          const result = await sprite.execFile('tail', ['-n', '300', process.env.OAUTH_FIXTURE_LOG]);
+          process.stdout.write(result.stdout.toString());
+          JS
+          else
+            timeout 120s flyctl ssh console --app "$OAUTH_FIXTURE_NAME" -C "tail -n 300 $OAUTH_FIXTURE_LOG" ||
+              echo "Reading the request log from the fixture's Fly Machine failed"
+          fi
+          echo "::endgroup::"
+          echo "OAuth fixture counters: $(curl --silent --show-error --max-time 20 "$OAUTH_FIXTURE_ORIGIN/stats" | jq -c 'del(.echoes)' 2>/dev/null || echo unavailable)"
+          exit 0
+
+      - name: Check that the agent credentials stayed out of the agent images
+        # Credentials travel per run as the agent configuration's store files, never in an image: search the
+        # Fly Machines agent image this run built and the derived image the runtime built from it. A Sprite has
+        # no image; its clean checkpoint is taken at provisioning, before any run's credentials are uploaded.
+        if: always() && env.AGENT_RUNTIME == 'fly-machines' && env.AGENT_CLI_VERSION != ''
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -s ${OUT}/credential-values ]] || { echo "No credential values to search for"; exit 0; }
+          images=("propr/agent:$GITHUB_SHA")
+          if [[ -n ${DERIVED_IMAGE:-} ]]; then
+            flyctl auth docker > /dev/null
+            docker pull --quiet "$DERIVED_IMAGE" > /dev/null
+            images+=("$DERIVED_IMAGE")
+          fi
+          for image in "${images[@]}"; do
+            container=$(docker create "$image")
+            # grep -c reads the whole export (grep -q would stop at the first match and could hide a failed
+            # export behind SIGPIPE); each side's status is checked on its own.
+            set +e
+            docker export "$container" | grep -acF -f "$OUT/credential-values" > "$RUNNER_TEMP/leak-count"
+            status=("${PIPESTATUS[@]}")
+            set -e
+            docker rm "$container" > /dev/null
+            (( status[0] == 0 )) || { echo "::error::Exporting $image failed (docker export exited ${status[0]}), so it was not searched"; exit 1; }
+            (( status[1] <= 1 )) || { echo "::error::Searching the export of $image failed (grep exited ${status[1]})"; exit 1; }
+            count=$(< "$RUNNER_TEMP/leak-count")
+            [[ $count =~ ^[0-9]+$ ]] || { echo "::error::Searching the export of $image gave no match count"; exit 1; }
+            (( count == 0 )) || { echo "::error::$image contains a $AGENT credential value ($count matching lines)"; exit 1; }
+            echo "- No $AGENT credential value in \`$image\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Redact the worker log for upload
+        id: worker-log
+        if: always()
+        run: |
+          set -euo pipefail
+          [[ -s ${OUT:-}/app-logs.jsonl ]] || { echo "No worker log was recorded"; exit 0; }
+          source .github/fly-e2e/mask-fly-token.sh
+          dir="$RUNNER_TEMP/worker-log"
+          mkdir -p "$dir"
+          # redact_fly_tokens replaces every fm2_ fragment and exits 3 if it found one; GitHub tokens are replaced too.
+          # Only the redacted copy is uploaded, and a fragment found fails this step after the copy is written.
+          status=0
+          redact_fly_tokens < "$OUT/app-logs.jsonl" |
+            sed -E '/^::error::/d; s/(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/[redacted GitHub token]/g' > "$dir/app-logs.jsonl" ||
+            status=$?
+          # The agent's own credentials (from FLY_E2E_APP_ENV or FLY_E2E_APP_ENV_EXTRA) must not reach the worker log either.
+          leaked=0
+          if [[ -s ${OUT}/credential-values ]]; then
+            leaked=$(grep -cF -f "$OUT/credential-values" "$OUT/app-logs.jsonl" || true)
+            if (( leaked > 0 )); then
+              awk 'NR == FNR { if (length) secrets[++n] = $0; next }
+                { for (i = 1; i <= n; i++) while ((at = index($0, secrets[i])) > 0)
+                    $0 = substr($0, 1, at - 1) "[redacted agent credential]" substr($0, at + length(secrets[i])); print }' \
+                "$OUT/credential-values" "$dir/app-logs.jsonl" > "$dir/app-logs.redacted" && mv "$dir/app-logs.redacted" "$dir/app-logs.jsonl"
+            fi
+          fi
+          echo "path=$dir/app-logs.jsonl" >> "$GITHUB_OUTPUT"
+          echo "Redacted $(wc -l < "$dir/app-logs.jsonl") worker log lines"
+          (( status == 0 )) || { echo "::error::The worker log held a Fly token fragment (redacted in the uploaded copy)"; exit 1; }
+          (( leaked == 0 )) || { echo "::error::$leaked worker log line(s) held a $AGENT credential value (redacted in the uploaded copy)"; exit 1; }
+          echo "- No Fly token fragment or $AGENT credential value in the worker log" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the redacted worker log
+        if: always() && steps.worker-log.outputs.path != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: fly-e2e-worker-log-${{ github.run_attempt }}
+          path: ${{ steps.worker-log.outputs.path }}
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Destroy test app, Machines and volume
+        if: always() && steps.app.outcome == 'success'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: flyctl apps destroy "$APP" --yes
+      - name: Destroy the Fly Machines agent app
+        # Keyed only on the marker written right after the app is created, so it runs whatever failed.
+        if: always()
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: if [[ -f $OUT/destroy-agent-app ]]; then flyctl apps destroy "$AGENT_APP" --yes; fi
+      - name: Reap remaining Sprites owned by this deployment
+        if: always() && steps.app.outcome == 'success' && env.AGENT_RUNTIME == 'sprites'
+        env:
+          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+        run: |
+          node --import tsx --input-type=module <<'JS'
+          import { createHash } from 'node:crypto';
+          import { SpritesClient } from '@fly/sprites';
+          import { spritePoolKey } from './packages/shared/src/statusKeys.ts';
+          const marker = createHash('sha256').update(spritePoolKey(process.env.APP)).digest('hex').slice(0, 16);
+          const prefix = 'propr-' + marker + '-';
+          const client = new SpritesClient(process.env.SPRITES_TOKEN);
+          for (const sprite of await client.listAllSprites(prefix)) {
+            if (sprite.name.startsWith(prefix)) await client.deleteSprite(sprite.name);
+          }
+          JS
+      - name: Delete the OAuth fixture Sprite
+        # Keyed only on the marker written before the Sprite is created, so it runs whatever failed.
+        if: always() && env.EXTENSIONS == 'true'
+        env:
+          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+        run: |
+          [[ -f $OUT/delete-oauth-sprite ]] || exit 0
+          node --input-type=module <<'JS'
+          import { SpritesClient } from '@fly/sprites';
+          const client = new SpritesClient(process.env.SPRITES_TOKEN);
+          const name = process.env.OAUTH_FIXTURE_NAME;
+          const remaining = await client.listAllSprites(name);
+          for (const sprite of remaining) if (sprite.name === name) await client.deleteSprite(name);
+          if ((await client.listAllSprites(name)).some(sprite => sprite.name === name)) throw new Error(`Sprite ${name} is still listed`);
+          console.log(`Deleted the OAuth fixture Sprite ${name}`);
+          JS
+      - name: Destroy the OAuth fixture's Fly app
+        # Keyed only on the marker written before the app is created, so it runs whatever failed.
+        if: always() && env.EXTENSIONS == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+        run: if [[ -f $OUT/destroy-oauth-app ]]; then flyctl apps destroy "$OAUTH_FIXTURE_NAME" --yes; fi
+      - name: Verify that no app, Machine or Sprite is left behind
+        if: always() && steps.app.outcome == 'success'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
+          SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN }}
+        run: |
+          set -euo pipefail
+          apps=$(flyctl apps list --org "$ORG" --json | jq -r '.[] | (.Name // .name // empty)')
+          left=()
+          for app in "$APP" "$AGENT_APP" "$OAUTH_FIXTURE_NAME"; do
+            ! grep -qxF "$app" <<< "$apps" || left+=("$app")
+          done
+          (( ${#left[@]} == 0 )) || { echo "::error::Fly apps left behind: ${left[*]}"; exit 1; }
+          if [[ -n $SPRITES_TOKEN ]]; then
+            node --import tsx --input-type=module <<'JS'
+          import { createHash } from 'node:crypto';
+          import { SpritesClient } from '@fly/sprites';
+          import { spritePoolKey } from './packages/shared/src/statusKeys.ts';
+          const marker = createHash('sha256').update(spritePoolKey(process.env.APP)).digest('hex').slice(0, 16);
+          const client = new SpritesClient(process.env.SPRITES_TOKEN);
+          const names = [...await client.listAllSprites('propr-' + marker + '-'), ...await client.listAllSprites(process.env.OAUTH_FIXTURE_NAME)]
+            .map(sprite => sprite.name).filter(name => name.startsWith('propr-' + marker + '-') || name === process.env.OAUTH_FIXTURE_NAME);
+          if (names.length) throw new Error(`Sprites left behind: ${names.join(', ')}`);
+          JS
+          fi
+          echo "- No app, Machine or Sprite of this run is left behind" >> "$GITHUB_STEP_SUMMARY"
+      - name: Close fixture work
+        if: always() && env.ISSUE != ''
+        env:
+          GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          token=$(bash "$OUT/installation-token.sh")
+          echo "::add-mask::$token"
+          # $1 is the URI-encoded branch name; a branch already gone is fine.
+          delete_branch() {
+            status=$(curl --silent --show-error -o "$OUT/delete-ref.json" -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer $token" "https://api.github.com/repos/$REPO/git/refs/heads/$1")
+            [[ $status == 204 ]] && return 0
+            if [[ $status == 404 || $status == 422 ]] && jq -e --arg status "$status" '
+              .message | test("^Reference does not exist[.]?$"; "i") or ($status == "404" and . == "Not Found")
+            ' "$OUT/delete-ref.json" >/dev/null; then
+              return 0
+            fi
+            echo "::error::Deleting branch $1 returned HTTP $status"
+            return 1
+          }
+          encode='split("/") | map(@uri) | join("/")'
+          # ISSUE2 is the queued run of the PROPR_FLY_MACHINES_MAX mode.
+          for issue in "$ISSUE" ${ISSUE2:+"$ISSUE2"}; do
+            prs=$(gh pr list --repo "$REPO" --json number,headRefName,closingIssuesReferences,isCrossRepository |
+              jq -r --argjson issue "$issue" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | [.number, (.headRefName | '"$encode"')] | @tsv')
+            if [[ -n $prs ]]; then
+              while IFS=$'\t' read -r pr ref; do
+                gh pr close "$pr" --repo "$REPO"
+                delete_branch "$ref"
+              done <<< "$prs"
+            fi
+            # A run that failed before opening a PR still leaves its "<issue>/..." branch behind.
+            branches=$(gh api --paginate "repos/$REPO/git/matching-refs/heads/$issue/" |
+              jq -r '.[].ref | ltrimstr("refs/heads/") | '"$encode")
+            if [[ -n $branches ]]; then
+              while read -r ref; do
+                echo "Deleting leftover fixture branch $ref"
+                delete_branch "$ref"
+              done <<< "$branches"
+            fi
+            gh issue close "$issue" --repo "$REPO"
+          done

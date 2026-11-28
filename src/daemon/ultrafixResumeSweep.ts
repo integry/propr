@@ -31,11 +31,14 @@ export async function runUltrafixResumeSweep(
     }
 }
 
-/** Start the periodic sweep; a run still in progress is not overlapped by the next tick. */
+/**
+ * Start the periodic sweep; a run still in progress is not overlapped by the
+ * next tick. Returns the stop: clears the timer and waits for a run in progress.
+ */
 export function scheduleUltrafixResumeSweep(
     redisClient: Redis,
     options: { intervalMs?: number; sweep?: Sweep } = {},
-): NodeJS.Timeout {
+): () => Promise<void> {
     let running: Promise<void> | null = null;
     const intervalMs = options.intervalMs ?? ULTRAFIX_RESUME_SWEEP_INTERVAL_MS;
     const tick = (): void => {
@@ -45,5 +48,8 @@ export function scheduleUltrafixResumeSweep(
     tick();
     const interval = setInterval(tick, intervalMs);
     interval.unref?.();
-    return interval;
+    return async () => {
+        clearInterval(interval);
+        await running;
+    };
 }

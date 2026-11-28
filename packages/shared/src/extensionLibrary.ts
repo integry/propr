@@ -105,7 +105,7 @@ export function serializeAutomationExtensions(value: AutomationExtensions | null
   return JSON.stringify({ servers: value?.servers ?? [], skills: value?.skills ?? [] });
 }
 
-export type ExtensionSkipReason = 'not_found' | 'disabled' | 'runtime' | 'repository' | 'agent' | 'write_not_authorized' | 'secret_not_configured' | 'oauth_not_connected' | 'oauth_needs_sign_in' | 'run_limit' | 'package_unavailable' | 'package_integrity_mismatch';
+export type ExtensionSkipReason = 'not_found' | 'disabled' | 'runtime' | 'repository' | 'agent' | 'write_not_authorized' | 'secret_not_configured' | 'oauth_not_connected' | 'oauth_needs_sign_in' | 'run_limit' | 'package_unavailable' | 'package_integrity_mismatch' | 'agent_runtime_unsupported';
 /**
  * Skip reasons reported for auto-applied items too: a missing credential, or a
  * runtime without extension support (the item would otherwise apply).

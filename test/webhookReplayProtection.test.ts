@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import http from 'node:http';
 import express, { Request, Response } from 'express';
 import { handleWebhookRequest, WEBHOOK_DELIVERY_TTL_SECONDS } from '../packages/api/webhookHandler.js';
+import { recoverDirectWebhooks } from '../src/daemon/directWebhookRecovery.js';
 import { closeConnection } from '@propr/core';
 
 after(async () => {
@@ -36,19 +37,19 @@ const WEBHOOK_SECRET = 'test-webhook-secret';
 
 interface StoredEntry {
   value: string;
-  ex?: number;
+  expiresAt: number;
 }
 
-function createMockRedisClient() {
+function createMockRedisClient(now = Date.now) {
   const store = new Map<string, StoredEntry>();
   return {
     store,
-    set: async (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
-      if (opts?.NX && store.has(key)) {
-        return null;
-      }
-      store.set(key, { value, ex: opts?.EX });
-      return 'OK';
+    set: async (key: string, value: string, opts: { GET: true; EX: number }) => {
+      const time = now();
+      const previous = store.get(key);
+      store.set(key, { value, expiresAt: time + opts.EX * 1000 });
+      assert.equal(opts.GET, true);
+      return previous && previous.expiresAt > time ? previous.value : null;
     },
   };
 }
@@ -121,10 +122,14 @@ function sendWebhook(
 describe('Webhook Replay Protection', () => {
   let redisClient: ReturnType<typeof createMockRedisClient>;
   let server: http.Server;
+  let now: number;
+  let processed: number;
 
   beforeEach(async () => {
-    redisClient = createMockRedisClient();
-    const app = createTestApp(redisClient);
+    now = Date.UTC(2026, 10, 1);
+    processed = 0;
+    redisClient = createMockRedisClient(() => now);
+    const app = createTestApp(redisClient, async () => { processed++; });
     server = app.listen(0);
     await new Promise<void>((resolve) => server.on('listening', resolve));
   });
@@ -188,6 +193,41 @@ describe('Webhook Replay Protection', () => {
       assert.match(second.body, /Duplicate webhook delivery/);
     });
 
+    test('idle recovery rejects a recent duplicate after the original reservation would expire', async () => {
+      const guid = 'retained-across-idle-stop';
+      const body = makeBody();
+      const deliver = () => sendWebhook(server, body, {
+        'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+        'x-github-event': 'issues',
+        'x-github-delivery': guid,
+      });
+
+      assert.equal((await deliver()).status, 200);
+      now += WEBHOOK_DELIVERY_TTL_SECONDS * 1000 - 100;
+      const duplicate = await deliver();
+      assert.equal(duplicate.status, 409);
+      const deliveredAt = new Date(now).toISOString();
+      now += 200;
+
+      // GitHub's visible history contains only the rejected attempt.
+      const result = await recoverDirectWebhooks(deliveredAt, {
+        async list() {
+          return {
+            deliveries: [{ id: 2, guid, delivered_at: deliveredAt, status_code: duplicate.status, status: 'Failure' }],
+            next: null,
+            exhausted: false,
+          };
+        },
+        async redeliver(id) {
+          assert.equal(id, 2);
+          assert.equal((await deliver()).status, 409);
+          return false;
+        },
+      });
+      assert.deepEqual(result, { scanned: 1, failed: 1, redelivered: 1, skipped: 0 });
+      assert.equal(processed, 1);
+    });
+
     test('accepts different delivery IDs with same body', async () => {
       const body = makeBody();
 
@@ -209,6 +249,35 @@ describe('Webhook Replay Protection', () => {
     });
   });
 
+  test('a redelivery while the original is still processing runs the processor once', async () => {
+    let calls = 0;
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const app = createTestApp(redisClient, async () => {
+      calls++;
+      started.resolve();
+      await finish.promise;
+    });
+    const listener = app.listen(0);
+    await new Promise<void>(resolve => listener.on('listening', resolve));
+    const body = makeBody();
+    const headers = {
+      'x-hub-signature-256': signPayload(body, WEBHOOK_SECRET),
+      'x-github-event': 'issues',
+      'x-github-delivery': 'same-waking-delivery',
+    };
+    const original = sendWebhook(listener, body, headers);
+    try {
+      await started.promise;
+      assert.equal((await sendWebhook(listener, body, headers)).status, 409);
+      assert.equal(calls, 1);
+    } finally {
+      finish.resolve();
+      await new Promise<void>(resolve => listener.close(() => resolve()));
+    }
+    assert.equal((await original).status, 200);
+  });
+
   describe('Redis key storage', () => {
     test('stores delivery ID with correct key prefix and TTL', async () => {
       const body = makeBody();
@@ -219,7 +288,7 @@ describe('Webhook Replay Protection', () => {
       });
       const entry = redisClient.store.get('webhook:delivery:test-delivery-123');
       assert.ok(entry, 'delivery key should be stored');
-      assert.strictEqual(entry.ex, WEBHOOK_DELIVERY_TTL_SECONDS, 'delivery key TTL should match exported constant');
+      assert.strictEqual(entry.expiresAt, now + WEBHOOK_DELIVERY_TTL_SECONDS * 1000, 'delivery key TTL should match exported constant');
     });
 
     test('does not store key when delivery ID is missing', async () => {
@@ -469,100 +538,4 @@ describe('Webhook Replay Protection', () => {
       assert.strictEqual(forwarded.status, 200, 'forwarded delivery with fwd- prefix must not collide with original');
     });
   });
-
-  describe('Redis adapter shape (server.ts integration path)', () => {
-    /**
-     * Verifies that the Redis adapter pattern used in server.ts correctly
-     * reshapes the {NX, EX} options for the node-redis client. This test
-     * exercises the same adapter logic used in production to catch any
-     * mismatch between the handler's interface and node-redis's API.
-     */
-    test('adapter reshapes NX/EX options correctly', async () => {
-      const calls: Array<{ key: string; value: string; opts: Record<string, unknown> }> = [];
-
-      // Simulate the exact adapter from server.ts
-      const fakeNodeRedisClient = {
-        set: async (key: string, value: string, opts?: Record<string, unknown>) => {
-          calls.push({ key, value, opts: opts ?? {} });
-          return 'OK' as string | null;
-        },
-      };
-
-      const adapter = {
-        set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
-          if (opts) {
-            return fakeNodeRedisClient.set(key, value, {
-              ...(opts.NX ? { NX: true as const } : {}),
-              ...(opts.EX != null ? { EX: opts.EX } : {}),
-            }) as Promise<string | null>;
-          }
-          return fakeNodeRedisClient.set(key, value) as Promise<string | null>;
-        },
-      };
-
-      // Call through the adapter the same way handleWebhookRequest does
-      await adapter.set('webhook:delivery:test-id', '1', { NX: true, EX: 300 });
-
-      assert.strictEqual(calls.length, 1);
-      assert.strictEqual(calls[0].key, 'webhook:delivery:test-id');
-      assert.strictEqual(calls[0].value, '1');
-      assert.deepStrictEqual(calls[0].opts, { NX: true, EX: 300 });
-    });
-
-    test('adapter passes through plain set without options', async () => {
-      const calls: Array<{ key: string; value: string; opts: Record<string, unknown> }> = [];
-      const fakeNodeRedisClient = {
-        set: async (key: string, value: string, opts?: Record<string, unknown>) => {
-          calls.push({ key, value, opts: opts ?? {} });
-          return 'OK' as string | null;
-        },
-      };
-
-      const adapter = {
-        set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
-          if (opts) {
-            return fakeNodeRedisClient.set(key, value, {
-              ...(opts.NX ? { NX: true as const } : {}),
-              ...(opts.EX != null ? { EX: opts.EX } : {}),
-            }) as Promise<string | null>;
-          }
-          return fakeNodeRedisClient.set(key, value) as Promise<string | null>;
-        },
-      };
-
-      await adapter.set('some-key', 'some-value');
-      assert.strictEqual(calls.length, 1);
-      assert.deepStrictEqual(calls[0].opts, {});
-    });
-
-    test('adapter returns null when NX key already exists', async () => {
-      const existing = new Set<string>();
-      const fakeNodeRedisClient = {
-        set: async (key: string, _value: string, opts?: Record<string, unknown>) => {
-          if (opts?.NX && existing.has(key)) return null;
-          existing.add(key);
-          return 'OK' as string | null;
-        },
-      };
-
-      const adapter = {
-        set: (key: string, value: string, opts?: { NX?: boolean; EX?: number }) => {
-          if (opts) {
-            return fakeNodeRedisClient.set(key, value, {
-              ...(opts.NX ? { NX: true as const } : {}),
-              ...(opts.EX != null ? { EX: opts.EX } : {}),
-            }) as Promise<string | null>;
-          }
-          return fakeNodeRedisClient.set(key, value) as Promise<string | null>;
-        },
-      };
-
-      const first = await adapter.set('webhook:delivery:dup', '1', { NX: true, EX: 300 });
-      assert.strictEqual(first, 'OK');
-
-      const second = await adapter.set('webhook:delivery:dup', '1', { NX: true, EX: 300 });
-      assert.strictEqual(second, null, 'NX must return null for existing key');
-    });
-  });
-
 });

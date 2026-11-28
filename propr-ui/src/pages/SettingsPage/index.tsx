@@ -21,7 +21,7 @@ import { useDesktop } from '../../desktop/DesktopContext';
 import SettingsNavigation, { type SettingsNavigationSection } from './SettingsNavigation';
 import McpServerSection from './McpServerSection';
 import { useSettingsCategoryRoute } from './useSettingsCategoryRoute';
-import { agentExtensionSections, maintenanceSections, settingsDataSections } from './settingsDataSections';
+import { agentExtensionSections, idleShutdownSections, maintenanceSections, settingsDataSections } from './settingsDataSections';
 import SettingsSaveStatusBar from './SettingsSaveStatusBar';
 
 const AdminSettingsPage: React.FC = () => {
@@ -330,6 +330,7 @@ const AdminSettingsPage: React.FC = () => {
       content: <NotificationSettingsSection />
     },
     ...maintenanceSections(user),
+    ...idleShutdownSections(user),
     {
       id: 'usage-tips',
       category: 'experimental',

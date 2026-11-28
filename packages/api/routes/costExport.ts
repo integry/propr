@@ -7,6 +7,10 @@
  * recorded the same run (see `loggedRuns`). A dimension that was never
  * recorded is null, never a guess, and a group none of whose executions
  * recorded a cost has a null cost rather than $0.
+ *
+ * Compute figures sit beside the token cost: the sandbox wall time, CPU and
+ * compute cost the run's runtime reported (`compute_*` columns), counted only
+ * over executions that reported them, and null (not 0) when none did.
  */
 
 import type { Request, Response } from 'express';
@@ -35,6 +39,15 @@ export interface CostFigures {
   cache_read_input_tokens: number;
   /** Recorded cost; null when no execution in the row recorded one. */
   cost_usd: number | null;
+  /** Executions whose runtime reported compute usage. */
+  compute_runs: number;
+  /** Sandbox wall time of those executions. */
+  compute_wall_time_ms: number;
+  compute_queue_ms: number | null;
+  /** CPU-seconds; null when no execution in the row measured CPU. */
+  compute_cpu_seconds: number | null;
+  /** Compute cost (runtime-reported or rate table); null when no execution in the row was priced. */
+  compute_cost_usd: number | null;
 }
 
 export type CostRow = Partial<Record<CostGroupKey, string | null>> & CostFigures;
@@ -114,16 +127,18 @@ function loggedRuns(db: Knex, byTask: boolean, window: AnalyticsWindow | null): 
   return db.raw(`(select execution_id, agent_alias, execution_type from (?) where rank = 1) as run`, [ranked]);
 }
 
-interface ExecutionSchema { hasLogs: boolean; logsHaveTask: boolean; hasReasoning: boolean; hasCache: boolean }
+interface ExecutionSchema { hasLogs: boolean; logsHaveTask: boolean; hasReasoning: boolean; hasCache: boolean; hasCompute: boolean; hasQueue: boolean }
 
 async function probeExecutionSchema(db: Knex): Promise<ExecutionSchema> {
-  const [hasLogs, logsHaveTask, hasReasoning, hasCache] = await Promise.all([
+  const [hasLogs, logsHaveTask, hasReasoning, hasCache, hasCompute, hasQueue] = await Promise.all([
     hasTable(db, 'llm_logs'),
     hasColumn(db, 'llm_logs', 'task_id'),
     hasColumn(db, 'llm_executions', 'reasoning_level'),
     hasColumn(db, 'llm_executions', 'cache_read_input_tokens'),
+    hasColumn(db, 'llm_executions', 'compute_wall_time_ms'),
+    hasColumn(db, 'llm_executions', 'compute_queue_ms'),
   ]);
-  return { hasLogs, logsHaveTask, hasReasoning, hasCache };
+  return { hasLogs, logsHaveTask, hasReasoning, hasCache, hasCompute, hasQueue };
 }
 
 /**
@@ -134,7 +149,7 @@ async function probeExecutionSchema(db: Knex): Promise<ExecutionSchema> {
 function executionRows(
   db: Knex, schema: ExecutionSchema, groupBy: CostGroupKey[], { window, ...scope }: CostExportScope & { window: AnalyticsWindow | null },
 ): Knex.QueryBuilder {
-  const { hasLogs, logsHaveTask, hasReasoning, hasCache } = schema;
+  const { hasLogs, logsHaveTask, hasReasoning, hasCache, hasCompute } = schema;
   const detailSum = (executionColumn: string, detailColumn: string) => db.raw(`coalesce(e.${executionColumn}, (
     select sum(d.${detailColumn}) from llm_execution_details d where d.execution_id = e.execution_id
   ), 0) as ${executionColumn}`);
@@ -152,7 +167,11 @@ function executionRows(
     .select('e.task_id', 'e.cost_usd', detailSum('input_tokens', 'token_count_input'), detailSum('output_tokens', 'token_count_output'))
     .select(db.raw(hasCache
       ? 'coalesce(e.cache_creation_input_tokens, 0) as cache_creation_input_tokens, coalesce(e.cache_read_input_tokens, 0) as cache_read_input_tokens'
-      : '0 as cache_creation_input_tokens, 0 as cache_read_input_tokens'));
+      : '0 as cache_creation_input_tokens, 0 as cache_read_input_tokens'))
+    .select(db.raw(schema.hasQueue ? 'e.compute_queue_ms' : 'NULL as compute_queue_ms'))
+    .select(db.raw(hasCompute
+      ? 'e.compute_wall_time_ms, e.compute_cpu_seconds, e.compute_cost_usd'
+      : 'NULL as compute_wall_time_ms, NULL as compute_cpu_seconds, NULL as compute_cost_usd'));
   if (hasLogs && (groupBy.includes('agent') || groupBy.includes('execution_type'))) {
     query.leftJoin(loggedRuns(db, logsHaveTask, window), 'run.execution_id', 'e.execution_id');
   }
@@ -174,6 +193,13 @@ interface AggregateRow {
   cache_read_input_tokens?: number | string | null;
   cost_usd?: number | string | null;
   costed?: number | string;
+  compute_runs?: number | string;
+  compute_queue_ms?: number | string | null;
+  compute_wall_time_ms?: number | string | null;
+  compute_cpu_seconds?: number | string | null;
+  cpu_measured?: number | string;
+  compute_cost_usd?: number | string | null;
+  compute_costed?: number | string;
   [key: string]: unknown;
 }
 
@@ -186,11 +212,23 @@ function aggregate(db: Knex, rows: Knex.QueryBuilder): Knex.QueryBuilder {
     .sum('x.cache_creation_input_tokens as cache_creation_input_tokens')
     .sum('x.cache_read_input_tokens as cache_read_input_tokens')
     .sum('x.cost_usd as cost_usd')
-    .count('x.cost_usd as costed');
+    .count('x.cost_usd as costed')
+    .count('x.compute_wall_time_ms as compute_runs')
+    .sum('x.compute_wall_time_ms as compute_wall_time_ms')
+    .sum('x.compute_queue_ms as compute_queue_ms')
+    .sum('x.compute_cpu_seconds as compute_cpu_seconds')
+    .count('x.compute_cpu_seconds as cpu_measured')
+    .sum('x.compute_cost_usd as compute_cost_usd')
+    .count('x.compute_cost_usd as compute_costed');
 }
 
+const count = (value: unknown): number => Number(value ?? 0) || 0;
+
+/** A sum over the executions that recorded it; null when none did. */
+const measuredSum = (recorded: unknown, sum: unknown, digits: number): number | null =>
+  count(recorded) > 0 ? Number(count(sum).toFixed(digits)) : null;
+
 function figures(row: AggregateRow | undefined): CostFigures {
-  const count = (value: unknown) => Number(value ?? 0) || 0;
   return {
     executions: count(row?.executions),
     tasks: count(row?.tasks),
@@ -198,7 +236,12 @@ function figures(row: AggregateRow | undefined): CostFigures {
     output_tokens: count(row?.output_tokens),
     cache_creation_input_tokens: count(row?.cache_creation_input_tokens),
     cache_read_input_tokens: count(row?.cache_read_input_tokens),
-    cost_usd: count(row?.costed) > 0 ? Number(Number(row?.cost_usd ?? 0).toFixed(6)) : null,
+    cost_usd: measuredSum(row?.costed, row?.cost_usd, 6),
+    compute_runs: count(row?.compute_runs),
+    compute_wall_time_ms: count(row?.compute_wall_time_ms),
+    compute_queue_ms: row?.compute_queue_ms == null ? null : Number(row.compute_queue_ms),
+    compute_cpu_seconds: measuredSum(row?.cpu_measured, row?.compute_cpu_seconds, 3),
+    compute_cost_usd: measuredSum(row?.compute_costed, row?.compute_cost_usd, 6),
   };
 }
 
@@ -246,6 +289,7 @@ export async function loadCostExport(
 
 const FIGURE_COLUMNS: Array<keyof CostFigures> = [
   'executions', 'tasks', 'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'cost_usd',
+  'compute_runs', 'compute_wall_time_ms', 'compute_cpu_seconds', 'compute_cost_usd', 'compute_queue_ms',
 ];
 
 /** Header row, then one row per group: the grouped dimensions in column order, then the figures. */

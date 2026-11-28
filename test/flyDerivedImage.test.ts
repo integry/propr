@@ -1,0 +1,1487 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { after, afterEach, beforeEach, test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
+import zlib from 'node:zlib';
+import { FlyMachinesRuntime } from '../packages/core/src/agents/runtime/flyMachinesRuntime.ts';
+import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
+import { createAgentImagePackageIndex, indexCheckedAgentRuntimePackages, setAgentImagePackageIndexLoader } from '../packages/core/src/agents/runtime/agentRuntimePackageIndex.ts';
+import { agentRuntimePackageInstallCommand } from '../packages/core/src/agents/runtime/agentRuntimePackageProfile.ts';
+import { MachinesClient, MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.ts';
+import { flyConfig } from '../packages/core/src/agents/runtime/fly/config.ts';
+import { flyPackageImageTag, FlyPackageImages, resetFlyPackageImages } from '../packages/core/src/agents/runtime/fly/derivedImage.ts';
+import { builderLifetimeMs, DEFAULT_FLY_PACKAGE_IMAGE_TIMINGS } from '../packages/core/src/agents/runtime/fly/imageBuilder.ts';
+import { MEDIA, parseFlyImage, sha256, type ImageManifest, type RegistryApi } from '../packages/core/src/agents/runtime/fly/registry.ts';
+import { RUN, WRAPPER, wrapper } from '../packages/core/src/agents/runtime/fly/wrapper.ts';
+import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
+import { closeConnection } from '../packages/core/src/db/connection.ts';
+import logger from '../packages/core/src/utils/logger.ts';
+
+after(closeConnection);
+beforeEach(resetFlyPackageImages);
+afterEach(() => setAgentImagePackageIndexLoader());
+
+const BASE_DIGEST = 'sha256:' + 'a'.repeat(64);
+const TOKEN = 'FlyV1 synthetic-worker-credential';
+const env = (app: string, extra: Record<string, string> = {}) => ({ PROPR_FLY_APP: app, PROPR_FLY_API_TOKEN: TOKEN,
+    PROPR_FLY_IMAGE: 'registry.fly.io/agents@' + BASE_DIGEST, ...extra });
+
+const layerTar = Buffer.from('a tar stream of the files apt installed');
+const layerGz = zlib.gzipSync(layerTar);
+const layer = { digest: sha256(layerGz), size: layerGz.length, diffId: sha256(layerTar), changed: 3, removed: 0 };
+
+class Registry implements RegistryApi {
+    tags = new Map<string, string>();
+    blobs = new Map<string, Buffer>();
+    manifests = new Map<string, { mediaType: string; body: Buffer }>();
+    uploads: string[] = [];
+    fail?: Error;
+    lookups = 0;
+    /** Base tags and the manifest digest each names now; a test may move one. */
+    baseTags = new Map<string, string>([['current', BASE_DIGEST]]);
+    /** When set, base manifest reads wait for it. */
+    gate?: Promise<void>;
+    baseConfig = Buffer.from(JSON.stringify({ architecture: 'amd64', os: 'linux', config: { User: 'node' },
+        rootfs: { type: 'layers', diff_ids: ['sha256:' + '1'.repeat(64)] }, history: [{ created_by: 'base' }] }));
+    base: ImageManifest = { schemaVersion: 2, mediaType: MEDIA.dockerManifest,
+        config: { mediaType: 'application/vnd.docker.container.image.v1+json', digest: sha256(this.baseConfig), size: this.baseConfig.length },
+        layers: [{ mediaType: MEDIA.dockerLayer, digest: 'sha256:' + '2'.repeat(64), size: 10 }] };
+    constructor() { this.blobs.set(sha256(this.baseConfig), this.baseConfig); }
+    async manifest(repository: string, reference: string) {
+        this.lookups++;
+        await this.gate;
+        if (this.fail) throw this.fail;
+        assert.equal(repository, 'agents');
+        const digest = this.baseTags.get(reference) ?? reference;
+        assert.ok([...this.baseTags.values(), BASE_DIGEST].includes(digest), reference);
+        return { digest, manifest: this.base };
+    }
+    async resolve(_repository: string, tag: string) { return this.tags.get(tag); }
+    async blob(_repository: string, digest: string) { return this.blobs.get(digest)!; }
+    async upload(_repository: string, { digest, size }: { digest: string; size: number }, content: Buffer | string) {
+        const bytes = typeof content === 'string' ? fs.readFileSync(content) : content;
+        assert.equal(bytes.length, size);
+        assert.equal(sha256(bytes), digest);
+        this.uploads.push(digest);
+        this.blobs.set(digest, bytes);
+    }
+    async push(_repository: string, tag: string, { mediaType, body }: { mediaType: string; body: Buffer }) {
+        const digest = sha256(body);
+        this.manifests.set(digest, { mediaType, body });
+        this.tags.set(tag, digest);
+        return digest;
+    }
+}
+
+/** Build Machines report `buildState`; agent Machines finish as soon as they start. */
+class Machines implements MachinesApi {
+    launches: MachineLaunch[] = [];
+    live = new Set<string>();
+    peak = 0;
+    events: string[] = [];
+    started = new Set<string>();
+    buildState = 'built';
+    buildResult: Record<string, unknown> = { ms: 12_000, code: 0, tail: 'Setting up figlet', layer };
+    /** What the build Machine reports for its dpkg check of the layer; null for no report. */
+    verified?: Record<string, number> | null;
+    async create(launch: MachineLaunch) {
+        const id = 'm' + this.launches.length;
+        this.launches.push(launch);
+        this.live.add(id);
+        this.peak = Math.max(this.peak, this.live.size);
+        this.events.push('create ' + launch.config.processes[0].cmd[0]);
+        return id;
+    }
+    private isBuild(id: string) { return this.launches[Number(id.slice(1))].config.processes[0].cmd[0] === 'build'; }
+    async logs() {}
+    async exec(id: string, args: string[]) {
+        if (args[0] === '/usr/bin/touch') { if (args[1] === RUN + '/start') this.started.add(id); return { stdout: '', exit_code: 0 }; }
+        if (args[0] === '/bin/cat' && args[1] === RUN + '/packages-result') return { stdout: JSON.stringify({ ms: 5, code: 0, tail: '' }), exit_code: 0 };
+        if (args[0] === '/bin/cat') {
+            assert.equal(args[1], RUN + '/build-result');
+            // The wrapper's read-back of the layer against dpkg, for the packages build.json asked it to verify.
+            const verify = JSON.parse(this.file(this.launches[Number(id.slice(1))], RUN + '/build.json')!).verify as string[];
+            const verified = this.verified === undefined ? { packages: verify.length, files: 3, installedBytes: 0, layerBytes: 0 } : this.verified;
+            return { stdout: JSON.stringify({ ...this.buildResult, ...(verified && { verified }) }), exit_code: 0 };
+        }
+        const [op, file, offset, length] = args.slice(3);
+        if (op === 'probe') {
+            if (this.isBuild(id)) return { stdout: this.buildState + '\n0', exit_code: 0 };
+            return { stdout: this.started.has(id) ? 'exited 0\n1\n' : 'ready\n0', exit_code: 0 };
+        }
+        const files: Record<string, Buffer> = { [RUN + '/stdout']: Buffer.from('ok\n'), [RUN + '/stderr']: Buffer.alloc(0),
+            [RUN + '/workspace/status']: Buffer.from('bundle test'), [RUN + '/workspace/result.bundle']: Buffer.from([1]),
+            [RUN + '/layer.tar.gz']: layerGz };
+        const data = files[file];
+        if (op === 'size') return { stdout: String(data?.length), exit_code: data ? 0 : 44 };
+        return { stdout: data!.subarray(+offset, +offset + +length).toString('base64'), exit_code: 0 };
+    }
+    async find(): Promise<string | undefined> { return undefined; }
+    async signal() {}
+    async destroy(id: string) { this.live.delete(id); this.events.push('destroy ' + (this.isBuild(id) ? 'build' : 'launch')); }
+    async gone(id: string) { return !this.live.has(id); }
+    file(launch: MachineLaunch, guestPath: string) {
+        const entry = launch.config.files.find(f => f.guest_path === guestPath);
+        return entry && Buffer.from(entry.raw_value, 'base64').toString();
+    }
+}
+
+function spec(name = 'task') {
+    return new AgentRunSpecBuilder({
+        agentType: 'claude', image: 'propr/agent', name, stdin: true, user: '0:0', network: agentRunNetwork('bridge'),
+        workspace: { hostPath: '/unused', containerPath: '/home/node/workspace', readOnly: false, mode: 'clone',
+            clone: { remote: 'unused', baseRef: 'base', baseCommit: '0123', branch: 'test', resultDir: RESULT, script: WORKSPACE_TRANSPORT_SCRIPT } },
+    }).command('claude', '--version').build();
+}
+
+const FAST = { pollMs: 10, lostCreateWindowMs: 200, removalWindowMs: 200 };
+const runtime = (api: Machines, registry: Registry, app: string, packages: string[] | (() => string[]), extra: Record<string, string> = {},
+    timings: ConstructorParameters<typeof FlyPackageImages>[1] = FAST) =>
+    new FlyMachinesRuntime(api, env(app, extra), async () => typeof packages === 'function' ? packages() : packages, new FlyPackageImages(() => registry, timings));
+const isBuild = (launch: MachineLaunch) => launch.config.processes[0].cmd[0] === 'build';
+
+test('only registry.fly.io images with a tag or digest can be derived', () => {
+    assert.deepEqual(parseFlyImage('registry.fly.io/agents@' + BASE_DIGEST), { repository: 'agents', reference: BASE_DIGEST });
+    assert.deepEqual(parseFlyImage('registry.fly.io/agents:agent-1'), { repository: 'agents', reference: 'agent-1' });
+    assert.deepEqual(parseFlyImage('registry.fly.io/agents:agent-1@' + BASE_DIGEST), { repository: 'agents', reference: BASE_DIGEST });
+    for (const image of ['docker.io/propr/agent:1', 'registry.fly.io/agents', 'registry.fly.io/agents@sha256:test', 'registry.fly.io.evil/agents:1'])
+        assert.equal(parseFlyImage(image), undefined, image);
+    assert.notEqual(flyPackageImageTag(BASE_DIGEST, ['figlet']), flyPackageImageTag(BASE_DIGEST, ['figlet', 'jq']));
+    assert.notEqual(flyPackageImageTag(BASE_DIGEST, ['figlet']), flyPackageImageTag('sha256:' + 'b'.repeat(64), ['figlet']));
+    assert.match(flyPackageImageTag(BASE_DIGEST, ['figlet']), /^propr-packages-[0-9a-f]{24}$/);
+});
+
+test('the first run builds the derived image, the Machine runs it with nothing to install, and the next run reuses it', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'derive', ['figlet']);
+    const first = fly.start(spec());
+    assert.equal((await first.wait()).exitCode, 0);
+    const [build, agent] = api.launches;
+    // The build Machine starts from the base image by digest, runs the same apt argv as root and never sees the Fly token.
+    assert.equal(build.config.image, 'registry.fly.io/agents@' + BASE_DIGEST);
+    assert.deepEqual(build.config.processes[0].cmd, ['build']);
+    assert.equal(build.config.processes[0].user, 'root');
+    assert.equal(build.config.auto_destroy, true);
+    assert.deepEqual(JSON.parse(api.file(build, RUN + '/build.json')!).argv, agentRuntimePackageInstallCommand(['figlet']));
+    assert.equal(api.file(build, WRAPPER), wrapper);
+    assert.ok(!JSON.stringify(build).includes('synthetic-worker-credential'));
+    assert.ok(!JSON.stringify(build).includes(Buffer.from(TOKEN).toString('base64')));
+    // The build Machine is deleted before the agent Machine is created.
+    assert.deepEqual(api.events.slice(0, 3), ['create build', 'destroy build', 'create launch']);
+    assert.equal(api.peak, 1);
+    // The pushed manifest is the base plus the verified layer; the configuration gains its diff ID.
+    const tag = flyPackageImageTag(BASE_DIGEST, ['figlet']);
+    const digest = registry.tags.get(tag)!;
+    assert.equal(agent.config.image, 'registry.fly.io/agents@' + digest);
+    const pushed = registry.manifests.get(digest)!;
+    assert.equal(pushed.mediaType, MEDIA.dockerManifest);
+    const manifest = JSON.parse(pushed.body.toString()) as ImageManifest;
+    assert.deepEqual(manifest.layers, [...registry.base.layers, { mediaType: MEDIA.dockerLayer, digest: layer.digest, size: layer.size }]);
+    const config = JSON.parse(registry.blobs.get(manifest.config.digest)!.toString());
+    assert.deepEqual(config.rootfs.diff_ids, ['sha256:' + '1'.repeat(64), layer.diffId]);
+    assert.equal(config.config.User, 'node');
+    assert.equal(config.history.length, 2);
+    assert.equal(api.file(agent, RUN + '/packages.json'), undefined, 'no apt step at Machine start');
+    await first.release!();
+
+    resetFlyPackageImages(); // another worker, or a restart: the registry tag is the shared cache
+    const second = fly.start(spec('second'));
+    assert.equal((await second.wait()).exitCode, 0);
+    assert.equal(api.launches.length, 3);
+    assert.equal(api.launches[2].config.processes[0].cmd[0], 'launch');
+    assert.equal(api.launches[2].config.image, 'registry.fly.io/agents@' + digest);
+    await second.release!();
+});
+
+test('concurrent runs share one build', async () => {
+    const api = new Machines();
+    const fly = runtime(api, new Registry(), 'shared', ['figlet']);
+    const runs = ['a', 'b', 'c'].map(name => fly.start(spec(name)));
+    for (const run of runs) assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(api.launches.filter(l => l.config.processes[0].cmd[0] === 'build').length, 1);
+    await Promise.all(runs.map(run => run.release!()));
+});
+
+test('every agent Machine created from the derived image logs its run and image, also a run that reused the cached build', async t => {
+    const infos: Array<{ fields: Record<string, unknown>; msg: string }> = [];
+    t.mock.method(logger, 'info', (fields: Record<string, unknown>, msg: string) => { infos.push({ fields, msg }); });
+    const api = new Machines();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'launch-log', ['figlet']);
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    const second = fly.start(spec('second')); // the worker's cached image: no build and no registry log of its own
+    assert.equal((await second.wait()).exitCode, 0);
+    await second.release!();
+    const image = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet']));
+    assert.equal(infos.filter(i => i.msg === 'Installed agent runtime packages in a derived Fly Machine image').length, 1);
+    const launches = infos.filter(i => i.msg === 'Launched the agent Fly Machine from the derived image').map(i => i.fields);
+    assert.deepEqual(launches.map(({ run, image: launched, packageCount }) => ({ run, image: launched, packageCount })),
+        [{ run: 'first', image, packageCount: 1 }, { run: 'second', image, packageCount: 1 }]);
+    assert.deepEqual(launches.map(l => l.machine), api.launches.filter(l => !isBuild(l)).map(l => 'm' + api.launches.indexOf(l)));
+});
+
+test('an apt failure in the build fails the run with apt output and creates no agent Machine', async () => {
+    const api = new Machines();
+    api.buildState = 'build-failed';
+    api.buildResult = { ms: 2000, code: 100, tail: 'E: Unable to locate package figlett' };
+    const run = runtime(api, new Registry(), 'aptfail', ['figlett']).start(spec());
+    await assert.rejects(run.wait(), /could not install the agent runtime packages .*apt exited with code 100[\s\S]*Unable to locate package figlett/);
+    assert.deepEqual(api.events, ['create build', 'destroy build']);
+});
+
+test('a registry failure falls back to installing at Machine start, and is not retried at once', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    registry.fail = new Error('Fly registry GET returned HTTP 401');
+    const fly = runtime(api, registry, 'fallback', ['figlet']);
+    for (const name of ['first', 'second']) {
+        const run = fly.start(spec(name));
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+    }
+    assert.equal(api.launches.length, 2);
+    assert.equal(registry.lookups, 1, 'the second run uses the fallback without asking the registry again');
+    for (const launch of api.launches) {
+        assert.equal(launch.config.image, 'registry.fly.io/agents@' + BASE_DIGEST);
+        assert.deepEqual(JSON.parse(api.file(launch, RUN + '/packages.json')!).argv, agentRuntimePackageInstallCommand(['figlet']));
+    }
+});
+
+test('an image outside registry.fly.io installs at Machine start', async () => {
+    const api = new Machines();
+    const run = new FlyMachinesRuntime(api, { ...env('elsewhere'), PROPR_FLY_IMAGE: 'docker.io/propr/agent:1' }, async () => ['figlet'],
+        new FlyPackageImages(() => { throw new Error('no registry for this image'); })).start(spec());
+    await run.wait().catch(() => {});
+    assert.equal(api.launches.length, 1);
+    assert.ok(api.file(api.launches[0], RUN + '/packages.json'));
+    await run.release!().catch(() => {});
+});
+
+test('a layer that does not match its recorded digest is not pushed', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    api.buildResult = { ms: 1, code: 0, tail: '', layer: { ...layer, diffId: 'sha256:' + 'f'.repeat(64) } };
+    const run = runtime(api, registry, 'mismatch', ['figlet']).start(spec());
+    await run.wait().catch(() => {});
+    assert.equal(registry.tags.size, 0);
+    assert.deepEqual(registry.uploads, []);
+    assert.deepEqual(api.events.slice(0, 3), ['create build', 'destroy build', 'create launch']);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'), 'the run falls back to the start-time install');
+    await run.release!().catch(() => {});
+});
+
+test('a build whose layer was not verified against dpkg is neither pushed nor cached: the run installs at start', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    api.verified = null;
+    const fly = runtime(api, registry, 'unverified', ['figlet=2.2.5-3+b1', 'libc-bin:amd64']);
+    const run = fly.start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.deepEqual(JSON.parse(api.file(api.launches[0], RUN + '/build.json')!).verify, ['figlet', 'libc-bin'],
+        'the build Machine checks dpkg names, without pins or architecture qualifiers');
+    assert.equal(registry.tags.size, 0);
+    assert.deepEqual(registry.uploads, []);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'), 'the run falls back to the start-time install');
+    await run.release!();
+    const next = fly.start(spec('next'));
+    assert.equal((await next.wait()).exitCode, 0);
+    assert.equal(api.launches.filter(isBuild).length, 1, 'no digest was cached, and the failure backs off');
+    assert.ok(api.file(api.launches[2], RUN + '/packages.json'));
+    await next.release!();
+});
+
+test('a layer smaller than the package files the build Machine read back is a failed build', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    // The fixture layer is a few dozen bytes; the build Machine reports 702 KiB of figlet files in it.
+    api.verified = { packages: 1, files: 40, installedBytes: 702 * 1024, layerBytes: 702 * 1024 };
+    const run = runtime(api, registry, 'small-layer', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(registry.tags.size, 0);
+    assert.deepEqual(registry.uploads, []);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'), 'the run falls back to the start-time install');
+    await run.release!();
+});
+
+test('a layer smaller than apt\'s Installed-Size is pushed when dpkg path-exclude kept the docs out', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    // Installed-Size counts the docs and locales a slim image never unpacks; the files in the layer fit it.
+    api.verified = { packages: 1, files: 4, installedBytes: 702 * 1024, layerBytes: layerTar.length };
+    const run = runtime(api, registry, 'excluded-docs', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(registry.tags.size, 1, 'the derived image is pushed');
+    assert.equal(api.file(api.launches[1], RUN + '/packages.json'), undefined, 'the agent Machine installs nothing');
+    await run.release!();
+});
+
+/** The build Machine's deletion fails; `gone` reports it present until the test says otherwise. */
+class StuckBuilder extends Machines {
+    present = true;
+    override async destroy(id: string) {
+        if (this.launches[Number(id.slice(1))].config.processes[0].cmd[0] === 'build') throw new Error('Fly API 503');
+        return super.destroy(id);
+    }
+    override async gone(id: string) { return id === 'm0' ? !this.present : super.gone(id); }
+}
+
+test('the run waits for the build Machine to be gone before creating its agent Machine', async () => {
+    const api = new StuckBuilder();
+    const run = runtime(api, new Registry(), 'stuck', ['figlet']).start(spec());
+    await delay(200);
+    assert.deepEqual(api.events, ['create build'], 'no agent Machine while the build Machine may still exist');
+    api.present = false; // its guest exited and Fly destroyed it
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.deepEqual(api.events, ['create build', 'create launch', 'destroy launch']);
+    await run.release!();
+});
+
+test('a run cancelled during a shared build leaves the build to finish and delete its Machine before the next agent Machine', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    let open!: () => void;
+    registry.gate = new Promise(resolve => { open = resolve; });
+    const fly = runtime(api, registry, 'cancelled', ['figlet']);
+    const cancel = new AbortController();
+    const first = fly.start(spec('first'), { signal: cancel.signal });
+    while (!registry.lookups) await delay(5);
+    cancel.abort(new Error('cancelled')); // while the shared preparation awaits the registry, before its build Machine exists
+    await assert.rejects(first.wait(), /cancelled/);
+    await first.release?.().catch(() => {});
+    assert.deepEqual(api.events, [], 'the cancelled run created no Machine');
+    const second = fly.start(spec('second'));
+    open();
+    assert.equal((await second.wait()).exitCode, 0);
+    // The next run joins the shared build; its build Machine is gone before the agent Machine exists.
+    assert.deepEqual(api.events, ['create build', 'destroy build', 'create launch', 'destroy launch']);
+    assert.equal(api.peak, 1);
+    assert.equal(api.launches.at(-1)!.config.image, 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet'])));
+    await second.release!();
+});
+
+test('a build Machine create with an unknown outcome (its lookup fails too) fails the run and creates no agent Machine', async () => {
+    const api = new Machines();
+    api.find = async () => { throw new Error('lookup failed'); };
+    const create = api.create.bind(api);
+    api.create = async launch => {
+        if (launch.config.processes[0].cmd[0] === 'build') { await create(launch); throw new Error('socket hang up'); }
+        return create(launch);
+    };
+    const run = runtime(api, new Registry(), 'unknown', ['figlet']).start(spec());
+    await assert.rejects(run.wait(), /build Machine creation could not be confirmed/);
+    assert.deepEqual(api.events, ['create build']);
+    await run.release?.().catch(() => {});
+});
+
+test('a base tag is resolved for every run, and a push to it selects a new derived image', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'tagged', ['figlet'], { PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' });
+    const go = async (name: string) => {
+        const run = fly.start(spec(name));
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+        return api.launches.at(-1)!;
+    };
+    const first = await go('first');
+    const derivedA = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet']));
+    assert.equal(first.config.image, derivedA);
+    assert.equal((await go('unchanged')).config.image, derivedA, 'an unchanged tag reuses the cached image');
+    assert.equal(api.launches.filter(l => l.config.processes[0].cmd[0] === 'build').length, 1);
+
+    const moved = 'sha256:' + 'b'.repeat(64);
+    registry.baseTags.set('current', moved); // the operator pushes a new base image to the same tag
+    const third = await go('moved');
+    const builds = api.launches.filter(l => l.config.processes[0].cmd[0] === 'build');
+    assert.equal(builds.length, 2);
+    assert.equal(builds[1].config.image, 'registry.fly.io/agents@' + moved, 'the new build starts from the manifest the tag names now');
+    const derivedB = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(moved, ['figlet']));
+    assert.notEqual(derivedB, derivedA);
+    assert.equal(third.config.image, derivedB);
+    assert.equal(registry.lookups, 3, 'one base manifest read per run');
+});
+
+function python(code: string, ...args: string[]) {
+    return execFileSync('python3', ['-I', '-c', wrapper + '\n' + code, ...args], { encoding: 'utf8' });
+}
+
+test('the wrapper layer holds what changed, whiteouts for removals, and matching digests', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-layer-'));
+    try {
+        for (const dir of ['usr/bin', 'usr/share/doc/old', 'etc', 'opt/propr', 'var/cache/apt/archives']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+        fs.writeFileSync(path.join(root, 'usr/bin/kept'), 'unchanged');
+        fs.writeFileSync(path.join(root, 'usr/share/doc/old/readme'), 'removed with its directory');
+        fs.writeFileSync(path.join(root, 'etc/config'), 'v1');
+        fs.writeFileSync(path.join(root, 'etc/removed'), 'gone');
+        const out = path.join(root, '..', path.basename(root) + '.tar.gz');
+        const result = JSON.parse(python(`
+root = sys.argv[1]
+before = snapshot(root)
+time.sleep(0.05)
+open(os.path.join(root, 'usr/bin/figlet'), 'w').write('new binary')
+os.symlink('figlet', os.path.join(root, 'usr/bin/figlet-link'))
+open(os.path.join(root, 'etc/config'), 'w').write('v2')
+os.remove(os.path.join(root, 'etc/removed'))
+os.remove(os.path.join(root, 'usr/share/doc/old/readme'))
+os.rmdir(os.path.join(root, 'usr/share/doc/old'))
+open(os.path.join(root, 'opt/propr/ignored'), 'w').write('wrapper files are not image content')
+open(os.path.join(root, 'var/cache/apt/archives/figlet.deb'), 'w').write('download cache')
+print(json.dumps(write_layer(before, snapshot(root), sys.argv[2], root)))
+`, root, out));
+        const gz = fs.readFileSync(out);
+        assert.equal(result.digest, sha256(gz));
+        assert.equal(result.size, gz.length);
+        assert.equal(result.diffId, sha256(zlib.gunzipSync(gz)));
+        const members = python(`
+import tarfile
+with tarfile.open(sys.argv[1]) as tar:
+    for m in tar.getmembers():
+        print(m.name, m.type.decode(), m.linkname)
+`, out).trim().split('\n').map(line => line.trimEnd());
+        assert.deepEqual(members, [
+            'etc 5', 'etc/.wh.removed 0', 'etc/config 0',
+            'usr 5', 'usr/bin 5', 'usr/bin/figlet 0', 'usr/bin/figlet-link 2 figlet',
+            'usr/share 5', 'usr/share/doc 5', 'usr/share/doc/.wh.old 0',
+        ]);
+        fs.rmSync(out);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// A fake dpkg on a real file tree: the wrapper's capture and its read-back check, on an
+// overlay-like root where regular files report another device than the root directory.
+const FAKE_INSTALL = `
+import builtins
+root, out, bindir = sys.argv[1], sys.argv[2], sys.argv[3]
+real_lstat = os.lstat
+def overlay_lstat(p, *a, **k):
+    st = real_lstat(p, *a, **k)
+    if stat.S_ISDIR(st.st_mode):
+        return st
+    # Overlayfs with layers on different filesystems: a file reports its layer's device.
+    return os.stat_result((st.st_mode, st.st_ino, st.st_dev + 1) + tuple(st)[3:])
+os.lstat = overlay_lstat
+before = snapshot(root)
+before_installed = dpkg_installed(os.path.join(bindir, 'dpkg-query'))
+time.sleep(0.05)
+files = {'usr/bin/fakefig': 'x' * 3000, 'usr/share/fakefig/standard.flf': 'f' * 5000, 'usr/share/fakefig/big.flf': 'b' * 9000,
+         'var/lib/dpkg/info/fakefig.list': ''}
+for rel, content in files.items():
+    os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+    open(os.path.join(root, rel), 'w').write(content)
+os.symlink('fakefig', os.path.join(root, 'usr/bin/fakefig-alias'))
+open(os.path.join(bindir, 'installed'), 'w').write('1')
+after = snapshot(root)
+skip = sys.argv[4] if len(sys.argv) > 4 else None
+if skip:
+    del after[skip]
+layer = write_layer(before, after, out, root)
+try:
+    verified = verify_layer(['fake-virtual', 'basepkg'], before_installed, before, after, out, root, os.path.join(bindir, 'dpkg-query'))
+except RuntimeError as error:
+    verified = {'error': str(error)}
+print(json.dumps({'layer': layer, 'verified': verified}))
+`;
+
+function fakeDpkg(dir: string, installedKiB = 17) {
+    // dpkg-query -W lists basepkg before the install and fakefig (providing fake-virtual) after it; -L lists their files.
+    fs.writeFileSync(path.join(dir, 'dpkg-query'), `#!/bin/sh
+here=$(dirname "$0")
+if [ "$1" = "-W" ]; then
+  printf 'basepkg\tinstall ok installed\t4\t\n'
+  [ -f "$here/installed" ] && printf 'fakefig\tinstall ok installed\t${installedKiB}\tfake-virtual\n'
+  exit 0
+fi
+case "$2" in
+  fakefig) printf '/.\n/usr\n/usr/bin\n/usr/bin/fakefig\n/usr/bin/fakefig-alias\n/bin/fakefig\n/usr/share/fakefig/standard.flf\n/usr/share/fakefig/big.flf\n/usr/share/doc/fakefig/copyright\ndiverted by other to: /usr/bin/x\n' ;;
+  basepkg) printf '/usr/bin/base-tool\n' ;;
+esac
+`, { mode: 0o755 });
+}
+
+test('the build layer captures every file a package installs, on an overlay root, and the dpkg read-back confirms it', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-capture-'));
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-dpkg-'));
+    try {
+        for (const dir of ['usr/bin', 'usr/share/doc', 'etc/dpkg/dpkg.cfg.d', 'var/lib/dpkg/info']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+        fs.symlinkSync('usr/bin', path.join(root, 'bin')); // merged /usr: dpkg -L may name /bin/fakefig
+        fs.writeFileSync(path.join(root, 'usr/bin/base-tool'), 'in the base image');
+        // Slim images drop docs: dpkg -L lists the copyright file, which is never unpacked.
+        fs.writeFileSync(path.join(root, 'etc/dpkg/dpkg.cfg.d/docker'), 'path-exclude /usr/share/doc/*\npath-include /usr/share/doc/*/keep\n');
+        fakeDpkg(bin);
+        const out = path.join(bin, 'layer.tar.gz');
+        const result = JSON.parse(python(FAKE_INSTALL, root, out, bin));
+        // The package's regular files in the layer: the symlink has no data, the base file is not in the layer.
+        assert.deepEqual(result.verified, { packages: 2, files: 6, installedBytes: 17 * 1024, layerBytes: 3000 + 5000 + 9000 });
+        const members = python(`
+import tarfile
+with tarfile.open(sys.argv[1]) as tar:
+    for m in tar.getmembers():
+        print(m.name, m.size)
+`, out).trim().split('\n');
+        for (const file of ['usr/bin/fakefig 3000', 'usr/share/fakefig/standard.flf 5000', 'usr/share/fakefig/big.flf 9000', 'usr/bin/fakefig-alias 0'])
+            assert.ok(members.includes(file), `${file} in ${members.join(', ')}`);
+        assert.ok(!members.some(member => member.startsWith('usr/bin/base-tool')), 'unchanged base files stay out of the layer');
+        const raw = zlib.gunzipSync(fs.readFileSync(out)).length;
+        assert.ok(raw >= 3000 + 5000 + 9000, `uncompressed layer ${raw} bytes holds the installed files`);
+
+        // A file the capture missed (here: dropped from the post-install snapshot) fails the build.
+        fs.rmSync(path.join(bin, 'installed'));
+        for (const rel of ['usr/bin/fakefig', 'usr/bin/fakefig-alias', 'usr/share/fakefig/standard.flf', 'usr/share/fakefig/big.flf']) fs.rmSync(path.join(root, rel));
+        const missed = JSON.parse(python(FAKE_INSTALL, root, out, bin, '/usr/share/fakefig/big.flf'));
+        assert.match(missed.verified.error, /fakefig installed \/usr\/share\/fakefig\/big\.flf, but the layer does not contain it/);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(bin, { recursive: true, force: true });
+    }
+});
+
+test('a package whose Installed-Size is mostly docs dpkg path-exclude keeps out has a layer that passes the size check', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-capture-docs-'));
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-dpkg-docs-'));
+    try {
+        for (const dir of ['usr/bin', 'usr/share/doc', 'etc/dpkg/dpkg.cfg.d', 'var/lib/dpkg/info']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+        fs.symlinkSync('usr/bin', path.join(root, 'bin'));
+        fs.writeFileSync(path.join(root, 'usr/bin/base-tool'), 'in the base image');
+        fs.writeFileSync(path.join(root, 'etc/dpkg/dpkg.cfg.d/docker'), 'path-exclude /usr/share/doc/*\n');
+        // apt counts 2 MiB for fakefig: its docs, which the slim image never unpacks.
+        fakeDpkg(bin, 2048);
+        const out = path.join(bin, 'layer.tar.gz');
+        const result = JSON.parse(python(FAKE_INSTALL, root, out, bin));
+        assert.equal(result.verified.installedBytes, 2048 * 1024);
+        const raw = zlib.gunzipSync(fs.readFileSync(out)).length;
+        assert.ok(raw < result.verified.installedBytes, `the layer (${raw} bytes) is smaller than Installed-Size`);
+        assert.equal(result.verified.layerBytes, 3000 + 5000 + 9000);
+        assert.ok(raw >= result.verified.layerBytes, 'the worker\'s size check passes');
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(bin, { recursive: true, force: true });
+    }
+});
+
+test('a hard-linked package file counts once toward the layer bytes, as tar stores its data once', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-capture-links-'));
+    try {
+        for (const dir of ['usr/bin', 'out']) fs.mkdirSync(path.join(root, dir), { recursive: true });
+        const result = JSON.parse(python(`
+root = sys.argv[1]
+before = snapshot(root)
+time.sleep(0.05)
+open(os.path.join(root, 'usr/bin/tool'), 'w').write('t' * 4000)
+os.link(os.path.join(root, 'usr/bin/tool'), os.path.join(root, 'usr/bin/tool-alias'))
+after = snapshot(root)
+out = os.path.join(root, 'out', 'layer.tar.gz')
+write_layer(before, after, out, root)
+files = ['/usr/bin/tool', '/usr/bin/tool-alias']
+installed = lambda q='': {'tool': (4096, set())}
+dpkg_installed = installed
+verified = verify_layer(['tool'], {}, before, after, out, root, dpkg_list=lambda name: files)
+raw = len(gzip.open(out).read())
+print(json.dumps({'verified': verified, 'raw': raw}))
+`, root));
+        assert.equal(result.verified.layerBytes, 4000);
+        assert.ok(result.raw >= result.verified.layerBytes);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an exception anywhere in the wrapper build ends it with build-error and the message', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-build-error-'));
+    try {
+        fs.writeFileSync(path.join(dir, 'build.json'), JSON.stringify({ argv: ['true'], path: '/usr/bin:/bin', timeout: 1000, verify: [] }));
+        python(`
+run = Path(sys.argv[1])
+def snapshot(root='/'):
+    raise OSError('snapshot failed: no space left on device')
+wait_for_ack = lambda idle: None
+build()
+`, dir);
+        assert.equal(fs.readFileSync(path.join(dir, 'status'), 'utf8'), 'build-error\n');
+        const result = JSON.parse(fs.readFileSync(path.join(dir, 'build-result'), 'utf8'));
+        assert.equal(result.error, 'OSError: snapshot failed: no space left on device');
+        assert.equal(result.code, null);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The production build verifies with the default root '/': real host paths outside the
+// excluded mounts, a fake dpkg, and before/after snapshots that say which files changed.
+test('the dpkg read-back under the production root checks package files: a missing or uncaptured file fails, an unchanged base file passes', () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-root-dpkg-'));
+    try {
+        const file = fs.realpathSync('/usr/bin/env');
+        const missing = path.join(path.dirname(file), 'propr-missing-' + crypto.randomUUID());
+        fs.writeFileSync(path.join(bin, 'dpkg-query'), `#!/bin/sh
+if [ "$1" = "-W" ]; then printf 'fakepkg\\tinstall ok installed\\t1\\t\\n'; exit 0; fi
+printf '/.\\n${path.dirname(file)}\\n${file}\\n'
+[ -n "$MISSING" ] && printf '%s\\n' "$MISSING"
+exit 0
+`, { mode: 0o755 });
+        const out = path.join(bin, 'layer.tar.gz');
+        const verify = (mode: string, extra: Record<string, string> = {}) => JSON.parse(execFileSync('python3', ['-I', '-c', wrapper + `
+import tarfile
+file, out, query, mode = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+assert image_path(file) == file, image_path(file)
+with tarfile.open(out, 'w:gz') as tar:
+    if mode == 'captured':
+        tar.add(file, arcname=file[1:], recursive=False)
+meta = (1, 2, 3)
+before = {file: meta} if mode in ('unchanged', 'missing') else {}
+after = {file: meta}
+try:
+    print(json.dumps(verify_layer(['fakepkg'], {'fakepkg'}, before, after, out, dpkg_query=query)))
+except RuntimeError as error:
+    print(json.dumps({'error': str(error)}))
+`, file, out, path.join(bin, 'dpkg-query'), mode], { encoding: 'utf8', env: { ...process.env, ...extra } }));
+        assert.deepEqual(verify('unchanged'), { packages: 1, files: 1, installedBytes: 0, layerBytes: 0 }, 'an unchanged base file passes');
+        assert.deepEqual(verify('captured'), { packages: 1, files: 1, installedBytes: 0, layerBytes: fs.statSync(file).size }, 'a file in the layer passes');
+        assert.equal(verify('omitted').error, `fakepkg installed ${file}, but the layer does not contain it`);
+        assert.equal(verify('missing', { MISSING: missing }).error, `fakepkg lists ${missing}, which does not exist after the install`);
+    } finally { fs.rmSync(bin, { recursive: true, force: true }); }
+});
+
+// Applies a layer the way container runtimes do: a whiteout removes its target,
+// an entry replaces a path of another type. Unlike tarfile it refuses to resolve
+// a member's parent through anything but a real directory.
+const APPLY_AND_COMPARE = `
+import shutil, tarfile
+def tree(root):
+    out = {}
+    for d, dirs, files in os.walk(root):
+        for name in dirs + files:
+            p = os.path.join(d, name)
+            st = os.lstat(p)
+            kind = 'link:' + os.readlink(p) if stat.S_ISLNK(st.st_mode) else 'dir' if stat.S_ISDIR(st.st_mode) else 'file:' + open(p).read()
+            out[os.path.relpath(p, root)] = kind
+    return out
+lower, upper, layer = sys.argv[1], sys.argv[2], sys.argv[3]
+with tarfile.open(layer) as tar:
+    for m in tar.getmembers():
+        parent = lower
+        for part in os.path.dirname(m.name).split('/') if os.path.dirname(m.name) else []:
+            parent = os.path.join(parent, part)
+            if not stat.S_ISDIR(os.lstat(parent).st_mode):
+                raise SystemExit('member ' + m.name + ' resolves through a non-directory')
+        base = os.path.basename(m.name)
+        if base.startswith('.wh.'):
+            p = os.path.join(parent, base[4:])
+            if os.path.isdir(p) and not os.path.islink(p): shutil.rmtree(p)
+            elif os.path.lexists(p): os.remove(p)
+            continue
+        p = os.path.join(lower, m.name)
+        if os.path.lexists(p) and not (m.isdir() and os.path.isdir(p) and not os.path.islink(p)):
+            shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else os.remove(p)
+        tar.extract(m, lower)
+print(json.dumps({'applied': tree(lower), 'expected': tree(upper)}))
+`;
+
+for (const kind of ['symlink', 'regular file'] as const) {
+    test(`a directory replaced by a ${kind} applies to the post-install tree`, () => {
+        const base = fs.mkdtempSync(path.join(os.tmpdir(), 'fly-replace-'));
+        const root = path.join(base, 'root');
+        const lower = path.join(base, 'lower');
+        const out = path.join(base, 'layer.tar.gz');
+        try {
+            // '-tool' sorts before '.wh.-tool': the whiteout must still come first.
+            for (const name of ['tool', '-tool']) {
+                fs.mkdirSync(path.join(root, 'usr/share', name, 'nested'), { recursive: true });
+                fs.writeFileSync(path.join(root, 'usr/share', name, 'old'), 'v1');
+                fs.writeFileSync(path.join(root, 'usr/share', name, 'nested/deep'), 'v1');
+            }
+            fs.mkdirSync(path.join(root, 'opt/tool-2'), { recursive: true });
+            fs.cpSync(root, lower, { recursive: true, verbatimSymlinks: true });
+            const result = JSON.parse(python(`
+root, kind = sys.argv[1], sys.argv[3]
+before = snapshot(root)
+time.sleep(0.05)
+import shutil
+for name in ['tool', '-tool']:
+    target = os.path.join(root, 'usr/share', name)
+    shutil.rmtree(target)
+    if kind == 'symlink':
+        os.symlink('/opt/tool-2', target)
+    else:
+        open(target, 'w').write('now a file')
+print(json.dumps(write_layer(before, snapshot(root), sys.argv[2], root)))
+`, root, out, kind));
+            assert.equal(result.removed, 2, 'one whiteout per replaced directory, none for its children');
+            const members = python(`
+import tarfile
+with tarfile.open(sys.argv[1]) as tar:
+    for m in tar.getmembers():
+        print(m.name, m.type.decode(), m.linkname)
+`, out).trim().split('\n').map(line => line.trimEnd());
+            const entry = (name: string) => kind === 'symlink' ? `usr/share/${name} 2 /opt/tool-2` : `usr/share/${name} 0`;
+            assert.deepEqual(members, ['usr 5', 'usr/share 5',
+                'usr/share/.wh.-tool 0', entry('-tool'), 'usr/share/.wh.tool 0', entry('tool')]);
+            const { applied, expected } = JSON.parse(python(APPLY_AND_COMPARE, lower, root, out));
+            assert.deepEqual(applied, expected);
+        } finally { fs.rmSync(base, { recursive: true, force: true }); }
+    });
+}
+
+test('digests in the test fixtures are real sha256 values', () => {
+    assert.equal(layer.digest, 'sha256:' + crypto.createHash('sha256').update(layerGz).digest('hex'));
+});
+
+test('the registry client resolves the amd64 manifest, uploads in chunks and keeps the token on registry.fly.io', async () => {
+    const amd64 = Buffer.from(JSON.stringify(new Registry().base));
+    const index = Buffer.from(JSON.stringify({ schemaVersion: 2, mediaType: MEDIA.ociIndex, manifests: [
+        { mediaType: MEDIA.ociManifest, digest: 'sha256:' + '9'.repeat(64), size: 1, platform: { os: 'unknown', architecture: 'unknown' } },
+        { mediaType: MEDIA.dockerManifest, digest: sha256(amd64), size: amd64.length, platform: { os: 'linux', architecture: 'amd64' } }] }));
+    const calls: Array<{ method: string; url: string; auth: string | null }> = [];
+    let tokenRequests = 0;
+    const fetcher = (async (input: string | URL, init: RequestInit = {}) => {
+        const url = new URL(String(input));
+        const headers = new Headers(init.headers);
+        const method = init.method ?? 'GET';
+        init.signal?.throwIfAborted();
+        if (url.pathname === '/token') {
+            tokenRequests++;
+            assert.equal(headers.get('authorization'), 'Basic ' + Buffer.from('x:' + TOKEN).toString('base64'));
+            assert.equal(url.searchParams.get('scope'), 'repository:agents:pull,push');
+            return Response.json({ token: 'registry-bearer' });
+        }
+        calls.push({ method, url: url.pathname + url.search, auth: headers.get('authorization') });
+        if (headers.get('authorization') !== 'Bearer registry-bearer')
+            return new Response(null, { status: 401, headers: { 'www-authenticate': 'Bearer realm="https://registry.fly.io/token",service="registry.fly.io",scope="repository:agents:pull,push"' } });
+        if (url.pathname === '/v2/agents/manifests/agent-1') return new Response(index);
+        if (url.pathname === '/v2/agents/manifests/' + sha256(amd64)) return new Response(amd64);
+        if (method === 'HEAD' && url.pathname.includes('/blobs/')) return new Response(null, { status: 404 });
+        if (method === 'POST') return new Response(null, { status: 202, headers: { location: '/v2/agents/blobs/uploads/u1?state=0' } });
+        if (method === 'PATCH') {
+            const body = Buffer.from(init.body as Uint8Array);
+            assert.equal(headers.get('content-range'), `0-${body.length - 1}`);
+            return new Response(null, { status: 202, headers: { location: 'https://registry.fly.io/v2/agents/blobs/uploads/u1?state=1' } });
+        }
+        if (method === 'PUT') return new Response(null, { status: 201 });
+        throw new Error('unexpected ' + method + ' ' + url);
+    }) as typeof fetch;
+    const { FlyRegistry } = await import('../packages/core/src/agents/runtime/fly/registry.ts');
+    const registry = new FlyRegistry(TOKEN, fetcher);
+    const resolved = await registry.manifest('agents', 'agent-1');
+    assert.equal(resolved.digest, sha256(amd64));
+    assert.equal(tokenRequests, 1);
+    await registry.upload('agents', layer, layerGz);
+    const put = calls.find(c => c.method === 'PUT')!;
+    assert.equal(put.url, '/v2/agents/blobs/uploads/u1?state=1&digest=' + encodeURIComponent(layer.digest));
+    assert.ok(calls.slice(1).every(c => c.auth === 'Bearer registry-bearer'));
+    // The push's own bound ends an upload in progress.
+    const pushed = calls.length;
+    await assert.rejects(registry.upload('agents', layer, layerGz, AbortSignal.abort(new Error('push deadline'))), /push deadline/);
+    assert.equal(calls.length, pushed, 'no request is sent once the push deadline passed');
+    // An upload location elsewhere never receives the token.
+    await assert.rejects((registry as unknown as { request(m: string, p: string): Promise<Response> }).request('PATCH', 'https://example.com/upload'),
+        /Refusing to send the Fly token/);
+});
+
+test('a lost build Machine create is looked up by name until it appears, and deleted before any agent Machine', async t => {
+    const registry = new Registry();
+    const events: string[] = [];
+    let lookups = 0;
+    let buildName: string | undefined;
+    const original = globalThis.fetch;
+    t.after(() => { globalThis.fetch = original; });
+    globalThis.fetch = (async (input: string | URL, init: RequestInit = {}) => {
+        const url = new URL(String(input));
+        const method = init.method ?? 'GET';
+        if (method === 'POST' && url.pathname === '/v1/apps/lost/machines') {
+            const launch = JSON.parse(String(init.body)) as MachineLaunch;
+            if (isBuild(launch)) {
+                buildName = launch.name;
+                events.push('POST build');
+                throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+            }
+            events.push('POST launch');
+            return Response.json({ error: 'end of test' }, { status: 422 });
+        }
+        if (method === 'GET' && url.searchParams.get('metadata.propr_run_id') === buildName) {
+            lookups++;
+            events.push('GET ' + lookups);
+            // Fly finishes creating it after the client's own three lookups.
+            return Response.json(lookups >= 4 ? [{ id: 'late1', name: buildName, state: 'created' }] : []);
+        }
+        if (method === 'DELETE' && url.pathname === '/v1/apps/lost/machines/late1') {
+            events.push('DELETE late1');
+            return new Response(null, { status: 200 });
+        }
+        if (method === 'GET' && url.pathname === '/v1/apps/lost/machines/late1') {
+            events.push('GONE late1'); // the build Machine's slot is freed only once Fly confirms it gone
+            return new Response(null, { status: 404 });
+        }
+        throw new Error('unexpected ' + method + ' ' + url);
+    }) as typeof fetch;
+    const fly = new FlyMachinesRuntime(undefined, env('lost'), async () => ['figlet'], new FlyPackageImages(() => registry, { ...FAST, lostCreateWindowMs: 5000 }));
+    const run = fly.start(spec());
+    await assert.rejects(run.wait(), /HTTP 422: end of test/);
+    await run.release?.().catch(() => {});
+    assert.deepEqual(events, ['POST build', 'GET 1', 'GET 2', 'GET 3', 'GET 4', 'DELETE late1', 'GONE late1', 'POST launch']);
+});
+
+/** Build Machine creates lose their response; `find` answers the lookups by name. */
+class LostBuilder extends Machines {
+    lose = true;
+    override async create(launch: MachineLaunch) {
+        if (isBuild(launch) && this.lose) { this.launches.push(launch); this.events.push('create build (lost)'); throw new Error('socket hang up'); }
+        return super.create(launch);
+    }
+}
+
+test('a lost build Machine create that stays absent for the lookup window falls back to the start-time install', async () => {
+    const api = new LostBuilder();
+    let lookups = 0;
+    api.find = async () => { lookups++; return undefined; };
+    const run = runtime(api, new Registry(), 'absent', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.ok(lookups >= 2, 'it kept looking for the whole window');
+    assert.deepEqual(api.events, ['create build (lost)', 'create launch', 'destroy launch']);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'));
+    await run.release!();
+});
+
+test('a lost build Machine create whose absence cannot be confirmed fails the run without an agent Machine', async () => {
+    const api = new LostBuilder();
+    api.find = async () => { throw new MachinesHttpError('GET', 403, 'token cannot list Machines'); };
+    const run = runtime(api, new Registry(), 'unconfirmed', ['figlet']).start(spec());
+    await assert.rejects(run.wait(), /build Machine creation could not be confirmed/);
+    assert.deepEqual(api.events, ['create build (lost)']);
+    await run.release?.().catch(() => {});
+});
+
+test('an apt failure is remembered for the base image and package list: later runs fail at once until the list changes', async () => {
+    const api = new Machines();
+    api.buildState = 'build-failed';
+    api.buildResult = { ms: 2000, code: 100, tail: 'E: Unable to locate package figlett' };
+    let packages = ['figlett'];
+    const fly = runtime(api, new Registry(), 'aptcache', () => packages);
+    for (const name of ['first', 'second', 'third']) {
+        const run = fly.start(spec(name));
+        await assert.rejects(run.wait(), /apt exited with code 100[\s\S]*Unable to locate package figlett/);
+        await run.release?.().catch(() => {});
+    }
+    assert.equal(api.launches.filter(isBuild).length, 1, 'one build Machine for three runs');
+    assert.equal(api.launches.filter(l => !isBuild(l)).length, 0);
+    packages = ['figlet'];
+    api.buildState = 'built';
+    api.buildResult = { ms: 12_000, code: 0, tail: '', layer };
+    const fixed = fly.start(spec('fixed'));
+    assert.equal((await fixed.wait()).exitCode, 0);
+    assert.equal(api.launches.filter(isBuild).length, 2, 'a changed list builds again');
+    await fixed.release!();
+});
+
+test('a cached derived image whose tag was deleted is rebuilt instead of launched', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'deleted', ['figlet'], {}, { ...FAST, recheckAfterMs: 0 });
+    const go = async (name: string) => {
+        const run = fly.start(spec(name));
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+    };
+    await go('first');
+    await go('kept');
+    assert.equal(api.launches.filter(isBuild).length, 1, 'the tag still names the image: reused');
+    registry.tags.clear(); // the operator deleted the propr-packages-* tag
+    await go('after-delete');
+    assert.equal(api.launches.filter(isBuild).length, 2);
+    assert.equal(api.launches.at(-1)!.config.image, 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet'])));
+});
+
+test('a Machine create refused for a cached derived image re-checks the registry once and retries', async () => {
+    class Refusing extends Machines {
+        refuse?: string;
+        override async create(launch: MachineLaunch) {
+            if (!isBuild(launch) && launch.config.image === this.refuse) {
+                this.refuse = undefined;
+                this.events.push('refused launch');
+                throw new MachinesHttpError('POST', 422, 'image not found');
+            }
+            return super.create(launch);
+        }
+    }
+    const api = new Refusing();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'refused', ['figlet']);
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    api.refuse = api.launches.at(-1)!.config.image;
+    registry.tags.clear();
+    await delay(2); // a rebuilt image gets another creation time, so another digest
+    const second = fly.start(spec('second'));
+    assert.equal((await second.wait()).exitCode, 0);
+    assert.equal(api.launches.filter(isBuild).length, 2, 'the missing tag was rebuilt');
+    assert.notEqual(api.launches.at(-1)!.config.image, api.launches[1].config.image);
+    assert.ok(api.events.includes('refused launch'));
+    await second.release!();
+});
+
+test('concurrent rechecks that both find the tag deleted share one replacement build', async () => {
+    class GatedRegistry extends Registry {
+        /** While set, derived-tag lookups wait for it; `waiting` counts the lookups held. */
+        resolveGate?: Promise<void>;
+        waiting = 0;
+        override async resolve(repository: string, tag: string) {
+            if (this.resolveGate) { this.waiting++; await this.resolveGate; }
+            return super.resolve(repository, tag);
+        }
+    }
+    const api = new Machines();
+    const registry = new GatedRegistry();
+    const fly = runtime(api, registry, 'recheck-race', ['figlet'], {}, { ...FAST, recheckAfterMs: 0 });
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    assert.equal(api.launches.filter(isBuild).length, 1);
+    registry.tags.clear(); // the operator deleted the propr-packages-* tag
+    let open!: () => void;
+    registry.resolveGate = new Promise<void>(resolve => { open = resolve; });
+    // Both runs capture the same cached entry and recheck it before either sees the tag is gone.
+    const runs = ['a', 'b'].map(name => fly.start(spec(name)));
+    while (registry.waiting < 2) await delay(5);
+    registry.resolveGate = undefined;
+    await delay(2); // a rebuilt image gets another creation time, so another digest
+    open();
+    for (const run of runs) assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(api.launches.filter(isBuild).length, 2, 'exactly one replacement build');
+    const rebuilt = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, ['figlet']));
+    assert.deepEqual(api.launches.slice(-2).map(launch => launch.config.image), [rebuilt, rebuilt]);
+    await Promise.all(runs.map(run => run.release!()));
+});
+
+test('a refused create under PROPR_FLY_MACHINES_MAX=1 gives up its slot to rebuild the image, then takes it again', { timeout: 15_000 }, async () => {
+    class Refusing extends Machines {
+        refuse?: string;
+        override async create(launch: MachineLaunch) {
+            if (!isBuild(launch) && launch.config.image === this.refuse) {
+                this.refuse = undefined;
+                this.events.push('refused launch');
+                throw new MachinesHttpError('POST', 422, 'image not found');
+            }
+            return super.create(launch);
+        }
+    }
+    const api = new Refusing();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'refused-capped', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' });
+    const plain = runtime(api, registry, 'refused-capped', () => [], { PROPR_FLY_MACHINES_MAX: '1' });
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    api.refuse = api.launches.at(-1)!.config.image;
+    registry.tags.clear();
+    await delay(2); // a rebuilt image gets another creation time, so another digest
+    api.events.length = 0;
+    const second = fly.start(spec('second'));
+    const result = await second.wait();
+    assert.equal(result.exitCode, 0);
+    assert.deepEqual(api.events, ['refused launch', 'create build', 'destroy build', 'create launch', 'destroy launch']);
+    assert.equal(api.launches.filter(isBuild).length, 2, 'the missing tag was rebuilt');
+    assert.equal(api.peak, 1);
+    assert.equal(typeof result.computeUsage?.queueMs, 'number');
+    await second.release!();
+    // The slot was freed exactly once: another run gets it.
+    const third = plain.start(spec('third'));
+    assert.equal((await third.wait()).exitCode, 0);
+    await third.release!();
+});
+
+test('a rebuild after a refused create that outlasts the boot timeout still gives the replacement Machine its boot window', async () => {
+    const registry = new Registry();
+    class Refusing extends Machines {
+        refuse?: string;
+        override async create(launch: MachineLaunch) {
+            if (!isBuild(launch) && launch.config.image === this.refuse) {
+                this.refuse = undefined;
+                this.events.push('refused launch');
+                registry.gate = delay(1500); // preparing the replacement image takes longer than the 1 s boot timeout
+                throw new MachinesHttpError('POST', 422, 'image not found');
+            }
+            return super.create(launch);
+        }
+    }
+    const api = new Refusing();
+    const fly = runtime(api, registry, 'refused-slow', ['figlet'], { PROPR_FLY_BOOT_TIMEOUT: '1' });
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    api.refuse = api.launches.at(-1)!.config.image;
+    registry.tags.clear();
+    const second = fly.start(spec('second'));
+    const result = await second.wait();
+    assert.ok(api.events.includes('refused launch'));
+    assert.equal(api.launches.filter(isBuild).length, 2, 'the missing tag was rebuilt');
+    const replacement = 'm' + (api.launches.length - 1);
+    assert.ok(api.started.has(replacement), 'the replacement Machine was started');
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.computeUsage!.imageWaitMs! >= 1400, String(result.computeUsage!.imageWaitMs));
+    await second.release!();
+});
+
+test('a Machine create refused for a derived image, then a registry failure, retries on the base image with a start-time install', async () => {
+    class Refusing extends Machines {
+        refuse?: string;
+        override async create(launch: MachineLaunch) {
+            if (!isBuild(launch) && launch.config.image === this.refuse) {
+                this.events.push('refused launch');
+                throw new MachinesHttpError('POST', 422, 'image not found');
+            }
+            return super.create(launch);
+        }
+    }
+    const api = new Refusing();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'refused-fallback', ['figlet']);
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    const derived = api.launches.at(-1)!.config.image;
+    assert.notEqual(derived, 'registry.fly.io/agents@' + BASE_DIGEST);
+    api.refuse = derived; // the derived image stays unavailable
+    registry.tags.clear();
+    registry.fail = new Error('Fly registry GET returned HTTP 503');
+    const second = fly.start(spec('second'));
+    assert.equal((await second.wait()).exitCode, 0);
+    await second.release!();
+    assert.deepEqual(api.events.filter(e => e === 'refused launch'), ['refused launch']);
+    const retry = api.launches.at(-1)!;
+    assert.equal(retry.config.image, 'registry.fly.io/agents@' + BASE_DIGEST, 'the fallback launches the configured base image');
+    assert.deepEqual(JSON.parse(api.file(retry, RUN + '/packages.json')!).argv, agentRuntimePackageInstallCommand(['figlet']));
+});
+
+test('deleting the build Machine has its own window: a delete that never succeeds fails the run in that window', async () => {
+    const api = new StuckBuilder();
+    const started = Date.now();
+    const run = runtime(api, new Registry(), 'stuck-window', ['figlet']).start(spec());
+    await assert.rejects(run.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    assert.ok(Date.now() - started < 5000);
+    assert.deepEqual(api.events, ['create build']);
+    await run.release?.().catch(() => {});
+});
+
+test('compute usage counts the wait for the derived image from dispatch', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    registry.gate = delay(150);
+    const run = runtime(api, registry, 'wait', ['figlet'], { PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' }).start(spec());
+    const result = await run.wait();
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.computeUsage!.imageWaitMs! >= 140, String(result.computeUsage!.imageWaitMs));
+    assert.ok(result.computeUsage!.wallTimeMs >= result.computeUsage!.imageWaitMs!);
+    assert.ok(result.computeUsage!.provisioningMs! >= result.computeUsage!.imageWaitMs!);
+    await run.release!();
+});
+
+test('a derived image built with a pinned version keeps serving it after the refreshed index drops the version', async () => {
+    const pinned = 'figlet=2.2.5-3+b1';
+    const indexWith = (version: string) => createAgentImagePackageIndex({ figlet: [version] });
+    setAgentImagePackageIndexLoader(async () => indexWith('2.2.5-3+b1'));
+    const api = new Machines();
+    const registry = new Registry();
+    const fly = new FlyMachinesRuntime(api, env('pinned'), indexCheckedAgentRuntimePackages(async () => [pinned]), new FlyPackageImages(() => registry, FAST));
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    const derived = 'registry.fly.io/agents@' + registry.tags.get(flyPackageImageTag(BASE_DIGEST, [pinned]));
+    // The archive moves on and the worker refreshes its index: the pinned version is no longer listed.
+    setAgentImagePackageIndexLoader(async () => indexWith('2.2.6-1'));
+    for (const name of ['cached', 'other-worker']) {
+        if (name === 'other-worker') resetFlyPackageImages(); // only the registry tag is left to find the image by
+        const run = fly.start(spec(name));
+        assert.equal((await run.wait()).exitCode, 0, name);
+        assert.equal(api.launches.at(-1)!.config.image, derived, name);
+        await run.release!();
+    }
+    assert.equal(api.launches.filter(isBuild).length, 1, 'the image already has the packages: nothing is rebuilt');
+    // A new installation is still checked: a rebuild, and a start-time install after a registry failure.
+    const launches = api.launches.length;
+    registry.tags.clear();
+    resetFlyPackageImages();
+    const rebuild = fly.start(spec('rebuild'));
+    await assert.rejects(rebuild.wait(), /Unknown version: figlet=2\.2\.5-3\+b1/);
+    await rebuild.release?.().catch(() => {});
+    registry.fail = new Error('Fly registry GET returned HTTP 503');
+    const fallback = fly.start(spec('fallback'));
+    await assert.rejects(fallback.wait(), /Unknown version: figlet=2\.2\.5-3\+b1/);
+    await fallback.release?.().catch(() => {});
+    assert.equal(api.launches.length, launches, 'no build or agent Machine to install a version the archive lacks');
+});
+
+/** While `stuck`, the build Machine's acknowledgement and delete fail; it stays present until a delete succeeds. */
+class UndeletableBuilder extends Machines {
+    stuck = true;
+    override async exec(id: string, args: string[]) {
+        if (this.stuck && args[0] === '/usr/bin/touch' && args[1] === RUN + '/packages-read') throw new Error('Fly API 503');
+        return super.exec(id, args);
+    }
+    override async destroy(id: string) {
+        if (this.stuck && isBuild(this.launches[Number(id.slice(1))])) throw new Error('Fly API 503');
+        return super.destroy(id);
+    }
+}
+
+test('a build Machine whose deletion is unconfirmed is deleted before any later run builds or creates an agent Machine', async () => {
+    const api = new UndeletableBuilder();
+    const registry = new Registry();
+    const fly = runtime(api, registry, 'undeletable', ['figlet'], { PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' });
+    const first = fly.start(spec('first'));
+    while (!registry.lookups) await delay(5);
+    // A second run is waiting on the registry when the shared build fails: it must not start a build beside the left-over Machine.
+    let open!: () => void;
+    registry.gate = new Promise(resolve => { open = resolve; });
+    const waiting = fly.start(spec('waiting'));
+    await assert.rejects(first.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    await first.release?.().catch(() => {});
+    open();
+    await assert.rejects(waiting.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    await waiting.release?.().catch(() => {});
+    const later = fly.start(spec('later'));
+    await assert.rejects(later.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    await later.release?.().catch(() => {});
+    assert.deepEqual(api.events, ['create build'], 'no second build Machine and no agent Machine while m0 may exist');
+    assert.deepEqual([...api.live], ['m0']);
+    // Fly recovers: the next run deletes the left-over build Machine first, then builds and runs.
+    api.stuck = false;
+    const recovered = fly.start(spec('recovered'));
+    assert.equal((await recovered.wait()).exitCode, 0);
+    assert.deepEqual(api.events.slice(0, 5), ['create build', 'destroy build', 'create build', 'destroy build', 'create launch']);
+    assert.equal(api.peak, 1);
+    await recovered.release!();
+});
+
+test('a lost build Machine create that could not be confirmed is looked up again before the next run builds', async () => {
+    const api = new LostBuilder();
+    let listing: 'failing' | 'visible' = 'failing';
+    api.find = async () => {
+        if (listing === 'failing') throw new MachinesHttpError('GET', 503, 'unavailable');
+        api.live.add('m0'); // Fly did create it
+        return 'm0';
+    };
+    const fly = runtime(api, new Registry(), 'lost-unresolved', ['figlet']);
+    const first = fly.start(spec('first'));
+    await assert.rejects(first.wait(), /build Machine creation could not be confirmed/);
+    await first.release?.().catch(() => {});
+    const second = fly.start(spec('second'));
+    await assert.rejects(second.wait(), /Could not look up Fly image build Machine propr-build-/);
+    await second.release?.().catch(() => {});
+    assert.deepEqual(api.events, ['create build (lost)'], 'no build or agent Machine while the lost one is unaccounted for');
+    listing = 'visible';
+    api.lose = false;
+    const third = fly.start(spec('third'));
+    assert.equal((await third.wait()).exitCode, 0);
+    assert.deepEqual(api.events.slice(0, 5), ['create build (lost)', 'destroy build', 'create build', 'destroy build', 'create launch']);
+    await third.release!();
+});
+
+test('a build Machine counts against PROPR_FLY_MACHINES_MAX: with one slot no agent Machine exists beside it', async () => {
+    const api = new Machines();
+    const fly = runtime(api, new Registry(), 'capped-build', () => [], { PROPR_FLY_MACHINES_MAX: '1' });
+    const derive = runtime(api, new Registry(), 'capped-build', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' });
+    const building = derive.start(spec('building'));
+    while (!api.launches.length) await delay(5);
+    // A run without packages needs no build, but its agent Machine waits for the build Machine's slot.
+    const other = fly.start(spec('other'));
+    const [built, plain] = await Promise.all([building.wait(), other.wait()]);
+    assert.equal(built.exitCode, 0);
+    assert.equal(plain.exitCode, 0);
+    assert.equal(api.peak, 1, 'never a build Machine and an agent Machine at once');
+    assert.deepEqual(api.events.slice(0, 2), ['create build', 'destroy build']);
+    // The capacity queue and the image wait are their own compute usage fields.
+    assert.equal(typeof built.computeUsage?.queueMs, 'number');
+    assert.equal(typeof built.computeUsage?.imageWaitMs, 'number');
+    assert.ok(built.computeUsage!.wallTimeMs >= built.computeUsage!.imageWaitMs! + built.computeUsage!.queueMs!);
+    assert.equal(plain.computeUsage?.imageWaitMs, undefined, 'no package list: no image wait');
+    await building.release!();
+    await other.release!();
+});
+
+test('an unconfirmed build Machine delete keeps its slot until a background retry confirms it gone', async () => {
+    const api = new UndeletableBuilder();
+    const timings = { ...FAST, reconcileMs: 20 };
+    const derive = runtime(api, new Registry(), 'capped-stuck', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' }, timings);
+    const failed = derive.start(spec('failed'));
+    await assert.rejects(failed.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    await failed.release?.().catch(() => {});
+    // A run for another list is not blocked by the obligation, but it waits for the slot m0 still holds.
+    const plain = runtime(api, new Registry(), 'capped-stuck', () => [], { PROPR_FLY_MACHINES_MAX: '1' }, timings).start(spec('plain'));
+    await delay(100);
+    assert.deepEqual(api.events, ['create build'], 'no agent Machine while the build Machine may exist');
+    api.stuck = false; // the next background retry deletes m0 and frees its slot
+    assert.equal((await plain.wait()).exitCode, 0);
+    assert.deepEqual(api.events.slice(0, 3), ['create build', 'destroy build', 'create launch']);
+    assert.equal(api.peak, 1);
+    await plain.release!();
+});
+
+const until = async (what: string, check: () => boolean, timeoutMs = 5_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!check()) {
+        if (Date.now() >= deadline) assert.fail(`timed out after ${timeoutMs} ms waiting until ${what}`);
+        await delay(5);
+    }
+};
+
+/** The build Machine's deletion returns, but Fly lists it (destroying, still counted) until the test says otherwise. */
+class LingeringBuilder extends Machines {
+    lingering = true;
+    override async gone(id: string) { return id === 'm0' && this.lingering ? false : super.gone(id); }
+}
+
+test('a build Machine whose deletion returned keeps its slot until Fly confirms it gone', async () => {
+    const api = new LingeringBuilder();
+    const timings = { ...FAST, removalWindowMs: 5000 };
+    const derive = runtime(api, new Registry(), 'capped-lingering', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' }, timings).start(spec('derive'));
+    await until('the build Machine deletion returned', () => api.events.includes('destroy build'));
+    // A run for no packages needs only the slot: it waits for the build Machine to be gone, not for the build's end.
+    const plain = runtime(api, new Registry(), 'capped-lingering', () => [], { PROPR_FLY_MACHINES_MAX: '1' }, timings).start(spec('plain'));
+    await delay(150);
+    assert.deepEqual(api.events, ['create build', 'destroy build'], 'no agent Machine while Fly still lists the build Machine');
+    api.lingering = false;
+    assert.equal((await plain.wait()).exitCode, 0);
+    assert.equal((await derive.wait()).exitCode, 0);
+    assert.deepEqual(api.events.slice(0, 3), ['create build', 'destroy build', 'create launch']);
+    assert.equal(api.peak, 1);
+    await Promise.all([derive, plain].map(run => run.release!()));
+});
+
+/** Every deletion of the build Machine fails; whether it still exists is answered by the real Machines client's GET. */
+class DeletedOutsideBuilder extends UndeletableBuilder {
+    client = new MachinesClient(flyConfig(env('capped-outside')));
+    override async gone(id: string) { return isBuild(this.launches[Number(id.slice(1))]) ? this.client.gone(id) : super.gone(id); }
+}
+
+test('a build Machine deleted outside ProPR while its deletion keeps failing frees its slot once Fly answers 404', { timeout: 10_000 }, async t => {
+    const api = new DeletedOutsideBuilder();
+    let deletedOutside = false;
+    const lookups: number[] = [];
+    const realFetch = globalThis.fetch;
+    t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+        if (!String(url).startsWith('https://api.machines.dev/')) return realFetch(url, init);
+        assert.equal(init.method, 'GET');
+        assert.match(url, /\/apps\/capped-outside\/machines\/m0$/);
+        lookups.push(deletedOutside ? 404 : 200);
+        return deletedOutside ? new Response('{"error":"machine not found"}', { status: 404 })
+            : Response.json({ id: 'm0', name: 'propr-build-outside', state: 'stopped' });
+    });
+    const timings = { ...FAST, reconcileMs: 20 };
+    const failed = runtime(api, new Registry(), 'capped-outside', ['figlet'], { PROPR_FLY_MACHINES_MAX: '1' }, timings).start(spec('failed'));
+    await assert.rejects(failed.wait(), /Could not confirm deletion of Fly image build Machine m0/);
+    await failed.release?.().catch(() => {});
+    const plain = runtime(api, new Registry(), 'capped-outside', () => [], { PROPR_FLY_MACHINES_MAX: '1' }, timings).start(spec('plain'));
+    await delay(100);
+    assert.deepEqual(api.events, ['create build'], 'a build Machine Fly still lists keeps its slot');
+    deletedOutside = true; // deleted outside ProPR: every DELETE still fails, but the lookup now answers 404
+    assert.equal((await plain.wait()).exitCode, 0);
+    assert.deepEqual(api.events, ['create build', 'create launch', 'destroy launch'], 'no deletion of m0 ever succeeded');
+    assert.ok(lookups.includes(404));
+    const after = lookups.length;
+    await delay(100);
+    assert.equal(lookups.length, after, 'no more retries once Fly confirmed the build Machine gone');
+    await plain.release!();
+});
+
+/** The app holds build Machines an earlier worker process left: one past any build's deadline, one still young. */
+class LeftoverMachines extends Machines {
+    listed: string[] = [];
+    old = { id: 'old1', name: 'propr-build-old', state: 'started', createdAt: Date.now() - 24 * 3600_000 };
+    young = { id: 'young1', name: 'propr-build-young', state: 'started', createdAt: Date.now() };
+    youngGone = false;
+    leftovers = new Set(['old1', 'young1']);
+    async list(prefix: string) {
+        this.listed.push(prefix);
+        return [this.old, this.young].filter(m => this.leftovers.has(m.id));
+    }
+    override async destroy(id: string) {
+        if (this.leftovers.delete(id)) { this.events.push('destroy leftover ' + id); return; }
+        return super.destroy(id);
+    }
+    override async gone(id: string) {
+        if (id === 'young1') return this.youngGone || !this.leftovers.has(id);
+        if (this.leftovers.has(id)) return false;
+        return super.gone(id);
+    }
+}
+
+test('build Machines left by an earlier worker process are found by name prefix and hold capacity until gone', async () => {
+    const api = new LeftoverMachines();
+    const fly = runtime(api, new Registry(), 'leftovers', () => [], { PROPR_FLY_MACHINES_MAX: '2' }, { ...FAST, reconcileMs: 20 });
+    const first = fly.start(spec('first'));
+    // The old one is deleted; the young one may be another worker's build in progress, so it is only counted.
+    assert.equal((await first.wait()).exitCode, 0, 'one slot is free beside the young leftover');
+    // Both leftovers held the two slots at first: the run's Machine waited for the old one's deletion.
+    assert.deepEqual(api.events.slice(0, 2), ['destroy leftover old1', 'create launch']);
+    await first.release!();
+    assert.deepEqual(api.listed, ['propr-build-']);
+    assert.ok(!api.events.includes('destroy leftover young1'), 'a young build Machine is never deleted');
+    // Two runs at once: the young leftover still holds one of the two slots, so they run one after the other.
+    const runs = ['a', 'b'].map(name => fly.start(spec(name)));
+    await Promise.all(runs.map(run => run.wait()));
+    assert.equal(api.peak, 1);
+    for (const run of runs) await run.release!();
+    // Once Fly reports it gone, its slot is free: two runs can overlap.
+    api.youngGone = true;
+    await delay(60);
+    api.peak = 0;
+    const slow = new Set<string>();
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => { if (args.includes('probe') && !slow.has(id)) { slow.add(id); await delay(30); } return exec(id, args); };
+    const parallel = ['c', 'd'].map(name => fly.start(spec(name)));
+    await Promise.all(parallel.map(run => run.wait()));
+    assert.equal(api.peak, 2);
+    for (const run of parallel) await run.release!();
+    // The search runs once per app and worker process.
+    assert.deepEqual(api.listed, ['propr-build-']);
+});
+
+test('a run cancelled while startup reconciliation waits for a slot settles at once; reconciliation continues', async () => {
+    const api = new LeftoverMachines();
+    // The young leftover first: with one slot, reconciliation holds it and waits for a second slot for the old one.
+    api.list = async prefix => { api.listed.push(prefix); return [api.young, api.old].filter(m => api.leftovers.has(m.id)); };
+    const fly = runtime(api, new Registry(), 'leftovers-cancel', () => [], { PROPR_FLY_MACHINES_MAX: '1' }, { ...FAST, reconcileMs: 20 });
+    const cancel = new AbortController();
+    const first = fly.start(spec('first'), { signal: cancel.signal });
+    while (!api.listed.length) await delay(5);
+    await delay(50);
+    cancel.abort(new Error('cancelled'));
+    const settled = await Promise.race([first.wait().then(() => 'resolved', (error: Error) => error.message), delay(500).then(() => 'blocked')]);
+    assert.equal(settled, 'cancelled', 'the cancelled run is not held by the young leftover');
+    await first.release?.().catch(() => {});
+    assert.deepEqual(api.events, [], 'no Machine was created or deleted for the cancelled run');
+    // Reconciliation went on without the run: once the young leftover is gone, the old one takes the slot and is deleted.
+    api.youngGone = true;
+    const next = fly.start(spec('next'));
+    assert.equal((await next.wait()).exitCode, 0);
+    assert.deepEqual(api.events.slice(0, 2), ['destroy leftover old1', 'create launch']);
+    assert.equal(api.peak, 1);
+    await next.release!();
+    assert.deepEqual(api.listed, ['propr-build-']);
+});
+
+/** The build Machine reports `building`, then its wrapper dies (an OOM kill): probes fail and auto_destroy removes it. */
+class DyingBuilder extends Machines {
+    probes = 0;
+    goneChecks = 0;
+    override async exec(id: string, args: string[], signal?: AbortSignal) {
+        if (id === 'm0' && !this.live.has(id)) throw new Error('Fly API 404: machine not found');
+        if (id === 'm0' && args.includes('probe') && ++this.probes > 2) { this.live.delete(id); throw new Error('Fly API 502'); }
+        if (id === 'm0' && args.includes('probe')) return { stdout: 'building\n0', exit_code: 0 };
+        return super.exec(id, args, signal);
+    }
+    override async gone(id: string) { if (id === 'm0') this.goneChecks++; return super.gone(id); }
+}
+
+test('a build Machine that dies mid-build fails the build after a few failed probes instead of at the deadline', { timeout: 10_000 }, async () => {
+    const api = new DyingBuilder();
+    const registry = new Registry();
+    const run = runtime(api, registry, 'dying-builder', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(api.goneChecks, 2, 'Fly is asked once three probes in a row failed, then once more to confirm the deletion');
+    assert.equal(registry.tags.size, 0);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'), 'the run falls back to the start-time install');
+    await run.release!();
+});
+
+test('the layer download runs under the build deadline', async () => {
+    const api = new Machines();
+    const signals: Array<AbortSignal | undefined> = [];
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args, signal) => { if (args.includes(RUN + '/layer.tar.gz')) signals.push(signal); return exec(id, args); };
+    const run = runtime(api, new Registry(), 'download-deadline', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.ok(signals.length >= 2 && signals.every(signal => signal instanceof AbortSignal && !signal.aborted), 'size and chunk reads carry the deadline');
+    await run.release!();
+});
+
+test('a push that outlasts its bound fails the build: the run installs at start and nothing is tagged', { timeout: 10_000 }, async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    registry.upload = (_repository, _blob, _content, signal) => new Promise((_resolve, reject) => {
+        signal!.addEventListener('abort', () => reject(signal!.reason));
+    });
+    const run = runtime(api, registry, 'push-timeout', ['figlet'], {}, { ...FAST, pushTimeoutMs: 50 }).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(registry.tags.size, 0);
+    assert.ok(api.file(api.launches[1], RUN + '/packages.json'));
+    await run.release!();
+});
+
+test('a build that fails the same way backs off exponentially per base manifest and package list, reset by a new base', async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    const api = new Machines();
+    const registry = new Registry();
+    api.buildResult = { ms: 1, code: 0, tail: '', error: 'RuntimeError: figlet lists /usr/bin/figlet, which does not exist after the install' };
+    api.buildState = 'build-error';
+    const fly = runtime(api, registry, 'backoff', ['figlet'], { PROPR_FLY_IMAGE: 'registry.fly.io/agents:current' },
+        { ...FAST, failureBackoffMs: 1000, failureBackoffMaxMs: 3500 });
+    const builds = async (advanceMs: number) => {
+        t.mock.timers.tick(advanceMs);
+        const run = fly.start(spec());
+        assert.equal((await run.wait()).exitCode, 0);
+        await run.release!();
+        return api.launches.filter(isBuild).length;
+    };
+    assert.equal(await builds(0), 1);
+    assert.equal(await builds(0), 1, 'the first failure backs off for 1s');
+    assert.equal(await builds(1001), 2);
+    assert.equal(await builds(1001), 2, 'the second failure backs off for 2s');
+    assert.equal(await builds(1000), 3);
+    assert.equal(await builds(3000), 3, 'the third failure backs off for the 3.5s cap, not 4s');
+    assert.equal(await builds(501), 4);
+    assert.equal(await builds(3000), 4, 'the backoff stays at the cap');
+    // The base tag moves: a new base manifest builds at once, and its failures start from the first step again.
+    registry.baseTags.set('current', 'sha256:' + 'b'.repeat(64));
+    assert.equal(await builds(0), 5);
+    assert.equal(await builds(1001), 6);
+    api.buildState = 'built';
+    api.buildResult = { ms: 1, code: 0, tail: '', layer };
+    assert.equal(await builds(2001), 7, 'the build succeeds after the second step');
+    assert.equal(registry.tags.size, 1);
+    assert.equal(await builds(0), 7, 'the derived image is reused');
+});
+
+test('a derived tag another worker pushed while this one waited is used without creating a build Machine', async () => {
+    const api = new Machines();
+    const registry = new Registry();
+    const published = 'sha256:' + 'c'.repeat(64);
+    let lookups = 0;
+    registry.resolve = async (_repository, tag) => {
+        if (++lookups === 1) return undefined;
+        registry.tags.set(tag, published);
+        return published;
+    };
+    const run = runtime(api, registry, 'published-meanwhile', ['figlet']).start(spec());
+    assert.equal((await run.wait()).exitCode, 0);
+    assert.equal(lookups, 2, 'the tag is looked up again once the build slot is held');
+    assert.equal(api.launches.filter(isBuild).length, 0);
+    assert.equal(api.launches[0].config.image, 'registry.fly.io/agents@' + published);
+    await run.release!();
+});
+
+test('a young leftover build Machine that outlives any build is deleted instead of holding its slot for good', { timeout: 10_000 }, async () => {
+    const api = new LeftoverMachines();
+    const timings = { ...DEFAULT_FLY_PACKAGE_IMAGE_TIMINGS, ...FAST, reconcileMs: 20 };
+    // It passes the age of any live build Machine a second after the startup search finds it.
+    api.young.createdAt = Date.now() - builderLifetimeMs(flyConfig(env('aging')), timings) + 1000;
+    api.leftovers.delete('old1');
+    const fly = runtime(api, new Registry(), 'aging', () => [], { PROPR_FLY_MACHINES_MAX: '2' }, timings);
+    const first = fly.start(spec('first'));
+    assert.equal((await first.wait()).exitCode, 0);
+    await first.release!();
+    assert.ok(!api.events.includes('destroy leftover young1'), 'not deleted while its build may be in progress');
+    for (let i = 0; i < 400 && !api.events.includes('destroy leftover young1'); i++) await delay(10);
+    assert.ok(api.events.includes('destroy leftover young1'), 'deleted once it is older than any build');
+    // Its slot is free again: two runs overlap.
+    api.peak = 0;
+    const slow = new Set<string>();
+    const exec = api.exec.bind(api);
+    api.exec = async (id, args) => { if (args.includes('probe') && !slow.has(id)) { slow.add(id); await delay(30); } return exec(id, args); };
+    const parallel = ['c', 'd'].map(name => fly.start(spec(name)));
+    await Promise.all(parallel.map(run => run.wait()));
+    assert.equal(api.peak, 2);
+    for (const run of parallel) await run.release!();
+});

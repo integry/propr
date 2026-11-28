@@ -239,6 +239,13 @@ export async function loadConfiguredDefaultAgentAlias(): Promise<string | null> 
   return typeof alias === 'string' && alias.trim() ? alias.trim() : null;
 }
 
+async function extensionAdmissionRefusal(agent?: AgentConfig) {
+  const kind = agent?.runtime?.trim().toLowerCase();
+  if (!kind) return;
+  const { configuredExtensionRefusal } = await import('../../agents/runtime/registry.js');
+  return configuredExtensionRefusal(kind);
+}
+
 /**
  * The agent type the worker uses when a definition names no agent, resolved
  * like `AgentRegistry.getDefaultAgent`: the configured default alias, then the
@@ -246,12 +253,11 @@ export async function loadConfiguredDefaultAgentAlias(): Promise<string | null> 
  * registry falls back to a Claude agent from the environment. Null when no
  * default agent can be resolved.
  */
-function defaultAgentType(agents: AgentConfig[], configuredAlias: string | null): { type: string | null; cliVersion: string | null } {
-  if (agents.length === 0) return { type: 'claude', cliVersion: null };
+function defaultAgent(agents: AgentConfig[], configuredAlias: string | null) {
   const enabled = agents.filter(agent => agent.enabled);
   const resolved = (configuredAlias ? enabled.find(agent => agent.alias === configuredAlias) : undefined)
     ?? enabled.find(agent => agent.alias === 'default');
-  return { type: resolved?.type ?? null, cliVersion: agentCliVersion(resolved) };
+  return resolved;
 }
 
 /**
@@ -302,8 +308,14 @@ export async function validateAgentDefinitionRuntime(
     const explicitExtensions = hasAutomationExtensions(definition.extensions);
     if (!needsProprMcp && !explicitExtensions) return null;
     const [agents, configuredAlias] = await Promise.all([loadDirectAgents(), loadDefaultAgentAlias()]);
-    const { type, cliVersion } = defaultAgentType(agents, configuredAlias);
+    const agent = defaultAgent(agents, configuredAlias);
+    const type = agent?.type ?? (agents.length ? null : 'claude');
+    const cliVersion = agentCliVersion(agent);
     if (explicitExtensions && !agentRuntimeSupportsExtensions(type, cliVersion)) return `Added extensions require a ${extensionRuntimesLabel()} task runtime`;
+    if (explicitExtensions) {
+      const refusal = await extensionAdmissionRefusal(agent);
+      if (refusal) return refusal;
+    }
     if (!needsProprMcp) return null;
     if (type === null) return 'No default agent is configured; choose an agent that supports propr_mcp';
     if (!agentTypeSupportsProprMcp(type, cliVersion)) {
@@ -319,6 +331,10 @@ export async function validateAgentDefinitionRuntime(
   if (!direct && !syntheticAgent) return 'Choose an enabled agent and a model it supports';
 
   if (hasAutomationExtensions(definition.extensions) && (!direct || !agentRuntimeSupportsExtensions(direct.type, agentCliVersion(direct)))) return `Added extensions require a direct ${extensionRuntimesLabel()} task runtime`;
+  if (hasAutomationExtensions(definition.extensions)) {
+    const refusal = await extensionAdmissionRefusal(direct);
+    if (refusal) return refusal;
+  }
   if (needsProprMcp) {
     const supported = direct ? agentTypeSupportsProprMcp(direct.type, agentCliVersion(direct))
       : syntheticAgentSupportsProprMcp(syntheticAgent!, modelName, agents);

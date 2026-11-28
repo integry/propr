@@ -2,8 +2,25 @@ import { setTimeout } from 'node:timers/promises';
 import { DelayedError, type Job } from 'bullmq';
 import { AgentRegistry, logger, ensureAgentBundleImage, type AgentImagePreparationJobData } from '@propr/core';
 
-export async function prepareAgentRegistryAtStartup(): Promise<AgentRegistry> {
+/**
+ * Blocks until the unified agent image is ready. `signal` ends the wait with
+ * its abort reason: the all-in-one supervisor aborts it on SIGTERM, since
+ * without a reachable Docker daemon the image never becomes ready.
+ */
+export async function prepareAgentRegistryAtStartup(options: { signal?: AbortSignal } = {}): Promise<AgentRegistry> {
+    const { signal } = options;
+    signal?.throwIfAborted();
     logger.info('Preparing agent Docker images and initializing agent registry...');
+    // The API process may run without PROPR_AGENT_RUNTIME: publish this worker's default runtime so
+    // Settings validates runtime packages the way the agents here run (no Docker for remote runtimes).
+    void import('@propr/core')
+        .then(core => (core as { publishWorkerAgentRuntime?: () => Promise<void> }).publishWorkerAgentRuntime?.())
+        .catch(error => logger.warn({ error: (error as Error).message }, 'Could not publish the worker agent runtime'));
+    // Remote runtimes check package names against their package index before each new install;
+    // start the download now so the first run (or Settings check) does not wait on it.
+    void import('@propr/core')
+        .then(core => (core as { warmRemoteAgentRuntimePackageIndexes?: () => Promise<void> }).warmRemoteAgentRuntimePackageIndexes?.())
+        .catch(error => logger.warn({ error: (error as Error).message }, 'Could not warm the agent runtime package index'));
     const registry = AgentRegistry.getInstance();
     registry.setImagePreparationOwner(true);
     try {
@@ -20,7 +37,7 @@ export async function prepareAgentRegistryAtStartup(): Promise<AgentRegistry> {
     // here adds a throttled inspect-only check so an image prepared by another
     // process still clears this failure, and never starts another build.
     while (!registry.isInitialized() || registry.getOperationalStatus().unifiedAgentImage.status !== 'ready') {
-        await setTimeout(1_000);
+        await setTimeout(1_000, undefined, { signal });
         await registry.inspectAgentImageAvailability();
     }
     logger.info({

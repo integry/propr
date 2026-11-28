@@ -14,7 +14,7 @@ class FakeRedis {
     async quit() { return 'OK'; }
     disconnect() {}
 }
-mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
+mock.module('ioredis', { namedExports: { Redis: FakeRedis } });
 const { ClaudeGoalStream } = await import('../packages/core/src/agents/impl/claudeNativeGoal.js');
 const { AppServerConnection } = await import('../packages/core/src/agents/impl/codexAppServerConnection.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');

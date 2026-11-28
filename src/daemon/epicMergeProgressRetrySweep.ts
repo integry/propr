@@ -10,20 +10,23 @@ export const EPIC_MERGE_PROGRESS_RETRY_INTERVAL_MS = 60_000;
 export function scheduleEpicMergeProgressRetrySweep(
     intervalMs: number = EPIC_MERGE_PROGRESS_RETRY_INTERVAL_MS,
     retry: typeof retryPendingEpicMergeProgress = retryPendingEpicMergeProgress,
-): NodeJS.Timeout {
-    let running = false;
-    const sweep = async (): Promise<void> => {
+): () => Promise<void> {
+    let running: Promise<void> | null = null;
+    const sweep = (): void => {
         if (running) return;
-        running = true;
-        try {
-            await retry();
-        } catch (error) {
-            logger.warn({ error: (error as Error).message }, 'Epic merge progress retry sweep failed');
-        } finally {
-            running = false;
-        }
+        running = (async () => {
+            try {
+                await retry();
+            } catch (error) {
+                logger.warn({ error: (error as Error).message }, 'Epic merge progress retry sweep failed');
+            }
+        })().finally(() => { running = null; });
     };
-    const interval = setInterval(() => { void sweep(); }, intervalMs);
+    const interval = setInterval(sweep, intervalMs);
     interval.unref?.();
-    return interval;
+    // The stop clears the timer and waits for a run in progress.
+    return async () => {
+        clearInterval(interval);
+        await running;
+    };
 }

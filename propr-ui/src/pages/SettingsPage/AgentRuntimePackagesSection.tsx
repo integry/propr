@@ -1,9 +1,13 @@
+import { useSharedSystemStatus } from '../../contexts/SystemStatusContext';
+import type { SpritePoolStatus } from '@propr/shared';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { keepIfEqual } from '../../utils/keepIfEqual';
 import { Check, LoaderCircle, PackagePlus, RefreshCw, X } from 'lucide-react';
 import { SettingsSection, SettingsStatus, type SettingsStatusTone } from './SettingsLayout';
 import { SETTINGS_LABEL } from './settingsStyles';
 import { AgentRuntimePackageNameHelp, AgentRuntimePackagesDescription } from './AgentRuntimePackagesGuide';
+import { AgentRuntimePackageMessages } from './AgentRuntimePackageMessages';
+import { AgentRuntimePackageRuntimes } from './AgentRuntimePackageRuntimes';
 import {
   getAgentRuntimePackageState,
   searchAgentRuntimePackageCatalog,
@@ -29,24 +33,6 @@ function normalizePackageSpec(value: string): string {
   const separator = trimmed.indexOf('=');
   if (separator === -1) return trimmed.toLowerCase();
   return `${trimmed.slice(0, separator).toLowerCase()}=${trimmed.slice(separator + 1)}`;
-}
-
-function conciseBuildError(value?: string): string | null {
-  if (!value) return null;
-  const clean = value.replace(/\u001b\[[0-9;]*m/g, '');
-  const lines = clean.split('\n').map(line => line.trim()).filter(Boolean);
-  const preferred = [
-    /unable to locate package/i,
-    /no such package/i,
-    /not found/i,
-    /unsupported package manager/i,
-    /returned a non-zero code/i
-  ];
-  for (const pattern of preferred) {
-    const line = [...lines].reverse().find(candidate => pattern.test(candidate));
-    if (line) return line.slice(0, 240);
-  }
-  return (lines[lines.length - 1] || value).slice(0, 240);
 }
 
 interface PackageAutocompleteProps {
@@ -158,6 +144,32 @@ function runtimeStatusTone(status: AgentRuntimePackageState['status']): Settings
   return 'pending';
 }
 
+export function SpritePoolSummary({ pool }: { pool: SpritePoolStatus }) {
+  const metrics = { Cap: pool.cap, 'In use': pool.inUse, Idle: pool.idle, Provisioning: pool.provisioning,
+    'Awaiting cleanup': pool.awaitingCleanup, 'Orphans deleted': pool.orphansDeleted };
+  return <section aria-label="Sprite pool" className="mb-6 max-w-2xl rounded-lg border border-slate-200 p-4">
+    <h3 className="mb-3 text-sm font-semibold text-slate-800">Sprite pool</h3>
+    <dl className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+      {Object.entries(metrics).map(([label, value]) => <div key={label}>
+        <dt className="text-xs text-slate-600">{label}</dt>
+        <dd className="text-lg font-semibold tabular-nums">{value}</dd>
+      </div>)}
+    </dl>
+  </section>;
+}
+
+/** Remote runtimes install the packages themselves, so there are no images to count. */
+function runtimePackageSummary(state: AgentRuntimePackageState): string {
+  if (state.appliedBy) return `${state.activePackages.length} active · ${state.appliedBy}`;
+  const images = Object.keys(state.images).length;
+  return `${state.activePackages.length} active across ${images} agent image${images === 1 ? '' : 's'}`;
+}
+
+function RuntimeSpritePoolSummary() {
+  const pool = useSharedSystemStatus().status?.spritePool;
+  return pool ? <SpritePoolSummary pool={pool} /> : null;
+}
+
 const AgentRuntimePackagesSection: React.FC = () => {
   const [state, setState] = useState<AgentRuntimePackageState>(EMPTY_STATE);
   const [packages, setPackages] = useState<string[]>([]);
@@ -165,6 +177,8 @@ const AgentRuntimePackagesSection: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Availability could not be checked (package index unreachable); the change still went through.
+  const [warning, setWarning] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [catalogSources, setCatalogSources] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
@@ -249,6 +263,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
     }
     setValidating(true);
     setError(null);
+    setWarning(null);
     try {
       const result = await validateAgentRuntimePackageSelection([...packages, value]);
       if (!result.valid) {
@@ -256,6 +271,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
         return;
       }
       setPackages(result.packages);
+      setWarning(result.warnings?.join('; ') || null);
       if (result.sources) {
         setCatalogSources([...new Set(result.sources.map(source => `${source.osName} (${source.packageManager})`))]);
       }
@@ -299,6 +315,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
     try {
       const next = await updateAgentRuntimePackageState(normalizedDesired);
       setState(next);
+      setWarning(next.warnings?.join('; ') || null);
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
@@ -312,6 +329,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
       description={<AgentRuntimePackagesDescription />}
       status={<SettingsStatus tone={runtimeStatusTone(state.status)} role="status">{state.status}</SettingsStatus>}
     >
+      <RuntimeSpritePoolSummary />
       <div className="mb-6 max-w-2xl">
       <p className={`${SETTINGS_LABEL} mb-1.5`} id="agent-runtime-package-label">Add a package</p>
       <PackageAutocomplete
@@ -357,7 +375,7 @@ const AgentRuntimePackagesSection: React.FC = () => {
 
       <div className="mt-3 flex items-center justify-between gap-3">
         <span className="text-[12px] text-slate-500">
-          {state.activePackages.length} active across {Object.keys(state.images).length} agent image{Object.keys(state.images).length === 1 ? '' : 's'}
+          {runtimePackageSummary(state)}
         </span>
         <button
           type="button"
@@ -370,17 +388,9 @@ const AgentRuntimePackagesSection: React.FC = () => {
         </button>
       </div>
 
-      {(error || state.error) && (
-        <p className="mt-2 break-words text-[12px] leading-5 text-red-600">{error || conciseBuildError(state.error)}</p>
-      )}
-      {state.status === 'failed' && (state.buildLog || (state.error && state.error.length > 240)) && (
-        <details className="mt-2 text-[12px] text-slate-500">
-          <summary className="cursor-pointer select-none">Build details</summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap border-l-2 border-slate-200 pl-2 text-[10px] leading-4 text-slate-500">
-            {state.buildLog || state.error}
-          </pre>
-        </details>
-      )}
+      <AgentRuntimePackageRuntimes runtimes={state.runtimes} />
+      <AgentRuntimePackageMessages warning={warning} error={error} state={state}
+        runtimeErrorsShown={!!state.runtimes?.some(runtime => runtime.runtime !== 'docker')} />
       </div>
     </SettingsSection>
   );

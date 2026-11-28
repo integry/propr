@@ -21,6 +21,9 @@ docker run --rm \
   propr/launcher:latest
 ```
 
+Add `-e PROPR_PROFILE=minimal` (or set it in `.env`) on small hosts to run Redis plus
+one all-in-one app container that also serves the Web UI on the API port.
+
 Use this image for normal self-hosted installs. Use the source repository only if
 you want to develop ProPR itself or customize the Docker build.
 

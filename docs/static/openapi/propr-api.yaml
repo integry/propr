@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 329
-    documented: 91
+    total: 333
+    documented: 95
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -398,6 +398,81 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
       x-propr-permission: instance.manage_runtime
+      x-legacy-error: true
+  /api/admin/idle-shutdown:
+    get:
+      operationId: getIdleShutdownSettings
+      summary: Read the idle shutdown setting and what keeps the instance awake
+      description: |-
+        Off by default. The environment (`PROPR_IDLE_SHUTDOWN`, `PROPR_IDLE_SHUTDOWN_AFTER`) wins over the instance setting. See docs/operations/idle-shutdown.
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Administration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The effective setting and the daemon's latest status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdleShutdownSettings"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
+      x-legacy-error: true
+    put:
+      operationId: updateIdleShutdownSettings
+      summary: Turn idle shutdown on or off and set the idle window
+      description: |-
+        The daemon applies the change on its next check (within 30 seconds).
+
+        Requires the `instance.manage_settings` instance permission.
+      tags:
+        - Administration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IdleShutdownSettingsRequest"
+      responses:
+        "200":
+          description: The saved setting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdleShutdownSettings"
+        "400":
+          description: The body is not `{ enabled, after? }` or `after` is not a duration between 1m and 24h.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        "409":
+          description: The setting is pinned by the environment; code `ENVIRONMENT_MANAGED`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_settings
       x-legacy-error: true
   /api/admin/mcp:
     get:
@@ -3703,7 +3778,7 @@ paths:
             type: string
       requestBody:
         required: true
-        description: JSON-RPC initialize, ping, initialized notification, tools/list or explicitly authorized tools/call.
+        description: JSON-RPC initialize, ping, initialized notification, tools/list or explicitly authorized tools/call. The gateway holds any upstream MCP session; no session id reaches the caller.
         content:
           application/json:
             schema:
@@ -4904,7 +4979,7 @@ paths:
               $ref: "#/components/schemas/JsonObject"
       responses:
         "200":
-          description: Tool names only.
+          description: Tool names and the session mode the upstream chose (stateful, stateless or null). A stateful upstream session is ended after listing.
           content:
             application/json:
               schema:
@@ -4937,7 +5012,7 @@ paths:
               $ref: "#/components/schemas/JsonObject"
       responses:
         "200":
-          description: Server names and reachable booleans only.
+          description: "Per server: name, reachable boolean, status, the session mode the upstream chose (stateful or stateless; null when not reached) and the configured authentication. An unavailable server also has a short reason (an HTTP status, a timeout, `OAuth not connected`, `token refresh failed`), never upstream content or credentials."
           content:
             application/json:
               schema:
@@ -9471,6 +9546,25 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: public
       x-legacy-error: true
+  /config.js:
+    get:
+      operationId: getServedUiConfig
+      summary: Get the runtime config script of the API-served UI
+      description: Registered only when the API serves the built dashboard UI (`PROPR_SERVE_UI=1` or `PROPR_UI_DIST_DIR`, always on in all-in-one mode). Generated at startup, never cached; sets the browser-visible API base URL. See the Slim Control Plane section of the configuration reference.
+      tags:
+        - System
+      security: []
+      responses:
+        "200":
+          description: A script assigning `window.__PROPR_CONFIG__`.
+          content:
+            application/javascript:
+              schema:
+                type: string
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-legacy-error: true
   /health:
     get:
       operationId: getHealth
@@ -9675,6 +9769,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-legacy-error: true
+  /wake:
+    post:
+      operationId: wakeInstance
+      summary: Wake ping for an instance that stops when idle
+      description: "Public and side-effect free: reaching the process is the point (on Fly the request starts the Machine). Records `connect_ping` as the wake source."
+      tags:
+        - System
+      security: []
+      responses:
+        "202":
+          description: The instance is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdleWakeAccepted"
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: public
@@ -9919,6 +10032,35 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AgentRunAdmissionAgent"
+        spritePool:
+          type: object
+          properties:
+            cap:
+              type: integer
+              minimum: 0
+            inUse:
+              type: integer
+              minimum: 0
+            idle:
+              type: integer
+              minimum: 0
+            provisioning:
+              type: integer
+              minimum: 0
+            orphansDeleted:
+              type: integer
+              minimum: 0
+            awaitingCleanup:
+              type: integer
+              minimum: 0
+          required:
+            - cap
+            - inUse
+            - idle
+            - provisioning
+            - orphansDeleted
+            - awaitingCleanup
+          additionalProperties: false
         queueWorkers:
           type: object
           properties:
@@ -9981,6 +10123,13 @@ components:
             - label
             - repositories
           additionalProperties: false
+        runtime:
+          anyOf:
+            - $ref: "#/components/schemas/AgentRunAdmissionRuntime"
+            - type: "null"
+          description: Null when the runtime selection could not be resolved; see `runtimeUnavailable`.
+        runtimeUnavailable:
+          type: string
         subscriptionUsage:
           type: string
           description: Subscription usage is reported elsewhere; this says where.
@@ -9990,9 +10139,125 @@ components:
         - agents
         - queueWorkers
         - repositoryWorkflowSlots
+        - runtime
         - subscriptionUsage
       additionalProperties: false
       description: What physical agent-run admission enforces, globally and per agent, with the other limits a scheduler must respect.
+    AgentRunAdmissionRuntime:
+      type: object
+      properties:
+        runtime:
+          type: string
+          description: Default agent runtime (an agent's own `runtime` setting can select another, checked the same way at launch).
+        selectedBy:
+          type: string
+          enum:
+            - PROPR_AGENT_RUNTIME
+            - default
+        registered:
+          type: array
+          items:
+            type: string
+          description: Runtimes this process can launch.
+        capabilities:
+          type: object
+          properties:
+            bindMounts:
+              type: boolean
+            restrictedNetwork:
+              type: boolean
+              description: Outbound traffic can be confined to the run's host/port allowlist.
+            mcpPrivateNetwork:
+              type: boolean
+              description: Runs can join the private network that reaches ProPR MCP.
+            mcpReachableUrl:
+              type: boolean
+              description: Runs can reach ProPR MCP at a reachable URL with a per-run token (the fallback without private networking).
+            reattach:
+              type: boolean
+          required:
+            - bindMounts
+            - restrictedNetwork
+            - mcpPrivateNetwork
+            - mcpReachableUrl
+            - reattach
+          additionalProperties: false
+        network:
+          type: object
+          properties:
+            instanceMode:
+              anyOf:
+                - type: string
+                  enum:
+                    - open
+                    - restricted
+                - type: "null"
+              description: Instance network mode; null when the policy could not be read (runs then fail closed).
+            enforced:
+              type:
+                - boolean
+                - "null"
+            restrictedRuns:
+              type: string
+              enum:
+                - enforced
+                - refused
+              description: "enforced: restricted runs are confined; refused: admission refuses them before launch instead of running them open."
+            enforcement:
+              anyOf:
+                - type: object
+                  properties:
+                    method:
+                      type: string
+                    description:
+                      type: string
+                  required:
+                    - method
+                    - description
+                  additionalProperties: false
+                - type: "null"
+              description: How the runtime confines restricted runs.
+            refusal:
+              description: The error a restricted run gets on this runtime.
+              type: string
+            refusingRuns:
+              type: boolean
+              description: "The instance mode is restricted and enforced, and this runtime cannot enforce it: runs are being refused now. False for a restricted default that is not enforced: only runs whose effective policy remains restricted are refused."
+            unavailable:
+              type: string
+          required:
+            - instanceMode
+            - enforced
+            - restrictedRuns
+            - enforcement
+            - refusingRuns
+          additionalProperties: false
+        mcp:
+          type: object
+          properties:
+            transport:
+              type: string
+              enum:
+                - private-network
+                - reachable-url
+                - ssh-reverse-forward
+                - unavailable
+              description: How runs granted ProPR MCP reach it on this runtime.
+            reason:
+              type: string
+          required:
+            - transport
+            - reason
+          additionalProperties: false
+      required:
+        - runtime
+        - selectedBy
+        - registered
+        - capabilities
+        - network
+        - mcp
+      additionalProperties: false
+      description: What the default agent runtime can enforce. Admission refuses a run whose spec needs a capability its runtime lacks.
     AgentRunAdmissionStateCounts:
       type: object
       properties:
@@ -11805,6 +12070,229 @@ components:
         - status
       additionalProperties: false
       description: Liveness probe result.
+    IdleShutdownSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Effective switch. Off unless an operator turns it on.
+        afterMs:
+          type: integer
+        after:
+          type: string
+          description: The window in `.env` form, for example `15m`.
+        source:
+          type: string
+          enum:
+            - environment
+            - settings
+            - default
+        environmentManaged:
+          type: boolean
+          description: "`PROPR_IDLE_SHUTDOWN` or `PROPR_IDLE_SHUTDOWN_AFTER` is set, so the setting cannot be changed here."
+        environment:
+          type: object
+          propertyNames:
+            type: string
+          additionalProperties:
+            type:
+              - string
+              - "null"
+        warnings:
+          type: array
+          items:
+            type: string
+        status:
+          anyOf:
+            - $ref: "#/components/schemas/IdleShutdownStatus"
+            - type: "null"
+          description: Null until the daemon has published a status.
+      required:
+        - enabled
+        - afterMs
+        - after
+        - source
+        - environmentManaged
+        - environment
+        - warnings
+        - status
+      additionalProperties: false
+      description: Idle shutdown setting and live status.
+    IdleShutdownSettingsRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        after:
+          description: Duration between `1m` and `24h`, for example `15m` or `1h30m`. Keeps the saved value when omitted.
+          type: string
+      required:
+        - enabled
+      additionalProperties: false
+      description: Change the idle shutdown instance setting.
+    IdleShutdownStatus:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        afterMs:
+          type: integer
+        source:
+          type: string
+          enum:
+            - environment
+            - settings
+            - default
+        idle:
+          type: boolean
+          description: Whether every signal is quiet and nothing is due within the window.
+        idleSince:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        shutdownAt:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: "null"
+          description: When the instance stops if nothing changes; null while not idle or when disabled.
+        blockers:
+          type: array
+          items:
+            type: object
+            properties:
+              signal:
+                type: string
+                enum:
+                  - queue_jobs
+                  - agent_runs
+                  - ui_sessions
+                  - mcp_requests
+                  - http_requests
+                  - followup_handoffs
+                  - connect_deliveries
+                  - goals
+                  - ultrafix_loops
+                  - scheduled_work
+                  - separate_processes
+                  - unavailable
+              detail:
+                type: string
+            required:
+              - signal
+              - detail
+            additionalProperties: false
+          description: What keeps the instance awake right now.
+        nextDueAt:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: "null"
+          description: "Next due time of scheduled work: the wake hint published before an idle exit."
+        checkedAt:
+          type: string
+          format: date-time
+        lastShutdown:
+          anyOf:
+            - type: object
+              properties:
+                shutdownAt:
+                  type: string
+                  format: date-time
+                reason:
+                  type: string
+                idleForMs:
+                  type: number
+                nextDueAt:
+                  anyOf:
+                    - type: string
+                      format: date-time
+                    - type: "null"
+              required:
+                - shutdownAt
+                - reason
+                - idleForMs
+                - nextDueAt
+              additionalProperties: false
+            - type: "null"
+        lastWake:
+          anyOf:
+            - type: object
+              properties:
+                webhookRecovery:
+                  type: object
+                  properties:
+                    scanned:
+                      type: integer
+                    failed:
+                      type: integer
+                    redelivered:
+                      type: integer
+                    skipped:
+                      type: integer
+                    error:
+                      type: string
+                  required:
+                    - scanned
+                    - failed
+                    - redelivered
+                    - skipped
+                  additionalProperties: false
+                wokeAt:
+                  type: string
+                  format: date-time
+                source:
+                  type: string
+                  enum:
+                    - http
+                    - connect_ping
+                    - schedule
+                    - unknown
+                coldStartMs:
+                  type: number
+                  description: Process start to daemon ready.
+                sleptMs:
+                  type:
+                    - number
+                    - "null"
+                shutdownAt:
+                  anyOf:
+                    - type: string
+                      format: date-time
+                    - type: "null"
+              required:
+                - wokeAt
+                - source
+                - coldStartMs
+                - sleptMs
+                - shutdownAt
+              additionalProperties: false
+            - type: "null"
+      required:
+        - enabled
+        - afterMs
+        - source
+        - idle
+        - idleSince
+        - shutdownAt
+        - blockers
+        - nextDueAt
+        - checkedAt
+        - lastShutdown
+        - lastWake
+      additionalProperties: {}
+      description: The daemon's idle detector status, refreshed every 30 seconds.
+    IdleWakeAccepted:
+      type: object
+      properties:
+        status:
+          type: string
+          const: awake
+      required:
+        - status
+      additionalProperties: false
+      description: The instance is running.
     InstanceDatabaseExport:
       type: object
       properties:

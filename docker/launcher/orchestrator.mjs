@@ -45,6 +45,8 @@ export const PROPR_UI_PROXY_LABEL_PREFIX = 't-';
 // operator docs can then describe a single, pinned default.
 export const DEFAULT_CLOUDFLARED_IMAGE = 'cloudflare/cloudflared:2024.12.2';
 export const DEFAULT_PROPR_UI_ORIGIN = 'https://app.propr.dev';
+// Multi-container mode stays the default; `minimal` is an explicit opt-in.
+export const DEFAULT_STACK_PROFILE = 'full';
 export const DEFAULT_LOCAL_API_PORT = '4000';
 export const DEFAULT_LOCAL_API_BINDING = `127.0.0.1:${DEFAULT_LOCAL_API_PORT}`;
 
@@ -398,6 +400,18 @@ export function resolveConfig(env = process.env, overrides = {}) {
     // Connect spelling into a trusted canonical endpoint.
     const uiPublicApiUrl = get('PROPR_UI_PUBLIC_API_URL') || proprInstanceProxyUrl(proprInstanceId) || undefined;
 
+    // Stack profile: `full` (default) runs one container per component plus the
+    // UI container; `minimal` runs redis + one all-in-one app container whose
+    // API also serves the UI. The raw value is kept so validateEnv can reject
+    // a typo instead of silently starting the default stack.
+    const profileRaw = overrides.profile ?? get('PROPR_PROFILE') ?? DEFAULT_STACK_PROFILE;
+    const profile = String(profileRaw).trim().toLowerCase() || DEFAULT_STACK_PROFILE;
+    const indexingMode = String(get('PROPR_INDEXING') ?? 'inline').trim().toLowerCase() || 'inline';
+    const apiPublicUrl = get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiHostPort}`);
+    // The minimal profile has no UI container: the browser-facing UI is the
+    // API origin itself unless tunnel mode points the frontend at the hosted UI.
+    const defaultFrontendUrl = profile === 'minimal' ? apiPublicUrl : `http://localhost:${uiHostPort}`;
+
     return Object.freeze({
         stack, network, envFileLocal, envFileHost, nodeEnv,
         validateHostPaths: overrides.validateHostPaths === true,
@@ -424,8 +438,9 @@ export function resolveConfig(env = process.env, overrides = {}) {
         // and the frontend must point at the hosted UI origin. An explicit
         // API_PUBLIC_URL / FRONTEND_URL still wins; otherwise tunnel mode derives
         // them, falling back to the localhost defaults for local development.
-        apiPublicUrl: get('API_PUBLIC_URL') || (uiTunnelEnabled && uiPublicApiUrl ? uiPublicApiUrl : `http://localhost:${apiHostPort}`),
-        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || `http://localhost:${uiHostPort}`,
+        apiPublicUrl,
+        frontendUrl: get('FRONTEND_URL') || (uiTunnelEnabled ? DEFAULT_PROPR_UI_ORIGIN : undefined) || defaultFrontendUrl,
+        profile, indexingMode,
         ghOauthCallbackUrl: get('GH_OAUTH_CALLBACK_URL') || (uiTunnelEnabled && uiPublicApiUrl ? `${uiPublicApiUrl}/api/auth/github/callback` : `http://localhost:${apiHostPort}/api/auth/github/callback`),
         githubBotUsername: get('GITHUB_BOT_USERNAME') || 'propr.dev[bot]',
         indexingScanInterval: get('INDEXING_SCAN_INTERVAL_MS') || '300000',
@@ -1069,17 +1084,47 @@ export function ensureServiceImage(cfg, service, onLog, { freshnessCache } = {})
 export const CORE_SERVICES = ['redis', 'daemon', 'worker', 'indexing-worker', 'api'];
 export const TOGGLE_SERVICES = ['ui', 'docs', 'tunnel'];
 export const SERVICES = [...CORE_SERVICES, ...TOGGLE_SERVICES];
-const DATABASE_SERVICES = new Set(['daemon', 'worker', 'indexing-worker', 'api']);
+// The minimal profile replaces daemon/worker/indexing-worker/api/ui with one
+// app container (src/allInOne.ts) whose API serves the UI on its own origin.
+export const ALL_IN_ONE_SERVICE = 'all-in-one';
+export const STACK_PROFILES = ['full', 'minimal'];
+export const INDEXING_MODES = ['off', 'inline', 'separate'];
+export const MINIMAL_CORE_SERVICES = ['redis', ALL_IN_ONE_SERVICE];
+// Every service whose running container means "the stack is up", either profile.
+const ANY_PROFILE_CORE_SERVICES = new Set([...CORE_SERVICES, ALL_IN_ONE_SERVICE]);
+const DATABASE_SERVICES = new Set(['daemon', 'worker', 'indexing-worker', 'api', ALL_IN_ONE_SERVICE]);
 // Retired containers are recognized for upgrades and database safety only.
 // Their old Redis jobs are left inert: no current service consumes that queue.
 const RETIRED_SERVICES = ['analysis-worker'];
-const MANAGED_SERVICES = [...SERVICES, ...RETIRED_SERVICES];
+const MANAGED_SERVICES = [...SERVICES, ALL_IN_ONE_SERVICE, ...RETIRED_SERVICES];
 const DATABASE_CONTAINER_SERVICES = new Set([...DATABASE_SERVICES, ...RETIRED_SERVICES]);
 // This value is intentionally module-private. A caller cannot opt a database
 // service out of its migration gate by passing an option to startService();
 // only startStack(), after its owner process exits successfully, can provide
 // the handoff capability.
 const MIGRATIONS_PREAPPLIED_HANDOFF = Symbol('migrations-preapplied-handoff');
+
+/**
+ * Core services the given profile starts, in dependency order. In the minimal
+ * profile PROPR_INDEXING=separate keeps the indexing worker as its own
+ * container next to the all-in-one process.
+ */
+export function coreServicesForProfile(cfg) {
+    if (cfg.profile !== 'minimal') return [...CORE_SERVICES];
+    return cfg.indexingMode === 'separate'
+        ? ['redis', ALL_IN_ONE_SERVICE, 'indexing-worker']
+        : [...MINIMAL_CORE_SERVICES];
+}
+
+/** Optional services this profile may start (the minimal profile has no UI container). */
+function toggleServicesForProfile(cfg) {
+    return cfg.profile === 'minimal' ? TOGGLE_SERVICES.filter((service) => service !== 'ui') : [...TOGGLE_SERVICES];
+}
+
+/** The container the tunnel sidecar shares a network namespace with. */
+function apiServiceForProfile(cfg) {
+    return cfg.profile === 'minimal' ? ALL_IN_ONE_SERVICE : 'api';
+}
 
 function imageTagForService(cfg, service) {
     if (service === 'redis') return cfg.images.redis;
@@ -1169,6 +1214,46 @@ function withMigrationPolicy(spec, service, migrationHandoff) {
     };
 }
 
+// API listener, identity and browser-facing settings shared by the api
+// service and the all-in-one container (which runs the same API in-process).
+// Agent credential mounts differ between the two, so the caller supplies them
+// at their historical position in the argument list.
+function apiServiceArgs(cfg, identity, credentialArgs) {
+    return [
+        // Stable in-network DNS alias so the cloudflared sidecar (and the
+        // Cloudflare Tunnel ingress config) can target a fixed
+        // `http://api:4000` regardless of the stack prefix. Without it the
+        // container is only reachable as `${stack}-api` (e.g. propr-api),
+        // which would force a per-stack tunnel ingress config and break the
+        // documented `http://api:4000` target. The alias is added
+        // unconditionally (not only in tunnel mode): it is harmless for
+        // tunnel-disabled local dev — each stack has its own network, so the
+        // alias is scoped to that network and never collides — and keeping it
+        // always-on avoids restarting the API just to enable the tunnel later.
+        '--network-alias', 'api',
+        '-p', `${cfg.apiPort}:4000`,
+        '-v', `${cfg.envFileHost}:/usr/src/app/.env:ro`,
+        '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
+        '--ulimit', 'nofile=65536:65536',
+        ...vibePromptCacheArgs(cfg),
+        ...managedCredentialArgs(cfg),
+        ...credentialArgs,
+        '-e', `API_PUBLIC_URL=${cfg.apiPublicUrl}`,
+        '-e', `FRONTEND_URL=${cfg.frontendUrl}`,
+        '-e', `GH_OAUTH_CALLBACK_URL=${cfg.ghOauthCallbackUrl}`,
+        '-e', `SESSION_REDIS_HOST=${cfg.stack}-redis`,
+        '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
+        '-e', `PROPR_API_RATE_LIMIT_MAX=${cfg.apiRateLimitMax}`,
+        '-e', `PROPR_API_RATE_LIMIT_WINDOW_MS=${cfg.apiRateLimitWindowMs}`,
+        '-e', `PROPR_AUTH_RATE_LIMIT_MAX=${cfg.authRateLimitMax}`,
+        '-e', `PROPR_AUTH_RATE_LIMIT_WINDOW_MS=${cfg.authRateLimitWindowMs}`,
+        '-e', `PROPR_WEBHOOK_RATE_LIMIT_MAX=${cfg.webhookRateLimitMax}`,
+        '-e', `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS=${cfg.webhookRateLimitWindowMs}`,
+        ...tunnelApiEnvArgs(cfg, identity),
+        ...proxyTrustApiEnvArgs(cfg),
+    ];
+}
+
 // Returns { image, args, command? } for a canonical service name.
 export function buildServiceSpec(cfg, service) {
     switch (service) {
@@ -1221,38 +1306,29 @@ export function buildServiceSpec(cfg, service) {
             const runtimeModeError = packagedRuntimeModeError(cfg);
             if (runtimeModeError) throw new Error(runtimeModeError);
             const identity = apiIdentityEnv(cfg);
-            const spec = appSpec(cfg, ['dist/packages/api/server.js'], [
-                // Stable in-network DNS alias so the cloudflared sidecar (and the
-                // Cloudflare Tunnel ingress config) can target a fixed
-                // `http://api:4000` regardless of the stack prefix. Without it the
-                // container is only reachable as `${stack}-api` (e.g. propr-api),
-                // which would force a per-stack tunnel ingress config and break the
-                // documented `http://api:4000` target. The alias is added
-                // unconditionally (not only in tunnel mode): it is harmless for
-                // tunnel-disabled local dev — each stack has its own network, so the
-                // alias is scoped to that network and never collides — and keeping it
-                // always-on avoids restarting the API just to enable the tunnel later.
-                '--network-alias', 'api',
-                '-p', `${cfg.apiPort}:4000`,
-                '-v', `${cfg.envFileHost}:/usr/src/app/.env:ro`,
-                '-v', '/tmp/pr-worktrees:/tmp/pr-worktrees',
-                '--ulimit', 'nofile=65536:65536',
-                ...vibePromptCacheArgs(cfg),
-                ...managedCredentialArgs(cfg),
-                ...agentCredentialArgs(cfg),
-                '-e', `API_PUBLIC_URL=${cfg.apiPublicUrl}`,
-                '-e', `FRONTEND_URL=${cfg.frontendUrl}`,
-                '-e', `GH_OAUTH_CALLBACK_URL=${cfg.ghOauthCallbackUrl}`,
-                '-e', `SESSION_REDIS_HOST=${cfg.stack}-redis`,
-                '-e', 'CONFIG_REPO_PATH=/tmp/config_repo',
-                '-e', `PROPR_API_RATE_LIMIT_MAX=${cfg.apiRateLimitMax}`,
-                '-e', `PROPR_API_RATE_LIMIT_WINDOW_MS=${cfg.apiRateLimitWindowMs}`,
-                '-e', `PROPR_AUTH_RATE_LIMIT_MAX=${cfg.authRateLimitMax}`,
-                '-e', `PROPR_AUTH_RATE_LIMIT_WINDOW_MS=${cfg.authRateLimitWindowMs}`,
-                '-e', `PROPR_WEBHOOK_RATE_LIMIT_MAX=${cfg.webhookRateLimitMax}`,
-                '-e', `PROPR_WEBHOOK_RATE_LIMIT_WINDOW_MS=${cfg.webhookRateLimitWindowMs}`,
-                ...tunnelApiEnvArgs(cfg, identity),
-                ...proxyTrustApiEnvArgs(cfg),
+            const spec = appSpec(cfg, ['dist/packages/api/server.js'], apiServiceArgs(cfg, identity, agentCredentialArgs(cfg)), identity.envFile);
+            return identity.scratchDir ? { ...spec, scratchDir: identity.scratchDir } : spec;
+        }
+        case ALL_IN_ONE_SERVICE: {
+            const runtimeModeError = packagedRuntimeModeError(cfg);
+            if (runtimeModeError) throw new Error(runtimeModeError);
+            const identity = apiIdentityEnv(cfg);
+            // The union of the daemon, worker, indexing-worker and api mounts
+            // and environment. Where they differ, the broadest need wins (the
+            // worker's writable agent credentials and OpenCode data).
+            const spec = appSpec(cfg, ['dist/src/allInOne.js'], [
+                ...apiServiceArgs(cfg, identity, agentCredentialArgs(cfg, { opencodeDataReadWrite: true })),
+                '-v', `${cfg.hostRepos}:/usr/src/app/repos`,
+                '-v', '/tmp/claude-logs:/tmp/claude-logs',
+                '-v', '/tmp/propr-egress:/tmp/propr-egress',
+                '-e', `GITHUB_BOT_USERNAME=${cfg.githubBotUsername}`,
+                '-e', 'STAGING_ENV_FILE=/usr/src/app/.env',
+                '-e', `INDEXING_SCAN_INTERVAL_MS=${cfg.indexingScanInterval}`,
+                '-e', `INDEXING_REINDEX_INTERVAL_MS=${cfg.indexingReindexInterval}`,
+                '-e', `PROPR_INDEXING=${cfg.indexingMode}`,
+                // Same-origin UI from the bundle shipped in the app image.
+                '-e', 'PROPR_SERVE_UI=1',
+                '-e', 'PROPR_SERVED_UI_API_URL=',
             ], identity.envFile);
             return identity.scratchDir ? { ...spec, scratchDir: identity.scratchDir } : spec;
         }
@@ -1308,7 +1384,7 @@ export function buildServiceSpec(cfg, service) {
                 // peer one of the API container's own addresses. The API can
                 // therefore trust this exact path without trusting unrelated
                 // containers or direct private-network clients.
-                networkMode: `container:${cfg.stack}-api`,
+                networkMode: `container:${cfg.stack}-${apiServiceForProfile(cfg)}`,
             };
         default:
             throw new Error(`unknown service: ${service}`);
@@ -1361,7 +1437,31 @@ export function stopService(cfg, service, { remove = true, onLog } = {}) {
 export function isStackRunning(cfg) {
     if (isStackReplacementPending(cfg)) return false;
     const status = getStackStatus(cfg);
-    return status.services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
+    return status.services.some((s) => ANY_PROFILE_CORE_SERVICES.has(s.service) && s.running);
+}
+
+/**
+ * Services a stack start brings up for cfg.profile, in dependency order. The
+ * minimal profile never starts the UI container: its API serves the UI.
+ */
+export function stackServicesToStart(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cfg.uiTunnelEnabled } = {}) {
+    const toggles = toggleServicesForProfile(cfg);
+    return [
+        ...coreServicesForProfile(cfg),
+        ...(ui && toggles.includes('ui') ? ['ui'] : []),
+        ...(docs ? ['docs'] : []),
+        ...(tunnel ? ['tunnel'] : []),
+    ];
+}
+
+/**
+ * Leftover containers of the other profile. Starting one profile removes them
+ * first so a switch (full ⇄ minimal) can never run two control planes against
+ * the same database and queues.
+ */
+function inactiveProfileServices(cfg) {
+    const active = new Set([...coreServicesForProfile(cfg), ...toggleServicesForProfile(cfg)]);
+    return [...ANY_PROFILE_CORE_SERVICES, 'ui'].filter((service) => !active.has(service));
 }
 
 /**
@@ -1373,11 +1473,11 @@ export function startStack(cfg, { ui = true, docs = cfg.docsEnabled, tunnel = cf
     if (isStackReplacementPending(cfg)) {
         throw new Error('Desktop-managed stack replacement was interrupted; re-run `propr setup` to resume it before starting the stack');
     }
-    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
+    const toStart = stackServicesToStart(cfg, { ui, docs, tunnel });
     const started = [];
     const freshnessCache = new Map();
     try {
-        for (const service of RETIRED_SERVICES) stopService(cfg, service, { onLog });
+        for (const service of [...RETIRED_SERVICES, ...inactiveProfileServices(cfg)]) stopService(cfg, service, { onLog });
         runMigrationPhase(cfg, { onLog, freshnessCache });
         for (const service of toStart) {
             startService(cfg, service, {
@@ -1705,11 +1805,11 @@ export async function startStackAsync(cfg, { ui = true, docs = cfg.docsEnabled, 
         onLog?.('  · resuming interrupted desktop-managed stack replacement');
         await replaceStackContainersAsync(cfg, { onLog, signal });
     }
-    const toStart = [...CORE_SERVICES, ...(ui ? ['ui'] : []), ...(docs ? ['docs'] : []), ...(tunnel ? ['tunnel'] : [])];
+    const toStart = stackServicesToStart(cfg, { ui, docs, tunnel });
     const started = [];
     const freshnessCache = new Map();
     try {
-        for (const service of RETIRED_SERVICES) await stopServiceAsync(cfg, service, { onLog, signal });
+        for (const service of [...RETIRED_SERVICES, ...inactiveProfileServices(cfg)]) await stopServiceAsync(cfg, service, { onLog, signal });
         await runMigrationPhaseAsync(cfg, { onLog, freshnessCache, signal });
         for (const service of toStart) {
             await startServiceAsync(cfg, service, {
@@ -1762,7 +1862,7 @@ async function getServiceStateAsync(cfg, service, signal) {
 export async function isStackRunningAsync(cfg, signal) {
     if (isStackReplacementPending(cfg)) return false;
     const status = await getStackStatusAsync(cfg, signal);
-    return status.services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
+    return status.services.some((s) => ANY_PROFILE_CORE_SERVICES.has(s.service) && s.running);
 }
 
 /**
@@ -1908,10 +2008,10 @@ function replacementMountsMatch(cfg, service, mounts, rootPaths) {
         }) || !hasReplacementMount(mounts, {
             type: 'bind', source: rootPaths.logs, destination: '/usr/src/app/logs',
         })) return false;
-        if (service === 'worker' && !hasReplacementMount(mounts, {
+        if ((service === 'worker' || service === ALL_IN_ONE_SERVICE) && !hasReplacementMount(mounts, {
             type: 'bind', source: rootPaths.repos, destination: '/usr/src/app/repos',
         })) return false;
-        if ((service === 'daemon' || service === 'api') && !hasReplacementMount(mounts, {
+        if ((service === 'daemon' || service === 'api' || service === ALL_IN_ONE_SERVICE) && !hasReplacementMount(mounts, {
             type: 'bind', source: rootPaths.envFile, destination: '/usr/src/app/.env',
         })) return false;
         return true;
@@ -2045,8 +2145,13 @@ export function parseStackStatus(cfg, stdout) {
         if (expectedNames.has(name)) byName.set(name, { state, status, ports: ports || '' });
     }
 
-    // Show retired services only while their containers still exist on an upgraded stack.
-    const visibleServices = [...SERVICES, ...RETIRED_SERVICES.filter((service) => byName.has(`${cfg.stack}-${service}`))];
+    // The configured profile's services, plus any other managed container that
+    // still exists (retired services on an upgraded stack, or the other
+    // profile's containers after a profile switch).
+    const profileServices = [...coreServicesForProfile(cfg), ...toggleServicesForProfile(cfg)];
+    const extraServices = [...SERVICES, ALL_IN_ONE_SERVICE, ...RETIRED_SERVICES]
+        .filter((service) => !profileServices.includes(service) && byName.has(`${cfg.stack}-${service}`));
+    const visibleServices = [...profileServices, ...extraServices];
     const services = visibleServices.map((service) => {
         const name = `${cfg.stack}-${service}`;
         const found = byName.get(name);
@@ -2065,7 +2170,7 @@ export function parseStackStatus(cfg, stdout) {
     // sidecar (e.g. an orphaned propr-tunnel left over after the core stack
     // stopped) must not mask the unusable state — otherwise `propr status`
     // would skip "Stack is not running" while the API is actually down.
-    const anyRunning = services.some((s) => CORE_SERVICES.includes(s.service) && s.running);
+    const anyRunning = services.some((s) => ANY_PROFILE_CORE_SERVICES.has(s.service) && s.running);
     return { stack: cfg.stack, network: cfg.network, running: anyRunning, services };
 }
 
@@ -2253,6 +2358,13 @@ export function validateEnv(cfg) {
 
     const runtimeModeError = packagedRuntimeModeError(cfg);
     if (runtimeModeError) errors.push(runtimeModeError);
+
+    if (cfg.profile !== undefined && !STACK_PROFILES.includes(cfg.profile)) {
+        errors.push(`PROPR_PROFILE ("${cfg.profile}") must be one of: ${STACK_PROFILES.join(', ')}. Use \`full\` (the default multi-container stack) or \`minimal\` (redis + one all-in-one app container that also serves the UI).`);
+    }
+    if (cfg.indexingMode !== undefined && !INDEXING_MODES.includes(cfg.indexingMode)) {
+        errors.push(`PROPR_INDEXING ("${cfg.indexingMode}") must be one of: ${INDEXING_MODES.join(', ')}.`);
+    }
 
     const vapidError = validateVapidConfiguration(cfg);
     if (vapidError) errors.push(vapidError);
@@ -2554,6 +2666,8 @@ export function pullImages(cfg, { onLog = () => {}, env = process.env } = {}) {
     for (const [key, manifestTag] of Object.entries(cfg.images)) {
         if (key === 'docs' && !cfg.docsEnabled) continue;
         if (key === 'cloudflared' && !cfg.uiTunnelEnabled) continue;
+        // The minimal profile serves the UI from the app image's bundled build.
+        if (key === 'ui' && cfg.profile === 'minimal') continue;
         // The tunnel sidecar actually runs cfg.cloudflaredImage, which honors a
         // PROPR_CLOUDFLARED_IMAGE override; pre-pull that image rather than the
         // bare manifest tag so an override isn't pulled twice (here + on demand).

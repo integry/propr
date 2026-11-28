@@ -318,9 +318,30 @@ describe('validateAgentDefinitionRuntime', () => {
     assert.equal(await withDefault([], null)({ capabilities: ['propr_mcp'] }), null);
   });
 
-  test('added extensions require a qualified direct or default runtime even without propr_mcp', async () => {
+  test('added extensions require a qualified direct or default runtime even without propr_mcp', async t => {
+    const original = process.env.PROPR_AGENT_RUNTIME;
+    process.env.PROPR_AGENT_RUNTIME = 'sprites';
+    t.after(() => {
+      if (original === undefined) delete process.env.PROPR_AGENT_RUNTIME;
+      else process.env.PROPR_AGENT_RUNTIME = original;
+    });
     const extensions = { servers: ['docs'], skills: [] };
     assert.equal(await check({ extensions }), null);
+    const { registerAgentRuntime } = await import('../packages/core/src/agents/runtime/registry.ts');
+    registerAgentRuntime('worker-custom', () => { throw new Error('API constructed a runtime'); });
+    const sprites = { ...deps, loadAgents: async () => [{ ...agent(), runtime: 'sprites' }], loadDefaultAgentAlias: async () => 'claude' };
+    for (const selection of [{}, { agentAlias: null, modelName: null }]) {
+      for (const runtime of [undefined, 'docker', 'worker-custom']) {
+        assert.equal(await validateAgentDefinitionRuntime({ ...base, extensions, ...selection }, {
+          ...sprites, loadAgents: async () => [agent({ runtime })],
+        }), null);
+      }
+      // Sprites applies skill bundles and URL servers; the worker refuses an added package server by name at launch.
+      assert.equal(await validateAgentDefinitionRuntime({ ...base, extensions, ...selection }, sprites), null);
+    }
+    const { extensionRuntimeRefusal } = await import('../packages/core/src/agents/runtime/registry.ts');
+    assert.match(extensionRuntimeRefusal({ kind: 'bare', capabilities: {} }) ?? '', /bare.*does not support extensions/);
+    assert.equal(extensionRuntimeRefusal({ kind: 'sprites', capabilities: { extensions: { skills: true, remoteMcp: true, packageMcp: false } } }), undefined);
     assert.match(await check({ extensions, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude, Codex, Antigravity, OpenCode or Vibe/);
     assert.match(await check({ extensions, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude, Codex, Antigravity, OpenCode or Vibe/);
     assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude, Codex, Antigravity, OpenCode or Vibe/);

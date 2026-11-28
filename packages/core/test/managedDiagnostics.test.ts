@@ -773,7 +773,7 @@ test('unavailable spool does not block executor or daemon and capture retries af
                 import path from 'node:path';
                 import { mock } from 'node:test';
                 class Redis { on(){return this} async quit(){} disconnect(){} }
-                mock.module('ioredis', {namedExports:{Redis,default:Redis}});
+                mock.module('ioredis', {namedExports:{Redis}});
                 const { executeDockerCommand } = await import('./packages/core/src/claude/docker/dockerExecutor.ts');
                 const { prepareProviderCapture, captureProviderOutput } = await import('./packages/core/src/diagnostics/managedLogRuntime.ts');
                 const { scheduleManagedDiagnostics } = await import('./src/daemon/managedDiagnostics.ts');
@@ -804,7 +804,7 @@ test('executor and native goal admission retain create and final argument secret
                 import { mock } from 'node:test';
                 import { gunzipSync } from 'node:zlib';
                 class Redis { on(){return this} async quit(){} disconnect(){} }
-                mock.module('ioredis', {namedExports:{Redis,default:Redis}});
+                mock.module('ioredis', {namedExports:{Redis}});
                 const runtime = await import('./packages/core/src/diagnostics/managedLogRuntime.ts');
                 const create = ['run','-e','GITHUB_TOKEN=opaque-create-canary','image'];
                 const final = ['start','--attach','--interactive','container','--env','RUN_SECRET=opaque-final-canary'];

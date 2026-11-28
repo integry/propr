@@ -666,14 +666,14 @@ const ULTRAFIX_DEFERRED_KEY_PREFIX = 'ultrafix:deferred';
 const ULTRAFIX_AUTOMATIC_WORK_EPOCH_KEY_PREFIX = 'ultrafix:automatic-work-epoch';
 let ultrafixStateRedis: Redis | null = null;
 
-export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions } {
+export function buildRedisRuntimeConfig(env: NodeJS.ProcessEnv = process.env): { url?: string; options: RedisOptions } {
     const options: RedisOptions = {
         maxRetriesPerRequest: null,
         enableReadyCheck: false
     };
 
-    if (process.env.REDIS_URL) {
-        const parsedUrl = new URL(process.env.REDIS_URL);
+    if (env.REDIS_URL) {
+        const parsedUrl = new URL(env.REDIS_URL);
         options.host = parsedUrl.hostname;
         options.port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : (parsedUrl.protocol === 'rediss:' ? 6380 : 6379);
         if (parsedUrl.username) {
@@ -684,7 +684,7 @@ export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions
         }
         if (parsedUrl.protocol === 'rediss:') {
             options.tls = {
-                rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+                rejectUnauthorized: env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
             };
         }
         if (parsedUrl.pathname && parsedUrl.pathname !== '/') {
@@ -695,26 +695,26 @@ export function buildRedisRuntimeConfig(): { url?: string; options: RedisOptions
         }
 
         return {
-            url: process.env.REDIS_URL,
+            url: env.REDIS_URL,
             options
         };
     }
 
     const redisOptions: RedisOptions = {
         ...options,
-        host: process.env.REDIS_HOST || 'redis',
-        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        host: env.REDIS_HOST || 'redis',
+        port: parseInt(env.REDIS_PORT || '6379', 10),
     };
 
-    if (process.env.REDIS_USERNAME) {
-        redisOptions.username = process.env.REDIS_USERNAME;
+    if (env.REDIS_USERNAME) {
+        redisOptions.username = env.REDIS_USERNAME;
     }
-    if (process.env.REDIS_PASSWORD) {
-        redisOptions.password = process.env.REDIS_PASSWORD;
+    if (env.REDIS_PASSWORD) {
+        redisOptions.password = env.REDIS_PASSWORD;
     }
-    if (process.env.REDIS_TLS === 'true' || process.env.REDIS_TLS === '1') {
+    if (env.REDIS_TLS === 'true' || env.REDIS_TLS === '1') {
         redisOptions.tls = {
-            rejectUnauthorized: process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+            rejectUnauthorized: env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
         };
     }
 

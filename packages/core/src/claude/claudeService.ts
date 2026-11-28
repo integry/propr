@@ -4,14 +4,15 @@ import os from 'os';
 import logger from '../utils/logger.js';
 import { getDefaultModel, resolveModelAlias } from '../config/modelAliases.js';
 import { AgentRegistry } from '../agents/AgentRegistry.js';
-import type { AgentTerminationReason, AnalysisResult } from '../agents/types.js';
+import type { AgentExecutionResult, AgentTerminationReason, AnalysisResult } from '../agents/types.js';
 import { generateTaskImportPrompt, IssueRef, IssueDetails } from './prompts/promptGenerator.js';
-import { executeDockerCommand, buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
+import { buildClaudeDockerImage as buildDockerImageInternal } from './docker/dockerExecutor.js';
+import { runAgent } from '../agents/runtime/registry.js';
+import { buildClaudeServiceRunSpec } from './claudeServiceRunSpec.js';
 import {
     verifyWorktreeStructure,
     verifyWorktreePostExecution,
     setWorktreeOwnership,
-    buildDockerArgs,
     parseStreamJsonOutput,
     storePromptInRedis,
     buildClaudePrompt,
@@ -61,6 +62,8 @@ export interface ExecuteClaudeCodeOptions {
 export interface ClaudeCodeResponse {
     /** Container-observed workflow validation report, independent of agent prose. */
     repositoryValidation?: string;
+    /** Auto-applied Extension Library items the agent runtime could not apply (Markdown note). */
+    extensionNotice?: string;
     /** Structured per-command outcome the `repositoryValidation` report is rendered from. */
     repositoryValidationResult?: RepositoryValidationResult;
     success: boolean;
@@ -98,6 +101,8 @@ export interface ClaudeCodeResponse {
     terminationReason?: AgentTerminationReason;
     tokenUsage?: TokenUsage;
     usageMetrics?: UsageTrackingMetrics | null;
+    /** What the agent's sandbox consumed (wall time, CPU, memory, compute cost). */
+    computeUsage?: AgentExecutionResult['computeUsage'];
 }
 
 export interface GenerateTaskSummaryOptions {
@@ -143,14 +148,14 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
         const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
 
         const access = await prepareAgentGitAccess({ worktreePath, githubToken, issueRef, prompt });
-        const dockerArgs = buildDockerArgs({
+        const runSpec = buildClaudeServiceRunSpec({
             worktreePath, githubToken: access.githubToken, gitMountArgs: access.gitMountArgs, prompt, modelName, issueNumber: issueRef.number,
             CLAUDE_DOCKER_IMAGE, CLAUDE_CONFIG_PATH, CLAUDE_MAX_TURNS,
             systemPrompt: options.systemPrompt, tools: options.tools, agentAlias: 'claude'
         });
         const { result, usageMetrics } = await executeWithUsageTracking(
             'claude',
-            async () => executeDockerCommand('docker', dockerArgs, {
+            async () => runAgent(null, runSpec, {
                 timeout: timeoutMs ?? CLAUDE_TIMEOUT_MS,
                 cwd: worktreePath,
                 onSessionId,
@@ -198,7 +203,7 @@ export async function executeClaudeCode(options: ExecuteClaudeCodeOptions): Prom
             terminationReason,
             prompt: prompt,
             tokenUsage: claudeOutput.tokenUsage,
-            usageMetrics
+            usageMetrics, ...(result.computeUsage && { computeUsage: result.computeUsage })
         };
 
         await storePromptInRedis({ claudeOutput, prompt, issueRef, model: response.model!, isRetry, retryReason });
@@ -292,7 +297,7 @@ function buildLlmMetricsPayload(claudeResult: ClaudeCodeResponse, fallbackModel:
         sessionId: claudeResult.sessionId,
         conversationId: claudeResult.conversationId,
         conversationLog: claudeResult.conversationLog as unknown as ConversationStep[],
-        tokenUsage: claudeResult.tokenUsage,
+        tokenUsage: claudeResult.tokenUsage, computeUsage: claudeResult.computeUsage,
         finalResult: claudeResult.finalResult ? {
             num_turns: claudeResult.conversationLog?.length ?? 0,
             cost_usd: undefined

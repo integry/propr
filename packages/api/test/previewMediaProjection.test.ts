@@ -32,8 +32,9 @@ test('default task-list and identity-only preview consumers exit without opening
     delete env.NODE_TEST_CONTEXT;
     // A fresh process must exit naturally; this suite's core import and teardown
     // would otherwise hide a singleton connection acquired by the list helpers.
+    // Node 24 prints spec output even to a pipe; ask for TAP so the match below holds on any version.
     const { stdout, stderr } = await promisify(execFile)(process.execPath, [
-      '--import', 'tsx', fileURLToPath(new URL('./goalTaskIsolation.test.ts', import.meta.url)),
+      '--import', 'tsx', '--test-reporter=tap', fileURLToPath(new URL('./goalTaskIsolation.test.ts', import.meta.url)),
     ], {
       cwd: fileURLToPath(new URL('../../../', import.meta.url)),
       env,

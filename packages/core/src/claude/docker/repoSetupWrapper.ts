@@ -1,7 +1,10 @@
 import { repositoryWorkflowExecution, buildWorkflowWrapper, markWorkflowWrapperBuilt } from '../../workflow/workflowExecution.js';
 import type { AgentType } from '../../agents/types.js';
-import { buildAgentContainerResourceArgs } from '../../agents/agentContainerResources.js';
+import { buildAgentContainerResourceArgs, resolveAgentContainerResources } from '../../agents/agentContainerResources.js';
+import type { AgentRunRepoSetup, AgentRunSpec } from '../../agents/runtime/types.js';
+import { renderDockerEnvArgs, renderDockerRunArgs } from '../../agents/runtime/dockerRunArgs.js';
 import { claudeConfigSeedScript } from './claudeConfigSeed.js';
+import { cloneRunStartsAsRoot } from '../../git/workspaceTransportScript.js';
 
 export { buildAgentContainerResourceArgs };
 
@@ -66,6 +69,53 @@ fi
 exec "$entrypoint" "$@"
 `.trim();
 
+function repoSetupEnvironment(agentType: AgentType): AgentRunRepoSetup['env'] {
+    const gitIdentity = GIT_IDENTITIES[agentType];
+    return [
+        { name: 'PROPR_AGENT_TYPE', value: agentType },
+        { name: 'PROPR_WORKSPACE', value: WORKSPACE_PATH },
+        { name: 'PROPR_CACHE_DIR', value: `${DEFAULT_CACHE_ROOT}/${agentType}` },
+        { name: 'GIT_AUTHOR_NAME', value: gitIdentity.name },
+        { name: 'GIT_AUTHOR_EMAIL', value: gitIdentity.email },
+        { name: 'GIT_COMMITTER_NAME', value: gitIdentity.name },
+        { name: 'GIT_COMMITTER_EMAIL', value: gitIdentity.email },
+    ];
+}
+
+/**
+ * The repository setup hook (or the active repository workflow wrapper) that
+ * runs before the provider entrypoint. Resolved when the run is described, so
+ * the workflow wrapper of the current execution is captured.
+ */
+export function buildAgentRunRepoSetup(agentType: AgentType): AgentRunRepoSetup {
+    const execution = repositoryWorkflowExecution.getStore();
+    return {
+        agentType,
+        shell: '/bin/bash',
+        script: execution ? buildWorkflowWrapper(execution.workflow, execution.marker) : REPO_SETUP_WRAPPER_SCRIPT,
+        providerEntrypoint: ENTRYPOINT_PATHS[agentType],
+        env: repoSetupEnvironment(agentType),
+    };
+}
+
+/**
+ * Finish a provider spec as every agent launch is finished: the common
+ * resource boundary plus the repository setup wrapper around the entrypoint.
+ */
+export function applyAgentRunLaunchWrapper(spec: AgentRunSpec, agentType: AgentType): AgentRunSpec {
+    // The wrapper runs the setup hook as node only when it starts as root, and the clone
+    // workspace transport on Fly Machines and Sprites refuses any other start. Refuse here
+    // too, so a provider spec missing `user` fails when it is built, also for local Docker.
+    if (!cloneRunStartsAsRoot(spec.user)) {
+        throw new Error(`Agent run ${spec.name} (${agentType}) wraps its provider entrypoint in the repository setup wrapper but starts as ${spec.user ? `"${spec.user}"` : 'the image user'}; set user "0:0" and drop to node in the entrypoint`);
+    }
+    spec.resources = resolveAgentContainerResources();
+    spec.repoSetup = buildAgentRunRepoSetup(agentType);
+    if (repositoryWorkflowExecution.getStore()) markWorkflowWrapperBuilt(renderDockerRunArgs(spec));
+    return spec;
+}
+
+/** Argv form of {@link applyAgentRunLaunchWrapper} for launches still assembled as raw `docker run` arguments. */
 export function wrapDockerRunArgsWithRepoSetup(
     dockerArgs: string[],
     dockerImage: string,
@@ -78,34 +128,22 @@ export function wrapDockerRunArgsWithRepoSetup(
 
     const beforeImage = dockerArgs.slice(0, imageIndex);
     const afterImage = dockerArgs.slice(imageIndex + 1);
-    const cacheDir = `${DEFAULT_CACHE_ROOT}/${agentType}`;
-    const gitIdentity = GIT_IDENTITIES[agentType];
     const resourceArgs = buildAgentContainerResourceArgs();
-    const setupEnv = [
-        '-e', `PROPR_AGENT_TYPE=${agentType}`,
-        '-e', `PROPR_WORKSPACE=${WORKSPACE_PATH}`,
-        '-e', `PROPR_CACHE_DIR=${cacheDir}`,
-        '-e', `GIT_AUTHOR_NAME=${gitIdentity.name}`,
-        '-e', `GIT_AUTHOR_EMAIL=${gitIdentity.email}`,
-        '-e', `GIT_COMMITTER_NAME=${gitIdentity.name}`,
-        '-e', `GIT_COMMITTER_EMAIL=${gitIdentity.email}`
-    ];
+    const setup = buildAgentRunRepoSetup(agentType);
+    const setupEnv = renderDockerEnvArgs(setup.env);
     const beforeImageWithSetupEnv = beforeImage[0] === 'run'
         ? [beforeImage[0], ...resourceArgs, ...setupEnv, ...beforeImage.slice(1)]
         : [...resourceArgs, ...setupEnv, ...beforeImage];
 
-    const execution = repositoryWorkflowExecution.getStore();
     const args = [
         ...beforeImageWithSetupEnv,
-        '--entrypoint', '/bin/bash',
+        '--entrypoint', setup.shell,
         dockerImage,
         '-lc',
-        execution
-            ? buildWorkflowWrapper(execution.workflow, execution.marker)
-            : REPO_SETUP_WRAPPER_SCRIPT,
-        ENTRYPOINT_PATHS[agentType],
+        setup.script,
+        setup.providerEntrypoint,
         ...afterImage
     ];
-    if (execution) markWorkflowWrapperBuilt(args);
+    if (repositoryWorkflowExecution.getStore()) markWorkflowWrapperBuilt(args);
     return args;
 }

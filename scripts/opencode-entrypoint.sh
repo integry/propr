@@ -267,7 +267,7 @@ write_back_credentials() {
         for credential_file in "${opencode_credential_files[@]}"; do
             # OpenCode 2 never updates auth.json; sync owns write-backs, and
             # copying the seeded file back would undo a host login.
-            if [ "$sync_database" = "1" ] && [ "$credential_file" = "auth.json" ]; then
+            if [ "${sync_database:-0}" = "1" ] && [ "$credential_file" = "auth.json" ]; then
                 continue
             fi
             status=0
@@ -279,7 +279,7 @@ write_back_credentials() {
         done
     fi
 
-    if [ "$sync_database" = "1" ]; then
+    if [ "${sync_database:-0}" = "1" ]; then
         # Bounded so a stopped container still exits before Docker's 10 s stop
         # timeout. The helper's writes are atomic (SQLite transaction, temp
         # file + rename), so an interrupted sync leaves the host store as it
@@ -322,6 +322,17 @@ if [ $# -gt 0 ]; then
         # straight to the agent.
         cd /home/node/workspace
         exec su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
+    elif [ "$opencode_ephemeral" = "1" ] && [ -n "$opencode_source_data" ] && [ -d "$opencode_source_data" ]; then
+        # Remote runtimes (Fly Machines, Sprites) start the entrypoint as node.
+        # Refreshed logins still go back to the per-run store copy, which the
+        # runtime returns to the agent configuration's credential store.
+        set +e
+        "$@"
+        command_status=$?
+        set -e
+
+        write_back_credentials
+        exit "$command_status"
     else
         exec "$@"
     fi

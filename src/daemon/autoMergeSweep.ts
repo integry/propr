@@ -95,20 +95,23 @@ export async function sweepAutoMergeCandidates(
 export function scheduleAutoMergeSweep(
     intervalMs: number = AUTO_MERGE_SWEEP_INTERVAL_MS,
     sweep: () => Promise<void> = () => sweepAutoMergeCandidates(),
-): NodeJS.Timeout {
-    let running = false;
-    const tick = async (): Promise<void> => {
+): () => Promise<void> {
+    let running: Promise<void> | null = null;
+    const tick = (): void => {
         if (running) return;
-        running = true;
-        try {
-            await sweep();
-        } catch (error) {
-            logger.warn({ error: (error as Error).message }, 'Auto-merge sweep failed');
-        } finally {
-            running = false;
-        }
+        running = (async () => {
+            try {
+                await sweep();
+            } catch (error) {
+                logger.warn({ error: (error as Error).message }, 'Auto-merge sweep failed');
+            }
+        })().finally(() => { running = null; });
     };
-    const interval = setInterval(() => { void tick(); }, intervalMs);
+    const interval = setInterval(tick, intervalMs);
     interval.unref?.();
-    return interval;
+    // The stop clears the timer and waits for a run in progress.
+    return async () => {
+        clearInterval(interval);
+        await running;
+    };
 }

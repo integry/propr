@@ -1,7 +1,7 @@
  
 import logger from '../utils/logger.js';
 import { OperatorCatalog, operatorCatalogDigest } from './operatorCatalog.js';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { hash, randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 import { EXTENSION_LIMITS, EXTENSION_LIBRARY_VERSION, agentRuntimeSupportsExtensions, extensionItemSkipReason, unsupportedExtensionRuntimeMessage, extensionLibraryInputSchema, publicExtensionProfile, resolveExtensionSet } from '@propr/shared';
 import type { AutomationExtensions, ExtensionLibraryInput, ExtensionLibraryItems, ExtensionLibraryRevision, ExtensionLibraryServer, ExtensionLibrarySkill, ExtensionResolutionContext, ExtensionSkillBundle, LegacyExtensionProfileRevision, ResolvedExtensionSet, TaskExtensionsPreview } from '@propr/shared';
@@ -16,8 +16,10 @@ import {
 import { parseAcknowledgements, pinPackageServers, secretAcknowledgements } from './extensionPackageLibrary.js';
 
 export interface ExtensionGrantNetwork { mode: 'open' | 'restricted'; allow: string[]; instanceAllow: string[] }
-export class ExtensionError extends Error { constructor(readonly status: number, message: string) { super(message); } }
-export const extensionTokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
+/** `reason`, when set, is short and secret-free (why an upstream could not be reached) and is returned with the error. */
+export class ExtensionError extends Error { constructor(readonly status: number, message: string, readonly reason?: string) { super(message); } }
+/** Grant tokens are 256 random bits, not passwords: a fast digest is the right lookup key (a slow KDF would add per-call latency, not strength). */
+export const extensionTokenHash = (token: string) => hash('sha256', token, 'hex');
 /** Authenticated binding of sealed library credentials: they open only for that instance and the revision that sealed them. */
 export const libraryIdentity = (instanceId: string, revision: number) => `library/${instanceId}/${revision}`;
 /**

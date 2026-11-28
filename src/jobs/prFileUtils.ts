@@ -131,6 +131,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     return {
         success: result.success,
         repositoryValidation: result.repositoryValidation,
+        ...(result.extensionNotice && { extensionNotice: result.extensionNotice }),
         ...(result.repositoryValidationResult && { repositoryValidationResult: result.repositoryValidationResult }),
         model: result.modelUsed,
         ...(result.reasoningLevel && { reasoningLevel: result.reasoningLevel }),
@@ -155,6 +156,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
         ...(result.commitSubject && { commitSubject: result.commitSubject }),
         conversationLog: result.conversationLog,
         tokenUsage: result.tokenUsage,
-        usageMetrics: result.usageMetrics
+        usageMetrics: result.usageMetrics,
+        ...(result.computeUsage && { computeUsage: result.computeUsage })
     };
 }

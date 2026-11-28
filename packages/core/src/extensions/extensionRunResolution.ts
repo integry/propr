@@ -16,6 +16,8 @@ export interface ExtensionLabelOptOutRecord {
 export interface ExtensionRunNotes {
   labelOptOut?: ExtensionLabelOptOutRecord;
   autoApplySkipped?: { reason: ExtensionAutoApplySkip; message: string };
+  /** Auto-applied items dropped because the run's agent runtime cannot apply their class. */
+  runtimeUnsupported?: { runtime: string; servers: string[]; skills: string[]; message: string };
 }
 
 /** Issue tasks and pull request follow-ups honour the opt-out labels; automation runs do not. */
@@ -84,6 +86,7 @@ export function extensionResolutionEvent(snapshot: { revision: number; auditActo
     ...(packages.length ? { packages } : {}),
     ...(notes.labelOptOut ? { labelOptOut: notes.labelOptOut } : {}),
     ...(notes.autoApplySkipped ? { autoApplySkipped: notes.autoApplySkipped } : {}),
+    ...(notes.runtimeUnsupported ? { runtimeUnsupported: notes.runtimeUnsupported } : {}),
   };
 }
 export type ExtensionResolutionEvent = ReturnType<typeof extensionResolutionEvent>;
@@ -91,6 +94,7 @@ export type ExtensionResolutionEvent = ReturnType<typeof extensionResolutionEven
 /** One-line reason for the task timeline. */
 export function extensionResolutionReason(event: ExtensionResolutionEvent): string {
   if (event.autoApplySkipped) return 'Extensions resolved; auto-applied items were skipped for this Codex run';
+  if (event.runtimeUnsupported) return `Extensions resolved; auto-applied items agent runtime "${event.runtimeUnsupported.runtime}" cannot apply were skipped`;
   if (event.labelOptOut) return `Extensions resolved; ${event.labelOptOut.labels.join(', ')} removed items`;
   return event.skipped.length || event.omitted.length ? 'Extensions resolved; some items were skipped' : 'Extensions resolved';
 }

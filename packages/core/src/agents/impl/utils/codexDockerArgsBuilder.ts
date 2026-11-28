@@ -8,7 +8,10 @@ import {
     resolveCodexConfigPath,
     type CodexRuntimeReasoningLevel
 } from '../../../config/configManager.js';
-import { wrapDockerRunArgsWithRepoSetup } from '../../../claude/docker/repoSetupWrapper.js';
+import { applyAgentRunLaunchWrapper } from '../../../claude/docker/repoSetupWrapper.js';
+import { AgentRunSpecBuilder, agentRunMcpGrant, agentRunNetwork } from '../../runtime/agentRunSpec.js';
+import { renderDockerRunArgs } from '../../runtime/dockerRunArgs.js';
+import type { AgentRunSpec } from '../../runtime/types.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
 import {
     buildCodexRepositoryScoutArgs,
@@ -90,19 +93,18 @@ function isGitHubCredentialEnvironmentVariable(name: string): boolean {
         || GITHUB_CREDENTIAL_ENV_PATTERN.test(normalizedName);
 }
 
-function buildEnvironmentVariableArgs(
+function addEnvironmentVariables(
+    builder: AgentRunSpecBuilder,
     sources: Array<Record<string, string> | undefined>,
     omitGitHubCredentials: boolean
-): string[] {
-    const args: string[] = [];
+): void {
     for (const source of sources) {
         if (!source) continue;
         for (const [key, value] of Object.entries(source)) {
             if (omitGitHubCredentials && isGitHubCredentialEnvironmentVariable(key)) continue;
-            args.push('-e', `${key}=${value}`);
+            builder.env(key, value);
         }
     }
-    return args;
 }
 
 export interface CodexDockerArgsParams {
@@ -172,7 +174,7 @@ export function codexTrustsWorkspace(params: Pick<CodexDockerArgsParams, 'reposi
     return !params.repositoryInspection && !params.toolPolicy?.exclusiveMcp;
 }
 
-export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArgsParams): string[] {
+export function buildCodexRunSpec(config: AgentConfig, params: CodexDockerArgsParams): AgentRunSpec {
     const {
         worktreePath, githubToken, modelName, issueNumber, environment,
         taskId, readOnlyWorkspace = false, repositoryInspection = false,
@@ -185,14 +187,6 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
     const configPath = resolveCodexConfigPath(config.configPath);
     assertCodexConfigPathAvailable(configPath);
     const workerOwnedGit = !agentOwnsGit(params);
-    const envVars = [
-        ...buildEnvironmentVariableArgs([config.envVars, environment], true),
-        ...(params.toolPolicy?.exclusiveMcp ? ['-e', 'PROPR_EXTENSION_EXCLUSIVE_MCP=1'] : []),
-        // Always set, after operator variables, so their envVars cannot change it.
-        '-e', `PROPR_CODEX_TRUST_WORKSPACE=${codexTrustsWorkspace(params) ? 1 : 0}`,
-        // Name only: docker copies the value from its own environment.
-        ...Object.keys(params.toolPolicy ? codexToolPolicyArgs(params.toolPolicy).env : {}).flatMap(name => ['-e', name]),
-    ];
     const streamConfig = resolveCodexStreamConfig({
         ...process.env,
         ...config.envVars,
@@ -202,51 +196,63 @@ export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArg
     const taskType = resolveTaskType(params);
     const containerName = `${config.alias || 'codex'}-${taskType}-${shortTaskId}`;
     const workspaceTarget = repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace';
-    const dockerArgs: string[] = [
-        'run', '--rm', '-i',
-        '--name', containerName,
-        '--security-opt', 'no-new-privileges',
-        '--security-opt', 'seccomp=unconfined',
-        '--security-opt', 'apparmor=unconfined',
-        '--cap-add', 'CHOWN',
-        '--network', agentContainerNetwork(params.toolPolicy),
-        '--user', '0:0',
-        '-v', `${worktreePath}:${workspaceTarget}:${readOnlyWorkspace ? 'ro' : 'rw'}`,
-        ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, !workerOwnedGit, readOnlyWorkspace)),
-        '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:rw`,
-        ...(repositoryInspection
-            ? []
-            : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
-        ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
-        ...envVars,
-        ...buildAgentGitCredentialArgs(),
-        '-w', '/home/node/workspace',
-        dockerImage,
-        ...buildCodexCliArgs(params, streamConfig),
-    ];
+    const policy = params.toolPolicy;
+    const builder = new AgentRunSpecBuilder({
+        agentType: 'codex', image: dockerImage, alias: config.alias, name: containerName, stdin: true, user: '0:0',
+        network: agentRunNetwork(agentContainerNetwork(policy)),
+        security: { securityOpts: ['seccomp=unconfined', 'apparmor=unconfined'], capAdd: ['CHOWN'] },
+        workspace: { hostPath: worktreePath, containerPath: workspaceTarget, readOnly: readOnlyWorkspace },
+        mcpGrant: agentRunMcpGrant(policy),
+    }).workspaceMount();
+    if (!repositoryInspection) {
+        builder.dockerOptions(params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, !workerOwnedGit, readOnlyWorkspace), 'git');
+    }
+    // Goal runs resume their session from the store, so they keep the direct mount.
+    builder.credentialBind(configPath, CONTAINER_CONFIG_PATH, false, { provider: 'codex', store: 'config', perRun: params.executionMode !== 'goal' });
+    if (!repositoryInspection) builder.env('GH_TOKEN', githubToken).env('GITHUB_TOKEN', githubToken);
+    if (readOnlyWorkspace) builder.env('PROPR_REPO_SETUP', '0');
+    addEnvironmentVariables(builder, [config.envVars, environment], true);
+    if (policy?.exclusiveMcp) builder.env('PROPR_EXTENSION_EXCLUSIVE_MCP', '1');
+    // Always set, after operator variables, so their envVars cannot change it.
+    builder.env('PROPR_CODEX_TRUST_WORKSPACE', codexTrustsWorkspace(params) ? '1' : '0');
+    // Name only: the runtime copies the value from the launch environment.
+    for (const name of Object.keys(policy ? codexToolPolicyArgs(policy).env : {})) builder.env(name);
+    builder.dockerOptions(buildAgentGitCredentialArgs(), 'credential');
+    const cliArgs = buildCodexCliArgs(params, streamConfig);
+    builder.command(...cliArgs);
 
     if (modelName) {
         const cleanModelName = modelName.includes(':') ? modelName.split(':').pop()! : modelName;
-        const codexIndex = dockerArgs.indexOf('codex');
-        dockerArgs.splice(codexIndex + 2, 0, '--model', cleanModelName);
+        const codexIndex = builder.spec.args.indexOf('codex');
+        builder.spec.args.splice(codexIndex + 2, 0, '--model', cleanModelName);
         logger.info({ issueNumber, requestedModel: cleanModelName, agentAlias: config.alias }, 'Using specific model for Codex agent execution');
     } else {
         logger.debug({ issueNumber, agentAlias: config.alias }, 'No model specified, Codex agent will use default');
     }
     logger.info({ issueNumber, agentAlias: config.alias }, 'Docker args built for Codex agent');
-    return wrapDockerRunArgsWithRepoSetup(dockerArgs, dockerImage, 'codex');
+    return applyAgentRunLaunchWrapper(builder.build(), 'codex');
 }
 
-/** Build the same isolated goal container, but expose Codex's native JSONL App Server. */
-export function buildCodexAppServerDockerArgs(config: AgentConfig, params: CodexDockerArgsParams): string[] {
-    const args = buildCodexDockerArgs(config, {
+export function buildCodexDockerArgs(config: AgentConfig, params: CodexDockerArgsParams): string[] {
+    return renderDockerRunArgs(buildCodexRunSpec(config, params));
+}
+
+/** The same isolated goal run, but exposing Codex's native JSONL App Server. */
+export function buildCodexAppServerRunSpec(config: AgentConfig, params: CodexDockerArgsParams): AgentRunSpec {
+    const spec = buildCodexRunSpec(config, {
         ...params,
         modelName: undefined,
         jsonOutput: false,
         executionMode: 'goal',
         resumeSessionId: undefined,
     });
-    const codexIndex = args.lastIndexOf('codex');
+    const codexIndex = spec.args.lastIndexOf('codex');
     if (codexIndex < 0) throw new Error('Codex executable was not present in App Server container arguments');
-    return [...args.slice(0, codexIndex), 'codex', 'app-server'];
+    spec.args = [...spec.args.slice(0, codexIndex), 'codex', 'app-server'];
+    return spec;
+}
+
+/** Build the same isolated goal container, but expose Codex's native JSONL App Server. */
+export function buildCodexAppServerDockerArgs(config: AgentConfig, params: CodexDockerArgsParams): string[] {
+    return renderDockerRunArgs(buildCodexAppServerRunSpec(config, params));
 }

@@ -1,0 +1,249 @@
+// Pre-runtime-seam argv builder, kept verbatim as the golden reference for AgentRunSpec rendering.
+// @ts-nocheck
+/* eslint-disable */
+import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../../packages/core/src/agents/agentGitAccess.js';
+import fs from 'fs';
+import { currentOpenCodeModel, isManagedAgentConfigPath } from '@propr/shared';
+import logger from '../../../packages/core/src/utils/logger.js';
+import { resolveConfigPath } from '../../../packages/core/src/config/configManager.js';
+import { wrapDockerRunArgsWithRepoSetup } from './repoSetupWrapper.js';
+import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../../packages/core/src/claude/prompts/promptGenerator.js';
+import type { AgentConfig, AnalysisResult } from '../../../packages/core/src/agents/types.js';
+import { createContainerExecutionId } from '../../../packages/core/src/agents/impl/utils/containerExecutionId.js';
+import {
+    buildOpenCodeRepositoryScoutConfig,
+    REPOSITORY_SCOUT_CONTAINER_ROOT,
+} from '../../../packages/core/src/agents/impl/utils/repositoryScoutMcpServer.js';
+export { normalizeOpenCodeCliModelName, toOpenCodeExternalModelId, toProprOpenCodeExternalModelId, toProprOpenCodeModelId, toOpenCodeGoOpenRouterId } from '../../../packages/core/src/agents/impl/openCodeModelIds.js';
+export { hasOpenCodeTokenUsage, isOpenCodeJsonlEvent, normalizeOpenCodeUsage, parseOpenCodeJsonl, parseOpenCodeStreamOutput, resolveOpenCodeFailureReason } from '../../../packages/core/src/agents/impl/openCodeParsing.js';
+export type { NormalizedOpenCodeUsage, OpenCodeEvent, OpenCodeUsage, ParsedOpenCodeOutput } from '../../../packages/core/src/agents/impl/openCodeParsing.js';
+import { resolveOpenCodeFailureReason, type ParsedOpenCodeOutput } from '../../../packages/core/src/agents/impl/openCodeParsing.js';
+import { toOpenCodeExternalModelId } from '../../../packages/core/src/agents/impl/openCodeModelIds.js';
+import { openCodeEnvVarRejection } from '../../../packages/core/src/agents/impl/openCodeEnvForwarding.js';
+
+const CONTAINER_CONFIG_PATH = '/home/node/.config/opencode';
+const CONTAINER_SOURCE_DATA_PATH = '/home/node/.local/share/opencode-source';
+const CONTAINER_RUNTIME_DATA_HOME = '/tmp/propr-opencode-data';
+
+export interface BuildOpenCodePromptOptions { customPrompt?: string; issueRef: IssueRef; branchName?: string; modelName?: string; issueDetails?: IssueDetails; isRetry?: boolean; retryReason?: string; systemPrompt?: string; }
+
+export interface OpenCodeDockerArgsParams {
+    config: AgentConfig; worktreePath: string; githubToken: string; modelName?: string; issueNumber: number;
+    taskId?: string; executionType?: string; readOnlyWorkspace?: boolean; configPath?: string;
+    repositoryInspection?: boolean;
+    gitMountArgs?: string[];
+    dataPath?: string;
+    ensureConfigPath?: (configPath: string) => void;
+}
+
+export function evaluateOpenCodeAnalysis(options: {
+    parsedOutput: ParsedOpenCodeOutput;
+    processResult: { timedOut?: boolean; exitCode: number | null; stderr?: string };
+    effectiveModel: string;
+    executionTimeMs: number;
+}): {
+    analysisText: string;
+    modelUsed: string;
+    success: boolean;
+    errorMsg: string;
+    result: AnalysisResult;
+} {
+    const { parsedOutput, processResult, effectiveModel, executionTimeMs } = options;
+    const analysisText = (parsedOutput.summary || '').trim();
+    const modelUsed = parsedOutput.modelUsed || effectiveModel;
+    const success = !processResult.timedOut
+        && processResult.exitCode === 0
+        && !parsedOutput.error
+        && analysisText.length > 0;
+    const errorMsg = resolveOpenCodeFailureReason(parsedOutput, processResult.stderr) || processResult.stderr || 'No assistant text returned';
+    const result: AnalysisResult = success
+        ? {
+            response: analysisText, modelUsed, executionTimeMs, success: true,
+            sessionId: parsedOutput.sessionId, tokenUsage: parsedOutput.tokenUsage,
+        }
+        : {
+            response: analysisText, modelUsed, executionTimeMs, success: false,
+            error: `Analysis failed: ${errorMsg}`, tokenUsage: parsedOutput.tokenUsage,
+        };
+    return { analysisText, modelUsed, success, errorMsg, result };
+}
+
+export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string {
+    const { customPrompt, issueRef, branchName, modelName, issueDetails, isRetry, retryReason, systemPrompt } = options;
+
+    const basePrompt = customPrompt || generateClaudePrompt({
+        issueRef, branchName: branchName ?? null, modelName: modelName ?? null, issueDetails: issueDetails ?? null
+    });
+    const systemContext = systemPrompt ? `SYSTEM INSTRUCTIONS:\n${systemPrompt}\n\n---\n\n` : '';
+    let prompt = `${systemContext}${basePrompt}
+
+**CRITICAL GIT SAFETY RULES:**
+- NEVER run 'rm .git' or delete the .git file/directory
+- NEVER run 'git init' in the workspace - this is already a git repository
+- If you encounter git errors, report them but DO NOT attempt to reinitialize the repository
+- The workspace is a git worktree linked to the main repository
+- Only make changes to the specific files mentioned in the issue/request
+- If git commands fail, describe the error but do NOT try destructive recovery methods
+- The system will automatically commit your changes after you complete the modifications`;
+
+    if (isRetry && retryReason) {
+        prompt += `\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
+    }
+
+    logger.debug({ issueNumber: issueRef.number, promptLength: prompt.length, hasSafetyRules: prompt.includes('CRITICAL GIT SAFETY RULES'), isCustomPrompt: !!customPrompt }, 'Generated OpenCode prompt with safety rules');
+
+    return prompt;
+}
+
+export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
+    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, repositoryInspection = false, dataPath, ensureConfigPath = ensureDirectory } = params;
+    assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
+    const configPath = params.configPath || resolveConfigPath(config.configPath);
+    const managedCredentials = isManagedAgentConfigPath(config.configPath);
+    ensureConfigPath(configPath);
+    const envVars = buildEnvVars(config);
+    const dataMount = resolveOpenCodeDataMount(configPath, config.envVars, dataPath, managedCredentials);
+    const shortTaskId = createContainerExecutionId(taskId);
+    const taskType = executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`);
+    const containerName = buildOpenCodeContainerName(config.alias || 'opencode', taskType, shortTaskId, modelName);
+    const workspaceMode = (readOnlyWorkspace ?? issueNumber === 0) ? 'ro' : 'rw';
+    const configMode = 'rw';
+    // Single execution path for every OpenCode run (task and analysis alike):
+    // the prompt always arrives over stdin and is attached via the opencode-run
+    // wrapper. Normal runs auto-approve prompts inside the task container. Scout
+    // runs instead use an inline, highest-precedence deny-first policy and auto
+    // mode, which still enforces explicit denies.
+    const title = issueNumber === 0 ? 'ProPR analysis' : 'ProPR task';
+    const legacyCli = isLegacyOpenCodeCli(config);
+    const commandArgs = ['opencode-run', '--format', 'json', '--title', title, ...buildOpenCodePermissionFlags(legacyCli, repositoryInspection)];
+    const dockerArgs = [
+        'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
+        '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMode}`,
+        ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, workspaceMode === 'ro')),
+        '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
+        ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
+        ...envVars,
+        ...buildOpenCodeConfigEnvArgs(legacyCli, repositoryInspection),
+        ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
+        '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', `XDG_DATA_HOME=${CONTAINER_RUNTIME_DATA_HOME}`,
+        '-e', 'PROPR_EPHEMERAL_STATE=1',
+        ...(managedCredentials ? ['-e', 'PROPR_MANAGED_CREDENTIALS=1'] : []), ...buildAgentGitCredentialArgs(),
+        '-w', '/home/node/workspace', config.dockerImage, ...commandArgs
+    ];
+    appendOpenCodeDataMount(dockerArgs, dataMount);
+
+    if (modelName) {
+        // A saved selection of a retired free model runs on its current successor.
+        const cleanModelName = toOpenCodeExternalModelId(currentOpenCodeModel(modelName));
+        dockerArgs.push('--model', cleanModelName);
+        logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: config.alias }, 'Model specified for OpenCode agent');
+    }
+
+    return wrapDockerRunArgsWithRepoSetup(dockerArgs, config.dockerImage, 'opencode');
+}
+
+function isLegacyOpenCodeCli(config: AgentConfig): boolean {
+    return (config.cliVersionResolved ?? config.cliVersion)?.startsWith('1.') ?? false;
+}
+
+function buildOpenCodePermissionFlags(legacyCli: boolean, repositoryInspection: boolean): string[] {
+    if (!legacyCli) return ['--auto'];
+    return repositoryInspection ? ['--pure', '--auto'] : ['--dangerously-skip-permissions'];
+}
+
+function buildOpenCodeConfigEnvArgs(legacyCli: boolean, repositoryInspection: boolean): string[] {
+    if (!repositoryInspection) return ['-e', `OPENCODE_CONFIG_DIR=${CONTAINER_CONFIG_PATH}`];
+    const scoutConfig = ['-e', `OPENCODE_CONFIG_CONTENT=${buildOpenCodeRepositoryScoutConfig(legacyCli)}`];
+    if (legacyCli) return ['-e', `OPENCODE_CONFIG_DIR=${CONTAINER_CONFIG_PATH}`, ...scoutConfig];
+    return [
+        '-e', 'OPENCODE_CONFIG_DIR=/tmp/propr-opencode-scout-config',
+        '-e', 'OPENCODE_CONFIG_PROJECT_DISABLE=1', '-e', 'OPENCODE_DISABLE_CLAUDE_CODE=1', '-e', 'OPENCODE_CONFIG=',
+        ...scoutConfig,
+    ];
+}
+
+function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyWorkspace: boolean | undefined): void {
+    if (repositoryInspection && !readOnlyWorkspace) throw new Error('Repository inspection requires a read-only workspace');
+}
+
+interface OpenCodeDataMount { hostPath: string; mode: 'ro' | 'rw'; }
+
+function appendOpenCodeDataMount(dockerArgs: string[], dataMount: OpenCodeDataMount | null): void {
+    if (!dataMount) return;
+    dockerArgs.splice(
+        dockerArgs.indexOf('-w'),
+        0,
+        '-v',
+        `${dataMount.hostPath}:${CONTAINER_SOURCE_DATA_PATH}:${dataMount.mode}`,
+        '-e',
+        `PROPR_OPENCODE_SOURCE_DATA=${CONTAINER_SOURCE_DATA_PATH}`
+    );
+}
+
+function resolveOpenCodeDataMount(
+    configPath: string,
+    envVars: AgentConfig['envVars'],
+    explicitHostDataPath?: string,
+    managedCredentials = false
+): OpenCodeDataMount | null {
+    const configuredHostDataPath = process.env.HOST_OPENCODE_DATA_DIR;
+    if (configuredHostDataPath && !managedCredentials) return { hostPath: configuredHostDataPath, mode: 'rw' };
+    if (explicitHostDataPath) return { hostPath: explicitHostDataPath, mode: 'rw' };
+    if (envVars?.XDG_DATA_HOME && shouldForwardEnvVar('XDG_DATA_HOME', envVars.XDG_DATA_HOME)) return null;
+    const inferredHostDataPath = inferOpenCodeDataPath(configPath);
+    return inferredHostDataPath && fs.existsSync(inferredHostDataPath)
+        ? { hostPath: inferredHostDataPath, mode: 'rw' }
+        : null;
+}
+
+export function inferOpenCodeDataPath(configPath: string): string | null {
+    let end = configPath.length;
+    while (end > 0 && configPath.charCodeAt(end - 1) === 47) end--;
+    const normalized = configPath.slice(0, end);
+    if (normalized.endsWith('/.config/opencode')) {
+        return `${normalized.slice(0, -'/.config/opencode'.length)}/.local/share/opencode`;
+    }
+    return null;
+}
+
+function buildEnvVars(config: AgentConfig): string[] {
+    const envVars: string[] = [];
+    if (!config.envVars) return envVars;
+    for (const [key, value] of Object.entries(config.envVars)) {
+        if (!shouldForwardEnvVar(key, value)) continue;
+        envVars.push('-e', `${key}=${value}`);
+    }
+    return envVars;
+}
+
+/**
+ * Decide whether a user-configured env var is safe to forward into the OpenCode
+ * container. Rejects invalid names, GitHub credential vars (the container gets
+ * its scoped token injected separately), wrapper-managed vars, and values
+ * containing newlines/NUL.
+ */
+export function shouldForwardEnvVar(key: string, value: string): boolean {
+    const rejection = openCodeEnvVarRejection(key, value);
+    if (rejection) logger.warn({ envVar: key }, REJECTION_MESSAGES[rejection]);
+    return !rejection;
+}
+
+const REJECTION_MESSAGES = {
+    'invalid-name': 'Skipping OpenCode env var with invalid name',
+    'github-credential': 'Skipping GitHub credential env var for OpenCode container',
+    reserved: 'Skipping OpenCode env var managed by ProPR',
+    'unsafe-value': 'Skipping OpenCode env var with unsupported multiline or NUL value',
+} as const;
+
+function buildOpenCodeContainerName(alias: string, taskType: string, shortTaskId: string, modelName?: string): string {
+    const suffix = `-${shortTaskId}`;
+    const rawPrefix = modelName
+        ? `${alias}-${taskType}-${modelName}`
+        : `${alias}-${taskType}`;
+    const maxPrefixLength = Math.max(1, 120 - suffix.length);
+    const sanitizedPrefix = rawPrefix.replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, maxPrefixLength).replace(/[^a-zA-Z0-9]+$/, '');
+    const sanitized = `${sanitizedPrefix || 'opencode'}${suffix}`;
+    return (sanitized || `opencode-${Date.now().toString(36)}`).slice(0, 128);
+}
+
+function ensureDirectory(configPath: string): void { fs.mkdirSync(configPath, { recursive: true, mode: 0o700 }); }

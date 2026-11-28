@@ -23,7 +23,7 @@ import {
 import { agentRunExecutionUpdate, agentTaskOptions, launchCarriesExtensions } from './agentRuns/agentTaskOptions.js';
 import { advanceAfterReport } from './agentRuns/autonomy.js';
 import { buildAgentReportPrompt } from './agentRuns/reportPrompt.js';
-import { asAgentRunAdmissionParent, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
+import { asAgentRunAdmissionParent, mcpGrantRuntimeOptions, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import { AgentRunPersistenceError, AgentRunReportError, AgentRunSettlementError, reportFromResult } from './agentRuns/runErrors.js';
 import { defaultReportNoveltyLookups, storeReportWithNovelty, type ReportNoveltyStore } from './agentRuns/reportNovelty.js';
 import { evaluateUnproductiveStreakQuietly } from './agentRuns/unproductiveStreak.js';
@@ -515,18 +515,22 @@ export function createAgentRunProcessor(overrides: Partial<AgentRunProcessorDeps
             });
 
             // 7. Execute in a container within the spend cap.
-            const { agent, alias, model } = await deps.resolveAgent(definition, log);
+            const { agent, alias, model, runtime } = await deps.resolveAgent(definition, log);
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, agentRunExecutionUpdate(alias, model));
             const stopped = await stoppedBeforeLaunch({ runId, taskId, stateManager, log }, correlationId);
             if (stopped) return stopped;
-            // The report reads ProPR context over MCP only with `propr_mcp`.
-            if (definition.capabilities.includes('propr_mcp')) mcpGrant = await deps.mcpGrants.request(runId, 'report');
-            const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant });
+            const runWorkspace = workspace;
+            const execute = async () => {
+                // The report reads ProPR context over MCP only with `propr_mcp`.
+                if (definition.capabilities.includes('propr_mcp')) mcpGrant = await deps.mcpGrants.request(runId, 'report', ...mcpGrantRuntimeOptions(runtime));
+                const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace: runWorkspace, mcpGrant });
+                return asAgentRunAdmissionParent(mcpGrant, () => agent.executeTask(options));
+            };
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
-                () => runWithJobAgentCapacity(agentCapacity, () => asAgentRunAdmissionParent(mcpGrant, async () => await (deps.extensionsApply ?? launchCarriesExtensions)({ agent }, options)
-                    ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, () => agent.executeTask(options))
-                    : agent.executeTask(options))),
+                () => runWithJobAgentCapacity(agentCapacity, async () => await (deps.extensionsApply ?? launchCarriesExtensions)({ agent })
+                    ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, execute)
+                    : execute()),
             );
 
             // 8. A task stopped directly during execution discards the result.

@@ -5,14 +5,16 @@ import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAcce
 import logger from '../../utils/logger.js';
 import { type ModelReasoningLevel } from '@propr/shared';
 import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions, type TokenUsage } from '../types.js';
-import { executeDockerCommand } from '../../claude/docker/dockerExecutor.js';
+import { runAgent } from '../runtime/registry.js';
+import { renderDockerRunArgs } from '../runtime/dockerRunArgs.js';
+import type { AgentRunSpec } from '../runtime/types.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
-import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
+import { applyAgentRunLaunchWrapper } from '../../claude/docker/repoSetupWrapper.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath, loadModelReasoningLevel, resolveAgentModelReasoningLevel } from '../../config/configManager.js';
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
-import { buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
+import { attachComputeUsage, buildAnalysisSafetySuffix, executeWithUsageTracking, type UsageTrackingMetrics } from './utils/index.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
 import { parseAntigravityJsonl, normalizeAntigravityModelId, type AntigravityOutputEvent } from './utils/antigravityOutputParser.js';
@@ -26,7 +28,7 @@ import fs from 'fs';
 import { randomUUID } from 'node:crypto';
 import { resolveAgentTerminationReason } from '../termination.js';
 import type { AgentWatchdogTrip } from '../../claude/docker/agentActivityWatchdog.js';
-import { buildAntigravityDockerArgs } from './utils/antigravityDockerArgsBuilder.js';
+import { buildAntigravityRunSpec } from './utils/antigravityDockerArgsBuilder.js';
 import { readBoundedProviderOutputFile } from './utils/boundedProviderOutput.js';
 import { detectAntigravityPrintTimeout } from './utils/antigravityPrintTimeout.js';
 import { antigravityRunLoginFailure, inspectAntigravityCredentials, resolveAntigravityLoginFailure } from './utils/antigravityCredentialCheck.js';
@@ -72,6 +74,8 @@ function formatAnalysisFailure(protocolError: string | undefined, stderr: string
     return `Analysis failed: ${loginFailure || protocolError || stderr || 'No result returned'}`;
 }
 
+type AntigravityRunParams = { toolPolicy?: AgentTaskOptions['toolPolicy']; gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number; streamOutput?: boolean };
+
 export class AntigravityAgent implements Agent {
     readonly config: AgentConfig;
     readonly goalCapable = true;
@@ -101,10 +105,7 @@ export class AntigravityAgent implements Agent {
         if (options.executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);
         const transcriptPath = this.createTransientTranscriptPath(taskId);
 
-        logger.info({
-            issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason
-        }, isRetry ? 'Starting Antigravity agent execution (RETRY)...' : 'Starting Antigravity agent execution...');
+        logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason }, isRetry ? 'Starting Antigravity agent execution (RETRY)...' : 'Starting Antigravity agent execution...');
 
         try {
             const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
@@ -113,11 +114,11 @@ export class AntigravityAgent implements Agent {
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
             const reasoningLevel = await this.resolveReasoningLevel(options.reasoningLevel, effectiveModel);
             const requestedCliModel = effectiveModel ? toAntigravityCliModelId(effectiveModel, reasoningLevel) : undefined;
-            const dockerArgs = this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, reasoningLevel, issueNumber: issueRef.number, environment, taskId, transcriptPath, toolPolicy: options.toolPolicy, streamOutput: true });
+            const runSpec = this.buildRunSpec({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, reasoningLevel, issueNumber: issueRef.number, environment, taskId, transcriptPath, toolPolicy: options.toolPolicy, streamOutput: true });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'antigravity',
-                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
+                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
                     taskId, streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
                     ...(options.toolPolicy && { extraEnvVars: antigravityToolPolicyArgs(options.toolPolicy).env })
@@ -126,7 +127,7 @@ export class AntigravityAgent implements Agent {
             );
 
             const executionTime = Date.now() - startTime;
-            return this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, requestedCliModel, prompt, worktreePath, worktreeGitContent, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath, metadata });
+            return attachComputeUsage(await this.processExecutionResult({ result, executionTime, issueRef, effectiveModel, requestedCliModel, prompt, worktreePath, worktreeGitContent, taskId, prNumber, isRetry, retryReason, usageMetrics, transcriptPath, metadata }), result);
         } catch (error) {
             return this.handleExecutionError(error, Date.now() - startTime, issueRef, effectiveModel);
         } finally {
@@ -149,7 +150,7 @@ export class AntigravityAgent implements Agent {
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const reasoningLevel = await this.resolveReasoningLevel(options.reasoningLevel, model);
             const response = await executeAntigravityNativeGoal(options, {
-                agentAlias: this.config.alias,
+                agentAlias: this.config.alias, runtime: this.config.runtime,
                 diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
                 buildDockerArgs: async ({ conversationId, launch }) => {
                     const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
@@ -176,10 +177,8 @@ export class AntigravityAgent implements Agent {
     }
 
     private buildPromptWithRetryContext(prompt: string, isRetry: boolean, retryReason?: string): string {
-        if (isRetry && retryReason) {
-            return `${prompt}\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
-        }
-        return prompt;
+        if (!isRetry || !retryReason) return prompt;
+        return `${prompt}\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
     }
 
     private async processExecutionResult(opts: {
@@ -212,7 +211,7 @@ export class AntigravityAgent implements Agent {
             providerModel: response.reportedModel ?? response.modelUsed, modifiedFiles: [],
             commitMessage: null, summary: response.summary ?? undefined, prompt, sessionId, conversationId: response.conversationId, conversationLog: response.conversationLog,
             tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined,
-            error: success ? undefined : this.resolveRunFailureMessage(result, executionError, !!printTimeout),
+            error: success ? undefined : this.resolveRunError(result, executionError, Boolean(printTimeout)),
             terminationReason
         };
 
@@ -223,9 +222,8 @@ export class AntigravityAgent implements Agent {
         return agentResult;
     }
 
-    /** A print timeout names itself first; otherwise a login failure beats raw stderr. */
-    private resolveRunFailureMessage(result: { stdout: string; stderr: string; exitCode: number | null }, executionError: string | undefined, printTimedOut: boolean): string { return (printTimedOut ? executionError : undefined) || antigravityRunLoginFailure(result, this.getHostConfigPath(), this.config.envVars) || result.stderr || executionError || 'Antigravity execution failed'; }
-
+    // A print timeout names its own cause; otherwise prefer a login failure, then stderr.
+    private resolveRunError(result: { stdout: string; stderr: string; exitCode: number | null }, executionError: string | undefined, printTimedOut: boolean): string { return (printTimedOut && executionError) || antigravityRunLoginFailure(result, this.getHostConfigPath(), this.config.envVars) || result.stderr || executionError || 'Antigravity execution failed'; }
     private async resolveSessionOutput(stdout: string, transcriptPath?: string, taskId?: string) {
         const parsedOutput = parseAntigravityJsonl(stdout);
         const sessionOutput = await this.readTransientSessionOutput(transcriptPath, parsedOutput.sessionId, taskId);
@@ -399,11 +397,11 @@ export class AntigravityAgent implements Agent {
                 ? await this.resolveReasoningLevel(options.reasoningLevel, effectiveModel)
                 : options?.reasoningLevel;
             const requestedCliModel = toAntigravityCliModelId(effectiveModel, reasoningLevel);
-            const dockerArgs = this.buildDockerArgs({ worktreePath: readOnlyWorkspacePath || '/tmp/antigravity-analysis', ...await prepareAnalysisGitAccess(options, readOnlyWorkspacePath || '/tmp/antigravity-analysis'), modelName: effectiveModel, reasoningLevel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: !!readOnlyWorkspacePath, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands, printTimeoutMs: effectiveTimeoutMs });
+            const runSpec = this.buildRunSpec({ worktreePath: readOnlyWorkspacePath || '/tmp/antigravity-analysis', ...await prepareAnalysisGitAccess(options, readOnlyWorkspacePath || '/tmp/antigravity-analysis'), modelName: effectiveModel, reasoningLevel, issueNumber: 0, taskId, executionType, readOnlyWorkspace: !!readOnlyWorkspacePath, repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands, printTimeoutMs: effectiveTimeoutMs });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'antigravity',
-                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars }, timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId, model: effectiveModel }),
+                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars }, timeout: effectiveTimeoutMs, stdinData: fullPrompt, taskId, model: effectiveModel }),
                 { timeoutMs: ANALYSIS_AGENT_TANK_TIMEOUT_MS, alias: this.config.alias, skipUsageTracking: options?.skipUsageTracking }
             );
             const executionTimeMs = Date.now() - startTime;
@@ -476,44 +474,47 @@ export class AntigravityAgent implements Agent {
         return level ?? route?.effort ?? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, route?.model ?? model) ?? await loadModelReasoningLevel();
     }
 
-    private buildDockerArgs(params: { toolPolicy?: AgentTaskOptions['toolPolicy']; gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number; streamOutput?: boolean }): string[] {
+    private buildDockerArgs(params: AntigravityRunParams): string[] { return renderDockerRunArgs(this.buildRunSpec(params)); }
+
+    private buildRunSpec(params: AntigravityRunParams): AgentRunSpec {
         const { worktreePath, githubToken, modelName, issueNumber, environment, taskId, executionType, transcriptPath, readOnlyWorkspace = false, repositoryInspection = false, executionMode = 'task', resumeConversationId, nativeGoalLaunch = false, printTimeoutMs = this.timeoutMs } = params;
         const configPath = this.getHostConfigPath();
-        const runtimeName = 'antigravity';
-        const dockerArgs = buildAntigravityDockerArgs({
+        const runtimeName = 'antigravity' as const;
+        const spec = buildAntigravityRunSpec({
             worktreePath, githubToken, gitMountArgs: params.gitMountArgs, modelName, issueNumber, environment,
             configEnvironment: this.config.envVars, taskId, executionType, transcriptPath,
             readOnlyWorkspace, repositoryInspection, executionMode, configPath,
             dockerImage: this.config.dockerImage, agentAlias: this.config.alias,
             shellCommand: this.buildAntigravityShellCommand(repositoryInspection), toolPolicy: params.toolPolicy,
         });
+        const cliArgs = spec.args;
         // The prompt is delivered through non-TTY stdin, not as an argv element,
         // to avoid spawn E2BIG on large repo-context prompts. Only CLI flags such
         // as the model selection are appended here.
         // Antigravity otherwise applies its own five-minute print-mode deadline,
         // which can abort large plan prompts long before ProPR's execution timeout.
-        dockerArgs.push('--print-timeout', `${Math.max(1, Math.ceil(printTimeoutMs / 1000))}s`);
+        cliArgs.push('--print-timeout', `${Math.max(1, Math.ceil(printTimeoutMs / 1000))}s`);
         // Goal conversation identity and live narration must arrive on stdout
         // while the invocation runs. Persistent goal conversations do not export
         // the disposable task transcript, so plain text cannot support resume.
         // Implementation task runs stream too: live narration, step activity and
         // reported token usage. Analysis keeps plain print output.
-        if (executionMode === 'goal' || params.streamOutput) dockerArgs.push('--output-format', 'stream-json');
+        if (executionMode === 'goal' || params.streamOutput) cliArgs.push('--output-format', 'stream-json');
         // Only the launch expands `/goal`. Resumed goal invocations carry
         // operator input and ProPR feedback, which slash commands or installed
         // skills must not consume instead of the conversation.
-        if (executionMode === 'goal' && !nativeGoalLaunch) dockerArgs.push('--disable-slash-commands');
+        if (executionMode === 'goal' && !nativeGoalLaunch) cliArgs.push('--disable-slash-commands');
         if (modelName) {
             // Convert ProPR's namespaced id (e.g. 'antigravity-gpt-oss-120b')
             // to the Antigravity CLI's native model name. Passing the prefixed id
             // makes `agy` fall back to its default model.
             const cleanModelName = toAntigravityCliModelId(modelName, params.reasoningLevel);
-            dockerArgs.push('--model', cleanModelName);
+            cliArgs.push('--model', cleanModelName);
             logger.info({ issueNumber, requestedModel: cleanModelName, originalModel: modelName, agentAlias: this.config.alias }, 'Model specified for Antigravity agent');
         } else { logger.debug({ issueNumber, agentAlias: this.config.alias }, 'No model specified, Antigravity agent will use default'); }
-        if (executionMode === 'goal' && resumeConversationId) dockerArgs.push('--conversation', resumeConversationId);
+        if (executionMode === 'goal' && resumeConversationId) cliArgs.push('--conversation', resumeConversationId);
         logger.info({ issueNumber, agentAlias: this.config.alias }, 'Docker args built for Antigravity agent');
-        return wrapDockerRunArgsWithRepoSetup(dockerArgs, this.config.dockerImage, runtimeName);
+        return applyAgentRunLaunchWrapper(spec, runtimeName);
     }
 
 }

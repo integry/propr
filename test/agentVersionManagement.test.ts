@@ -258,8 +258,8 @@ describe('agent version management', () => {
         const antigravityDockerArgs = fs.readFileSync('packages/core/src/agents/impl/utils/antigravityDockerArgsBuilder.ts', 'utf8');
 
         for (const [name, source] of Object.entries({ claudeDockerArgs, codexDockerArgs, antigravityDockerArgs })) {
-            assert.match(source, /'--cap-add', 'CHOWN'/, `${name} should grant CHOWN for mounted config repair`);
-            assert.match(source, /'--user', '0:0'/, `${name} should start as root so the entrypoint can repair config ownership`);
+            assert.match(source, /capAdd: \['CHOWN'\]/, `${name} should grant CHOWN for mounted config repair`);
+            assert.match(source, /user: '0:0'/, `${name} should start as root so the entrypoint can repair config ownership`);
         }
     });
 
@@ -274,7 +274,7 @@ describe('agent version management', () => {
         assert.match(entrypoint, /bash\|sh\|\/bin\/bash\|\/bin\/sh/);
         assert.match(vibeAgent, /import \{ buildVibeDockerEnvVars(, [^}]+)? \} from '\.\/utils\/vibeDockerEnvironment\.js'/);
         assert.match(vibeAgent, /const envVars = buildVibeDockerEnvVars\(this\.config,/);
-        assert.match(vibeAgent, /\.\.\.envVars/);
+        assert.match(vibeAgent, /assembleVibeRunSpec\(\{[\s\S]*\benvVars\b[\s\S]*\}\)/);
         assert.match(vibeDockerEnvironment, /envVars\.push\('-e', 'PROPR_AGENT_TYPE=vibe'\)/);
     });
 

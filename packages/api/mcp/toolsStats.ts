@@ -11,7 +11,7 @@ type ListScope = (principal: McpPrincipal, args: Args) => Promise<string[] | nul
 export function addStatsTools(tools: McpTool[], deps: ToolDeps, listScope: ListScope, now: () => Date = () => new Date()): void {
   tools.push({
     name: 'get_cost_breakdown',
-    description: 'Export recorded LLM cost grouped by day, repository, agent, model, reasoning_level, execution_type and/or outcome (success/failed): executions, tasks, input/output/cache tokens and cost in USD per row, plus totals. The same rows as GET /api/stats/cost. Omit repository to cover every repository in this grant; executions without a task are not attributable to a repository and are left out. cost_usd is null when no execution in a row recorded a cost.',
+    description: 'Export recorded LLM cost grouped by day, repository, agent, model, reasoning_level, execution_type and/or outcome (success/failed): executions, tasks, input/output/cache tokens and cost in USD per row, plus the compute usage agent runtimes reported (compute_runs, compute_wall_time_ms, compute_queue_ms, compute_cpu_seconds, compute_cost_usd), and totals. The same rows as GET /api/stats/cost. Omit repository to cover every repository in this grant; executions without a task are not attributable to a repository and are left out. cost_usd is null when no execution in a row recorded a cost; compute_cpu_seconds and compute_cost_usd are null when no execution in a row measured or priced them.',
     scope: 'read',
     readOnly: true,
     schema: z.object({

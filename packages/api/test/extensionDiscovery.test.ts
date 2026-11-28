@@ -9,10 +9,11 @@ import { Readable } from 'node:stream';
 import type { AddressInfo } from 'node:net';
 import { createApiRequestRateLimiter } from '../requestRateLimits.js';
 import { ExtensionLibraryStore } from '../../core/src/extensions/extensionProfileStore.js';
+import { ExtensionDialAgent } from '../../core/src/extensions/happyEyeballs.js';
 import { up } from '../../core/src/db/migrations/20261013210000_extension_profiles.js';
 
 type ProbeResponse = Readable & { statusCode: number; headers: Record<string, string> };
-type ProbeOptions = { headers: Record<string, string | undefined>; agent: boolean; servername?: string };
+type ProbeOptions = { headers: Record<string, string | undefined>; agent: unknown; servername?: string };
 
 const repositoryChecks: string[] = [];
 const gitRequests: Array<{ route: string; params: Record<string, string | number> }> = [];
@@ -66,17 +67,21 @@ test('admin discovery is secret-free and bounded; Git refs resolve separately fr
   t.mock.method(https, 'request', (url: URL, options: ProbeOptions, callback: (response: ProbeResponse) => void) => {
     assert.equal(url.href, 'https://8.8.8.8/mcp');
     assert.equal(options.headers.Host, '8.8.8.8');
-    calls++; assert.equal(options.headers.Authorization, undefined); assert.equal(options.agent, false);
+    calls++; assert.equal(options.headers.Authorization, undefined);
+    // Discovery opens a session as the gateway does: initialize, the initialized notification, then tools/list in it.
     const request = Object.assign(new EventEmitter(), { end: async (payload: string) => {
-      assert.deepEqual(JSON.parse(payload), {jsonrpc:'2.0',id:1,method:'tools/list'}); await beforeProbeReply();
-      const response = Object.assign(Readable.from([Buffer.from(JSON.stringify({jsonrpc:'2.0',id:1,result:{tools}}))]), {statusCode:200,headers:{'content-type':'application/json'}});
+      const rpc = JSON.parse(payload);
+      if (rpc.method === 'notifications/initialized') { const accepted = Object.assign(Readable.from([]), { statusCode: 202, headers: {} }); callback(accepted); accepted.on('end', () => request.emit('close')); accepted.resume(); return; }
+      const result = rpc.method === 'initialize' ? { protocolVersion: '2025-06-18', capabilities: {} } : { tools };
+      if (rpc.method !== 'initialize') { assert.deepEqual(rpc, {jsonrpc:'2.0',id:2,method:'tools/list'}); await beforeProbeReply(); }
+      const response = Object.assign(Readable.from([Buffer.from(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result}))]), {statusCode:200,headers:{'content-type':'application/json'}});
       callback(response); response.on('end', () => request.emit('close'));
     }, destroy: () => request.emit('close') }); return request;
   });
   const discovered = await post('/tools', {url:'https://8.8.8.8/mcp'});
-  assert.equal(discovered.status, 200); assert.deepEqual(await discovered.json(), {tools:['lookup','update-docs']});
+  assert.equal(discovered.status, 200); assert.deepEqual(await discovered.json(), {tools:['lookup','update-docs'], session:'stateless'});
   assert.equal((await post('/tools', {url:'https://8.8.8.8/mcp', token:'unaccepted'})).status,400);
-  assert.equal((await post('/tools', {url:'https://127.0.0.1/mcp'})).status,502); assert.equal(calls,1);
+  assert.equal((await post('/tools', {url:'https://127.0.0.1/mcp'})).status,502); assert.equal(calls,3);
   tools = Array.from({length:65}, () => ({name:'lookup'})); assert.equal((await post('/tools', {url:'https://8.8.8.8/mcp'})).status,502);
   tools = [{name:'lookup'}];
   beforeProbeReply = async () => { await database('instance_members').update({role:'member'}); };
@@ -116,7 +121,8 @@ test('MCP transport dials vetted addresses while retaining endpoint Host, TLS id
     assert.equal(url.pathname, '/mcp%2Ftools');
     assert.equal(options.headers.Host, expectedHost);
     assert.equal(options.servername, expectedHost);
-    assert.equal(options.agent, false);
+    // A one-request agent that dials only the vetted addresses (Happy Eyeballs across them), never a pooled global one.
+    assert.ok(options.agent instanceof ExtensionDialAgent);
     const request = Object.assign(new EventEmitter(), { end: () => {
       const response = Object.assign(Readable.from([Buffer.from('{}')]), { statusCode: 200, headers: { 'content-type': 'application/json' } });
       callback(response); response.on('end', () => request.emit('close'));

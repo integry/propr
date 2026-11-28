@@ -33,6 +33,13 @@ function resultPage(res: Response, { status, title, message, outcome }: { status
 <script nonce="${nonce}">(function(){var m={type:'propr-extension-oauth',outcome:'${outcome}'};try{new BroadcastChannel('propr-extension-oauth').postMessage(m)}catch(e){}try{if(window.opener)window.opener.postMessage(m,'*')}catch(e){}})();</script></body></html>`);
 }
 
+declare module 'express-session' {
+  interface SessionData {
+    /** When this session last started an extension OAuth sign-in. */
+    extensionOAuthSignInAt?: number;
+  }
+}
+
 type Handle = (run: (req: Request, actor: string) => Promise<unknown>) => RequestHandler;
 const scopesOf = (value: unknown) => {
   if (value === undefined) return undefined;
@@ -57,7 +64,12 @@ export function createExtensionOAuthRoutes(store: ExtensionLibraryStore, handle:
     oauthStart: handle(async (req, actor) => {
       exact(req, ['name']);
       if (typeof req.body.name !== 'string') throw new ExtensionError(400, 'Invalid extension item');
-      return extensionOAuth(store).startSignIn(actor, req.sessionID, req.body.name, extensionOAuthUrls(environment));
+      const started = await extensionOAuth(store).startSignIn(actor, req.sessionID, req.body.name, extensionOAuthUrls(environment));
+      // Keep the session the sign-in is bound to. A browser already has one; an API client
+      // authenticated by a bearer token (and a cookie jar) gets one for the callback. The
+      // cookie authenticates nothing: the callback still requires the same signed-in actor.
+      if (req.session) req.session.extensionOAuthSignInAt = Date.now();
+      return started;
     }),
     oauthDisconnect: handle(async (req, actor) => {
       exact(req, ['name']);

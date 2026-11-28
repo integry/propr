@@ -21,7 +21,7 @@ import {
 import { buildAgentActionPrompt } from './agentRuns/actionPrompt.js';
 import { agentRunExecutionUpdate, agentTaskOptions, launchCarriesExtensions } from './agentRuns/agentTaskOptions.js';
 import { actingPausedReason, notifyAgentReportAwaitingApproval } from './agentRuns/autonomy.js';
-import { asAgentRunAdmissionParent, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant, type RevokedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
+import { asAgentRunAdmissionParent, mcpGrantRuntimeOptions, requestAgentRunMcpGrant, revokeAgentRunMcpGrant, revokeGrantQuietly, type IssuedAgentRunMcpGrant, type RevokedAgentRunMcpGrant } from './agentRuns/mcpGrantClient.js';
 import {
     actionSummaryFromResult,
     AgentRunMutationsSettlementError,
@@ -465,21 +465,25 @@ export function createAgentActionProcessor(overrides: Partial<AgentActionProcess
 
             // 5. Execute with the action-phase MCP grant, within the spend cap. The
             //    prompt follows the grant, so what it permits is what the tools permit.
-            const { agent, alias, model } = await deps.resolveAgent(definition, log);
+            const { agent, alias, model, runtime } = await deps.resolveAgent(definition, log);
             await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, agentRunExecutionUpdate(alias, model));
             const current = await deps.getRun(runId);
             if (current?.state !== 'acting') return taskFollowsRun(context);
             const stopped = await followCancelledTask(context, 'before its agent started');
             if (stopped) return stopped;
-            mcpGrant = await deps.mcpGrants.request(runId, 'action');
-            const mergeAllowed = actionMayMerge(definition, mcpGrant, log);
-            const prompt = deps.buildPrompt({ definition, run: { id: runId, triggerEvent: run.triggerEvent }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote, mergeAllowed });
-            const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace, mcpGrant, phase: 'action' });
+            const runWorkspace = workspace;
+            const execute = async () => {
+                mcpGrant = await deps.mcpGrants.request(runId, 'action', ...mcpGrantRuntimeOptions(runtime));
+                const mergeAllowed = actionMayMerge(definition, mcpGrant, log);
+                const prompt = deps.buildPrompt({ definition, run: { id: runId, triggerEvent: run.triggerEvent }, report: run.report ?? '', operatorNote: run.operatorNote ?? job.data.operatorNote, mergeAllowed });
+                const options = agentTaskOptions({ runId, taskId, definition, issueRef, prompt, model, token, workspace: runWorkspace, mcpGrant, phase: 'action' });
+                return asAgentRunAdmissionParent(mcpGrant, () => agent.executeTask(options));
+            };
             const result = await deps.withCostCap(
                 { taskId, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName, modelName: model, logger: log },
-                () => runWithJobAgentCapacity(agentCapacity, () => asAgentRunAdmissionParent(mcpGrant, async () => await (deps.extensionsApply ?? launchCarriesExtensions)({ agent }, options)
-                    ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, () => agent.executeTask(options))
-                    : agent.executeTask(options))),
+                () => runWithJobAgentCapacity(agentCapacity, async () => await (deps.extensionsApply ?? launchCarriesExtensions)({ agent })
+                    ? runWithNetworkPolicy({ taskId, correlatedLogger: log }, execute)
+                    : execute()),
             );
 
             // 6. The agent is done, so its grant ends. A task stopped during execution

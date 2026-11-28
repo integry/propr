@@ -1,5 +1,5 @@
 import type { AutomationCapability } from '@propr/shared';
-import { PROPR_MCP_BEARER_TOKEN_ENV, PROPR_MCP_SERVER_NAME, type AgentToolPolicy } from '@propr/core';
+import { PROPR_MCP_BEARER_TOKEN_ENV, PROPR_MCP_SERVER_NAME, type AgentRunMcpTransport, type AgentToolPolicy } from '@propr/core';
 
 /** Run-scoped ProPR MCP credential issued for one agent run (issue 9). */
 export interface AgentRunMcpGrant {
@@ -7,6 +7,11 @@ export interface AgentRunMcpGrant {
     token: string;
     /** Docker network the container joins so `url` resolves; null keeps the default bridge. */
     network?: string | null;
+    /**
+     * `reachable-url` when the runtime cannot join a private network and `url` is reachable without one;
+     * `ssh-reverse-forward` when `url` is the loopback end of the runtime's per-run SSH reverse forward.
+     */
+    transport?: AgentRunMcpTransport;
 }
 
 export type AgentRunPhase = 'report' | 'action';
@@ -33,6 +38,6 @@ export function agentRunToolPolicy(input: {
     return {
         allowWeb,
         mcpServers: [proprMcpServer(mcpGrant)],
-        ...(mcpGrant.network ? { dockerNetwork: mcpGrant.network } : {}),
+        ...(mcpGrant.network && mcpGrant.transport !== 'reachable-url' ? { dockerNetwork: mcpGrant.network } : {}),
     };
 }

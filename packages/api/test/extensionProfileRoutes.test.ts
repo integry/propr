@@ -144,9 +144,11 @@ test('extension HTTP boundary requires fresh durable administration, preflight J
     await database('extension_library_revisions').where({ revision: restored.revision }).update({ secrets_encrypted: '' });
     const validated = await post('/validate', {});
     assert.equal(validated.status, 200);
-    assert.deepEqual(await validated.json(), { results: [{ name: 'synthetic', reachable: true, status: 'reachable' }] });
+    // No Mcp-Session-Id from the upstream: a stateless server.
+    assert.deepEqual(await validated.json(), { results: [{ name: 'synthetic', reachable: true, status: 'reachable', session: 'stateless', authentication }] });
   }
-  assert.equal(validationRequests, 2);
+  // initialize and the initialized notification for each check; a stateless session has nothing to DELETE.
+  assert.equal(validationRequests, 4);
   for (const character of ['\x00', '\x1f', ' ', '\x7f']) {
     const source = await post('/skills/github-source', { repository: 'fixture/repo', ref: `refs/heads/test${character}ref` });
     assert.equal(source.status, 400, 'Git refs reject controls, spaces and DEL before repository access');

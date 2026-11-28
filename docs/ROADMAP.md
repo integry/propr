@@ -47,8 +47,11 @@ Driving ProPR entirely from CI and scripts.
   [API reference](https://docs.propr.dev/docs/operations/api-reference) page and
   a documented `@propr/client` — [#2745](https://github.com/integry/propr/issues/2745)
 
+## Operator-owned compute
+
+Running the control plane and agents in the operator’s own cloud account is in scope, including [Fly Machines and Sprites](docs/tutorials/setup-fly.md). The operator chooses the provider, controls access and pays for usage.
+
 ## Non-goals (for now)
 
 - GitLab / Bitbucket support — the loop is deliberately built on GitHub's APIs
-- Hosting your code or your agents — ProPR stays self-hosted; Connect relays
-  events only
+- ProPR-operated compute for customer repositories or agent runs. Connect can relay events and wake an operator-owned instance.

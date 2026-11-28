@@ -75,6 +75,87 @@ describe('AgentRuntimePackagesSection', () => {
     expect(await screen.findByText('pending')).toBeInTheDocument();
   });
 
+  it('saves a list whose availability could not be verified and shows the warning', async () => {
+    const warning = 'could not verify availability: the Debian 12 (bookworm) package index could not be fetched (fetch failed)';
+    validateSelection.mockImplementationOnce(async packages => ({ valid: true, packages: [...packages].sort(), errors: [], warnings: [warning] }));
+    updateState.mockResolvedValueOnce({
+      installationId: 'test-installation',
+      packages: ['figlet', 'jq'],
+      activePackages: ['jq'],
+      status: 'pending',
+      images: {},
+      appliedBy: 'Installed in a derived Fly Machine image; no Docker image is built',
+      updatedAt: 'now',
+      warnings: [warning]
+    });
+    render(<AgentRuntimePackagesSection />);
+
+    expect(await screen.findByText('jq')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Package name'), { target: { value: 'figlet' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add package' }));
+    expect(await screen.findByText(`Warning: ${warning}`)).toBeInTheDocument();
+    expect(await screen.findByText('figlet')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(updateState).toHaveBeenCalledWith(['figlet', 'jq']));
+    expect(await screen.findByText(`Warning: ${warning}`)).toHaveClass('text-amber-700');
+  });
+
+  it('shows packages applied by remote runtimes instead of an image count', async () => {
+    getState.mockResolvedValueOnce({
+      installationId: 'test-installation',
+      packages: ['postgresql-client'],
+      activePackages: ['postgresql-client'],
+      status: 'ready',
+      images: {},
+      appliedBy: 'Installed in a derived Fly Machine image; no Docker image is built',
+      updatedAt: 'now'
+    });
+    render(<AgentRuntimePackagesSection />);
+
+    expect(await screen.findByText('1 active · Installed in a derived Fly Machine image; no Docker image is built')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('ready');
+    expect(screen.queryByText(/active across/)).not.toBeInTheDocument();
+  });
+
+  it('shows each runtime\'s own state when remote runtimes are in use, with a refusal on its row', async () => {
+    getState.mockResolvedValueOnce({
+      installationId: 'test-installation',
+      packages: ['jq', 'postfix'],
+      activePackages: ['jq'],
+      status: 'failed',
+      images: {},
+      error: 'Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: postfix',
+      runtimes: [
+        { runtime: 'docker', label: 'Docker', status: 'ready', activePackages: ['jq', 'postfix'], source: 'derived Docker image' },
+        { runtime: 'sprites', label: 'Sprites', status: 'failed', activePackages: ['jq'], source: 'Ubuntu 26.04 LTS (resolute)',
+          error: 'Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: postfix' },
+      ],
+      updatedAt: 'now'
+    });
+    render(<AgentRuntimePackagesSection />);
+
+    const list = await screen.findByRole('list', { name: 'Runtime package state per runtime' });
+    const rows = Array.from(list.querySelectorAll('li'));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Docker');
+    expect(rows[0]).toHaveTextContent('ready · 2 active');
+    expect(rows[1]).toHaveTextContent('Ubuntu 26.04 LTS (resolute)');
+    expect(rows[1]).toHaveTextContent('failed · 1 active');
+    // The refusal is shown once, on the runtime that refused the list.
+    expect(screen.getAllByText('Sprites (Ubuntu 26.04 LTS (resolute)): Unknown package: postfix')).toHaveLength(1);
+  });
+
+  it('shows no per-runtime list on a Docker-only instance', async () => {
+    getState.mockResolvedValueOnce({
+      installationId: 'test-installation', packages: ['jq'], activePackages: ['jq'], status: 'ready', images: {}, updatedAt: 'now',
+      runtimes: [{ runtime: 'docker', label: 'Docker', status: 'ready', activePackages: ['jq'], source: 'derived Docker image' }],
+    });
+    render(<AgentRuntimePackagesSection />);
+    expect(await screen.findByText(/active across/)).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Runtime package state per runtime' })).not.toBeInTheDocument();
+  });
+
   it('explains why packages are needed and how to find their names', async () => {
     render(<AgentRuntimePackagesSection />);
     await screen.findByText('jq');

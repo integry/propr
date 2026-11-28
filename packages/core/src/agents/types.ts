@@ -1,6 +1,7 @@
 import { IssueRef, IssueDetails } from '../claude/prompts/promptGenerator.js';
 import type { CliVersionType } from '../config/configManager.js';
 import type { UsageTrackingMetrics } from './impl/utils/usageTrackingWrapper.js';
+import type { AgentRunComputeUsage } from './runtime/computeUsage.js';
 import type { AgentType as SharedAgentType, ReasoningLevel } from '@propr/shared';
 import type { RepositoryValidationResult } from '../workflow/repositoryValidationResult.js';
 
@@ -19,6 +20,8 @@ export interface AgentConfig {
     // Docker configuration
     dockerImage: string;    // e.g., 'propr/agent:latest'
     configPath: string;     // Host path or '~' path resolved before Docker bind use
+    /** Agent runtime the runs use (`docker` by default, or PROPR_AGENT_RUNTIME). */
+    runtime?: string;
 
     // Model configuration
     supportedModels: string[]; // List of models this agent supports
@@ -373,6 +376,12 @@ export interface AgentExecutionResult {
 
     // Agent Tank subscription usage metrics (for tracking session/weekly usage)
     usageMetrics?: UsageTrackingMetrics;
+
+    /** What the agent's sandbox consumed (wall time, CPU, memory, compute cost), reported by its runtime. */
+    computeUsage?: AgentRunComputeUsage;
+
+    /** Markdown note for the run's issue or pull request comment: auto-applied library items the agent runtime could not apply. */
+    extensionNotice?: string;
 
     // Additional fields for compatibility with existing ClaudeCodeResponse
     rawOutput?: string;

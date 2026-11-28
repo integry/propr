@@ -1234,9 +1234,19 @@ test('an item enabled after the processor chose its scope still launches under t
 test('extension automation captures instance restriction before agent.executeTask', async t => {
   const { extensionLaunchIntegrationFixture } = await import('./fixtures/extensionLaunchIntegration.js');
   const fixture = await extensionLaunchIntegrationFixture(); t.after(fixture.cleanup);
-  const h = harness({ run: storedRun({ ownerId: '1', definitionSnapshot: definition({ ownerId: '1', extensions: fixture.extensions }) }), execute: fixture.execute, extensionsApply: async () => true });
+  const h = harness({ run: storedRun({ ownerId: '1', definitionSnapshot: definition({ ownerId: '1', capabilities: ['repository_read', 'propr_mcp'], extensions: fixture.extensions }) }), execute: fixture.execute, extensionsApply: async () => true });
+  const { currentAgentNetworkPolicy } = await import('@propr/core');
+  let grantMode: string | undefined;
+  h.deps.mcpGrants = {
+    request: async (_runId, phase) => {
+      grantMode = currentAgentNetworkPolicy()?.mode;
+      return { grantId: 'g', phase, url: 'https://mcp.example.com', token: 'test', expiresAt: NOW + 60_000, scopes: ['read'] };
+    },
+    revoke: async () => ({ revoked: true, grantId: 'g', calls: 0, mutatingOperations: 0 }),
+  };
   const result = await createAgentRunProcessor(h.deps)(job);
   assert.equal(result.status, 'complete');
+  assert.equal(grantMode, 'restricted', 'grant planning sees the same scope as launch');
   assert.equal(fixture.captures(), 1);
 });
 

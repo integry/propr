@@ -5,12 +5,12 @@ import { EXTENSION_LIBRARY_CONTRACT, EXTENSION_LIMITS, type ExtensionSkillBundle
 import { ExtensionError, ExtensionLibraryStore, type ExtensionLibraryItemRef } from '../../core/src/extensions/extensionProfileStore.js';
 import { extensionLibraryUsage } from '../../core/src/extensions/extensionLibraryUsage.js';
 import { extensionGatewayCall } from '../../core/src/extensions/mcpGateway.js';
-import { requestExtensionMcp } from '../../core/src/extensions/endpointPolicy.js';
+import { probeExtensionMcp } from '../../core/src/extensions/mcpUpstreamSessions.js';
+import { testExtensionConnections } from '../../core/src/extensions/extensionConnectionTest.js';
 import { readSkillArchive, skillPath, type SkillFile } from '../../core/src/extensions/skillBundles.js';
 import { resolveGitHubMetadataToken, verifyGitHubRepositoryAccess } from '../githubMetadataAuth.js';
 import { isDemoViewer } from '../demoMode.js';
 import { refuseDemoViewer } from '../permissionGuards.js';
-import { extensionOAuth } from '../../core/src/extensions/extensionOAuthStore.js';
 import { resolveNpmPackage } from '../../core/src/extensions/packageRegistry.js';
 import { createExtensionOAuthRoutes, extensionOAuthInstanceInfo } from './extensionOAuthRoutes.js';
 
@@ -24,7 +24,7 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
       await store.authorize(req.user.id);
       if (req.method !== 'GET' && (req.get('X-ProPR-Extensions') !== '1' || !req.is('application/json'))) throw new ExtensionError(403, 'Extensions require the preflight-protected JSON contract');
       res.set('Cache-Control', 'no-store').json(await run(req, req.user.id));
-    } catch (error) { res.status(error instanceof ExtensionError ? error.status : 400).json({ error: error instanceof ExtensionError ? error.message : 'Extension operation unavailable or invalid' }); }
+    } catch (error) { res.status(error instanceof ExtensionError ? error.status : 400).json(error instanceof ExtensionError ? { error: error.message, ...(error.reason ? { reason: error.reason } : {}) } : { error: 'Extension operation unavailable or invalid' }); }
   };
   const exact = (req: Request, keys: string[]) => {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body) || Object.keys(req.body).some(k => !keys.includes(k))) throw new ExtensionError(400, 'Invalid extension request');
@@ -49,23 +49,10 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
     setEnabled: handle(async (req, actor) => { exact(req, ['item', 'enabled']); return { library: await store.setItemEnabled(actor, itemRef(req.body.item), req.body.enabled) }; }),
     replaceSecret: handle(async (req, actor) => { exact(req, ['name', 'secret', 'expectedRevision']); return { library: await store.replaceSecret(actor, req.body.name, req.body.secret, req.body.expectedRevision) }; }),
     history: handle(async (_req, actor) => ({ revisions: await store.history(actor) })),
+    // Test connections; an unavailable server carries a short, secret-free `reason`.
     validate: handle(async (req, actor) => {
       exact(req, []);
-      const { servers, secrets } = await store.validationTargets(actor);
-      const library = { instanceId: await store.instanceId() };
-      const results = [];
-      for (const server of servers) {
-        let reachable = false;
-        // Catalog and package servers run inside the task container; nothing is started here.
-        if (server.kind !== 'https') { results.push({ name: server.name, reachable: null, status: 'not_validated' }); continue; }
-        try {
-          // An OAuth server is validated with its current access token; its library secret is a client secret, never sent upstream.
-          const credential = server.authentication === 'oauth' ? await extensionOAuth(store).accessToken(library.instanceId, server) : secrets[server.name];
-          const response = await requestExtensionMcp(server.url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'propr-validation', version: '1' } } }, credential) as { result?: unknown };
-          reachable = Boolean(response?.result);
-        } catch { /* No response content or error from upstream is disclosed. */ }
-        results.push({ name: server.name, reachable, status: reachable ? 'reachable' : 'unavailable' });
-      }
+      const results = await testExtensionConnections(store, actor);
       await store.authorize(actor); return { results };
     }),
     discoverTools: handle(async (req, actor) => {
@@ -73,14 +60,16 @@ export function createExtensionLibraryRoutes(store = new ExtensionLibraryStore(d
       if (typeof req.body.url !== 'string') throw new ExtensionError(400, 'HTTPS endpoint required');
       // Discovery never reads saved credentials or accepts a customer token.
       let response: unknown;
-      try { response = await requestExtensionMcp(req.body.url, { jsonrpc: '2.0', id: 1, method: 'tools/list' }); }
+      // The same handshake as the gateway, so stateful servers list their tools inside a session that is then ended.
+      let session: 'stateful' | 'stateless' | null = null;
+      try { const probe = await probeExtensionMcp(req.body.url, undefined, { listTools: true }); response = probe.tools; session = probe.session; }
       catch { throw new ExtensionError(502, 'MCP tool discovery unavailable'); }
       const rpc = response as { jsonrpc?: unknown; id?: unknown; error?: unknown; result?: { tools?: unknown } } | null;
       const tools = rpc?.result?.tools;
-      if (rpc?.jsonrpc !== '2.0' || rpc.id !== 1 || rpc.error || !Array.isArray(tools) || tools.length > EXTENSION_LIMITS.tools) throw new ExtensionError(502, 'MCP tool discovery unavailable');
+      if (rpc?.jsonrpc !== '2.0' || rpc.id !== 2 || rpc.error || !Array.isArray(tools) || tools.length > EXTENSION_LIMITS.tools) throw new ExtensionError(502, 'MCP tool discovery unavailable');
       const names = tools.flatMap(tool => tool && typeof tool === 'object' && typeof tool.name === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(tool.name) ? [tool.name] : []);
       await store.authorize(actor);
-      return { tools: [...new Set(names)] };
+      return { tools: [...new Set(names)], session };
     }),
     /** "Check" for a package server: registry lookup only. Nothing is downloaded, installed or executed. */
     resolvePackage: handle(async (req, actor) => {

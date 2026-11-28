@@ -57,6 +57,8 @@ interface FinalResult {
 interface ClaudeResult {
     /** Container-observed workflow validation report, independent of agent prose. */
     repositoryValidation?: string;
+    /** Auto-applied Extension Library items the agent runtime could not apply. */
+    extensionNotice?: string;
     repositoryValidationResult?: RepositoryValidationResult;
     success?: boolean;
     sessionId?: string | null;
@@ -423,7 +425,8 @@ export async function generateCompletionCommentParts(
         summary: buildSummarySection(result, options.noCodeChanges === true),
         digest: renderReviewDigest(reviewDigest),
         reviewDigest,
-        validation: result.repositoryValidation ? `${redactSecrets(result.repositoryValidation)}\n\n` : '',
+        validation: (result.extensionNotice ? `${result.extensionNotice}\n\n` : '')
+            + (result.repositoryValidation ? `${redactSecrets(result.repositoryValidation)}\n\n` : ''),
         logs,
         trailer: options.publishedAs === 'issue_comment'
             ? `*This processing report was generated automatically by [ProPR](https://propr.dev) for issue #${issueRef.number}.*`

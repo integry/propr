@@ -156,7 +156,7 @@ function makeHandlerDeps(canceller: MergedPRTaskCancellerDeps) {
     processed,
     deps: {
       webhookSecret: WEBHOOK_SECRET,
-      redis: { set: async () => 'OK' },
+      redis: { set: async () => null },
       processor: async (_payload: Record<string, unknown>, event: string) => {
         processed.push(event);
       },

@@ -18,6 +18,9 @@ import { ExtensionPackageCache, type NpmRunner } from '../src/extensions/package
 import { resolveNpmPackage } from '../src/extensions/packageRegistry.js';
 import { claudeToolPolicyArgs, codexToolPolicyArgs, openCodeToolPolicyArgs, vibeToolPolicyArgs } from '../src/agents/agentToolPolicy.js';
 import { openCodeMcpConfig } from '../src/agents/mcpLaunch/openCodeMcpLaunch.js';
+import { PACKAGE_SERVER_INSTALLER, packageServerInstallSpec, packageServersDigest } from '../src/extensions/remotePackageServers.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { AgentConfig, AgentExtensionRequest, AgentTaskOptions } from '../src/agents/types.js';
 import { up } from '../src/db/migrations/20261013210000_extension_profiles.js';
 import { up as grantMigration } from '../src/db/migrations/20261013220000_extension_grant_network.js';
@@ -215,6 +218,63 @@ test('a matching run launches the package through the stdio bridge for Claude an
   assert.ok(codexToolPolicyArgs(second.launched.toolPolicy!).cliArgs.some(arg => arg.includes('env_vars=["PROPR_EXTENSION_STDIO_0_0_SECRET"]')));
 });
 
+test('a runtime without bind mounts gets the verified install to replay: npm ci from the same lock files, then the bridge runs it', async t => {
+  const { save, store, cache, database, worktree, root, registry, environment } = await fixture(t);
+  await save([packageServer({ secretEnv: ['FIXTURE_TOKEN'] })], { 'local-tools/FIXTURE_TOKEN': secret }, ['local-tools']);
+  const taskId = randomUUID();
+  await database('tasks').insert({ task_id: taskId });
+  let launched: AgentTaskOptions | undefined; let launch: ReturnType<typeof currentExtensionLaunch>;
+  const options: AgentTaskOptions = { extensions: issueTask(), taskId, issueRef: { repoOwner: 'team', repoName: 'repo', number: 1 }, worktreePath: worktree, prompt: 'Run', githubToken: '' };
+  await executeWithExtensions(claude, options, async prepared => {
+    launch = currentExtensionLaunch();
+    await launch!.beforeLaunch();
+    launched = prepared;
+    return result;
+  }, store, { packageCache: cache, runtimeSupport: { kind: 'sprites', capabilities: { skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false }, bindMounts: false, mcpEndpoint: 'https://propr.example/api/mcp' } });
+  assert.deepEqual(launch!.mounts, [], 'nothing is bind-mounted');
+  assert.deepEqual(launch!.requires!.packageMcp, ['local-tools']);
+  const installed = await cache.verify((await store.readLibrary('1')).servers[0] as any);
+  const install = launch!.packageInstall!;
+  assert.equal(install.registry, registry.url.replace(/\/+$/, ''));
+  assert.equal(install.servers.length, 1);
+  const [remote] = install.servers;
+  assert.equal(remote.key, cache.key((await store.readLibrary('1')).servers[0] as any));
+  assert.equal(remote.lock, await fs.readFile(path.join(installed.localDirectory, 'package-lock.json'), 'utf8'), 'the worker\'s verified lock file, verbatim');
+  assert.match(packageServersDigest(install.servers), /^[0-9a-f]{16}$/);
+  assert.ok(!JSON.stringify(install).includes(secret), 'the install carries no secret');
+  const local = launched!.toolPolicy!.localMcpServers!;
+  const config = JSON.parse(Buffer.from(local[0].bridgeConfig, 'base64url').toString());
+  assert.equal(config.args[0], `/opt/propr/packages/${remote.key}/node_modules/propr-fixture-mcp/bin/server.js`);
+  assert.deepEqual(local[0].env, { PROPR_EXTENSION_STDIO_0_0_SECRET: secret }, 'secrets reach the bridge by environment name, as on Docker');
+
+  // Replay the install as the Sprite or Machine does, into a scratch root.
+  const sandbox = path.join(root, 'sandbox-packages');
+  const specFile = path.join(root, 'package-servers.json');
+  const resultFile = path.join(root, 'package-servers-result');
+  const installer = path.join(root, 'installer.py');
+  await fs.writeFile(installer, PACKAGE_SERVER_INSTALLER);
+  await fs.writeFile(specFile, JSON.stringify({ ...JSON.parse(packageServerInstallSpec(install, 120_000, environment.PATH)), root: sandbox }));
+  await promisify(execFile)('python3', ['-I', installer, specFile, resultFile]);
+  const outcome = JSON.parse(await fs.readFile(resultFile, 'utf8'));
+  assert.equal(outcome.code, 0, outcome.tail);
+  const directory = path.join(sandbox, remote.key);
+  if (process.getuid?.() !== 0) await assert.rejects(fs.writeFile(path.join(directory, remote.entry), 'tampered'), /EACCES/, 'the install is read-only');
+  assert.ok(!await fs.stat(registry.marker).catch(() => null), 'no lifecycle script ran during the replay');
+  // The agent lists and calls the tools through the bridge, from the replayed install.
+  const remoteConfig = { ...config, args: [config.args[0].replace(`/opt/propr/packages/${remote.key}`, directory), ...config.args.slice(1)] };
+  const call = await bridgeSession(t, Buffer.from(JSON.stringify(remoteConfig)).toString('base64url'), { ...local[0].env }, directory);
+  assert.equal((await call('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'agent', version: '1' } })).result.serverInfo.name, 'local-tools');
+  assert.deepEqual((await call('tools/call', { name: 'echo', arguments: { text: 'hi' } })).result.content[0].text, `dep:${plainValue}:hi:--flag,value`);
+
+  // A lock file that does not pin the package at its integrity value is refused before npm runs.
+  const tampered = { ...remote, key: 'b'.repeat(40), integrity: `sha512-${'A'.repeat(86)}==` };
+  await fs.writeFile(specFile, JSON.stringify({ ...JSON.parse(packageServerInstallSpec({ ...install, servers: [tampered] }, 120_000, environment.PATH)), root: sandbox }));
+  await assert.rejects(promisify(execFile)('python3', ['-I', installer, specFile, resultFile]), /does not pin the package at its integrity value/);
+  assert.notEqual(JSON.parse(await fs.readFile(resultFile, 'utf8')).code, 0);
+  assert.ok(!await fs.stat(path.join(sandbox, tampered.key)).catch(() => null));
+  if (process.getuid?.() !== 0) await import('node:child_process').then(c => c.execFileSync('chmod', ['-R', 'u+w', sandbox]));
+});
+
 test('Vibe gets the package server as a VIBE_MCP_SERVERS stdio entry whose own env is all the bridge needs', async t => {
   const { save, run, cache, store } = await fixture(t);
   await save([packageServer({ secretEnv: ['FIXTURE_TOKEN'] })], { 'local-tools/FIXTURE_TOKEN': secret }, ['local-tools']);
@@ -308,4 +368,28 @@ test('a missing secret skips the server; a native export erases package secrets'
   const exported = await store.readLibrary('1');
   assert.deepEqual(exported.secrets['local-tools'], { count: 1, configured: false, configuredEnv: [] });
   assert.ok(!JSON.stringify(await database('extension_library_revisions').select('*')).includes(secret));
+});
+
+test('a package server whose lock files cannot travel to a remote runtime is dropped when auto-applied and refuses the run when explicit', async () => {
+  const { prepareRemotePackageServers } = await import('../src/extensions/remotePackageServers.js');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-locks-'));
+  try {
+    const missing = path.join(dir, 'missing'); const large = path.join(dir, 'large'); const ok = path.join(dir, 'ok');
+    for (const directory of [missing, large, ok]) { await fs.mkdir(directory); await fs.writeFile(path.join(directory, 'package.json'), '{}'); }
+    await fs.writeFile(path.join(large, 'package-lock.json'), 'x'.repeat(2 * 1024 * 1024 + 1));
+    await fs.writeFile(path.join(ok, 'package-lock.json'), '{}');
+    const pkg = (name: string) => ({ kind: 'package', name, package: 'propr-fixture-mcp', version: '1.0.0', integrity: 'sha512-x' }) as any;
+    const installed = new Map([['missing', missing], ['large', large], ['ok', ok]].map(([name, localDirectory]) => [name, { localDirectory, entry: 'bin/server.js' } as any]));
+    const set = { servers: [pkg('missing'), pkg('large'), pkg('ok')], skills: [], skipped: [], omitted: [] };
+    const cache = { key: (server: { name: string }) => server.name.padEnd(40, '0') } as any;
+    const auto = await prepareRemotePackageServers(set, issueTask(), { installed, cache, runtime: 'fly-machines' });
+    assert.deepEqual(auto.set.servers.map(s => s.name), ['ok']);
+    assert.deepEqual([...auto.remote.keys()], ['ok']);
+    assert.deepEqual(auto.set.skipped.map(s => [s.name, s.reason, s.source]), [['missing', 'package_unavailable', 'auto'], ['large', 'package_unavailable', 'auto']]);
+    assert.deepEqual(auto.dropped!.servers, ['missing', 'large']);
+    assert.match(auto.dropped!.message, /"missing" has no package-lock\.json in its verified install, and agent runtime "fly-machines" needs it/);
+    assert.match(auto.dropped!.message, /"large" has a package-lock\.json larger than 2 MiB/);
+    const explicit = await prepareRemotePackageServers(set, { ...issueTask(), servers: ['large'] }, { installed, cache, runtime: 'sprites' });
+    assert.match(explicit.refused!.message, /"large" has a package-lock\.json larger than 2 MiB, the most agent runtime "sprites" can carry/);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });

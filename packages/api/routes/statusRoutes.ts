@@ -9,6 +9,8 @@ import {
   resolveGithubAuthMode,
   resolveGithubEventIntakeMode,
   ROUTING_STATUS_REDIS_KEY,
+  IDLE_STATUS_REDIS_KEY,
+  parseIdleShutdownStatus,
   type GithubEventIntakeMode
 } from '@propr/shared';
 import {
@@ -24,6 +26,7 @@ import type { SyntheticAgentConfig } from '@propr/shared';
 import { getConnectMcpState } from '../mcp/tunnelMode.js';
 import { applyRoutingStatus, parseConnectAccountStatus, type RoutingState } from './connectAccountStatus.js';
 import { getOrCreatePublicInstanceIdentity } from '../publicInstanceIdentity.js';
+import { readSpritePoolStatus } from '../services/spritePoolStatus.js';
 import { timeApiStage } from '../apiPerformanceTiming.js';
 
 interface StatusRoutesDeps {
@@ -94,6 +97,7 @@ interface RuntimeStatusSnapshot {
   worker: 'running' | 'stopped' | 'unknown';
   workerCount?: number;
   routing?: RoutingState;
+  idleShutdown?: Record<string, unknown>;
 }
 
 interface BoundedFreshValue<T> {
@@ -466,15 +470,30 @@ async function getRoutingState(redisClient: RedisClientType): Promise<RoutingSta
   }
 }
 
+/** Opt-in idle shutdown state the daemon publishes; absent when the daemon has not published one. */
+async function getIdleShutdownState(redisClient: RedisClientType): Promise<Record<string, unknown> | undefined> {
+  try {
+    const raw = await redisClient.get(IDLE_STATUS_REDIS_KEY);
+    if (!raw) return undefined;
+    return parseIdleShutdownStatus(JSON.parse(raw)) as Record<string, unknown> | null ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function getRuntimeStatusSnapshot(redisClient: RedisClientType): Promise<RuntimeStatusSnapshot> {
-  const [pingResult, daemonResult, workerResult, routingResult] = await Promise.allSettled([
+  const [pingResult, daemonResult, workerResult, routingResult, idleResult, poolResult] = await Promise.allSettled([
     redisClient.ping(),
     redisClient.get('system:status:daemon'),
     redisClient.sCard('system:status:workers'),
     getRoutingState(redisClient),
+    getIdleShutdownState(redisClient),
+    readSpritePoolStatus(redisClient),
   ]);
+  const spritePool = poolResult.status === 'fulfilled' ? poolResult.value : undefined;
   const routing = routingResult.status === 'fulfilled' ? routingResult.value : undefined;
-  const routingField = routing ? { routing } : {};
+  const idleShutdown = idleResult.status === 'fulfilled' ? idleResult.value : undefined;
+  const routingField = { ...(spritePool && { spritePool }), ...(routing ? { routing } : {}), ...(idleShutdown ? { idleShutdown } : {}) };
   if (pingResult.status === 'rejected'
     || daemonResult.status === 'rejected'
     || workerResult.status === 'rejected') {

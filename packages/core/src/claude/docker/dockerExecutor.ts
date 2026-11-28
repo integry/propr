@@ -1,12 +1,10 @@
-/* eslint-disable max-lines -- subprocess capture, cancellation and settlement share one execution lifecycle */
-import { ExtensionStreamRedactor } from '../../extensions/extensionOutput.js';
-import { currentExtensionLaunch, extensionLaunchForDockerRun } from '../../extensions/extensionLaunch.js';
-import { assertNativeLogAdmission, prepareCommandCapture, finishDiagnosticOutput, scheduleProviderCapture, type DiagnosticAgent } from '../../diagnostics/managedLogRuntime.js';
+import { startRunPipeline } from '../../agents/runtime/runPipeline.js';
+import { extensionLaunchForRun } from '../../extensions/extensionLaunchContext.js';
+import { assertNativeLogAdmission, type DiagnosticAgent } from '../../diagnostics/managedLogRuntime.js';
 import { createExecutionDeadline, type ExecutionDeadline } from './dockerExecutionDeadline.js';
 import { prepareAdmittedAgent, type AdmittedAgent, type AgentAdmissionExemption } from '../../agents/agentRunAdmission.js';
-import { captureWorkflowMarkers, withWorkflowExecutionDeadline } from '../../workflow/workflowExecution.js';
+import { withWorkflowExecutionDeadline } from '../../workflow/workflowExecution.js';
 import { spawn, SpawnOptions, ChildProcess } from 'child_process';
-import { StringDecoder } from 'node:string_decoder';
 import fs from 'fs';
 import logger from '../../utils/logger.js';
 import {
@@ -14,15 +12,14 @@ import {
     getExecutionAbortError, getDockerRunContainerName, getExecutionOwnershipContext, resolveExecutionArgs,
 } from './dockerExecutionOwnership.js';
 import { plannerAbortSignalKeyForTask, scheduleForceKill, setupAbortChecker } from './dockerAbortController.js';
-import { BoundedDiagnosticTail, BoundedProviderRecordBuffer, boundedProviderOutput } from '../../agents/impl/utils/boundedProviderOutput.js';
-import { inspectSessionMessageLine, SessionLineInspectionContext } from './dockerSessionOutput.js';
-import { admitCostExecution, refuseCostExecution, registerCostExecution, settleCostCapStop } from './dockerCostCap.js';
-import { startLiveOutputStreaming } from './dockerLiveOutputStreaming.js';
+import { admitCostExecution, refuseCostExecution, settleCostCapStop } from './dockerCostCap.js';
 import { detectContainerId } from './dockerContainerDetection.js';
 import type { AgentWatchdogTrip } from './agentActivityWatchdog.js';
-import { startExecutionWatchdog, type ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
+import type { AgentRunComputeUsage } from '../../agents/runtime/computeUsage.js';
+import type { ExecutionWatchdogOptions } from './dockerExecutionWatchdog.js';
 import { settleTimeoutStop, settleWatchdogStop } from './dockerExecutionSettlement.js';
 import { startWithNetworkPolicy, type NetworkPolicyOptions } from './dockerNetworkPolicy.js';
+import { startsContainer, type AgentRunLaunch } from '../../agents/runtime/agentRunLaunch.js';
 export { getDockerRootDir } from './dockerRootDir.js';
 
 export { stopDockerContainer } from './dockerContainerControl.js';
@@ -41,6 +38,8 @@ export interface ExecutionResult {
     stderr: string;
     exitCode: number | null;
     messageTimestamps: Map<string, string>;
+    /** Transport failure surfaced after the workspace has been retrieved. */
+    outputIncomplete?: string;
     /** Set when ProPR stopped the process after its configured execution deadline. */
     timedOut?: boolean;
     timeoutMs?: number;
@@ -48,6 +47,8 @@ export interface ExecutionResult {
     costCapExceeded?: boolean;
     /** Set when the stall/degenerate-output watchdog stopped the process. */
     watchdogTrip?: AgentWatchdogTrip;
+    /** What the agent's sandbox consumed; set by the agent runtime for agent runs only. */
+    computeUsage?: AgentRunComputeUsage;
 }
 export interface RunningTaskContainer { id: string; name: string; }
 export type TaskContainerLiveness = 'running' | 'stopped' | 'not_found' | 'unavailable';
@@ -81,6 +82,8 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     agentAlias?: string;
     /** Documented agent launch without a registered alias: charged to the global admission limit only. */
     agentAdmissionExemption?: AgentAdmissionExemption;
+    /** Set by an agent runtime: the run spec this launch renders, and its output stream sink. */
+    agentRun?: AgentRunLaunch;
 }
 
 /**
@@ -204,7 +207,7 @@ function spawnCommandProcess(
 }
 
 export async function executeDockerCommand(command: string, args: string[], options: DockerCommandOptions = {}): Promise<ExecutionResult> {
-    const extensions = extensionLaunchForDockerRun(command, args, options);
+    const extensions = extensionLaunchForRun(command, args, options);
     if (extensions) {
         args = [args[0], ...extensions.mounts, ...args.slice(1)];
     }
@@ -235,15 +238,16 @@ async function startDockerCommand(
     command: string, args: string[], options: DockerCommandOptions,
     { ownershipContext, executionSignal, deadline, timeoutError }: { ownershipContext: ReturnType<typeof getExecutionOwnershipContext>; executionSignal: AbortSignal | undefined; deadline: ExecutionDeadline; timeoutError: Error },
 ): Promise<ExecutionResult> {
-    if (command === 'docker' && args[0] === 'run') assertNativeLogAdmission(options.diagnostics);
+    const containerLaunch = startsContainer(command, args, options);
+    if (containerLaunch) assertNativeLogAdmission(options.diagnostics);
     const executionArgs = resolveExecutionArgs(command, args, options.taskId, ownershipContext?.attemptGeneration);
     const extensionValidationWindow = {};
     deadline.remaining();
-    await extensionLaunchForDockerRun(command, args, options)?.beforeLaunch(extensionValidationWindow, false);
-    const admission = command === 'docker' && args[0] === 'run' && !options.costCapExempt
+    await extensionLaunchForRun(command, args, options)?.beforeLaunch(extensionValidationWindow, false);
+    const admission = containerLaunch && !options.costCapExempt
         ? await prepareAdmittedAgent(executionArgs, {
             createArgs: async () => {
-                await extensionLaunchForDockerRun(command, args, options)?.beforeLaunch(extensionValidationWindow);
+                await extensionLaunchForRun(command, args, options)?.beforeLaunch(extensionValidationWindow);
                 return withWorkflowExecutionDeadline(command, executionArgs, deadline.remaining());
             },
             signal: executionSignal, taskId: options.taskId, extraEnvVars: options.extraEnvVars,
@@ -254,7 +258,7 @@ async function startDockerCommand(
     try {
         const abortError = getExecutionAbortError(admission?.signal);
         if (abortError) throw abortError;
-        await extensionLaunchForDockerRun(command, args, options)?.beforeLaunch(extensionValidationWindow);
+        await extensionLaunchForRun(command, args, options)?.beforeLaunch(extensionValidationWindow);
         const remainingMs = deadline.remaining();
         // Transfer the same budget to the subprocess timer. Keep timeout reporting
         // in terms of the caller's original limit and preserve partial output.
@@ -265,50 +269,17 @@ async function startDockerCommand(
     }
 }
 
-function prepareExecutionCapture(options: DockerCommandOptions, args: string[], admission: AdmittedAgent | null, attemptGeneration: string | undefined) {
-    const diagnostics = options.diagnostics && { ...options.diagnostics, attribution: { task: options.taskId, attempt: attemptGeneration } };
-    return prepareCommandCapture(diagnostics, admission?.args ?? args, { ...options.extraEnvVars, ...admission?.environment }, args);
-}
-
 function runDockerCommand(
     command: string, args: string[], options: DockerCommandOptions,
     { ownershipContext, executionSignal, admission, remainingMs }: { ownershipContext: ReturnType<typeof getExecutionOwnershipContext>; executionSignal: AbortSignal | undefined; admission: AdmittedAgent | null; remainingMs: number },
 ): Promise<ExecutionResult> {
     // eslint-disable-next-line complexity -- subprocess capture, cancellation and settlement share one execution lifecycle
     return new Promise((resolve, reject) => {
-        const { timeout = 300000, cwd, onSessionId, onContainerId, worktreePath, stdinData, extraEnvVars, taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, preserveOutputOnTimeout = false, model, costCapExempt } = options;
+        const { timeout = 300000, cwd, onContainerId, worktreePath, stdinData, extraEnvVars, taskId, preserveOutputOnTimeout = false } = options;
         const executionArgs = resolveExecutionArgs(command, withWorkflowExecutionDeadline(command, args, remainingMs), taskId, ownershipContext?.attemptGeneration);
-        const { capture, stdout: diagnosticStdout, stderr: diagnosticStderr } = prepareExecutionCapture(options, executionArgs, admission, ownershipContext?.attemptGeneration);
         const executablePath = command;
-        const namedContainer = command === 'docker' ? getDockerRunContainerName(executionArgs) : null;
-        // Agent containers count toward their run's spend cap; reaching it stops
-        // them like a timeout, so their partial work can still be published. Once
-        // the run was stopped at its cap, a new agent container is refused before
-        // it starts.
-        let stopForCostCap: (message: string) => void = () => undefined;
-        const costCap = registerCostExecution(command, args, { model, costCapExempt }, message => stopForCostCap(message));
-        if ('refusal' in costCap) {
-            refuseCostExecution(costCap.refusal, preserveOutputOnTimeout).then(resolve, reject);
-            return;
-        }
-        const costExecution = costCap.execution;
+        const namedContainer = options.agentRun?.spec.name ?? (command === 'docker' ? getDockerRunContainerName(executionArgs) : null);
         let child: ReturnType<typeof spawnCommandProcess>;
-        try { child = spawnCommandProcess(executablePath, admission?.args ?? executionArgs, { cwd, stdinData, extraEnvVars, environment: admission?.environment }); } catch (error) {
-            // A container that never started must not stay registered with the guard.
-            void costExecution?.finish().catch(() => null);
-            throw error;
-        }
-
-        let sessionLineBuffer = '';
-        const stderrTail = new BoundedDiagnosticTail(), workflowMarkers = captureWorkflowMarkers(args);
-        // Built on read only (it costs the whole bounded output), never per chunk.
-        const stdoutBuffer = new BoundedProviderRecordBuffer();
-        const readStdout = (): string => stdoutBuffer.output;
-        const extensionSecrets = currentExtensionLaunch()?.secrets;
-        const extensionStdout = extensionSecrets ? new ExtensionStreamRedactor(extensionSecrets) : undefined;
-        const extensionStderr = extensionSecrets ? new ExtensionStreamRedactor(extensionSecrets) : undefined;
-        const stdoutDecoder = new StringDecoder('utf8');
-        const stderrDecoder = new StringDecoder('utf8');
         const state = createDockerExecutionState();
         if (admission) state.containerId.value = admission.id;
         let ownershipFailure: unknown;
@@ -318,7 +289,6 @@ function runDockerCommand(
         let costCapStopMessage: string | null = null;
         const pendingCallbacks = new Set<Promise<void>>();
         let containerDetectionTimer: ReturnType<typeof setTimeout> | null = null;
-        const messageTimestamps = new Map<string, string>();
         const abortExecution = (executionTimeout = false): void => {
             void abortSpawnedExecution(child, state, {
                 namedContainer, scheduleForceKill,
@@ -332,7 +302,7 @@ function runDockerCommand(
                 attemptGeneration: executionTimeout ? undefined : ownershipContext?.attemptGeneration,
             });
         };
-        const watchdog = startExecutionWatchdog(options, () => {
+        const stopForWatchdog = () => {
             // A run already being stopped (deadline, user, ownership) keeps that outcome.
             if (state.aborted.value || state.timedOut) return false;
             clearTimeout(timeoutHandle);
@@ -340,7 +310,7 @@ function runDockerCommand(
             // Same subprocess-scoped stop path as the execution deadline.
             abortExecution(true);
             return true;
-        });
+        };
         const preserveOwnershipFailure = (error: unknown): void => {
             if (hasOwnershipFailure) return;
             hasOwnershipFailure = true;
@@ -354,37 +324,36 @@ function runDockerCommand(
             preserveOwnershipFailure(error);
             abortExecution();
         };
-        const warnFromLiveOutput = (error: Error): void => {
-            logger.warn({ error: error.message, taskId }, 'Live output unavailable; continuing agent execution');
-        };
         const invokeExecutionCallback = (callback: () => void | Promise<void>): void => {
             const callbackPromise = Promise.resolve().then(callback).catch(failFromCallback);
             pendingCallbacks.add(callbackPromise);
             void callbackPromise.finally(() => pendingCallbacks.delete(callbackPromise));
         };
-        const sessionInspectionContext: SessionLineInspectionContext = { messageTimestamps, state, onSessionId, invokeExecutionCallback };
-        const inspectSessionLines = (chunk: string, timestamp: string, flush = false): void => {
-            sessionLineBuffer = boundedProviderOutput(sessionLineBuffer + chunk);
-            const lines = sessionLineBuffer.split('\n');
-            const remainder = lines.pop() ?? '';
-            sessionLineBuffer = flush ? '' : remainder;
-            if (flush && remainder) lines.push(remainder);
-            for (const line of lines) {
-                inspectSessionMessageLine(line, timestamp, sessionInspectionContext);
-                costExecution?.observeLine(line);
-                watchdog.observeLine(line);
-            }
-        };
-        // The guard evaluates asynchronously, so no stop arrives before this is set.
-        stopForCostCap = message => {
+        const launch = startRunPipeline(options, {
+            markerArgs: args, diagnosticArgs: admission?.args ?? executionArgs, createArgs: executionArgs,
+            environment: { ...options.extraEnvVars, ...admission?.environment }, attempt: ownershipContext?.attemptGeneration,
+            command, stopForWatchdog, stopForCostCap, invokeExecutionCallback,
+        });
+        if (launch.refusal) { launch.refusal.then(resolve, reject); return; }
+        const { pipeline } = launch;
+        const { watchdog } = pipeline;
+        try { child = spawnCommandProcess(executablePath, admission?.args ?? executionArgs, { cwd, stdinData, extraEnvVars, environment: admission?.environment }); }
+        catch (error) {
+            pipeline.finishOutput();
+            void pipeline.closeLive();
+            void pipeline.finishCost()?.catch(() => null);
+            throw error;
+        }
+        options.agentRun?.onSpawn?.();
+        function stopForCostCap(message: string) {
             if (state.aborted.value) return;
             costCapStopMessage = message;
             abortExecution(true);
-        };
+        }
         // Awaits the final evaluation, so usage streamed after the last periodic
         // check still ends the execution with the spend-cap outcome.
         const finishCostExecution = async (): Promise<void> => {
-            const message = await costExecution?.finish().catch(() => null);
+            const message = await pipeline.finishCost()?.catch(() => null);
             if (message && !costCapStopMessage && !state.aborted.value) costCapStopMessage = message;
         };
         executionSignal?.addEventListener('abort', abortForExecutionSignal, { once: true });
@@ -402,40 +371,20 @@ function runDockerCommand(
             })
             : null;
 
-        const recordWatchdogActivity = (): void => watchdog.recordActivity();
-
-        const liveOutput = startLiveOutputStreaming({ taskId, streamToRedis, streamStderrToRedis, streamExtraOutput, stripAnsi, onOverflow: warnFromLiveOutput, onActivity: recordWatchdogActivity, onTranscriptRecord: watchdog.observeLine }, readStdout, () => stderrTail.value);
         const detectExecutionContainer = () => {
             if (admission) {
                 // Admission already owns the immutable ID. A volume-based lookup
                 // could pick a sibling execution sharing the same worktree.
                 state.containerIdDetected = true;
                 if (onContainerId) invokeExecutionCallback(() => onContainerId(admission.id, namedContainer ?? admission.id));
-            } else if (command === 'docker' && args[0] === 'run' && worktreePath) {
+            } else if (startsContainer(command, args, options) && worktreePath) {
                 containerDetectionTimer = detectContainerId(worktreePath, state, onContainerId, invokeExecutionCallback);
             }
         };
         detectExecutionContainer();
 
-        const diagnosticTimer = scheduleProviderCapture(capture);
-        child.stdout?.on('data', (data: Buffer) => {
-            const decoded = stdoutDecoder.write(data);
-            const chunk = extensionStdout ? extensionStdout.push(decoded) : decoded, ts = new Date().toISOString();
-            recordWatchdogActivity();
-            stdoutBuffer.append(chunk);
-            diagnosticStdout?.write(chunk);
-            liveOutput?.stdout(chunk);
-            inspectSessionLines(chunk, ts);
-        });
-        child.stderr?.on('data', (data: Buffer) => {
-            const decoded = stderrDecoder.write(data);
-            const chunk = extensionStderr ? extensionStderr.push(decoded) : decoded;
-            recordWatchdogActivity();
-            stderrTail.append(chunk);
-            workflowMarkers?.append(chunk);
-            diagnosticStderr?.write(chunk);
-            liveOutput?.stderr(chunk);
-        });
+        child.stdout?.on('data', (data: Buffer) => pipeline.write('stdout', data));
+        child.stderr?.on('data', (data: Buffer) => pipeline.write('stderr', data));
 
         const finishExecution = async (beforeAbortClose?: () => void) => {
             if (containerDetectionTimer) clearTimeout(containerDetectionTimer);
@@ -446,54 +395,39 @@ function runDockerCommand(
             await state.teardownPromise;
         };
         child.on('close', async (exitCode: number | null) => {
-            clearInterval(diagnosticTimer);
-            capture?.snapshot();
             clearTimeout(timeoutHandle);
-            watchdog.stop();
-            const stdoutEnd = stdoutDecoder.end();
-            const finalStdout = extensionStdout ? extensionStdout.push(stdoutEnd) + extensionStdout.finish() : stdoutEnd;
-            if (finalStdout) stdoutBuffer.append(finalStdout);
-            const stderrEnd = stderrDecoder.end();
-            const finalStderr = extensionStderr ? extensionStderr.push(stderrEnd) + extensionStderr.finish() : stderrEnd;
-            finishDiagnosticOutput(capture, finalStdout, finalStderr);
-            stderrTail.append(finalStderr);
-            const stderr = stderrTail.value;
-            workflowMarkers?.finish(finalStderr);
-            liveOutput?.stdout(finalStdout);
-            liveOutput?.stderr(finalStderr);
-            inspectSessionLines(finalStdout, new Date().toISOString(), true);
+            pipeline.finishOutput();
+            const result = pipeline.result(exitCode);
             await finishExecution();
             await watchdog.settled();
             executionSignal?.removeEventListener('abort', abortForExecutionSignal);
-            try { await liveOutput?.close(); }
-            catch (error) { logger.warn({ error: (error as Error).message, taskId }, 'Failed to publish final live output'); }
+            await pipeline.closeLive();
             const executionAbortError = getExecutionAbortError(executionSignal);
             if (executionAbortError) preserveOwnershipFailure(executionAbortError);
             if (hasOwnershipFailure) { reject(ownershipFailure); return; }
             if (processError) { reject(processError); return; }
             if (costCapStopMessage) {
-                settleCostCapStop(costCapStopMessage, { exitCode, stdout: readStdout(), stderr, messageTimestamps }, { preserveOutput: preserveOutputOnTimeout, resolve, reject });
+                settleCostCapStop(costCapStopMessage, result, { preserveOutput: preserveOutputOnTimeout, resolve, reject });
                 return;
             }
             if (state.aborted.value && !timeoutInitiatedAbort) { reject(new ExecutionAbortedError()); return; }
             if (watchdog.trip) {
-                settleWatchdogStop(watchdog.trip, { exitCode, stdout: readStdout(), stderr, messageTimestamps }, preserveOutputOnTimeout, { resolve, reject });
+                settleWatchdogStop(watchdog.trip, result, preserveOutputOnTimeout, { resolve, reject });
                 return;
             }
             if (state.timedOut) {
-                settleTimeoutStop(timeout, { exitCode, stdout: readStdout(), stderr, messageTimestamps }, preserveOutputOnTimeout, { resolve, reject });
+                settleTimeoutStop(timeout, result, preserveOutputOnTimeout, { resolve, reject });
                 return;
             }
-            resolve({ exitCode, stdout: readStdout(), stderr, messageTimestamps });
+            resolve(result);
         });
         child.on('error', async (error: Error) => {
             // close may run during cleanup; capture the process result before awaiting.
             processError = error;
             clearTimeout(timeoutHandle);
             watchdog.stop();
-            inspectSessionLines('', new Date().toISOString(), true);
             await finishExecution(() => executionSignal?.removeEventListener('abort', abortForExecutionSignal));
-            await liveOutput?.close().catch(() => undefined);
+            await pipeline.closeLive();
             reject(hasOwnershipFailure ? ownershipFailure : error);
         });
     });

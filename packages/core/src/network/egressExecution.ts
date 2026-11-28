@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import logger from '../utils/logger.js';
 import type { AgentType } from '../agents/types.js';
-import { AGENT_EGRESS_PROXY_SUPPORT, AGENT_EGRESS_RESTRICTED_ENV, baseEgressAllowlist, compileEgressAllowlist } from './egressAllowlist.js';
+import { AGENT_EGRESS_PROXY_SUPPORT, AGENT_EGRESS_RESTRICTED_ENV, agentCommandModel, baseEgressAllowlist, compileEgressAllowlist } from './egressAllowlist.js';
 import { EgressDenialRecorder, startEgressProxy, upstreamProxiesFromEnv, type EgressProxy, type EgressProxyStats } from './egressProxy.js';
 import type { AgentNetworkMode, ResolvedNetworkPolicy } from './networkPolicy.js';
 
@@ -43,6 +43,7 @@ export interface NetworkEgressReport extends EgressProxyStats {
     mode: AgentNetworkMode;
     source: ResolvedNetworkPolicy['source'];
     note?: string;
+    diagnostics?: string[];
     /** Instance and repository additions to the built-in base list. */
     allow: string[];
     restrictedContainers: number;
@@ -55,6 +56,7 @@ export interface NetworkEgressReport extends EgressProxyStats {
 interface NetworkEgressContext {
     policy: ResolvedNetworkPolicy;
     recorder: EgressDenialRecorder;
+    diagnostics: string[];
     restrictedContainers: number;
     fallbacks: NetworkEgressFallback[];
     refusals: NetworkEgressFallback[];
@@ -62,6 +64,7 @@ interface NetworkEgressContext {
 
 const networkEgressExecution = new AsyncLocalStorage<NetworkEgressContext>();
 export const currentAgentNetworkPolicy = () => networkEgressExecution.getStore()?.policy;
+export const currentNetworkEgressDiagnostics = () => networkEgressExecution.getStore()?.diagnostics;
 const activeProxies = new Map<string, EgressProxy>();
 /** Directories this process owns, from before the proxy listens until it is released. */
 const ownedDirectories = new Set<string>();
@@ -74,6 +77,7 @@ function reportFor(context: NetworkEgressContext): NetworkEgressReport {
     const { policy } = context;
     return {
         mode: policy.mode, source: policy.source, ...(policy.note ? { note: policy.note } : {}), allow: policy.allow,
+        ...(context.diagnostics.length ? { diagnostics: context.diagnostics } : {}),
         restrictedContainers: context.restrictedContainers, fallbacks: context.fallbacks, refusals: context.refusals, ...context.recorder.stats(),
     };
 }
@@ -108,7 +112,7 @@ export async function executeWithNetworkPolicy<T>(
         return { result, report: reportFor(enclosing), nested: true };
     }
     if (enclosing) logger.debug({ enclosing: enclosing.policy, policy }, 'Nested network policy scope with a different policy keeps its own record');
-    const context: NetworkEgressContext = { policy, recorder: new EgressDenialRecorder(), restrictedContainers: 0, fallbacks: [], refusals: [] };
+    const context: NetworkEgressContext = { policy, recorder: new EgressDenialRecorder(), diagnostics: [], restrictedContainers: 0, fallbacks: [], refusals: [] };
     try {
         const result = await networkEgressExecution.run(context, execute);
         return { result, report: reportFor(context), nested: false };
@@ -262,6 +266,23 @@ export async function resolveUnscopedNetworkPolicy(command: string, args: string
     return policy.mode === 'restricted' && policy.source === 'instance_enforced' ? policy : undefined;
 }
 
+/**
+ * The restricted policy an agent run started now must honour, whichever
+ * runtime launches it: the enclosing run's restricted policy, else the
+ * enforced instance policy for a run started outside any policy. Undefined
+ * when the run may use open networking. Like {@link resolveUnscopedNetworkPolicy},
+ * an unreadable instance policy rejects rather than opening the run.
+ */
+export async function resolveAgentRunNetworkPolicy(exemptReason?: string): Promise<ResolvedNetworkPolicy | undefined> {
+    if (exemptReason) return undefined;
+    const context = networkEgressExecution.getStore();
+    if (context) return context.policy.mode === 'restricted' ? context.policy : undefined;
+    const resolver = unscopedPolicyResolver;
+    if (!resolver) return undefined;
+    const policy = await resolver();
+    return policy.mode === 'restricted' && policy.source === 'instance_enforced' ? policy : undefined;
+}
+
 /** Runs one `docker run` (its arguments after `docker`) and reports how it ended. */
 export type EgressPreflightRunner = (args: string[]) => Promise<{ exitCode: number | null; stderr: string }>;
 
@@ -365,7 +386,7 @@ export async function prepareDockerRunNetwork(command: string, args: string[], e
         }));
         proxy = await startEgressProxy({
             socketPath: path.join(directory, SOCKET_NAME),
-            allowlist: compileEgressAllowlist([...baseEgressAllowlist(agentType as AgentType), ...context.policy.allow]),
+            allowlist: compileEgressAllowlist([...baseEgressAllowlist(agentType as AgentType, agentCommandModel(args)), ...context.policy.allow]),
             // Only the administrator's own IP literals open loopback, private or link-local addresses.
             addressAllowlist: compileEgressAllowlist(context.policy.instanceAllow ?? []),
             recorder: context.recorder,

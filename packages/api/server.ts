@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import { createExtensionLibraryRoutes } from './routes/extensionProfileRoutes.js';
 import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
@@ -58,6 +59,7 @@ import {
   createAgentRuntimeRoutes, createNotificationRoutes,
   createAdminRoutes,
   createAdminMcpRoutes,
+  createIdleShutdownRoutes,
   createGoalRoutes,
   createAutomationDefinitionRoutes,
   automationDefinitionAttachmentUpload,
@@ -104,6 +106,7 @@ import { resolveInstanceWebPushConfiguration } from './services/instanceWebPushC
 import { WEB_PUSH_CONFIGURATION_WARNINGS, type ValidatedWebPushConfiguration } from './services/webPushConfiguration.js';
 import { assertInstanceAdministratorConfigured, resolveDurableInstanceAuthorization } from './authorization.js';
 import { resolveApiListenHost } from './listenAddress.js';
+import { mountStaticUi, publicOriginOf, resolveStaticUi } from './staticUi.js';
 import {
   configureApiProxyTrust,
   createApiRequestRateLimiter,
@@ -123,6 +126,8 @@ import {
   registerRouteEntries,
 } from './routeRegistry.js';
 import { createAgentRunInternalRoutes } from './routes/agentRunInternalRoutes.js';
+import { createIdleShutdownRouteEntries } from './idleShutdownRouteRegistry.js';
+import { createIdleActivityMiddleware, createWakeHandler, startApiIdleShutdown } from './idleShutdownIntegration.js';
 import { registerDesktopApiBoundary } from './desktopApiBoundary.js';
 import {
   startVisualPreviewOAuthRefreshScheduler,
@@ -202,6 +207,22 @@ app.disable('x-powered-by');
 installApiFinalHandler(app);
 app.use(apiSecurityHeaders);
 app.use(refusePublicFleetData);
+// Opt-in idle shutdown: in-flight requests keep the instance awake, and the
+// Connect wake ping (or any first request) names what woke it.
+app.use(createIdleActivityMiddleware(() => ioRedisClient));
+app.post('/wake', createWakeHandler(() => ioRedisClient));
+
+// All-in-one mode serves the built UI on the API origin (no separate UI
+// container). Mounted ahead of CORS and the /api limiters; server-owned paths
+// always fall through to their routes.
+const staticUi = resolveStaticUi();
+if (staticUi.enabled && staticUi.distDir) {
+  mountStaticUi(app, { distDir: staticUi.distDir, publicApiUrl: staticUi.publicApiUrl });
+  console.log(`Serving the Web UI from ${staticUi.distDir}`);
+} else if (process.env.PROPR_SERVE_UI !== undefined || process.env.PROPR_UI_DIST_DIR !== undefined) {
+  console.warn(`Web UI serving requested but disabled: ${staticUi.reason}`);
+}
+const servedUiOrigin = staticUi.enabled ? publicOriginOf(process.env.API_PUBLIC_URL) : undefined;
 const PORT = Number(process.env.DASHBOARD_API_PORT || 4000);
 const HOST = resolveApiListenHost();
 
@@ -250,6 +271,12 @@ app.use((req, res, next) => {
   // user-controlled configuration even when it is gated by an allowlist.
   const mcpOrigin = getMcpOriginSync();
   const validateRequestCorsOrigin: CorsOriginValidator = (origin, callback) => {
+    // The UI served by this API (all-in-one) is same-origin with it, even when
+    // FRONTEND_URL names a different (e.g. hosted) UI origin.
+    if (servedUiOrigin && origin === servedUiOrigin) {
+      callback(null, true);
+      return;
+    }
     if (req.path.startsWith('/mcp/') && mcpOrigin && origin === mcpOrigin) {
       callback(null, true);
       return;
@@ -306,6 +333,7 @@ let resolvedWebPushConfiguration: ValidatedWebPushConfiguration = { configured: 
 let desktopPairingCleanupTimer: NodeJS.Timeout | undefined;
 let visualPreviewOAuthRefreshScheduler: VisualPreviewOAuthRefreshScheduler | undefined;
 let connectMcpRegistration: ConnectRegistrationManager | undefined;
+let stopApiIdleShutdown: (() => Promise<void>) | undefined;
 
 function createDemoTaskQueue(): Queue {
   return {
@@ -457,6 +485,7 @@ export function setupRoutes(): void {
   const adminRoutes = createAdminRoutes();
   const followupHandoffRoutes = createFollowupHandoffRoutes(createDefaultFollowupHandoffDeps());
   const adminMcpRoutes = createAdminMcpRoutes({ database: db, redisClient });
+  const idleShutdownRoutes = createIdleShutdownRoutes({ redisClient });
   const visualPreviewAuthRoutes = createVisualPreviewAuthRoutes({
     managedStorage: createManagedPreviewStorageClient(() => redisClient.get(ROUTING_STATUS_REDIS_KEY)),
   });
@@ -523,6 +552,7 @@ export function setupRoutes(): void {
     ...operationalRoutes,
     ...createStorageRouteEntries(storageRoutes),
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
+    ...createIdleShutdownRouteEntries(idleShutdownRoutes),
     ...createManagementRouteEntries({
       adminRoutes,
       adminMcpRoutes,
@@ -612,9 +642,7 @@ function setupWebhookRoute(): void {
     try {
       await handleWebhookRequest(req, res, {
         webhookSecret: process.env.GH_WEBHOOK_SECRET,
-        redis: { set: (key, value, opts) => opts
-          ? redisClient.set(key, value, { ...(opts.NX ? { NX: true as const } : {}), ...(opts.EX != null ? { EX: opts.EX } : {}) }) as Promise<string | null>
-          : redisClient.set(key, value) as Promise<string | null> },
+        redis: redisClient,
         processor: async (payload, event, cid, deliveryId) => {
           await processWebhookEvent(payload, event as WebhookEventType, cid, deliveryId);
         },
@@ -669,7 +697,17 @@ async function initializeNotificationBackground(): Promise<void> {
   }
 }
 
-async function start(): Promise<void> {
+export interface StartedApiServer {
+  /** Stops intake, closes every API-owned resource, then the HTTP server. Never exits the process. */
+  close(): Promise<void>;
+}
+
+export interface StartApiServerOptions {
+  /** Install the standalone SIGTERM handler that closes and exits (default true). */
+  installSignalHandlers?: boolean;
+}
+
+async function start(options: StartApiServerOptions = {}): Promise<StartedApiServer> {
   try {
     console.log('SQLite persistence is enabled');
     await runMigrations();
@@ -758,7 +796,10 @@ async function start(): Promise<void> {
       desktopPairingCleanupTimer.unref();
     }
     if (!demoMode) {
-      const socketService = initSocketService(httpServer, validateCorsOrigin, {
+      const socketService = initSocketService(httpServer, (origin, callback) => {
+        if (servedUiOrigin && origin === servedUiOrigin) { callback(null, true); return; }
+        validateCorsOrigin(origin, callback);
+      }, {
         engineMiddleware: socketAuthMiddleware.engineMiddleware,
         authenticate: authenticateSocketRequest,
       });
@@ -769,6 +810,11 @@ async function start(): Promise<void> {
         notificationProjection: notificationBackground,
       });
       console.log('[WebSocket] Queue features initialized for real-time updates');
+      stopApiIdleShutdown = startApiIdleShutdown({
+        redis: getIoRedisClient(),
+        countSessions: () => socketService.getConnectedClientCount(),
+        log: { info: (details, message) => console.log(`[idle-shutdown] ${message}`, details) },
+      });
       await initializeUltrafix(getIoRedisClient());
       // Register the webhook processors in THIS (API) process ONLY when the API
       // actually serves webhooks — i.e. direct_webhook mode, where this process
@@ -801,10 +847,11 @@ async function start(): Promise<void> {
         }
       }, 30 * 1000);
     }
-    httpServer.listen(PORT, HOST, () => { console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`); });
+    httpServer.listen(PORT, HOST);
+    await once(httpServer, 'listening');
+    console.log(`Dashboard API server running at ${HOST}:${PORT}${demoMode ? '' : ' (with WebSocket support)'}`);
 
-    process.on('SIGTERM', async () => {
-      console.log('SIGTERM received, shutting down gracefully...');
+    const close = async (): Promise<void> => {
       // Stop admissions and drain Fleet handlers before their dependencies close.
       await (await fleetDataListener)?.shutdown().catch(error => {
         console.warn('Fleet listener socket cleanup refused:', error);
@@ -824,21 +871,33 @@ async function start(): Promise<void> {
           { name: 'visual-preview OAuth refresh scheduler', close: () => visualPreviewOAuthRefreshScheduler?.close() ?? Promise.resolve() },
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },
           { name: 'ultrafix state redis', close: () => closeUltrafixStateRedis() },
+          { name: 'idle shutdown activity', close: () => stopApiIdleShutdown?.() ?? Promise.resolve() },
           { name: 'socket service', close: () => closeSocketService() },
           { name: 'browser sessions', close: () => socketAuthMiddleware.close() },
           { name: 'io redis client', close: () => getIoRedisClient().quit() }
         );
       }
       await closeResources(shutdownTasks);
-      httpServer.close(() => {
-        console.log('Server closed');
+      await new Promise<void>(resolveClose => httpServer.close(() => resolveClose()));
+      console.log('Server closed');
+    };
+    if (options.installSignalHandlers !== false) {
+      process.on('SIGTERM', async () => {
+        console.log('SIGTERM received, shutting down gracefully...');
+        await close();
         process.exit(0);
       });
-    });
+    }
+    return { close };
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
+}
+
+/** Composable entry for supervisors (all-in-one) that own signal handling and exit. */
+export function startApiServer(options: StartApiServerOptions = {}): Promise<StartedApiServer> {
+  return start(options);
 }
 
 // Importing supervisors and symlinked entries retain the production startup contract.

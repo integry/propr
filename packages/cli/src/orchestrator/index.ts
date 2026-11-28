@@ -7,7 +7,7 @@
  * here we resolve and dynamically import it, typed via ./types.ts.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { delimiter, dirname, join, posix, resolve, win32 } from "node:path";
 import type { OrchestratorConfig, OrchestratorModule } from "./types.js";
@@ -91,6 +91,24 @@ function resolveManifestPath(orchestratorPath: string): string | undefined {
   return existsSync(manifest) ? manifest : undefined;
 }
 
+/**
+ * The bundled launcher manifest (release version and pinned image tags), for
+ * commands that deploy the published images somewhere other than the local
+ * Docker stack (e.g. `propr deploy fly`).
+ */
+export function loadLauncherManifest(): { version: string; images: Record<string, string> } {
+  const orchPath = cachedPath ?? resolveOrchestratorPath();
+  const manifestPath = resolveManifestPath(orchPath);
+  if (!manifestPath) {
+    throw new Error(`Could not locate manifest.json (expected next to ${orchPath}). Run \`npm run build\` in packages/cli to bundle it.`);
+  }
+  const parsed = JSON.parse(readFileSync(manifestPath, "utf-8")) as { version?: unknown; images?: unknown };
+  if (typeof parsed.version !== "string" || !parsed.images || typeof parsed.images !== "object") {
+    throw new Error(`${manifestPath} is not a launcher manifest (missing version or images)`);
+  }
+  return { version: parsed.version, images: parsed.images as Record<string, string> };
+}
+
 /** Loads (and caches) the orchestrator module. */
 export async function loadOrchestrator(): Promise<OrchestratorModule> {
   if (cached) return cached;
@@ -127,6 +145,8 @@ export function resolveStackRoot(
 export async function getHostConfig(opts: {
   configManager?: ConfigManager;
   root?: string;
+  /** Explicit stack profile (`propr start --profile`); wins over PROPR_PROFILE. */
+  profile?: string;
 }): Promise<{ orch: OrchestratorModule; cfg: OrchestratorConfig; rootDir: string }> {
   const orch = await loadOrchestrator();
   const rootDir = resolveStackRoot(opts.configManager, opts.root);
@@ -148,6 +168,7 @@ export async function getHostConfig(opts: {
       cliOverrides.uiTunnelEnabled = tunnelExplicit;
     }
   }
+  if (opts.profile !== undefined) cliOverrides.profile = opts.profile;
   const cfg = orch.resolveHostConfig({ rootDir, env: process.env, manifestPath, cliOverrides });
   return { orch, cfg, rootDir };
 }

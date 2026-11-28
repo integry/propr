@@ -28,7 +28,8 @@ export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
     conversationLog: response.conversationLog,
     error: response.error,
     terminationReason: response.terminationReason,
-    tokenUsage: response.tokenUsage
+    tokenUsage: response.tokenUsage,
+    computeUsage: response.computeUsage
   };
 }
 
@@ -41,6 +42,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
   return {
     success: result.success,
     repositoryValidation: result.repositoryValidation,
+    ...(result.extensionNotice && { extensionNotice: result.extensionNotice }),
     ...(result.repositoryValidationResult && { repositoryValidationResult: result.repositoryValidationResult }),
     model: result.modelUsed,
     ...(result.reasoningLevel && { reasoningLevel: result.reasoningLevel }),
@@ -65,7 +67,8 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     ...(result.commitSubject && { commitSubject: result.commitSubject }),
     conversationLog: result.conversationLog,
     tokenUsage: result.tokenUsage,
-    usageMetrics: result.usageMetrics
+    usageMetrics: result.usageMetrics,
+    ...(result.computeUsage && { computeUsage: result.computeUsage })
   };
 }
 
@@ -196,7 +199,10 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   await stateManager.updateTaskState(taskId, TaskStates.CLAUDE_EXECUTION, {
     reason: `${agent.config.type} agent execution completed`,
     claudeResult: { success: claudeResult.success, sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, executionTime: claudeResult.executionTime },
-    historyMetadata: { sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model }
+    historyMetadata: {
+      sessionId: claudeResult.sessionId, conversationId: claudeResult.conversationId, model: claudeResult.model,
+      ...(claudeResult.computeUsage && { computeUsage: claudeResult.computeUsage }),
+    }
   });
 
   correlatedLogger.info({

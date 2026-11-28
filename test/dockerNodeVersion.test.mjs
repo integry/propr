@@ -8,7 +8,7 @@ const backendDockerfiles = [
   '../docker/Dockerfile.app.prod',
 ];
 
-test('backend Dockerfiles satisfy the declared Node 22 runtime baseline', () => {
+test('backend Dockerfiles run the Node 24 Active LTS runtime', () => {
   for (const relativePath of backendDockerfiles) {
     const dockerfileUrl = new URL(relativePath, import.meta.url);
     const dockerfile = readFileSync(dockerfileUrl, 'utf8');
@@ -16,7 +16,7 @@ test('backend Dockerfiles satisfy the declared Node 22 runtime baseline', () => 
 
     assert.ok(nodeStages.length > 0, `${relativePath} must contain a Node base image`);
     for (const stage of nodeStages) {
-      assert.equal(stage[1], '22', `${relativePath} must use Node 22 for every stage`);
+      assert.equal(stage[1], '24', `${relativePath} must use Node 24 for every stage`);
     }
   }
 });

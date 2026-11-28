@@ -259,7 +259,7 @@ export {
 
 // Export shared Redis status keys (one source of truth for cross-process status
 // keys so the daemon publisher, API status route, and CLI cannot drift)
-export { ROUTING_STATUS_REDIS_KEY } from './statusKeys.js';
+export { ROUTING_STATUS_REDIS_KEY, spritePoolKey, spritePoolStatus, type SpritePoolStatus } from './statusKeys.js';
 
 // Export the timestamp contract used at every account-status trust boundary.
 export { isAccountStatusTimestamp } from './accountStatusTimestamp.js';
@@ -622,3 +622,5 @@ export * from './repositoryEvents.js';
 export * from './ultrafixCycle.js';
 // Reading and waiting on the repository change-event journal: cursor codec, limits and errors.
 export * from './repositoryEventWait.js';
+// Opt-in control-plane idle shutdown: settings, Redis keys and wake hint shapes.
+export * from './idleShutdown.js';

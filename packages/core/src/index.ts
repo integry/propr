@@ -173,6 +173,7 @@ export { retryPendingEpicMergeProgress } from './webhook/epicPRHandler.js';
 export { processWebhookEvent, initializeWebhookHandler, getWebhookDeliveryInterest, SUPPORTED_WEBHOOK_EVENTS } from './webhook/webhookHandler.js';
 export type { WebhookEventType, RepositoryFilter, DetectedIssue, IssueProcessor, CommentProcessor, CommentDeletedHandler, CommentEditedHandler, CheckRunProcessor, WebhookHandlerOptions } from './webhook/webhookHandler.js';
 export { RoutingWebSocketIntakeService } from './intake/RoutingWebSocketIntakeService.js';
+export * from './intake/routingIdleFrames.js';
 export { buildDeliveryInterest, DELIVERY_INTEREST_CAPABILITY, MAX_INTEREST_FRAME_BYTES, MAX_INTEREST_REPOSITORIES, type DeliveryInterest, type DeliveryInterestEventRule } from './intake/routingDeliveryInterest.js';
 export type { RoutingWebSocketIntakeServiceOptions, RoutingWebSocketStatus, ConnectAccountStatus, MinimalWebSocket, RawData, WebSocketCtor, FetchLike, DeliveryAckBilling, DeliveryAckEvidence, DeliveryAckStatus, DeliveryDisposition } from './intake/RoutingWebSocketIntakeService.js';
 // The routing wire-protocol primitives (BoundedDeliverySet, BoundedTokenCache,
@@ -363,6 +364,45 @@ export type {
     RuntimePackageValidation
 } from './agents/runtime/agentRuntimePackages.js';
 export * from './agents/runtime/agentRuntimePackageVerification.js';
+export { agentRuntimePackagesDigest, agentRuntimeUsage, describeRemoteAgentRuntimePackageInstall, publishWorkerAgentRuntime, remoteAgentRuntimeConfigured,
+    remoteAgentRuntimePackageInstall, type AgentRuntimeUsage } from './agents/runtime/agentRuntimePackageProfile.js';
+export { acceptRemoteAgentRuntimePackages, describeAgentRuntimePackageRuntimes, loadAcceptedRemoteAgentRuntimePackages, remoteAgentRuntimePackageTargets,
+    warmRemoteAgentRuntimePackageIndexes, type AgentRuntimePackageRuntimeState, type RemoteRuntimePackageRecord,
+    type RemoteRuntimePackageRecords } from './agents/runtime/agentRuntimeRemotePackages.js';
+export { AGENT_IMAGE_PACKAGE_BASE, DEFAULT_SPRITE_PACKAGE_BASE, loadSpritePackageBase, parseSpritePackageBaseProbe,
+    type AgentRuntimePackageBase } from './agents/runtime/agentRuntimePackageBases.js';
+export type * from './agents/runtime/types.js';
+export { AgentRunSpecBuilder, agentRunEnvironment, agentRunMounts, agentRunMcpGrant, agentRunNetwork } from './agents/runtime/agentRunSpec.js';
+export { renderDockerRunArgs } from './agents/runtime/dockerRunArgs.js';
+export * from './agents/runtime/computeUsage.js';
+export { ComputeUsageAccumulator, parseCgroupReport, parseDockerSize, parseDockerStatsLine, type ComputeUsageSample } from './agents/runtime/computeUsageSampler.js';
+export { COMPUTE_USAGE_SAMPLE_MS_ENV, DEFAULT_COMPUTE_USAGE_SAMPLE_MS, DockerComputeUsageSampler, resolveComputeUsageSampleMs } from './agents/runtime/dockerComputeUsage.js';
+export * from './agents/credentials/broker.js';
+export * from './agents/credentials/providerManifests.js';
+export {
+    withCredentialStoreLock, CredentialStoreLockTimeoutError, CredentialStoreLeaseRevokedError, type CredentialStoreLease, type CredentialStoreLockOptions,
+} from './agents/credentials/credentialStoreLock.js';
+export {
+    AGENT_CREDENTIAL_BROKER_ENV, AGENT_CREDENTIAL_RUN_DIR_ENV, collectStagedCredentials, credentialRunRoot, resolveCredentialBrokerMode, stageAgentRunCredentials,
+    type CredentialBrokerMode, type StagedAgentRunCredentials,
+} from './agents/credentials/hostCredentialStaging.js';
+export { FlyMachinesRuntime } from './agents/runtime/flyMachinesRuntime.js';
+export { SpritesRuntime } from './agents/runtime/spritesRuntime.js';
+export { AgentRunStoppedError, DockerRuntime, DOCKER_RUNTIME_CAPABILITIES, type AgentRunOptions } from './agents/runtime/dockerRuntime.js';
+export {
+    AGENT_RUNTIME_ENV, DEFAULT_AGENT_RUNTIME, assertAgentRuntimeSupports, assertNativeGoalRuntime, closeAgentRuntimes, getAgentRuntime, registerAgentRuntime,
+    registeredAgentRuntimes, resolveAgentRuntimeKind, runAgent, withAgentRunNetworkRequirement, type AgentRuntimeFactory, type ProviderAgentRuntime,
+    AgentRuntimeCapabilityError, restrictedNetworkRefusal, runtimePackagesRefusal, runtimeSupportsMcpReachableUrl, type AgentRuntimeCapability,
+} from './agents/runtime/registry.js';
+export { OPEN_AGENT_RUN_NETWORK_POLICY, agentRunEgressRules, agentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agents/runtime/agentRunNetworkPolicy.js';
+export { agentRunMcpReachableUrl, agentRunMcpTransportFor, planAgentRunMcpTransport, type AgentRunMcpTransportPlan } from './agents/runtime/agentRunMcpTransport.js';
+export { readAgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReport, type AgentRuntimeCapabilityReportOptions } from './agents/runtime/agentRuntimeCapabilityReport.js';
+export { DOCKER_RESTRICTED_NETWORK_ENFORCEMENT, executeDockerRunWithSpecNetwork } from './agents/runtime/dockerNetwork.js';
+export {
+    BindWorkspaceTransport, WORKSPACE_TRANSPORT_ENV, WorkspaceTransportError, createWorkspaceTransport, resolveWorkspaceTransportMode,
+    runWithWorkspaceTransport, runtimeWorkspaceTransports, type PreparedWorkspace, type WorkspaceCompletionOptions, type WorkspaceRunOutcome,
+    type WorkspaceTransport,
+} from './git/workspaceTransport.js';
 export {
     clearAgentRuntimePackageCatalogCache,
     searchAgentRuntimePackages,
@@ -375,6 +415,17 @@ export type {
     AgentRuntimePackageSearchResult,
     AgentRuntimePackageSource
 } from './agents/runtime/agentRuntimePackageCatalog.js';
+export {
+    AGENT_IMAGE_APT_SOURCES,
+    AGENT_RUNTIME_PACKAGE_INDEX_WARNING,
+    AgentRuntimePackageUnavailableError,
+    assertAgentRuntimePackagesInIndex,
+    createAgentImagePackageIndex,
+    findUnavailableAgentRuntimePackages,
+    setAgentImagePackageIndexLoader,
+    validateAgentRuntimePackagesWithIndex
+} from './agents/runtime/agentRuntimePackageIndex.js';
+export type { AgentImagePackageIndex, AgentRuntimePackageIndexValidation, AgentRuntimePackageTarget } from './agents/runtime/agentRuntimePackageIndex.js';
 export { generateClaudePrompt } from './claude/prompts/promptGenerator.js';
 export type { IssueLabel, IssueUser, IssueComment, GenerateClaudePromptOptions } from './claude/prompts/promptGenerator.js';
 
@@ -402,6 +453,7 @@ export type {
 export {
     getReposFromEnv,
     getRepos,
+    seedMonitoredReposFromEnvironment,
     isMonitoredRepository, monitoredRepositoryFilter, isAutoCiFollowupEnabledForRepository, isCancelCiDuringFollowupEnabledForRepository,
     getCancelCiDuringFollowupWorkflowsForRepository,
     getNonBlockingChecksForRepository,
@@ -731,5 +783,7 @@ export {
     AGENT_ADMISSION_PARENT_KEY_ENV, goalParentSigningKey, agentAdmissionChildIdentity, agentRunGrantParentScope, createGoalParentNonce, currentAgentAdmissionNesting, goalParentScope, parentExecutionMarker, parentScopeFromIssueBody, parentScopeFromCommentJob,
     runAsAgentAdmissionParent, runWithAgentAdmissionParent, type AgentAdmissionNesting,
 } from './agents/agentRunNesting.js';
+// Opt-in control-plane idle shutdown: detector, signal collectors, activity heartbeats and wake hints.
+export * from './idle/index.js';
 
 export { RepositoryRepairRequiredError } from './git/objectRecovery.js';
