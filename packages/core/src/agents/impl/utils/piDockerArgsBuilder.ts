@@ -138,6 +138,35 @@ function buildPiContainerEnv(params: { config: AgentConfig; githubToken: string;
     return { secretEnv, configEnv: mcpConfig ? { [PI_MCP_CONFIG_ENV]: mcpConfig } : {}, cliArgs: policy?.cliArgs };
 }
 
+/** Host paths of the writable `-v`/`--volume` mounts in a docker argument list. */
+function writableVolumeHostPaths(mountArgs: string[]): string[] {
+    const hostPaths: string[] = [];
+    for (const [index, arg] of mountArgs.entries()) {
+        if (arg !== '-v' && arg !== '--volume') continue;
+        const [hostPath, , mode] = (mountArgs[index + 1] ?? '').split(':');
+        if (hostPath && !mode?.split(',').includes('ro')) hostPaths.push(hostPath);
+    }
+    return hostPaths;
+}
+
+/**
+ * The host Pi dir's mount under the root-only source parent. Docker would
+ * create a missing host directory, so only an existing source is mounted, and
+ * never one that overlaps a writable container mount.
+ */
+function buildPiConfigMountArgs(params: { configPath?: string; writablePaths: string[]; gitMountArgs: string[] }): string[] {
+    const { configPath } = params;
+    if (!configPath || !fs.existsSync(configPath)) return [];
+    const source = fs.realpathSync(configPath);
+    for (const hostPath of [...params.writablePaths, ...writableVolumeHostPaths(params.gitMountArgs)]) {
+        const writable = fs.existsSync(hostPath) ? fs.realpathSync(hostPath) : path.resolve(hostPath);
+        if (source === writable || source.startsWith(path.join(writable, path.sep)) || writable.startsWith(path.join(source, path.sep))) {
+            throw new Error('The Pi credential source overlaps a writable container mount');
+        }
+    }
+    return ['-v', `${configPath}:${PI_CONTAINER_SOURCE_DIR}:rw`];
+}
+
 /**
  * `docker run` arguments for one Pi run. The container starts as root only so
  * pi-entrypoint.sh can seed and chown the disposable Pi home; every Pi process
@@ -153,25 +182,7 @@ export function buildPiDockerArgs(params: PiDockerArgsParams, githubToken: strin
     const { secretEnv, configEnv, cliArgs: toolPolicyArgs } = buildPiContainerEnv({ config, githubToken, repositoryInspection, toolPolicy, environment: analysis ? undefined : params.environment });
     const workspaceMode = analysis ? 'ro' : 'rw';
     const gitMountArgs = repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, analysis);
-    // Docker would create a missing host directory. Mount only an existing source.
-    const configMountArgs: string[] = [];
-    if (configPath && fs.existsSync(configPath)) {
-        const source = fs.realpathSync(configPath);
-        const writablePaths = analysis ? [] : [worktreePath];
-        if (goalSession) writablePaths.push(goalSession.hostDir);
-        for (const [index, arg] of gitMountArgs.entries()) {
-            if (arg !== '-v' && arg !== '--volume') continue;
-            const [hostPath, , mode] = (gitMountArgs[index + 1] ?? '').split(':');
-            if (hostPath && !mode?.split(',').includes('ro')) writablePaths.push(hostPath);
-        }
-        for (const hostPath of writablePaths) {
-            const writable = fs.existsSync(hostPath) ? fs.realpathSync(hostPath) : path.resolve(hostPath);
-            if (source === writable || source.startsWith(path.join(writable, path.sep)) || writable.startsWith(path.join(source, path.sep))) {
-                throw new Error('The Pi credential source overlaps a writable container mount');
-            }
-        }
-        configMountArgs.push('-v', `${configPath}:${PI_CONTAINER_SOURCE_DIR}:rw`);
-    }
+    const configMountArgs = buildPiConfigMountArgs({ configPath, writablePaths: [...(analysis ? [] : [worktreePath]), ...(goalSession ? [goalSession.hostDir] : [])], gitMountArgs });
     const containerName = buildPiContainerName(config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', agentContainerNetwork(toolPolicy), '--user', '0:0',
