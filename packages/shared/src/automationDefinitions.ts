@@ -7,6 +7,7 @@ import { automationExtensionsSchema, EXTENSION_RUNTIMES, type AutomationExtensio
  */
 
 import type { AgentType } from './modelDefinitions.js';
+import { EXTENSION_AGENT_TYPES, PROPR_MCP_AGENT_TYPES, agentRuntimeSupportsProprMcp } from './agentRuntimeCapabilities.js';
 import { GOAL_REPOSITORY_PATTERN } from './goalCreation.js';
 import {
   AUTOMATION_SCHEDULE_MAX_LENGTH,
@@ -111,8 +112,8 @@ export type AutomationRunState = typeof AUTOMATION_RUN_STATES[number];
 export const TERMINAL_AUTOMATION_RUN_STATES = ['completed', 'failed', 'skipped', 'rejected', 'cancelled'] as const satisfies readonly AutomationRunState[];
 export type TerminalAutomationRunState = typeof TERMINAL_AUTOMATION_RUN_STATES[number];
 
-/** Agent types that can receive an MCP server config at launch (v1). */
-export const AGENT_TYPES_SUPPORTING_PROPR_MCP = ['claude', 'codex', 'pi'] as const satisfies readonly AgentType[];
+/** Agent types that can receive an MCP server config at launch, from the runtime capability map. */
+export const AGENT_TYPES_SUPPORTING_PROPR_MCP: readonly AgentType[] = PROPR_MCP_AGENT_TYPES;
 
 export const DEFAULT_AUTOMATION_CAPABILITIES: readonly AutomationCapability[] = ['repository_read'];
 export const DEFAULT_AUTOMATION_AUTONOMY_MODE: AutomationAutonomyMode = 'dry_run';
@@ -234,7 +235,7 @@ export const AUTOMATION_DEFINITION_CONTRACT = {
     servers: 'extension library server names',
     skills: 'extension library skill bundle ids',
     permission: 'instance.manage_settings',
-    runtimes: EXTENSION_RUNTIMES,
+    runtimes: EXTENSION_AGENT_TYPES,
   },
   runTriggers: AUTOMATION_RUN_TRIGGERS,
   runStates: AUTOMATION_RUN_STATES,
@@ -302,8 +303,8 @@ export function isTerminalAutomationRunState(value: unknown): value is TerminalA
   return TERMINAL_AUTOMATION_RUN_STATES.includes(value as TerminalAutomationRunState);
 }
 
-export function agentTypeSupportsProprMcp(agentType: unknown): boolean {
-  return AGENT_TYPES_SUPPORTING_PROPR_MCP.includes(agentType as typeof AGENT_TYPES_SUPPORTING_PROPR_MCP[number]);
+export function agentTypeSupportsProprMcp(agentType: unknown, cliVersion?: string | null): boolean {
+  return agentRuntimeSupportsProprMcp(agentType, cliVersion);
 }
 
 /** Only the UI "Run now" (manual) trigger is attended; everything else runs unattended. */

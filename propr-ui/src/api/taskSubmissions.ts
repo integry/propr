@@ -1,3 +1,4 @@
+import type { TaskExtensionsPreview } from '@propr/shared';
 import { API_BASE_URL, apiFetch, handleApiResponse } from './apiClient';
 export interface TaskSubmission {
   id: string;
@@ -53,12 +54,7 @@ export async function submitTask(key: string, payload: TaskRequest, files: File[
 }
 
 /** Library items that would apply automatically to a task for this repository and agent. */
-export interface TaskExtensionsPreview {
-  qualified: boolean;
-  revision: number;
-  servers: { name: string; capability: 'read' | 'write' }[];
-  skills: { name: string }[];
-}
+export type { TaskExtensionsPreview };
 export async function getTaskExtensionsPreview(repository: string, agentAlias?: string, model?: string, signal?: AbortSignal): Promise<TaskExtensionsPreview> {
   const query = new URLSearchParams({ repository, ...(agentAlias ? { agentAlias } : {}), ...(model ? { model } : {}) });
   const response = await apiFetch(`${API_BASE_URL}/api/task-submission-extensions?${query}`, { credentials: 'include', signal });

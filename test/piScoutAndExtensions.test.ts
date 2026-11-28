@@ -42,7 +42,7 @@ function extensionPolicy(overrides: Partial<AgentToolPolicy> = {}): AgentToolPol
         exclusiveMcp: true, allowWeb: true,
         mcpServers: [{ name: 'docs', url: 'http://api:4000/api/extensions/mcp/docs', bearerTokenEnv: 'PROPR_EXTENSION_MCP_0_TOKEN', bearerToken: TOKEN }],
         localMcpServers: [stdioServer('lookup', 'eyJjb25maWciOnRydWV9', { PROPR_EXTENSION_STDIO_1_0_SECRET: STDIO_SECRET })],
-        skillPaths: ['/opt/propr/extensions/bundle-a', '/opt/propr/extensions/bundle-b'],
+        skills: [{ id: 'bundle-a', name: 'alpha' }, { id: 'bundle-b', name: 'beta' }],
         ...overrides,
     };
 }

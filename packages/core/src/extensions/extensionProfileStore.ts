@@ -3,12 +3,8 @@ import logger from '../utils/logger.js';
 import { OperatorCatalog, operatorCatalogDigest } from './operatorCatalog.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
-import {
-  EXTENSION_LIMITS, EXTENSION_LIBRARY_VERSION, EXTENSION_RUNTIME_NAMES, extensionItemSkipReason, isExtensionRuntime, extensionLibraryInputSchema, publicExtensionProfile, resolveExtensionSet,
-  type AutomationExtensions, type ExtensionLibraryInput, type ExtensionLibraryItems, type ExtensionLibraryRevision, type ExtensionLibraryServer,
-  type ExtensionLibrarySkill, type ExtensionResolutionContext, type ExtensionSkillBundle, type LegacyExtensionProfileRevision,
-  type ResolvedExtensionSet,
-} from '@propr/shared';
+import { EXTENSION_LIMITS, EXTENSION_LIBRARY_VERSION, agentRuntimeSupportsExtensions, extensionItemSkipReason, unsupportedExtensionRuntimeMessage, extensionLibraryInputSchema, publicExtensionProfile, resolveExtensionSet } from '@propr/shared';
+import type { AutomationExtensions, ExtensionLibraryInput, ExtensionLibraryItems, ExtensionLibraryRevision, ExtensionLibraryServer, ExtensionLibrarySkill, ExtensionResolutionContext, ExtensionSkillBundle, LegacyExtensionProfileRevision, ResolvedExtensionSet, TaskExtensionsPreview } from '@propr/shared';
 import { extensionEndpoint, resolveExtensionEndpoint } from './endpointPolicy.js';
 import { sealExtensionSecrets, unsealExtensionSecrets } from './privateSecrets.js';
 import { validateSkillFiles, type SkillFile } from './skillBundles.js';
@@ -53,6 +49,8 @@ export interface PreparedExtensionLaunch {
 }
 export interface ExtensionLaunchContext {
   agentAlias: string; runtime: string; repositories: string[]; allowWrite: boolean;
+  /** The runtime's resolved CLI version, for the capability map's version predicate. */
+  cliVersion?: string | null;
   additional?: AutomationExtensions | null; autoApply?: boolean;
   /** Per-run server budget left after the run's own MCP servers. */
   maxServers?: number;
@@ -68,7 +66,7 @@ const emptyLibrary = (instanceId: string): ExtensionLibraryRevision => ({
   servers: [], skills: [], secrets: {}, skillBundles: [],
 });
 const resolutionContext = (context: ExtensionLaunchContext): ExtensionResolutionContext => ({
-  repository: context.repositories, agentAlias: context.agentAlias, runtime: context.runtime, allowWrite: context.allowWrite,
+  repository: context.repositories, agentAlias: context.agentAlias, runtime: context.runtime, cliVersion: context.cliVersion, allowWrite: context.allowWrite,
   additional: context.additional ?? null, autoApply: context.autoApply !== false,
   limits: { servers: context.maxServers ?? EXTENSION_LIMITS.servers, bundles: EXTENSION_LIMITS.bundles },
 });
@@ -322,9 +320,8 @@ export class ExtensionLibraryStore {
    * and catalog digests of the resolved servers are checked.
    */
   async resolveLaunch(context: ExtensionLaunchContext, validateResources = true): Promise<PreparedExtensionLaunch> {
-    if (!isExtensionRuntime(context.runtime)) throw new ExtensionError(400, `Extensions require ${EXTENSION_RUNTIME_NAMES} task execution`);
-    const { snapshot } = await this.head();
-    const set = resolveExtensionSet(await withOAuthStates(this.database, await this.withCurrentCatalogSecrets(snapshot)), resolutionContext(context));
+    if (!agentRuntimeSupportsExtensions(context.runtime, context.cliVersion)) throw new ExtensionError(400, unsupportedExtensionRuntimeMessage());
+    const { snapshot, set } = await this.resolveCurrent(resolutionContext(context));
     if (validateResources) {
       for (const server of set.servers) {
         if (server.kind === 'catalog') await this.catalog.resolve(server.catalogId, server.digest, server.tools, server.capability);
@@ -340,11 +337,22 @@ export class ExtensionLibraryStore {
    * credentials or limits. Write servers are listed; they apply only with the
    * submission's write opt-in.
    */
-  async taskPreview(context: { repository: string; agentAlias: string; runtime: string }): Promise<{ qualified: boolean; revision: number; servers: { name: string; capability: 'read' | 'write' }[]; skills: { name: string }[] }> {
-    const { snapshot } = await this.head();
-    if (!isExtensionRuntime(context.runtime)) return { qualified: false, revision: snapshot.revision, servers: [], skills: [] };
-    const set = resolveExtensionSet(await withOAuthStates(this.database, await this.withCurrentCatalogSecrets(snapshot)), { repository: context.repository, agentAlias: context.agentAlias, runtime: context.runtime });
+  async taskPreview(context: { repository: string; agentAlias: string; runtime: string; cliVersion?: string | null }): Promise<TaskExtensionsPreview> {
+    const { snapshot, set } = await this.resolveCurrent({ repository: context.repository, agentAlias: context.agentAlias, runtime: context.runtime, cliVersion: context.cliVersion });
+    // A runtime without support names the agent on the form, when items would otherwise apply.
+    if (!agentRuntimeSupportsExtensions(context.runtime, context.cliVersion)) return { qualified: false, revision: snapshot.revision, servers: [], skills: [], ...(set.skipped.some(item => item.reason === 'runtime') ? { unsupported: { agentAlias: context.agentAlias, runtime: context.runtime } } : {}) };
     return { qualified: true, revision: snapshot.revision, servers: set.servers.map(s => ({ name: s.name, capability: s.capability })), skills: set.skills.map(s => ({ name: s.bundle.name })) };
+  }
+  /**
+   * The library set of a run whose runtime cannot receive extensions: every
+   * item that would otherwise apply is reported as skipped for `runtime`, so
+   * the task's resolution event shows it. Never grants anything.
+   */
+  async resolveUnsupportedRuntime(context: ExtensionLaunchContext): Promise<{ snapshot: ExtensionLibraryRevision; set: ResolvedExtensionSet }> {
+    const { snapshot, set } = await this.resolveCurrent(resolutionContext(context)); return { snapshot, set: { ...set, servers: [], skills: [] } };
+  }
+  private async resolveCurrent(context: ExtensionResolutionContext) {
+    const { snapshot } = await this.head(); return { snapshot, set: resolveExtensionSet(await withOAuthStates(this.database, await this.withCurrentCatalogSecrets(snapshot)), context) };
   }
   /**
    * The library view resolution uses: catalog credential availability is read

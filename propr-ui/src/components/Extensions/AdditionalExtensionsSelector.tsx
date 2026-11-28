@@ -117,7 +117,7 @@ export function AdditionalExtensionsSelector({ value, onChange, target, disabled
   return (
     <div className="space-y-2 text-sm">
       <p className="font-medium text-slate-700">Additional extensions</p>
-      <p className="text-xs text-slate-500">Extra skills and MCP servers for this automation. Claude, Codex and Pi only.</p>
+      <p className="text-xs text-slate-500">Extra skills and MCP servers for this automation. OpenCode agents need CLI 2.x.</p>
       <div role="group" aria-label="Additional extensions" className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 sm:grid-cols-2">
         {group('servers', 'MCP servers')}
         {group('skills', 'Skills')}

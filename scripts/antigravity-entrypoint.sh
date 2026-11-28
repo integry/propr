@@ -21,8 +21,110 @@ antigravity_state_files=(
     "antigravity-cli/settings.json"
 )
 
+# Extension and ProPR MCP servers for this run. agy reads
+# <HOME>/.gemini/config/mcp_config.json and does not expand ${VAR} in headers,
+# so the worker passes a template that names each token variable and this
+# writes the real header into the disposable runtime home only: owned by node,
+# mode 0600, deleted after the run and never synced back to the host directory.
+# Prints the token variable names, which the agent itself does not need.
+write_antigravity_mcp_config() {
+    node - "$1" "${PROPR_EXTENSION_EXCLUSIVE_MCP:-0}" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const [target, exclusive] = process.argv.slice(2);
+const fail = message => { process.stderr.write(`Antigravity MCP configuration refused: ${message}\n`); process.exit(2); };
+let template;
+try { template = JSON.parse(process.env.PROPR_ANTIGRAVITY_MCP_CONFIG || ''); } catch { fail('invalid template'); }
+if (!template || typeof template.mcpServers !== 'object' || Array.isArray(template.mcpServers)) fail('invalid template');
+const servers = {};
+const tokenEnvs = [];
+for (const [name, server] of Object.entries(template.mcpServers)) {
+    if (!/^[A-Za-z0-9_-]+$/.test(name) || !server || typeof server !== 'object') fail('invalid server');
+    if (typeof server.serverUrl === 'string') {
+        if (!/^https?:\/\//.test(server.serverUrl)) fail(`server ${name} has an invalid URL`);
+        const env = server.bearerTokenEnv;
+        if (typeof env !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(env)) fail(`server ${name} has an invalid token variable`);
+        const token = process.env[env];
+        if (!token || /[\s"\\]/.test(token)) fail(`server ${name} has no usable run token`);
+        servers[name] = { serverUrl: server.serverUrl, headers: { Authorization: `Bearer ${token}` } };
+        tokenEnvs.push(env);
+    } else if (typeof server.command === 'string' && Array.isArray(server.args) && server.args.every(a => typeof a === 'string')) {
+        servers[name] = { command: server.command, args: server.args };
+    } else fail(`server ${name} is invalid`);
+}
+// Exclusive runs replace any configuration already in the runtime home;
+// other runs keep it, and the run's servers win on a name clash.
+let existing = {};
+if (exclusive !== '1') {
+    try { existing = JSON.parse(fs.readFileSync(target, 'utf8')).mcpServers || {}; } catch { existing = {}; }
+}
+fs.mkdirSync(path.dirname(target), { recursive: true });
+const temporary = `${target}.propr-tmp-${process.pid}`;
+fs.writeFileSync(temporary, `${JSON.stringify({ mcpServers: { ...existing, ...servers } }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+fs.chmodSync(temporary, 0o600);
+if (process.getuid && process.getuid() === 0) fs.chownSync(temporary, 1000, 1000);
+fs.renameSync(temporary, target);
+process.stdout.write(tokenEnvs.join(' '));
+NODE
+}
+
+# A 401 makes agy fall back to OAuth discovery and wait until the run times
+# out. Check each remote server with the run credential first and stop with a
+# clear error instead. Other failures are left to agy, which reports them.
+preflight_antigravity_mcp_servers() {
+    node - "$1" <<'NODE'
+const fs = require('node:fs');
+const servers = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).mcpServers || {};
+const initialize = { jsonrpc: '2.0', id: 'propr-preflight', method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'propr-antigravity-preflight', version: '1' } } };
+(async () => {
+    for (const [name, server] of Object.entries(servers)) {
+        if (typeof server.serverUrl !== 'string' || !server.headers) continue;
+        try {
+            const response = await fetch(server.serverUrl, { method: 'POST', headers: { ...server.headers, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(initialize), signal: AbortSignal.timeout(15000) });
+            await response.arrayBuffer().catch(() => undefined);
+            if (response.status === 401) {
+                process.stderr.write(`PROPR_MCP_AUTH_FAILED: MCP server "${name}" refused the run credential (HTTP 401). Antigravity would fall back to OAuth discovery and wait until the run times out, so the run stops here.\n`);
+                process.exit(3);
+            }
+        } catch {
+            process.stderr.write(`Warning: could not check MCP server "${name}" before launch\n`);
+        }
+    }
+})();
+NODE
+}
+
+# Copy the run's staged skill bundles (<id>:<name> pairs) to
+# <HOME>/.gemini/skills/<name>, where agy loads global skills. Exclusive runs
+# start from an empty skills directory.
+install_antigravity_skills() {
+    local skills_dir="$1"
+    local source_root="${PROPR_EXTENSION_SKILLS_ROOT:-/opt/propr/extensions}"
+    local pair id name
+    if [ "${PROPR_EXTENSION_EXCLUSIVE_MCP:-0}" = "1" ]; then
+        rm -rf "$skills_dir"
+    fi
+    mkdir -p "$skills_dir"
+    for pair in ${PROPR_ANTIGRAVITY_SKILLS:-}; do
+        id="${pair%%:*}"
+        name="${pair#*:}"
+        if ! [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || ! [[ "$name" =~ ^[a-z][a-z0-9-]{0,63}$ ]] || [ ! -f "$source_root/$id/SKILL.md" ]; then
+            echo "Antigravity skill bundle unavailable: $pair" >&2
+            return 1
+        fi
+        if [ -e "$skills_dir/$name" ]; then
+            echo "Warning: skipping duplicate Antigravity skill name $name" >&2
+            continue
+        fi
+        cp -R "$source_root/$id" "$skills_dir/$name"
+    done
+}
+
+antigravity_mcp_config_path=""
+antigravity_mcp_token_envs=""
+
 if [ "$antigravity_ephemeral" = "1" ]; then
-    antigravity_runtime_home="/tmp/propr-antigravity-home"
+    antigravity_runtime_home="${PROPR_ANTIGRAVITY_RUNTIME_HOME:-/tmp/propr-antigravity-home}"
     antigravity_config_dir="$antigravity_runtime_home/.gemini"
     mkdir -p "$antigravity_config_dir"
 
@@ -48,10 +150,32 @@ if [ "$antigravity_ephemeral" = "1" ]; then
         echo "Configured confined repository scout MCP permissions" >&2
     fi
 
+    if [ -n "${PROPR_ANTIGRAVITY_MCP_CONFIG:-}" ] || [ -n "${PROPR_ANTIGRAVITY_SKILLS:-}" ]; then
+        if [ "${PROPR_REPOSITORY_INSPECTION:-0}" = "1" ]; then
+            echo "Antigravity run MCP servers are not available to repository inspection" >&2
+            exit 2
+        fi
+        install_antigravity_skills "$antigravity_config_dir/skills" || exit 2
+    fi
+
+    if [ -n "${PROPR_ANTIGRAVITY_MCP_CONFIG:-}" ]; then
+        antigravity_mcp_config_path="$antigravity_config_dir/config/mcp_config.json"
+        trap 'rm -f "$antigravity_mcp_config_path"' EXIT
+        antigravity_mcp_token_envs=$(write_antigravity_mcp_config "$antigravity_mcp_config_path") || exit 2
+        echo "Configured run MCP servers for Antigravity" >&2
+    fi
+
     if [ "$(id -u)" = "0" ]; then
         chown -R node:node "$antigravity_runtime_home" 2>/dev/null || true
+        # chown -R must not widen the config: it stays node-owned and 0600.
+        if [ -n "$antigravity_mcp_config_path" ]; then
+            chmod 600 "$antigravity_mcp_config_path"
+        fi
     fi
     echo "Using disposable Antigravity runtime state" >&2
+elif [ -n "${PROPR_ANTIGRAVITY_MCP_CONFIG:-}" ] || [ -n "${PROPR_ANTIGRAVITY_SKILLS:-}" ]; then
+    echo "Antigravity run MCP servers require disposable runtime state" >&2
+    exit 2
 fi
 
 prepare_antigravity_config_dir() {
@@ -148,8 +272,13 @@ run_supervised_task() {
     trap 'forward_signal INT' INT
     trap 'forward_signal HUP' HUP
     set +e
-    # su-exec and env both exec, so $! is the task itself.
-    su-exec node env --default-signal=INT,QUIT HOME="$task_home" USER=node LOGNAME=node "$@" 0<&0 &
+    # su-exec and env both exec, so $! is the task itself. The MCP tokens are
+    # in the config file only; the agent process does not get them.
+    if [ "$(id -u)" = "0" ]; then
+        su-exec node env --default-signal=INT,QUIT "${antigravity_env_unset[@]}" HOME="$task_home" USER=node LOGNAME=node "$@" 0<&0 &
+    else
+        env --default-signal=INT,QUIT "${antigravity_env_unset[@]}" HOME="$task_home" "$@" 0<&0 &
+    fi
     supervised_task_pid=$!
     # A signal that arrived before the PID was known.
     if [ -n "$supervised_signal" ]; then
@@ -224,10 +353,24 @@ write_back_antigravity_state() {
 
 if [ $# -gt 0 ]; then
     echo "Executing command: $@" >&2
-    if [ "$(id -u)" = "0" ] && [ "$antigravity_ephemeral" = "1" ]; then
-        echo "Switching to node user with disposable Antigravity HOME..." >&2
-        cd /home/node/workspace
+    if [ "$antigravity_ephemeral" = "1" ]; then
+        if [ -n "$antigravity_mcp_config_path" ]; then
+            preflight_antigravity_mcp_servers "$antigravity_mcp_config_path" || exit $?
+        fi
+        antigravity_env_unset=(-u PROPR_ANTIGRAVITY_MCP_CONFIG)
+        for token_env in $antigravity_mcp_token_envs; do
+            antigravity_env_unset+=(-u "$token_env")
+        done
+        if [ "$(id -u)" = "0" ] || [ -d /home/node/workspace ]; then
+            cd /home/node/workspace
+        fi
+        if [ "$(id -u)" = "0" ]; then
+            echo "Switching to node user with disposable Antigravity HOME..." >&2
+        fi
         run_supervised_task "$antigravity_runtime_home" "$@"
+        if [ -n "$antigravity_mcp_config_path" ]; then
+            rm -f "$antigravity_mcp_config_path"
+        fi
         write_back_antigravity_state
         exit "$command_status"
     elif [ "$(id -u)" = "0" ]; then

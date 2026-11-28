@@ -1,7 +1,7 @@
 ---
 sidebar_label: "Instance agent extensions"
 title: "Configure agent skills and MCP extensions"
-description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, applied automatically to Claude, Codex and Pi issue tasks, pull request follow-ups and automation runs."
+description: "Manage the instance extension library of authorized MCP servers and skill bundles, with per-item limits, applied automatically to Claude, Codex, Antigravity, OpenCode 2.x, Vibe and Pi issue tasks, pull request follow-ups and automation runs."
 ---
 # Instance agent extensions
 
@@ -18,7 +18,7 @@ administrator in Access first.
 **Skills & MCP servers** opens with two flat lists, **MCP servers** and
 **Skills**. The Settings inspector beside them summarises how items apply: each
 item applies automatically in the repositories it is limited to, unticking it
-switches it off, and only Claude, Codex and Pi runs use extensions. Items with
+switches it off, and only Claude, Codex, Antigravity, OpenCode 2.x, Vibe and Pi runs use extensions. Items with
 **Apply automatically** turned off reach only the automations that add them, write
 servers need the run's [write authorization](#mcp-policy), and the
 [opt-out labels](#opt-out-labels) remove items from one issue or pull request.
@@ -121,14 +121,135 @@ as omitted.
 
 Resolution happens when the task's container is created, not when it is
 queued. Editing the library never invalidates a queued task: it launches with the
-library as it is at that moment. Claude, Codex and Pi task execution are the qualified
-targets. Other runtimes, and goal runs, launch without extensions as before
-(goal execution refuses explicitly added items). Review runs and Ultrafix review
-steps do not use the library.
+library as it is at that moment. The [runtime support](#runtime-support) table
+lists which agent runtimes are qualified targets. Other runtimes launch without
+extensions, and goal runs launch without them as before (goal execution refuses
+explicitly added items). Review runs and Ultrafix review steps do not use the
+library.
 If the library cannot be read when an issue task or follow-up resolves it (for
 example after a restore with mismatched revision identity), that run launches
 without extensions and a warning is logged; automation runs and explicitly added
 items still refuse.
+
+### Runtime support
+
+One runtime capability map (`AGENT_RUNTIME_CAPABILITIES` in `@propr/shared`)
+decides, per agent type, whether a runtime receives extension library items,
+whether it can receive the run-scoped ProPR MCP server (the `propr_mcp`
+capability and the preview and auto acting steps of agent definitions and
+automations), and how skill bundles reach it. Every gate reads it: library
+resolution, New Task, task submission, the worker launch, and agent definition
+and automation validation. The machine-readable contracts expose the same lists
+(`runtimes` in the extension library contract, `proprMcpAgentTypes` and
+`extensions.runtimes` in the automation definition contract).
+
+| Agent runtime | Extensions | ProPR MCP | Skills |
+| --- | --- | --- | --- |
+| Claude | Yes | Yes | Prompt pointer |
+| Codex | Yes | Yes | Prompt pointer |
+| Antigravity | Yes | Yes | Native (`~/.gemini/skills`) and prompt pointer |
+| OpenCode (2.x) | Yes | Yes | Native `skill` tool (`skills.paths`), plus the prompt pointer |
+| Vibe (3.x) | Yes | Yes | Native `skill` tool, plus the prompt pointer |
+| Pi | Yes | Yes | Native (`--skill <path>` per bundle), plus the prompt pointer |
+
+An entry can carry a CLI-version predicate: a runtime whose resolved CLI version
+fails it has no capabilities, whatever the entry says. On a runtime without
+extension support:
+
+- auto-applied items are not applied, and each one that would otherwise apply is
+  recorded in the task's `extensions.resolved` event as skipped with reason
+  `runtime`;
+- New Task shows *Extensions aren't available for &lt;agent&gt;* in place of
+  the extensions panel, when library items would otherwise apply;
+- explicitly added items are refused (`400 Extensions require Claude, Codex,
+  Antigravity, OpenCode, Vibe or Pi task execution`).
+
+OpenCode carries a `minMajor: 2` predicate: OpenCode 1.x ignores the 2.x
+`mcp.servers` and `skills.paths` config, so an agent pinned to a 1.x CLI has no
+extension or ProPR MCP support, and the automation editor and save checks say
+so.
+
+Each supported runtime renders the run's MCP servers through its own launch
+builder, which share one contract: `mcpServers` (the Core gateway URL
+`<gateway>/api/extensions/mcp/<name>` with a run-scoped bearer token in
+`PROPR_EXTENSION_MCP_<i>_TOKEN`), `localMcpServers` (`node
+/opt/propr/extension-stdio-bridge.mjs <base64 config>` with secrets in
+`PROPR_EXTENSION_STDIO_*` variables) and `exclusiveMcp` (no ambient servers or
+skills). Skill bundles are staged read-only at
+`/opt/propr/extensions/<id>/SKILL.md` and named in the prompt; a runtime may also
+register them natively.
+
+### Vibe
+
+Vibe 3 has no MCP command-line switches, so its builder renders everything
+through Vibe's environment layer. The values reach the container as `-e NAME`
+from the docker process environment, never in arguments or files:
+
+- `VIBE_MCP_SERVERS` is a JSON list with one entry per server. A stdio server
+  is `{"name", "transport": "stdio", "command": "/usr/local/bin/node", "args":
+  ["/opt/propr/extension-stdio-bridge.mjs", "<config>"], "env": {...}}`. Vibe
+  does not pass its own environment to stdio servers, so the entry's `env`
+  carries the bridge's `PROPR_EXTENSION_STDIO_*` secret names and values; they
+  are not exported to the agent as separate variables, and diagnostics redact
+  them. A gateway or ProPR MCP server is a `streamable-http` entry with
+  `auth: {"type": "static", "api_key_env": "<token variable>"}`.
+- `VIBE_SKILL_PATHS='["/opt/propr/extensions"]'` registers the staged bundles
+  with Vibe's `skill` tool.
+- Extension runs set `PROPR_EXTENSION_EXCLUSIVE_MCP=1`. Vibe merges
+  `mcp_servers` from `config.toml` with the environment by name, so the
+  entrypoint removes `mcp_servers` from the runtime copy of `config.toml` (the
+  mounted `~/.vibe` is never changed) and sets `VIBE_ENABLE_CONNECTORS=false`
+  so Mistral cloud connectors add no tools. When the run has skills,
+  `VIBE_ENABLED_SKILLS` lists only their names and the config's own
+  `enabled_skills` is removed from the copy. The run fails if the config cannot
+  be rewritten.
+
+MCP tools show up as `mcp_<server>.<tool>` tool calls in the live view and the
+task log. Vibe has no native web switch, so the web restriction stays a prompt
+notice.
+
+### OpenCode
+
+OpenCode 2.x has no MCP command-line switches either. Its builder renders the
+run's servers and skill path into the inline config, `OPENCODE_CONFIG_CONTENT`,
+merged with any inline config the run already has. 2.x reads servers from
+`mcp.servers`; a flat 1.x-style `mcp.<name>` block is ignored:
+
+```json
+{"mcp":{"servers":{
+  "<local>":{"type":"local","command":["/usr/local/bin/node","/opt/propr/extension-stdio-bridge.mjs","<config>"]},
+  "<gateway>":{"type":"remote","url":"<gateway>/api/extensions/mcp/<name>","headers":{"Authorization":"Bearer {env:PROPR_EXTENSION_MCP_0_TOKEN}"}}
+}},
+"skills":{"paths":["/opt/propr/extensions"]}}
+```
+
+- OpenCode starts local servers with its own environment, so the bridge's
+  `PROPR_EXTENSION_STDIO_*` secrets reach it as `-e NAME` from the docker
+  process environment and are never in arguments or the config.
+- Remote servers (gateway servers and `propr`) read their bearer token through
+  OpenCode's `{env:VAR}` substitution; no token is written into the config.
+- Staged `<id>/SKILL.md` bundles load natively through `skills.paths`. OpenCode
+  uses the bundle folder name as the skill id. The prompt pointer is still added.
+- Extension runs are exclusive. The launcher sets
+  `OPENCODE_CONFIG_PROJECT_DISABLE=1` (no workspace `opencode.json`,
+  `.opencode/`, `.claude/` or `.agents/` sources), `OPENCODE_DISABLE_CLAUDE_CODE=1`
+  (no `~/.claude` skills or prompt) and an empty `OPENCODE_CONFIG`. OpenCode
+  2.4.2 deep-merges its config sources, so an inline empty `mcp.servers` does
+  not remove the host's servers. Instead the entrypoint points
+  `OPENCODE_CONFIG_DIR` at a disposable copy of the mounted config dir: its
+  `opencode.json`, `opencode.jsonc` and `config.json` lose `mcp` and `skills`,
+  its `skills/` folders are left out, and every other entry links back to the
+  host dir, so the host's providers and settings still apply. The mounted dir
+  is never changed, and the run fails if a config document cannot be rewritten.
+  OpenCode also reads `~/.agents/skills` from the container home, which the
+  agent image does not populate.
+
+OpenCode 2 calls MCP tools through its Code Mode `execute` tool
+(`tools.<server>.<tool>()`). The live view and the task log show such a step
+under the tools it called, for example `docs.lookup` with that call's input; a
+script that calls several tools shows them joined, with each call and the
+script as input. A script that calls no tool stays an `execute` step. OpenCode
+has no native web switch, so the web restriction stays a prompt notice.
 
 ### Opt-out labels
 
@@ -148,7 +269,9 @@ automation runs. New Task's **Run without extensions** switch adds
 ### New Task
 
 New Task shows, read-only, which library items will apply for the chosen
-repository and agent (`GET /api/task-submission-extensions`, names only). When a
+repository and agent (`GET /api/task-submission-extensions`, names only). For an
+agent whose runtime cannot receive extensions, it shows a short note naming the
+agent instead (the response is `qualified: false` with `unsupported`). When a
 write server would apply, the form offers **Allow write servers for this task's
 first run**. The opt-in is sealed into the submission and is valid only for that
 submission's initial task; label-started tasks, retries, replacement attempts and
@@ -168,7 +291,8 @@ names, which were auto-applied (`autoApplied`) and which were added explicitly
 (`added`), items left out by the per-run limit (`omitted`), skipped additional
 items with their reasons (`skipped`; auto-applied items appear there too when their
 credential is missing: `secret_not_configured`, `oauth_not_connected` or
-`oauth_needs_sign_in`), and, when they applied, `labelOptOut` (the
+`oauth_needs_sign_in`, or when the agent's runtime cannot receive extensions:
+`runtime`), and, when they applied, `labelOptOut` (the
 labels and the items they removed) and `autoApplySkipped` (the Codex reason
 below). The event never contains secrets, URLs, credentials or tool output. The
 existing `network.extensions` telemetry event is unchanged. The run grant records
@@ -248,6 +372,35 @@ auto-applied items of automation runs. Items an automation adds explicitly keep
 the strict behaviour: such a run still ignores the operator configuration and
 refuses a workspace `.codex/config.toml`.
 
+### Antigravity configuration
+
+Antigravity (`agy`) task runs use a disposable runtime home
+(`/tmp/propr-antigravity-home`) inside the task container. The entrypoint writes
+the run's servers to `<runtime HOME>/.gemini/config/mcp_config.json`: stdio
+servers as `command`/`args` for the bridge, gateway and ProPR MCP servers as
+`serverUrl` with an `Authorization` header. agy does not expand `${VAR}` in
+headers, so the worker passes a template that names each token variable and the
+entrypoint writes the run token into the file. The file exists only in the
+container: it is owned by `node`, mode `0600`, deleted when agy exits and never
+copied back to the mounted host `~/.gemini`. The agent process itself does not
+receive the token variables; stdio servers inherit the agent environment, so
+their secrets reach the bridge as `PROPR_EXTENSION_STDIO_*` variables.
+
+Extension runs are exclusive: the run's file replaces any `mcp_config.json`
+already in the runtime home instead of merging with it, and skills start from an
+empty `<runtime HOME>/.gemini/skills`. Each staged bundle is copied to
+`<runtime HOME>/.gemini/skills/<name>/SKILL.md`, where agy loads global skills,
+and is also named in the prompt. agy also reads workspace configuration from the
+repository (`.agents/`, including `.agents/mcp_config.json`, and the
+`.claude/`, `.gemini/` and `.cursor/skills` skill directories); those are part of
+the task's repository and are not removed.
+
+A `401` from an MCP server makes agy fall back to OAuth discovery and wait until
+the run times out. Before starting agy, the entrypoint sends one `initialize`
+request with the run credential to each remote server; a `401` stops the run at
+once with `PROPR_MCP_AUTH_FAILED: MCP server "<name>" refused the run credential
+(HTTP 401)`. The check counts as one gateway call of the run's budget per server.
+
 ## OAuth servers
 
 Many hosted MCP servers accept only OAuth: a person signs in in a browser and the
@@ -257,7 +410,7 @@ An administrator connects the server once from Settings, in their own browser.
 Core stores the tokens encrypted, refreshes them, and the MCP gateway adds a
 current access token to each upstream call, exactly as it adds a Bearer token.
 Agent containers never see a token and never take part in a login flow, for
-Claude, Codex and Pi alike. ProPR always identifies itself as ProPR: it never presents
+Claude, Codex, Antigravity, OpenCode, Vibe and Pi alike. ProPR always identifies itself as ProPR: it never presents
 another product's client id, client metadata, redirect URI or user agent.
 
 ### Adding and connecting a server
@@ -471,7 +624,7 @@ scripts, so such a package would not work.
 - The run mounts the install read-only at `/opt/propr/packages/<n>` and starts
   it with the image's Node through the same stdio bridge
   (`/opt/propr/extension-stdio-bridge.mjs`) as an operator catalog stdio entry,
-  for Claude, Codex and Pi alike. The bridge enforces the selected tools, bounds the
+  for Claude, Codex, Antigravity, OpenCode, Vibe and Pi alike. The bridge enforces the selected tools, bounds the
   JSON protocol, drops the server's stderr and redacts the configured secrets.
 - The server process has the run's own network policy and nothing more. It is
   never reachable through Core's HTTPS gateway.
@@ -533,7 +686,7 @@ the agent image.
 
 An operator supplies a bounded JSON array through `PROPR_EXTENSION_CATALOG_FILE` on Core and workers. Install it outside task/repository mounts, owned by the operator with no group/other write permissions. The file contains configuration and secret **references**, never secret values. No API accepts catalog installation or command configuration. Restart/update the operator service configuration through its existing secret-management mechanism; never put credentials in library/UI input.
 
-A stdio entry contains `id`, `kind: "stdio"`, an absolute `executable` under `/usr/local/bin`, `/usr/bin` or `/opt/propr` already installed in the qualified task image, a fixed `args` array, `secretEnv` mapping child environment field names to operator-managed service environment references, and allowed `tools` and required `capability`. There is no shell interpolation, customer argument substitution, host path/socket access or additional bind mount. Claude, Codex and Pi all launch the installed `/opt/propr/extension-stdio-bridge.mjs` adapter in the existing isolated task container. It enforces the selected tools and bounded JSON protocol, drops child stderr and redacts configured secrets and encodings. Secret values travel through inherited environment names only, stay out of launch args/config JSON, and the launcher does not write them to the repository or provider home. Stdio catalog credentials are disclosed to the task container, including the agent CLI, shell tools and repository setup hooks. Those processes can read, persist or transmit them; output redaction does not prevent that access. Use only credentials appropriate for that trust boundary. Deployments must rebuild the qualified task image to include the adapter; no runtime package installation is attempted.
+A stdio entry contains `id`, `kind: "stdio"`, an absolute `executable` under `/usr/local/bin`, `/usr/bin` or `/opt/propr` already installed in the qualified task image, a fixed `args` array, `secretEnv` mapping child environment field names to operator-managed service environment references, and allowed `tools` and required `capability`. There is no shell interpolation, customer argument substitution, host path/socket access or additional bind mount. Claude, Codex, Antigravity, OpenCode, Vibe and Pi launch the installed `/opt/propr/extension-stdio-bridge.mjs` adapter in the existing isolated task container. It enforces the selected tools and bounded JSON protocol, drops child stderr and redacts configured secrets and encodings. Secret values travel through inherited environment names only (for Vibe, inside the stdio entry's `env` in the `VIBE_MCP_SERVERS` variable), stay out of launch args and config files (Antigravity config JSON and the OpenCode inline config included), and the launcher does not write them to the repository or provider home. Stdio catalog credentials are disclosed to the task container, including the agent CLI, shell tools and repository setup hooks. Those processes can read, persist or transmit them; output redaction does not prevent that access. Use only credentials appropriate for that trust boundary. Deployments must rebuild the qualified task image to include the adapter; no runtime package installation is attempted.
 
 An HTTPS catalog entry instead contains `kind: "https"`, one credential-free fixed `url`, explicit pinned IP `addresses`, optional operator `bearerSecretRef`, and allowed `tools` and required `capability`. TLS identity and every resolved address must match; redirects remain refused. Restricted runs additionally need the hostname in their effective allowlist and private IP literals in the instance-owned address allowlist. Merely installing an internal catalog entry grants no network exception to a run.
 

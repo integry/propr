@@ -128,7 +128,8 @@ test('item limits, runtime, capability, public secrets and tenant substitution f
   assert.equal((await store.resolveLaunch({ ...context, repositories: ['TEAM/REPO'] })).set.servers.length, 1);
   assert.equal((await store.resolveLaunch({ ...context, agentAlias: 'codex-other' })).set.servers.length, 0);
   assert.equal((await store.resolveLaunch({ ...context, repositories: ['other/repo'] })).set.servers.length, 0);
-  await assert.rejects(store.resolveLaunch({ ...context, runtime: 'opencode' }), /Claude, Codex or Pi/);
+  await assert.rejects(store.resolveLaunch({ ...context, runtime: 'opencode', cliVersion: '1.19.6' }), /Claude, Codex, Antigravity, OpenCode, Vibe or Pi/);
+  assert.equal((await store.resolveLaunch({ ...context, runtime: 'opencode', cliVersion: '2.4.2' })).set.servers.length, 1);
   await save(store, input([server({ capability: 'write' })]), { docs: secret });
   assert.equal((await store.resolveLaunch({ ...context, allowWrite: false })).set.servers.length, 0);
   assert.equal((await store.resolveLaunch({ ...context, allowWrite: true })).set.servers.length, 1);
@@ -537,7 +538,8 @@ test('catalog stdio is callable through both selected authorized launcher polici
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'catalog-launch-')); extensionTestResources(t).defer(() => fs.rm(root, { recursive: true, force: true }));
   const { operatorCatalogDigest } = await import('../src/extensions/operatorCatalog.js');
   const { executeWithExtensions, currentExtensionLaunch } = await import('../src/extensions/extensionLaunch.js');
-  const { claudeToolPolicyArgs, codexToolPolicyArgs } = await import('../src/agents/agentToolPolicy.js');
+  const { antigravityToolPolicyArgs, claudeToolPolicyArgs, codexToolPolicyArgs } = await import('../src/agents/agentToolPolicy.js');
+  const { antigravityToolPolicyEnvironment } = await import('../src/agents/mcpLaunch/index.js');
   const { spawn } = await import('node:child_process'); const { createInterface } = await import('node:readline');
   const code = `const rl = require('node:readline').createInterface({input:process.stdin}); rl.on('line', line => { const rpc=JSON.parse(line); if(rpc.id===undefined)return; const result = rpc.method==='tools/list' ? {tools:[{name:'lookup'},{name:'delete'}]} : {content:[{type:'text',text:'called '+process.env.API_KEY+' '+Buffer.from(process.env.API_KEY).toString('base64')}]}; process.stderr.write(process.env.API_KEY); console.log(JSON.stringify({jsonrpc:'2.0',id:rpc.id,result})); });`;
   // The allowlisted env executable invokes this suite's Node via a fixed argument,
@@ -548,12 +550,13 @@ test('catalog stdio is callable through both selected authorized launcher polici
   await save(store, input([{ kind: 'catalog', name: 'local', catalogId: entry.id, digest: operatorCatalogDigest(entry), enabled: true, tools: ['lookup'], capability: 'read' }]));
   const result = { success: true, executionTimeMs: 0, modifiedFiles: [], commitMessage: null, logs: '', modelUsed: 'synthetic' };
   const options = { extensions: automatic(), taskId: 'catalog-selected', issueRef: { repoOwner: 'team', repoName: 'repo', number: 1 }, worktreePath: root, prompt: 'Use selected tools', githubToken: '' };
-  for (const runtime of ['claude', 'codex'] as const) {
+  for (const runtime of ['claude', 'codex', 'antigravity'] as const) {
     const config = { type: runtime, alias: runtime, id: randomUUID(), enabled: true, dockerImage: 'synthetic', configPath: root, supportedModels: ['synthetic'] };
     await executeWithExtensions(config, options, async prepared => {
       await currentExtensionLaunch()!.beforeLaunch();
-      const launch = runtime === 'claude' ? claudeToolPolicyArgs(prepared.toolPolicy!) : codexToolPolicyArgs(prepared.toolPolicy!);
+      const launch = runtime === 'claude' ? claudeToolPolicyArgs(prepared.toolPolicy!) : runtime === 'codex' ? codexToolPolicyArgs(prepared.toolPolicy!) : antigravityToolPolicyArgs(prepared.toolPolicy!);
       assert.ok(!JSON.stringify(launch.cliArgs).includes(secret));
+      if (runtime === 'antigravity') assert.ok(!JSON.stringify(antigravityToolPolicyEnvironment(prepared.toolPolicy!)).includes(secret));
       assert.ok(!JSON.stringify(launch).includes(secret));
       assert.ok(!JSON.stringify(prepared.toolPolicy).includes(secret));
       const local = prepared.toolPolicy!.localMcpServers![0];

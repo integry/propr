@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ExtensionOAuthConnectionState } from './extensionOAuth.js';
+import { EXTENSION_AGENT_TYPES, agentRuntimeSupportsExtensions } from './agentRuntimeCapabilities.js';
 import {
   EXTENSION_LIMITS, EXTENSION_PROFILE_VERSION, catalogMcpSchema, extensionAgentAliasSchema, extensionRepositorySchema,
   extensionServerNameSchema, remoteMcpSchema, type ExtensionSecretStatus, type ExtensionSkillBundle,
@@ -13,14 +14,8 @@ import { EXTENSION_PACKAGE_ECOSYSTEMS, extensionPackageEnvConflict, packageServe
  */
 export const EXTENSION_LIBRARY_VERSION = EXTENSION_PROFILE_VERSION;
 export const EXTENSION_LIBRARY_LIMITS = { servers: 32, bundles: 32, repositories: 64, agents: 64 } as const;
-/** Agent types whose task adapters launch extension library items (`executeWithExtensions`). */
-export const EXTENSION_RUNTIMES = ['claude', 'codex', 'pi'] as const;
-export type ExtensionRuntime = typeof EXTENSION_RUNTIMES[number];
-/** The extension runtimes as prose, for refusals and help text. */
-export const EXTENSION_RUNTIME_NAMES = 'Claude, Codex or Pi';
-export function isExtensionRuntime(runtime: unknown): runtime is ExtensionRuntime {
-  return (EXTENSION_RUNTIMES as readonly unknown[]).includes(runtime);
-}
+/** Agent types whose runtime resolves library items, from the runtime capability map. */
+export const EXTENSION_RUNTIMES = EXTENSION_AGENT_TYPES;
 
 const itemLimits = {
   /** Empty means every repository. */
@@ -111,8 +106,11 @@ export function serializeAutomationExtensions(value: AutomationExtensions | null
 }
 
 export type ExtensionSkipReason = 'not_found' | 'disabled' | 'runtime' | 'repository' | 'agent' | 'write_not_authorized' | 'secret_not_configured' | 'oauth_not_connected' | 'oauth_needs_sign_in' | 'run_limit' | 'package_unavailable' | 'package_integrity_mismatch';
-/** Skip reasons of an item whose credential is missing: reported for auto-applied items too. */
-const CREDENTIAL_SKIP_REASONS: readonly ExtensionSkipReason[] = ['secret_not_configured', 'oauth_not_connected', 'oauth_needs_sign_in'];
+/**
+ * Skip reasons reported for auto-applied items too: a missing credential, or a
+ * runtime without extension support (the item would otherwise apply).
+ */
+const REPORTED_AUTO_SKIP_REASONS: readonly ExtensionSkipReason[] = ['secret_not_configured', 'oauth_not_connected', 'oauth_needs_sign_in', 'runtime'];
 export interface ExtensionSkippedItem {
   kind: 'server' | 'skill';
   /** Server name or skill bundle id. */
@@ -127,6 +125,8 @@ export interface ExtensionResolutionContext {
   repository?: string | readonly string[];
   agentAlias: string;
   runtime: string;
+  /** The runtime's resolved CLI version, for the capability map's version predicate. */
+  cliVersion?: string | null;
   additional?: { servers?: readonly string[]; skills?: readonly string[] } | null;
   /** Include `autoApply` items; default true. */
   autoApply?: boolean;
@@ -139,7 +139,7 @@ export interface ResolvedExtensionSkill extends ExtensionLibrarySkill { bundle: 
 export interface ResolvedExtensionSet {
   servers: ExtensionLibraryServer[];
   skills: ResolvedExtensionSkill[];
-  /** Explicit entries that were not applied, and auto items whose credential is missing. */
+  /** Explicit entries that were not applied, auto items whose credential is missing, and auto items the runtime cannot receive. */
   skipped: ExtensionSkippedItem[];
   /** Applicable items left out by the per-run limits. */
   omitted: ExtensionSkippedItem[];
@@ -158,7 +158,6 @@ const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 /** Why an item does not apply to a run, or null when it does (ignoring `autoApply` and per-run limits). */
 export function extensionItemSkipReason(library: LibraryView, item: ExtensionLibraryServer | ExtensionLibrarySkill, context: Omit<ExtensionResolutionContext, 'additional' | 'limits' | 'autoApply'>): ExtensionSkipReason | null {
   if (!item.enabled) return 'disabled';
-  if (!isExtensionRuntime(context.runtime)) return 'runtime';
   if (item.repositories.length) {
     const repositories = runRepositories(context.repository);
     // Every repository of the run must be within the item's limit.
@@ -177,6 +176,8 @@ export function extensionItemSkipReason(library: LibraryView, item: ExtensionLib
     if (item.kind === 'catalog' && library.secrets?.[item.name]?.configured === false) return 'secret_not_configured';
     if (item.kind === 'package' && item.secretEnv.length && library.secrets && !library.secrets[item.name]?.configured) return 'secret_not_configured';
   } else if (library.skillBundles && !library.skillBundles.some(b => b.id === item.bundleId)) return 'not_found';
+  // Checked last, so an item reported as `runtime` is one that would otherwise apply.
+  if (!agentRuntimeSupportsExtensions(context.runtime, context.cliVersion)) return 'runtime';
   return null;
 }
 
@@ -207,7 +208,7 @@ export function resolveExtensionSet(library: LibraryView, context: ExtensionReso
       for (const item of [...items].sort((a, b) => compare(sortKey(a), sortKey(b)) || compare(key(a), key(b)))) {
         if (!item.autoApply || explicit.includes(item)) continue;
         const reason = extensionItemSkipReason(library, item, context);
-        if (reason && CREDENTIAL_SKIP_REASONS.includes(reason)) skipped.push({ kind, name: key(item), reason, source: 'auto' });
+        if (reason && REPORTED_AUTO_SKIP_REASONS.includes(reason)) skipped.push({ kind, name: key(item), reason, source: 'auto' });
         else if (!reason) automatic.push(item);
       }
     }
@@ -264,6 +265,16 @@ export function taskRunExtensionRequest(input: { kind: 'issue' | 'pull_request';
   const labels = (input.labels ?? []).map(label => (typeof label === 'string' ? label : label?.name ?? '')).filter(Boolean);
   const base = input.base ?? { autoApply: true, servers: [], skills: [] };
   return { ...base, repositories: base.repositories ?? [input.repository], allowWrite: base.allowWrite === true || input.allowWrite === true, kind: input.kind, labels };
+}
+
+/** The New Task preview: library items that would apply automatically to a task for this repository and agent. */
+export interface TaskExtensionsPreview {
+  qualified: boolean;
+  revision: number;
+  servers: { name: string; capability: 'read' | 'write' }[];
+  skills: { name: string }[];
+  /** Present when the agent's runtime cannot receive extensions but library items would otherwise apply. */
+  unsupported?: { agentAlias: string; runtime: string };
 }
 
 /** Machine-readable library contract. */

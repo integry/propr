@@ -32,6 +32,7 @@ interface InstanceCatalogRoutesDeps {
 }
 
 function catalogAgent(agent: AgentConfig): InstanceCatalogAgent {
+  const cliVersion = agent.cliVersionResolved ?? agent.cliVersion;
   return {
     id: agent.id,
     kind: 'direct',
@@ -40,6 +41,7 @@ function catalogAgent(agent: AgentConfig): InstanceCatalogAgent {
     enabled: true,
     supportedModels: [...agent.supportedModels],
     ...(agent.defaultModel ? { defaultModel: agent.defaultModel } : {}),
+    ...(cliVersion ? { cliVersion } : {}),
   };
 }
 
