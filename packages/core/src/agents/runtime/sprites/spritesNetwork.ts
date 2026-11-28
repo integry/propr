@@ -2,7 +2,7 @@ import { isIP } from 'node:net';
 import type { NetworkPolicy, PolicyRule, Sprite } from '@fly/sprites';
 import { normalizeEgressHost } from '../../../network/egressAllowlist.js';
 import { SPRITES_MCP_FORWARD_HOST, SPRITES_MCP_FORWARD_PORT, isSpritesMcpForwardUrl } from './spritesMcpForwardConfig.js';
-import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy } from '../agentRunNetworkPolicy.js';
+import { agentRunSpecNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy } from '../agentRunNetworkPolicy.js';
 import type { AgentRunSpec, AgentRuntimeRestrictedNetworkEnforcement } from '../types.js';
 
 export const SPRITES_RESTRICTED_NETWORK_ENFORCEMENT: AgentRuntimeRestrictedNetworkEnforcement = Object.freeze({
@@ -79,7 +79,7 @@ export function spriteNetworkPolicy(spec: AgentRunSpec, gatewayUrls: readonly st
     const { restriction, policy } = spec.network;
     if (!restriction && policy?.mode !== 'restricted') return undefined;
     assertAgentRunNetworkRepresentationsAgree(spec);
-    const restricted = policy?.mode === 'restricted' ? policy : agentRunNetworkPolicy(spec.profile.agentType, restriction);
+    const restricted = policy?.mode === 'restricted' ? policy : agentRunSpecNetworkPolicy(spec, restriction);
     if (!isValidRestrictedAgentRunNetworkPolicy(restricted)) throw new Error(`Sprites refuses the malformed restricted network policy of ${spec.name}`);
     const allowed = new Set<string>();
     const zones = new Set<string>();

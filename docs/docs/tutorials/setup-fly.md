@@ -141,7 +141,8 @@ The **Fly end-to-end smoke** GitHub Actions workflow runs on manual dispatch by 
 | `FLY_E2E_TOKEN` | Fly organization token from `fly tokens create org -o <test-org>`. The workflow derives a Machine stop token locally, scoped to the disposable app and valid for at most two hours. |
 | `FLY_E2E_SPRITES_TOKEN` | Test Sprites org access to create, run and delete Sprites. Not needed for a `fly-machines` run without the extensions check; with it, that run hosts its OAuth fixture on a Sprite. |
 | `FLY_E2E_GITHUB_TOKEN` | Fine-grained fixture repository PAT with read and write access to Issues and Pull requests. No Contents access is required. The fixture App reads the generated file and deletes test branches. |
-| `FLY_E2E_APP_ENV` | Private environment file containing `PROPR_ADMIN_USERS` (fixture administrator’s GitHub login), `GH_APP_ID`, `GH_INSTALLATION_ID`, `PROPR_GH_PRIVATE_KEY_B64` and `CLAUDE_SETTINGS_B64` containing the test account’s API-key settings described above |
+| `FLY_E2E_APP_ENV` | Private environment file containing `PROPR_ADMIN_USERS` (fixture administrator’s GitHub login), `GH_APP_ID`, `GH_INSTALLATION_ID`, `PROPR_GH_PRIVATE_KEY_B64` and `CLAUDE_SETTINGS_B64` containing the test account’s API-key settings described above. For the other agents see [Agent input](#agent-input) |
+| `FLY_E2E_APP_ENV_EXTRA` | Optional. More `KEY=value` lines in the same format, for example `VIBE_ENV_B64=…` and `OPENCODE_CONFIG_B64=…`, appended to `FLY_E2E_APP_ENV` wherever the workflow reads the app env: the credential-key check and the env file passed to the deployed instance. GitHub can't show or append to a secret, so this adds keys without rewriting `FLY_E2E_APP_ENV`. Its values are masked in the log, and a key that is already in `FLY_E2E_APP_ENV` fails the run. Empty or unset, only `FLY_E2E_APP_ENV` is used. |
 | `FLY_E2E_GH_OAUTH_CLIENT_ID` | The fixture GitHub App’s client ID. The workflow writes it to the env file as `GH_OAUTH_CLIENT_ID` so `propr deploy fly` has a browser sign-in method. |
 | `FLY_E2E_GH_OAUTH_CLIENT_SECRET` | A client secret generated in the fixture App’s settings, written as `GH_OAUTH_CLIENT_SECRET`. CI never signs in through the browser, so the App’s callback URL can stay a placeholder. |
 
@@ -150,6 +151,19 @@ Install a dedicated fixture GitHub App with access to read the issue and write t
 The nightly run uses Sprites. A manual dispatch can set the `agent_runtime` input to `fly-machines` instead. That run also creates a disposable agent app, builds and pushes `Dockerfile.agent` to it, and gives the control plane a deploy token scoped to that app.
 
 Each run points the App webhook at the disposable Machine and sets a fresh signing secret. Before idle shutdown, it configures the runtime package `figlet`, which the agent image lacks, the same way Settings applies a package list, and records the list’s digest. The fixture issue asks for a file whose first line is the app name and whose second line is the output of `figlet -v | head -1`. After confirming delivery of the new fixture issue, the workflow waits for idle shutdown and adds the `AI` label. It reports the wake record’s redelivery count and verifies the linked PR, the figlet banner on the file’s second line, and the install log after the stop with the same digest (`Installed agent runtime packages on Sprite`, or `… at Fly Machine start` for Fly Machines). It prints that log’s `packagesDigest`, `packageCount` and `installMs`, and checks for a successful execution on the selected `compute_runtime`. Teardown restores the placeholder URL, closes the fixture issue and PR, and deletes the temporary compute, including the agent app.
+
+### Agent input
+
+The `agent` input (`claude`, `codex`, `vibe` or `opencode`, default `claude`; nightly runs use Claude Code) selects the agent the fixture issue runs on, through its `llm-<agent>` label. The workflow configures it as Claude is configured: an agent with ID and alias `<agent>` on its managed credential directory, with one credential file from `FLY_E2E_APP_ENV` (or `FLY_E2E_APP_ENV_EXTRA`) installed there. Every runtime then copies that file to the run as part of the agent configuration's credential store. The run adds no repository secrets.
+
+| Agent | `FLY_E2E_APP_ENV` or `FLY_E2E_APP_ENV_EXTRA` key (single-line base64) | Installed as |
+| --- | --- | --- |
+| Claude Code | `CLAUDE_SETTINGS_B64` | `settings.json` with an `env` object holding `ANTHROPIC_API_KEY` |
+| Codex | `CODEX_AUTH_B64` | `auth.json` (Codex's login, for example `{"OPENAI_API_KEY": "…"}`) |
+| Mistral Vibe | `VIBE_ENV_B64` | `.env` with `MISTRAL_API_KEY=…` |
+| OpenCode | `OPENCODE_CONFIG_B64` | `opencode.json` with a provider and its `options.apiKey` |
+
+`PROPR_E2E_<AGENT>_MODEL` in the same file overrides the agent's default model; OpenCode's must name the configured provider (for example `openrouter/…`). When the selected agent's key is missing, the run says so in its summary and skips. The step summary names the agent and the CLI version `Dockerfile.agent` pins for it, and the linked PR. Before upload, the worker log is searched for Fly token fragments (`redact_fly_tokens`) and for every credential value in the installed file; on Fly Machines the agent image the run built and the derived image are searched for those values too. A last step checks that no app, Machine or Sprite of the run is left. The fixture repository needs the `llm-<agent>` label for each agent you run.
 
 ### Extension Library check
 

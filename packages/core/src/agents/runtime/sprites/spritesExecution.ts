@@ -77,7 +77,7 @@ export async function execute(sprite: Sprite, launch: SpriteLaunch, { output, si
     let callbackError: unknown;
     const started = startRunPipeline(runOptions, {
         markerArgs: prepared.markerArgs, diagnosticArgs: prepared.markerArgs, environment: prepared.environment,
-        attempt: getExecutionOwnershipContext()?.attemptGeneration, secrets: [token],
+        attempt: getExecutionOwnershipContext()?.attemptGeneration, secrets: [token, ...prepared.secrets],
         stopForWatchdog: () => { if (cancellation.aborted) return false; stop.abort(); return true; },
         command: 'sprites', stopForCostCap: message => { costMessage = message; stop.abort(); },
         invokeExecutionCallback: cb => {

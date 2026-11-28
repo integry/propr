@@ -28,7 +28,13 @@ export function assembleVibeRunSpec(input: VibeRunSpecInput): AgentRunSpec {
     const sandbox = vibeAnalysisSandbox(mode);
     const builder = new AgentRunSpecBuilder({
         agentType: 'vibe', image: config.dockerImage, alias: config.alias, name: input.name, stdin: false,
-        network: agentRunNetwork('bridge'), security: { readOnlyRootFilesystem: sandbox.readOnlyRootFilesystem, capDrop: sandbox.capDrop },
+        // Execute runs start as root like every other agent: the setup wrapper and the clone
+        // workspace transport need root to keep the agent (dropped to node by the entrypoint)
+        // under a different user ID from their credentials. Analysis keeps the image user in
+        // its read-only, capability-free sandbox; it always uses the read-only bind transport.
+        ...(mode === 'execute' ? { user: '0:0' } : {}),
+        network: agentRunNetwork('bridge'),
+        security: { readOnlyRootFilesystem: sandbox.readOnlyRootFilesystem, capDrop: sandbox.capDrop, capAdd: mode === 'execute' ? ['CHOWN'] : [] },
         workspace: {
             hostPath: worktreePath,
             containerPath: repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace',

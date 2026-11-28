@@ -129,7 +129,11 @@ def launch():
     data = json.loads((run / 'input').read_bytes())
     node = pwd.getpwnam('node')
     for directory in data['directories']:
+        # Parents created here under the agent's home (e.g. ~/.config for OpenCode) belong to node too.
+        created = [p for p in (Path(directory), *Path(directory).parents) if not p.exists() and str(p).startswith('/home/node/')]
         Path(directory).mkdir(parents=True, exist_ok=True)
+        for parent in created:
+            os.chown(parent, node.pw_uid, node.pw_gid)
         os.chown(directory, node.pw_uid, node.pw_gid)
     if data['backupTmpfs']:
         target = '/home/node/.claude/backups'

@@ -262,7 +262,10 @@ test('credentials use one upload and only checked exports reach the broker. The 
     assert.equal(input.agent.env.PROPR_ANTIGRAVITY_SOURCE_CONFIG, undefined);
     assert.equal(input.agent.env.PROVIDER_AUTH, 'new');
     assert.equal(input.agent.env.HOME, '/opt/propr/run/tmp/propr-antigravity-home');
-    assert.deepEqual(input.files, [[relative, Buffer.from('rotated').toString('base64'), false]]);
+    // Store i of the agent configuration is uploaded under source/<i>/ and copied to its live path.
+    assert.deepEqual(input.files, [['0/' + relative, Buffer.from('rotated').toString('base64'), false]]);
+    assert.deepEqual(input.agent.stores, ['/opt/propr/run/tmp/propr-antigravity-home/.gemini']);
+    assert.deepEqual(input.agent.outputs, ['/opt/propr/run/tmp/propr-antigravity-home/.gemini/' + relative]);
     await run.release!();
     assert.equal(fs.readFileSync(path.join(root, relative), 'utf8'), 'refreshed');
     assert.deepEqual(sprite.events.slice(-5), ['export', 'read-export', 'restart', 'wipe', 'restore']);
