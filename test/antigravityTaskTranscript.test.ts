@@ -127,12 +127,19 @@ describe('Antigravity task transcript export', () => {
                 const target = path.join(container, mount.container);
                 fs.mkdirSync(path.dirname(target), { recursive: true });
                 if (mount.mode === 'ro') { fs.mkdirSync(target, { recursive: true }); fs.chmodSync(target, 0o555); }
-                else fs.symlinkSync(mount.host, target);
+                else if (isWithin(mount.host, sandbox) && fs.existsSync(mount.host)) {
+                    // The entrypoint refuses symlinks in the paths it writes back to as
+                    // root, so the container side is the real directory and the host
+                    // path points at it.
+                    fs.renameSync(mount.host, target);
+                    fs.symlinkSync(target, mount.host);
+                } else fs.symlinkSync(mount.host, target);
                 placed.push(mount.container);
             }
             const script = fs.readFileSync(path.join(process.cwd(), 'scripts/antigravity-entrypoint.sh'), 'utf8')
                 .replaceAll('/tmp/propr-antigravity-home', `${container}/tmp/propr-antigravity-home`)
-                .replaceAll('/home/node', `${container}/home/node`);
+                .replaceAll('/home/node', `${container}/home/node`)
+                .replaceAll('/opt/propr/privileged-post-task.sh', path.join(process.cwd(), 'scripts/privileged-post-task.sh'));
             const entrypoint = path.join(sandbox, 'antigravity-entrypoint.sh');
             fs.writeFileSync(entrypoint, script, { mode: 0o755 });
 

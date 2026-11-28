@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+# Fixed PATH, absolute binaries and data-only task files for every root step
+# after the task returns (see the file). Root-owned; sourced before the task.
+. /opt/propr/privileged-post-task.sh
+
 if [ -z "${GH_TOKEN:-}" ]; then
     echo "Warning: GH_TOKEN environment variable not set" >&2
 else
@@ -254,24 +258,23 @@ run_supervised_task() {
 # Copy refreshed credentials from the disposable data dir back to the mounted
 # host store. Runs once per task, after the task has exited (normally or after
 # a forwarded stop signal), so a rotated OAuth token survives the container.
+# Everything the task left behind is data: run only through
+# run_privileged_post_task, and copy only with propr_copy_task_file_back.
+opencode_credential_max_bytes=1048576
 write_back_credentials() {
+    local credential_file status
     if [ -n "$opencode_source_data" ] && [ -d "$opencode_source_data" ]; then
         for credential_file in "${opencode_credential_files[@]}"; do
-            runtime_path="$opencode_data_dir/$credential_file"
-            source_path="$opencode_source_data/$credential_file"
             # OpenCode 2 never updates auth.json; sync owns write-backs, and
             # copying the seeded file back would undo a host login.
             if [ "$sync_database" = "1" ] && [ "$credential_file" = "auth.json" ]; then
                 continue
             fi
-            if [ -f "$runtime_path" ]; then
-                temporary_path="${source_path}.propr-tmp-$$"
-                if cp -p "$runtime_path" "$temporary_path" && mv "$temporary_path" "$source_path"; then
-                    :
-                else
-                    rm -f "$temporary_path"
-                    echo "Warning: could not sync refreshed OpenCode credential file $credential_file" >&2
-                fi
+            status=0
+            propr_copy_task_file_back "$opencode_data_dir" "$credential_file" \
+                "$opencode_source_data" "$credential_file" "$opencode_credential_max_bytes" 0600 || status=$?
+            if [ "$status" != "0" ] && [ "$status" != "3" ]; then
+                echo "Warning: could not sync refreshed OpenCode credential file $credential_file" >&2
             fi
         done
     fi
@@ -279,9 +282,10 @@ write_back_credentials() {
     if [ "$sync_database" = "1" ]; then
         # Bounded so a stopped container still exits before Docker's 10 s stop
         # timeout. The helper's writes are atomic (SQLite transaction, temp
-        # file + rename), so an interrupted sync leaves the host store as it was.
-        if ! timeout --kill-after=1 "$opencode_write_back_timeout" \
-            su-exec node python3 "$opencode_credentials_helper" sync "$source_db" "$runtime_db"; then
+        # file + rename), so an interrupted sync leaves the host store as it
+        # was. It runs as node; the helper is root-owned in /opt/propr.
+        if ! /usr/bin/timeout --kill-after=1 "$opencode_write_back_timeout" \
+            "${propr_node_exec[@]}" /usr/bin/python3 -I "$opencode_credentials_helper" sync "$source_db" "$runtime_db"; then
             echo "Warning: could not write refreshed OpenCode credentials back to the host store" >&2
         fi
     fi
@@ -308,7 +312,8 @@ if [ $# -gt 0 ]; then
             sync_database=1
         fi
         run_supervised_task /home/node "$@"
-        write_back_credentials
+        # From here on the task has run: root steps follow privileged-post-task.sh.
+        run_privileged_post_task write_back_credentials || true
         exit "$command_status"
     elif [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2

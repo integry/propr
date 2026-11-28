@@ -13,8 +13,28 @@ import path from 'node:path';
 // chown stubbed) against a sandbox standing in for the container filesystem.
 
 const credentialsScript = path.join(process.cwd(), 'scripts/opencode-credentials.py');
+const POST_TASK_HELPER = path.join(process.cwd(), 'scripts/privileged-post-task.sh');
 
-type Sandbox = { dir: string; bin: string; home: string; stub(name: string, body: string): void };
+// Names of commands the post-task steps used to run, or might be tempted to,
+// by bare name. The task runs plant.sh, which puts a program for each in a
+// directory that leads PATH and that the task owns (in the image:
+// /home/node/bin); each records that it ran. None may run after the task.
+const PLANTED = ['cp', 'mv', 'rm', 'mkdir', 'chmod', 'chown', 'find', 'dirname', 'timeout', 'su-exec', 'python3', 'env', 'cat', 'id', 'sh'];
+function writePlanter(sandbox: Sandbox): { planter: string; plantedLog: string } {
+    const planter = path.join(sandbox.dir, 'plant.sh');
+    const plantedLog = path.join(sandbox.dir, 'planted.log');
+    fs.writeFileSync(planter, [
+        '#!/bin/bash',
+        `for name in ${PLANTED.join(' ')}; do`,
+        `    printf '#!/bin/bash\necho %s >> %q\nexit 99\n' "$name" ${JSON.stringify(plantedLog)} > ${JSON.stringify(sandbox.bin)}/"$name"`,
+        `    /bin/chmod 755 ${JSON.stringify(sandbox.bin)}/"$name"`,
+        'done',
+    ].join('\n'), { mode: 0o755 });
+    return { planter, plantedLog };
+}
+const plantedRuns = (plantedLog: string) => (fs.existsSync(plantedLog) ? fs.readFileSync(plantedLog, 'utf8').trim().split('\n').filter(Boolean) : []);
+
+type Sandbox = { dir: string; bin: string; home: string; stub(name: string, body: string): void; reset(): void };
 
 function makeSandbox(prefix: string): Sandbox {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -23,15 +43,22 @@ function makeSandbox(prefix: string): Sandbox {
     fs.mkdirSync(bin);
     fs.mkdirSync(path.join(home, 'workspace'), { recursive: true });
     const stub = (name: string, body: string) => fs.writeFileSync(path.join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
-    stub('id', 'if [ "$1" = "-u" ]; then echo 0; else exec /usr/bin/id "$@"; fi');
-    stub('su-exec', 'shift; exec "$@"');
-    stub('chown', 'exit 0');
-    return { dir, bin, home, stub };
+    // Removes what a previous task planted and restores the root-faking stubs.
+    const reset = () => {
+        for (const name of PLANTED) fs.rmSync(path.join(bin, name), { force: true });
+        stub('id', 'if [ "$1" = "-u" ]; then echo 0; else exec /usr/bin/id "$@"; fi');
+        stub('su-exec', 'shift; exec "$@"');
+        stub('chown', 'exit 0');
+    };
+    reset();
+    return { dir, bin, home, stub, reset };
 }
 
 function installEntrypoint(sandbox: Sandbox, name: string, replacements: Array<[string, string]>): string {
     let script = fs.readFileSync(path.join(process.cwd(), 'scripts', name), 'utf8');
     for (const [from, to] of replacements) script = script.replaceAll(from, to);
+    // Last, so the checkout path survives the /home/node replacement.
+    script = script.replaceAll('/opt/propr/privileged-post-task.sh', POST_TASK_HELPER);
     const entrypoint = path.join(sandbox.dir, name);
     fs.writeFileSync(entrypoint, script, { mode: 0o755 });
     return entrypoint;
@@ -78,8 +105,9 @@ describe('opencode-entrypoint.sh stop handling', () => {
     const sql = (db: string, script: string) => execFileSync('python3', ['-I', '-B', '-c', 'import sqlite3, sys\nwith sqlite3.connect(sys.argv[1]) as db: db.executescript(sys.argv[2])', db, script]);
     const hostValue = (db: string) => execFileSync('python3', ['-I', '-B', '-c', 'import sqlite3, sys\nprint(sqlite3.connect(sys.argv[1]).execute("SELECT value FROM credential WHERE id=\'cred-openai\'").fetchone()[0])', db], { encoding: 'utf8' }).trim();
 
-    async function withOpenCode(body: (ctx: { entrypoint: string; env: NodeJS.ProcessEnv; hostDb: string; ready: string; helperLog: string }) => Promise<void>): Promise<void> {
+    async function withOpenCode(body: (ctx: { entrypoint: string; env: NodeJS.ProcessEnv; hostDb: string; ready: string; helperLog: string; plantedLog: string; runtimeData: string; source: string; sandbox: Sandbox }) => Promise<void>): Promise<void> {
         const sandbox = makeSandbox('propr-opencode-stop-');
+        const { planter, plantedLog } = writePlanter(sandbox);
         try {
             const source = path.join(sandbox.dir, 'host', 'opencode');
             fs.mkdirSync(source, { recursive: true });
@@ -100,10 +128,13 @@ describe('opencode-entrypoint.sh stop handling', () => {
                 `python3 -I -B -c 'import sqlite3, sys\nwith sqlite3.connect(sys.argv[1]) as db: db.executescript(sys.argv[2])' "$XDG_DATA_HOME/opencode/opencode.db" ${JSON.stringify(credentialTable)}`,
             ].join('\n'));
             const ready = path.join(sandbox.dir, 'task.pid');
-            // The agent refreshes the ChatGPT token in the disposable DB, then keeps working.
+            // The agent refreshes the ChatGPT token in the disposable DB, plants
+            // programs named like the post-task commands, then keeps working.
             sandbox.stub('fake-agent', [
                 'cat >/dev/null',
                 `python3 -I -B -c 'import sqlite3, sys\nwith sqlite3.connect(sys.argv[1]) as db: db.execute("UPDATE credential SET value=?, time_updated=2 WHERE id=?", (sys.argv[2], "cred-openai"))' "$XDG_DATA_HOME/opencode/opencode.db" ${JSON.stringify(oauth('refresh-2'))}`,
+                'if [ -n "${PROPR_TEST_TASK_EXTRA:-}" ]; then eval "$PROPR_TEST_TASK_EXTRA"; fi',
+                `/bin/bash ${JSON.stringify(planter)}`,
                 'if [ -n "${PROPR_TEST_HANG:-}" ]; then echo $$ > "$PROPR_TEST_HANG"; exec sleep 60; fi',
                 'exit "${PROPR_TEST_EXIT:-0}"',
             ].join('\n'));
@@ -119,19 +150,45 @@ describe('opencode-entrypoint.sh stop handling', () => {
                 PROPR_OPENCODE_CREDENTIALS_HELPER: helper,
                 PYTHONDONTWRITEBYTECODE: '1',
             };
-            await body({ entrypoint, env, hostDb, ready, helperLog });
+            await body({ entrypoint, env, hostDb, ready, helperLog, plantedLog, runtimeData: path.join(env.XDG_DATA_HOME!, 'opencode'), source, sandbox });
         } finally {
             fs.rmSync(sandbox.dir, { recursive: true, force: true });
         }
     }
 
     test('a normal exit writes the refreshed token back once and keeps the task status', async () => {
-        await withOpenCode(async ({ entrypoint, env, hostDb, ready, helperLog }) => {
+        await withOpenCode(async ({ entrypoint, env, hostDb, ready, helperLog, plantedLog }) => {
             const result = await runEntrypoint(entrypoint, ['fake-agent'], { ...env, PROPR_TEST_EXIT: '7' }, ready);
             assert.equal(result.code, 7, result.stderr);
             assert.equal(hostValue(hostDb), oauth('refresh-2'));
             assert.deepEqual(fs.readFileSync(helperLog, 'utf8').trim().split('\n'), ['seed', 'sync']);
             assert.doesNotMatch(result.stderr, /Warning: could not/);
+            assert.deepEqual(plantedRuns(plantedLog), [], 'post-task steps ran programs the task planted on PATH');
+        });
+    });
+
+    test('copies account.json back as data and refuses one the task replaced with a symlink or hard link', async () => {
+        await withOpenCode(async ({ entrypoint, env, ready, plantedLog, runtimeData, source, sandbox }) => {
+            const secret = path.join(path.dirname(source), 'not-for-the-host');
+            fs.writeFileSync(secret, 'secret');
+            fs.writeFileSync(path.join(source, 'account.json'), '{"seeded":true}', { mode: 0o600 });
+            // Each run starts from a fresh container: disposable state and PATH as built.
+            const run = (extra: string) => {
+                sandbox.reset();
+                fs.rmSync(runtimeData, { recursive: true, force: true });
+                return runEntrypoint(entrypoint, ['fake-agent'], { ...env, PROPR_TEST_TASK_EXTRA: extra }, ready);
+            };
+            const refreshed = await run(`printf '{"refreshed":true}' > ${JSON.stringify(path.join(runtimeData, 'account.json'))}`);
+            assert.equal(refreshed.code, 0, refreshed.stderr);
+            assert.equal(fs.readFileSync(path.join(source, 'account.json'), 'utf8'), '{"refreshed":true}');
+            assert.equal(fs.statSync(path.join(source, 'account.json')).mode & 0o777, 0o600);
+            for (const link of [`ln -sf ${JSON.stringify(secret)}`, `ln -f ${JSON.stringify(secret)}`]) {
+                const result = await run(`rm -f ${JSON.stringify(path.join(runtimeData, 'account.json'))}; ${link} ${JSON.stringify(path.join(runtimeData, 'account.json'))}`);
+                assert.equal(result.code, 0, result.stderr);
+                assert.equal(fs.readFileSync(path.join(source, 'account.json'), 'utf8'), '{"refreshed":true}', `${link}: the host keeps its file`);
+                assert.match(result.stderr, /Warning: could not sync refreshed OpenCode credential file account\.json/);
+            }
+            assert.deepEqual(plantedRuns(plantedLog), []);
         });
     });
 
@@ -200,22 +257,24 @@ describe('opencode-entrypoint.sh stop handling', () => {
 describe('antigravity-entrypoint.sh stop handling', () => {
     const tokenPath = path.join('antigravity-cli', 'antigravity-oauth-token');
 
-    async function withAntigravity(body: (ctx: { entrypoint: string; env: NodeJS.ProcessEnv; hostToken: string; ready: string; mvLog: string }) => Promise<void>): Promise<void> {
+    type AntigravityContext = { entrypoint: string; env: NodeJS.ProcessEnv; hostToken: string; ready: string; plantedLog: string; sandbox: Sandbox };
+    async function withAntigravity(body: (ctx: AntigravityContext) => Promise<void>): Promise<void> {
         const sandbox = makeSandbox('propr-agy-stop-');
+        const { planter, plantedLog } = writePlanter(sandbox);
         try {
             const source = path.join(sandbox.dir, 'host', '.gemini');
             const hostToken = path.join(source, tokenPath);
             fs.mkdirSync(path.dirname(hostToken), { recursive: true });
             fs.writeFileSync(hostToken, 'token-1', { mode: 0o600 });
-            // mv is used only by the write-back: count how often it replaces the host token.
-            const mvLog = path.join(sandbox.dir, 'mv.log');
-            sandbox.stub('mv', `printf '%s\\n' "\${@: -1}" >> ${JSON.stringify(mvLog)}\nexec /bin/mv "$@"`);
             const ready = path.join(sandbox.dir, 'task.pid');
-            // agy refreshes its Google token in the disposable HOME, then keeps working.
+            // agy refreshes its Google token in the disposable HOME, plants
+            // programs named like the post-task commands, then keeps working.
             sandbox.stub('fake-agy', [
                 'cat >/dev/null',
                 `printf token-2 > "$HOME/.gemini/${tokenPath}"`,
-                'if [ -n "${PROPR_TEST_HANG:-}" ]; then echo $$ > "$PROPR_TEST_HANG"; exec sleep 60; fi',
+                'if [ -n "${PROPR_TEST_TASK_EXTRA:-}" ]; then eval "$PROPR_TEST_TASK_EXTRA"; fi',
+                `/bin/bash ${JSON.stringify(planter)}`,
+                'if [ -n "${PROPR_TEST_HANG:-}" ]; then echo $$ > "$PROPR_TEST_HANG"; exec /bin/sleep 60; fi',
                 'exit "${PROPR_TEST_EXIT:-0}"',
             ].join('\n'));
             const runtimeHome = path.join(sandbox.dir, 'container', 'tmp', 'propr-antigravity-home');
@@ -230,7 +289,7 @@ describe('antigravity-entrypoint.sh stop handling', () => {
                 PROPR_EPHEMERAL_STATE: '1',
                 PROPR_ANTIGRAVITY_SOURCE_CONFIG: source,
             };
-            await body({ entrypoint, env, hostToken, ready, mvLog });
+            await body({ entrypoint, env, hostToken, ready, plantedLog, sandbox });
         } finally {
             fs.rmSync(sandbox.dir, { recursive: true, force: true });
         }
@@ -238,26 +297,59 @@ describe('antigravity-entrypoint.sh stop handling', () => {
 
     // As ProPR launches it: /bin/bash -lc 'exec agy ...' propr-antigravity, minus the login shell that would reset PATH.
     const command = ['/bin/bash', '-c', 'set -e\nexec fake-agy "$@"', 'propr-antigravity', '--model', 'm'];
-    const tokenWrites = (mvLog: string, hostToken: string) => fs.readFileSync(mvLog, 'utf8').trim().split('\n').filter(target => target === hostToken).length;
 
-    test('a normal exit writes the refreshed token back once and keeps the task status', async () => {
-        await withAntigravity(async ({ entrypoint, env, hostToken, ready, mvLog }) => {
+    test('a normal exit writes the refreshed token back and keeps the task status', async () => {
+        await withAntigravity(async ({ entrypoint, env, hostToken, ready, plantedLog }) => {
             const result = await runEntrypoint(entrypoint, command, { ...env, PROPR_TEST_EXIT: '3' }, ready);
             assert.equal(result.code, 3, result.stderr);
             assert.equal(fs.readFileSync(hostToken, 'utf8'), 'token-2');
-            assert.equal(tokenWrites(mvLog, hostToken), 1);
+            assert.equal(fs.statSync(hostToken).mode & 0o777, 0o600);
+            assert.doesNotMatch(result.stderr, /Warning: could not/);
+            assert.deepEqual(plantedRuns(plantedLog), [], 'post-task steps ran programs the task planted on PATH');
+            assert.deepEqual(fs.readdirSync(path.dirname(hostToken)).filter(name => name.includes('propr-tmp')), [], 'no temp file left behind');
         });
     });
 
     for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-        test(`forwards ${signal} to agy and still writes the refreshed token back once`, async () => {
-            await withAntigravity(async ({ entrypoint, env, hostToken, ready, mvLog }) => {
+        test(`forwards ${signal} to agy and still writes the refreshed token back`, async () => {
+            await withAntigravity(async ({ entrypoint, env, hostToken, ready, plantedLog }) => {
                 const result = await runEntrypoint(entrypoint, command, { ...env, PROPR_TEST_HANG: ready }, ready, signal);
                 assertStopped(result, signal);
                 assert.equal(fs.readFileSync(hostToken, 'utf8'), 'token-2');
-                assert.equal(tokenWrites(mvLog, hostToken), 1);
                 assert.equal(fs.statSync(hostToken).mode & 0o777, 0o600);
+                assert.deepEqual(plantedRuns(plantedLog), []);
             });
         });
     }
+
+    test('refuses a state file the task replaced with a symlink, and exports the transcript without writing through a planted link', async () => {
+        await withAntigravity(async ({ entrypoint, env, hostToken, ready, plantedLog, sandbox }) => {
+            const secret = path.join(sandbox.dir, 'not-for-the-host');
+            fs.writeFileSync(secret, 'secret');
+            const transcriptDir = path.join(sandbox.dir, 'transcript');
+            fs.mkdirSync(transcriptDir);
+            const transcript = path.join(transcriptDir, 'transcript.jsonl');
+            const victim = path.join(sandbox.dir, 'victim');
+            fs.writeFileSync(victim, 'untouched');
+            const runtimeToken = `"$HOME/.gemini/${tokenPath}"`;
+            const logs = '"$HOME/.gemini/antigravity-cli/brain/conversation/.system_generated/logs"';
+            const result = await runEntrypoint(entrypoint, command, {
+                ...env,
+                PROPR_ANTIGRAVITY_TRANSCRIPT_PATH: transcript,
+                PROPR_TEST_TASK_EXTRA: [
+                    `rm -f ${runtimeToken}; ln -s ${JSON.stringify(secret)} ${runtimeToken}`,
+                    `mkdir -p ${logs}; printf '{"step":1}\\n' > ${logs}/transcript.jsonl`,
+                    `ln -s ${JSON.stringify(victim)} ${JSON.stringify(transcript)}`,
+                ].join('; '),
+            }, ready);
+            assert.equal(result.code, 0, result.stderr);
+            assert.equal(fs.readFileSync(hostToken, 'utf8'), 'token-1', 'the host keeps its token');
+            assert.match(result.stderr, /Warning: could not sync refreshed Antigravity state file antigravity-cli\/antigravity-oauth-token/);
+            assert.equal(fs.lstatSync(transcript).isFile(), true, 'the planted link is replaced');
+            assert.equal(fs.readFileSync(transcript, 'utf8'), '{"step":1}\n');
+            assert.equal(fs.statSync(transcript).mode & 0o777, 0o644);
+            assert.equal(fs.readFileSync(victim, 'utf8'), 'untouched');
+            assert.deepEqual(plantedRuns(plantedLog), []);
+        });
+    });
 });

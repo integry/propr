@@ -505,6 +505,11 @@ if [ "$antigravity_host_token" != "token-2" ]; then
 fi
 echo "✓ Antigravity entrypoint forwards docker stop and still writes the refreshed token back"
 
+# The root steps after the task (credential and transcript write-back) must not
+# run anything the task planted on PATH, and must treat task files as data.
+mkdir -p "$DATA_DIR/entrypoint-privileges"
+"$REPO_ROOT/scripts/smoke-test-entrypoint-privileges.sh" "$AGENT_TAG" "$DATA_DIR/entrypoint-privileges"
+
 docker run --rm --entrypoint node \
   -e "EXPECTED_VERSION=$EXPECTED_VERSION" \
   "$LAUNCHER_TAG" --input-type=module -e '
