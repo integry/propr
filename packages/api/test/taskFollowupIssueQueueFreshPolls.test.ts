@@ -11,7 +11,7 @@ import { test } from 'node:test';
 import { state, postFollowup, applyLabels, database, FIRST_COMMENT_ID, HUMAN_ACTOR_ID } from './taskFollowupFixture.js';
 import { openRequests, onIssue, dedupKey, requestChildId } from './taskFollowupIssueDispatch.js';
 import {
-  skip, parentJobId, DAY_MS, owned, runRecords, retiredRecords, until, hooks, withLiveQueue, livePoll, assertDispatched, assertChildRun, assertFailedAttempt,
+  skip, JOB_ID, DAY_MS, owned, runRecords, retiredRecords, until, hooks, withLiveQueue, livePoll, assertDispatched, assertChildRun, assertFailedAttempt,
   assertCompleted, alreadyDispatched, assertNextFollowupRunsOnce, runRecordOf, reserveIssueRetryRequest,
 } from './taskFollowupIssueLiveQueue.js';
 
@@ -30,7 +30,7 @@ for (const [routing, backed, later] of [['issue-only', false, false], ['issue-on
         assertCompleted(await live.settled(), alreadyDispatched(backed));
         await live.drained();
         const childId = await requestChildId();
-        assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'the original parent is gone');
+        assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the original parent is gone');
         assert.equal((await openRequests()).length, 1, 'the request is still open');
         assert.equal((await runRecords()).length, 1, 'with the record of its run');
 
@@ -175,7 +175,7 @@ test('an issue-only follow-up suspended after its claim, which reserves and runs
       assert.equal((await live.childSettled()).event, 'completed');
       await live.drained();
       assert.deepEqual(await openRequests(), [], 'B is recorded consumed');
-      assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'B\'s parent is removed');
+      assert.equal(await live.queue.getJob(JOB_ID), undefined, 'B\'s parent is removed');
       assert.equal(await live.queue.getJob(await requestChildId(commentB)), undefined, 'and so is its child');
       assert.deepEqual(await runRecordOf(live, commentB), { receiptEventId: String(e2) }, 'B\'s retired record names E2');
 

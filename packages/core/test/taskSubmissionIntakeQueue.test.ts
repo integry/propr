@@ -42,8 +42,6 @@ Object.assign(process.env, {
 const { db, closeConnection } = await import('../src/db/connection.js');
 const { up } = await import('../src/db/migrations/20260922000000_add_task_submissions.js');
 const { up: identityMigration } = await import('../src/db/migrations/20260922010000_preserve_task_submission_identity.js');
-const { up: issueDispatches } = await import('../src/db/migrations/20261128000000_create_issue_dispatches.js');
-const { enqueueIssueDispatch, findIssueDispatch } = await import('../src/queue/issueDispatch.js');
 const { insertTaskSubmission } = await import('../src/services/taskSubmissionService.js');
 const { queueSubmissionIntakeEvidence, reconcileSubmissionIntake, submissionIntakeJobId } = await import('../src/services/taskSubmissionIntake.js');
 const { createWorker, getIssueQueue, shutdownQueue, GITHUB_ISSUE_QUEUE_NAME } = await import('../src/queue/taskQueue.js');
@@ -70,11 +68,6 @@ before(async () => {
   redis = client;
   await up(db);
   await identityMigration(db);
-  // A new dispatch is linked to the issue's plan issue, when there is one.
-  await db.schema.createTable('plan_issues', table => {
-    table.increments('id'); table.string('draft_id'); table.string('repository'); table.integer('issue_number'); table.string('status'); table.timestamp('created_at');
-  });
-  await issueDispatches(db);
   worker = await createWorker(GITHUB_ISSUE_QUEUE_NAME, async job => { processed.push(String(job.id)); return { status: 'dispatched' }; }, { concurrency: 1 });
   worker.on('failed', job => { if (job) failures.push({ attemptsMade: job.attemptsMade, finishedOn: job.finishedOn }); });
 });
@@ -113,15 +106,7 @@ async function queuedSubmission(repo: string, number: number) {
   return row.id;
 }
 
-const intakeData = (id: string, repo: string, number: number) => ({ repoOwner: OWNER, repoName: repo, number, userId: '297689653', triggeringLabel: 'AI', correlationId: id });
-
-// The route's intake job, as enqueueIssueImplementationJob adds it (its own dispatch and job ID), with a shorter backoff.
-async function enqueueIntake(id: string, repo: string, number: number) {
-  return enqueueIssueDispatch(await getIssueQueue(), { name: 'processGitHubIssue', data: intakeData(id, repo, number),
-    opts: { attempts: 3, backoff: { type: 'exponential', delay: 200 }, removeOnComplete: true, removeOnFail: true } }, { database: db });
-}
-
-// An intake job as the route added it before dispatches had rows: one fixed job ID per issue.
+// The route's intake job, as enqueueIssueImplementationJob adds it, with a shorter backoff.
 async function addIntake(id: string, repo: string, number: number, opts: { delay?: number } = {}) {
   const queue = await getIssueQueue();
   await queue.add('processGitHubIssue', { repoOwner: OWNER, repoName: repo, number, userId: '297689653', triggeringLabel: 'AI', correlationId: id }, {
@@ -137,7 +122,7 @@ function requireRedis(t: TestContext): boolean {
 test('an intake job refused by worktree admission stays queued through its retries and is retryable once they are exhausted', async t => {
   if (!requireRedis(t)) return;
   const id = await queuedSubmission('web', 34);
-  const { jobId } = await enqueueIntake(id, 'web', 34);
+  await addIntake(id, 'web', 34);
   // The first failed attempt is delayed for its retry: the submission is not terminal.
   await until(async () => failures.length, count => count >= 1, 'the first failed attempt');
   assert.equal(failures[0].finishedOn, undefined);
@@ -151,9 +136,7 @@ test('an intake job refused by worktree admission stays queued through its retri
   assert.ok(failed.error!.includes(root), 'the measured filesystem path is reported');
   assert.equal(failed.issue_number, 34);
   assert.equal(failed.task_id, null);
-  assert.equal(await (await getIssueQueue()).getJob(jobId), undefined);
-  // The worker settles the dispatch alongside the submission, in its failure handler.
-  await until(() => findIssueDispatch({ owner: OWNER, repo: 'web', number: 34 }, { database: db }), row => row?.state === 'failed', 'the ended dispatch');
+  assert.equal(await (await getIssueQueue()).getJob(submissionIntakeJobId(OWNER, 'web', 34)), undefined);
 });
 
 test('a legacy submission left queued by an exhausted intake is settled from the queue\'s evidence, and a live one is not', async t => {

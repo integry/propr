@@ -163,14 +163,11 @@ const run = (extra: Record<string, unknown> = {}) => implement.run({ principal, 
 async function completePlanIssue(issueNumber: number) {
   issueLabels.set(issueNumber, [...new Set([...(issueLabels.get(issueNumber) ?? []), 'AI-done'])]);
   await core.updatePlanIssueStatus(repository, issueNumber, core.PlanIssueStatus.MERGED);
-  // The worker settles the issue's dispatch once its job completes.
-  await database('issue_dispatches').where({ repository, issue_number: issueNumber }).update({ state: 'completed' });
 }
 
 
 beforeEach(async () => {
   await database('task_drafts').delete();
-  await database('issue_dispatches').delete();
   await database('mcp_records').delete();
   await database('mcp_operations').delete();
   await database('task_drafts').insert({ draft_id: planId, user_id: 'user', repository, status: 'executed', context_config: JSON.stringify({ epicLabel: 'base-epic' }) });

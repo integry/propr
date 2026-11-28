@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { state, postFollowup, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
 import { openRequests, onIssue, dedupKey, requestChildId, postedComments } from './taskFollowupIssueDispatch.js';
 import {
-  skip, parentJobId, DAY_MS, raw, owned, ownedKeys, runRecords, retiredRecords, withLiveQueue, routings, assertDispatched, assertChildRun, assertFailedAttempt,
+  skip, JOB_ID, DAY_MS, raw, owned, ownedKeys, runRecords, retiredRecords, withLiveQueue, routings, assertDispatched, assertChildRun, assertFailedAttempt,
   assertCompleted, alreadyDispatched, assertNextFollowupRunsOnce,
 } from './taskFollowupIssueLiveQueue.js';
 
@@ -26,7 +26,7 @@ for (const [routing, backed] of routings) {
         state.consumeFails = true;
         const first = await postFollowup({ body: 'First instructions' }, 'failed-issue-task');
         assert.equal(first.json.state, 'queued');
-        assert.equal(first.json.jobId, await parentJobId());
+        assert.equal(first.json.jobId, JOB_ID);
         assert.equal(first.json.commentId, FIRST_COMMENT_ID);
         assert.ok(await owned.exists(dedupKey), 'the route\'s claim is in the suite\'s namespace');
         const firstChild = await requestChildId();
@@ -46,7 +46,7 @@ for (const [routing, backed] of routings) {
         await live.drained();
         assert.equal(live.runs.length, 1, 'the request\'s child ran once');
         assertChildRun(live.runs[0], { jobId: firstChild, requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /First instructions/ });
-        assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'the completed dispatcher job is removed, freeing its ID');
+        assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the completed dispatcher job is removed, freeing its ID');
         if (backed) assert.equal(await (await live.queue.getJob(firstChild))?.getState(), 'completed', 'a submission\'s child is kept as its receipt');
         else assert.equal(await live.queue.getJob(firstChild), undefined, 'an issue-only child is removed');
 
@@ -80,7 +80,7 @@ for (const outcome of ['completes', 'fails'] as const) {
       // The child ends and is removed, freeing its ID, before BullMQ retries the dispatch after its backoff.
       assert.equal((await live.childSettled()).event, outcome === 'completes' ? 'completed' : 'failed');
       assert.equal(await live.queue.getJob(childId), undefined, 'the ended child is removed, freeing its ID');
-      assert.equal(await (await live.queue.getJob(await parentJobId()))?.getState(), 'delayed', 'the dispatch has not retried yet');
+      assert.equal(await (await live.queue.getJob(JOB_ID))?.getState(), 'delayed', 'the dispatch has not retried yet');
       // The retry resumes after the outage, more than a day later by the application's clock.
       state.now += DAY_MS + 60 * 60_000;
       assert.equal(await raw.exists(record), 1, 'the record outlives any day-long expiry');
@@ -110,7 +110,7 @@ for (const outcome of ['completes', 'fails'] as const) {
           state.recordDispatchFails = backed;
           const first = await postFollowup({ body: 'First instructions' }, 'failed-issue-task');
           assert.equal(first.json.state, 'queued');
-          const [, queuedJob] = [first, await live.queue.getJob(await parentJobId())];
+          const [, queuedJob] = [first, await live.queue.getJob(JOB_ID)];
           const original = queuedJob!.data;
           // The first attempt cannot record the request consumed, or the receipt; its retry finds the run's record,
           // cannot settle it either, and adds nothing. The parent is then gone while the request stays open.
@@ -118,7 +118,7 @@ for (const outcome of ['completes', 'fails'] as const) {
           assertCompleted(await live.settled(), alreadyDispatched(backed));
           assert.equal((await live.childSettled()).event, outcome === 'completes' ? 'completed' : 'failed');
           await live.drained();
-          assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'the parent is gone');
+          assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the parent is gone');
           const childId = await requestChildId();
           assert.deepEqual(live.children.map(child => child.jobId), [childId], 'its child was added once');
           assert.equal(live.runs.length, 1);
@@ -130,7 +130,7 @@ for (const outcome of ['completes', 'fails'] as const) {
           state.consumeFails = false;
           state.recordDispatchFails = false;
           await live.restartWorker();
-          await live.queue.add('processGitHubIssue', original, { jobId: queuedJob!.id!, removeOnComplete: true, removeOnFail: true });
+          await live.queue.add('processGitHubIssue', original, { jobId: JOB_ID, removeOnComplete: true, removeOnFail: true });
           assertCompleted(await live.settled(), alreadyDispatched(backed));
           await live.drained();
           assert.deepEqual(live.children.map(child => child.jobId), [childId], 'nothing is added again');

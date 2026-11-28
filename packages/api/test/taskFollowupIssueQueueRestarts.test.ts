@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import { state, postFollowup, FIRST_COMMENT_ID } from './taskFollowupFixture.js';
 import { openRequests, onIssue, takeRecordsOffline, dedupKey, requestChildId, postedComments, receiptRecorded } from './taskFollowupIssueDispatch.js';
 import {
-  type Settled, skip, parentJobId, ORIGINAL, raw, owned, outcomeKeys, runRecords, hooks, replyLosingQueue, withLiveQueue, livePoll, routings, assertDispatched,
+  type Settled, skip, JOB_ID, ORIGINAL, raw, owned, outcomeKeys, runRecords, hooks, replyLosingQueue, withLiveQueue, livePoll, routings, assertDispatched,
   assertChildRun, assertFailedAttempt, assertCompleted, alreadyDispatched, assertNextFollowupRunsOnce,
 } from './taskFollowupIssueLiveQueue.js';
 
@@ -52,7 +52,7 @@ for (const [routing, backed] of routings) {
         for (let attempt = 0; attempt < 3; attempt++) assertFailedAttempt(await live.settled(), /Connection is closed/);
         await live.drained();
         state.runEnqueueFails = false;
-        assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'the exhausted parent is removed');
+        assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the exhausted parent is removed');
         assert.equal(live.runs.length, 0);
         assert.deepEqual(await runRecords(), []);
 
@@ -91,7 +91,7 @@ test('a submission-backed follow-up by another user, after the initial dispatch 
       assert.equal(live.runs.length, 1, 'which BullMQ deduplicates, so it ran once');
       assert.deepEqual([live.runs[0].data.userId, live.runs[0].data.retryRequesterId, live.runs[0].data.retryCommentId], ['submitter', undefined, undefined]);
       assert.equal(await (await live.queue.getJob(initialChild))?.getState(), 'failed', 'the failed child is kept, and blocks nothing');
-      assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'the exhausted parent is removed');
+      assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the exhausted parent is removed');
       assert.equal(await receiptRecorded(), false, 'the receipt is still not recorded');
 
       // The run failed without a PR; another user follows up, and their own child runs for them, once.
@@ -116,13 +116,13 @@ test('a submission-backed follow-up by another user, after the initial dispatch 
 test('a delivery while an issue-only retry\'s job waits does not replace it, and the one job runs for the requester', { skip, timeout: 30_000 }, async () => {
   await withLiveQueue(async live => {
     assert.equal((await postFollowup({ body: ORIGINAL }, 'failed-issue-task')).json.state, 'queued');
-    assert.equal((await live.queue.getJob(await parentJobId()))?.data.retryCommentId, FIRST_COMMENT_ID);
+    assert.equal((await live.queue.getJob(JOB_ID))?.data.retryCommentId, FIRST_COMMENT_ID);
 
     // Past the claim, a poll finds the job waiting; an add that reaches BullMQ with its ID keeps it too.
     await owned.del(dedupKey);
     assert.deepEqual(await livePoll(), { status: 'ignored', reason: 'job_already_queued' });
-    await live.queue.add('processGitHubIssue', { repoOwner: 'integry', repoName: 'propr', number: 14, userId: '99', triggeringLabel: 'AI' }, { jobId: await parentJobId() });
-    const kept = await live.queue.getJob(await parentJobId());
+    await live.queue.add('processGitHubIssue', { repoOwner: 'integry', repoName: 'propr', number: 14, userId: '99', triggeringLabel: 'AI' }, { jobId: JOB_ID });
+    const kept = await live.queue.getJob(JOB_ID);
     assert.deepEqual([kept?.data.retryRequesterId, kept?.data.retryCommentId], ['user-1', FIRST_COMMENT_ID]);
     assert.equal(await live.queue.getWaitingCount(), 1);
 
@@ -158,7 +158,7 @@ for (const [routing, backed] of [['a submission-backed', true], ['an issue-only'
         for (let attempt = 0; attempt < 3; attempt++) attempts.push(await live.settled());
         assert.deepEqual(attempts.map(settled => settled.event), ['failed', 'failed', 'failed']);
         assert.equal(attempts[2].job.attemptsMade, 3);
-        assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'the exhausted job is removed');
+        assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the exhausted job is removed');
         assert.equal(live.children.length, 0);
         assert.equal(await raw.get(outcomes[0]), 'possible', 'the outcome outlives the job');
 

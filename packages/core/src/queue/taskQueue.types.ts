@@ -66,11 +66,6 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData, AgentCapac
      * of one request so a sibling's completion label does not skip the others.
      */
     dispatchId?: string;
-    /**
-     * The `issue_dispatches` row this job runs for (`issueDispatch.ts`). Set on
-     * the top-level issue job when it is enqueued; its children inherit it.
-     */
-    issueDispatchId?: string;
     /** The issue's label names when the dispatch first ran; its retries keep them. */
     dispatchIssueLabels?: string[];
     issuePayload?: Record<string, unknown>;

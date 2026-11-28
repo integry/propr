@@ -1,6 +1,5 @@
-import { repositoryStorageLifecycle, protectStorageQueue, worktreeDiskPressureLogFields } from '../storage/lifecycle.js';
-import { beginIssueJobAttempt, deferIssueJobOnDiskPressure, recordIssueJobAdmitted, ISSUE_JOB_NAME, SUPERSEDED_ISSUE_DISPATCH_RESULT } from './issueDiskPressureDeferral.js';
-import { settleIssueJobCompletion, settleIssueJobFailure } from './issueJobSettlement.js';
+import { repositoryStorageLifecycle, protectStorageQueue, isWorktreeDiskPressureError, worktreeDiskPressureLogFields } from '../storage/lifecycle.js';
+import { deferIssueJobOnDiskPressure, endIssueDiskPressureWait, isFinalJobFailure, ISSUE_JOB_NAME } from './issueDiskPressureDeferral.js';
 // Task queue module for processing GitHub issues and PR comments
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
 import { Redis, RedisOptions } from 'ioredis';
@@ -228,6 +227,30 @@ async function finalizeSubmissionIntakeAttempt(job: Job | undefined, err: Error)
 }
 
 /**
+ * An issue job that failed for good on a disk-pressure refusal (its wait for
+ * free space ran out, or waiting is disabled and its retries are spent): the
+ * refused attempt never reached its processor, so nothing told the issue or its
+ * plan. Earlier attempts may have run (`issueJobAdmitted`); the report says
+ * which. The failed job is then removed: retained under its deterministic job
+ * ID it would swallow the issue's next trigger (a relabel, a later poll), which
+ * BullMQ deduplicates against it. Runs after the submission intake read the
+ * failed job. Best effort.
+ */
+async function settleIssueDiskPressureFailure(job: Job | undefined, err: Error): Promise<void> {
+    if (!job || job.name !== ISSUE_JOB_NAME || !isWorktreeDiskPressureError(err) || !isFinalJobFailure(job, err)) return;
+    try {
+        const { reportIssueDiskPressureRefusal } = await import('../services/issueDiskPressureRefusal.js');
+        await reportIssueDiskPressureRefusal(job as unknown as Parameters<typeof reportIssueDiskPressureRefusal>[0], { error: err });
+    } catch (error) {
+        logger.warn({ jobId: job.id, error: (error as Error).message }, 'Failed to report an issue job refused for disk pressure');
+    }
+    await job.remove().then(
+        () => logger.info({ jobId: job.id }, 'Removed the issue job refused for disk pressure, so a later trigger enqueues it again'),
+        error => logger.warn({ jobId: job.id, error: (error as Error).message }, 'Could not remove the issue job refused for disk pressure'),
+    );
+}
+
+/**
  * Create a worker for processing jobs. Initializes Redis connection if needed.
  */
 export async function createWorker<T extends JobData = JobData, R extends JobResult = JobResult>(
@@ -253,25 +276,19 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
                 .catch(error => logger.warn({ jobId: job.id, error: (error as Error).message }, 'Could not stop containers of a stalled job attempt'));
         }
         // An issue job refused at admission for disk pressure waits for free space on the same job.
-        const issueJob = job?.name === ISSUE_JOB_NAME;
-        return deferIssueJobOnDiskPressure(job, async () => {
-            if (issueJob) await beginIssueJobAttempt(job);
-            return repositoryStorageLifecycle.use(async () => {
-                // A job whose dispatch a newer request took over does not run beside that dispatch.
-                if (issueJob && !await recordIssueJobAdmitted(job)) return { ...SUPERSEDED_ISSUE_DISPATCH_RESULT } as unknown as R;
-                return processorFunction(job);
-            }, {
-                filesystem: process.env.GIT_WORKTREES_BASE_PATH || '/tmp/git-processor/worktrees',
-                reserveBytes: Number(process.env.WORKTREE_ADMISSION_RESERVE_BYTES || 2 * 1024 ** 3),
-                taskBytes: Number(process.env.WORKTREE_TASK_BUDGET_BYTES || 1024 ** 3),
-            });
-        });
+        return deferIssueJobOnDiskPressure(job, () => repositoryStorageLifecycle.use(async () => {
+            if (job?.name === ISSUE_JOB_NAME) await endIssueDiskPressureWait(job);
+            return processorFunction(job);
+        }, {
+            filesystem: process.env.GIT_WORKTREES_BASE_PATH || '/tmp/git-processor/worktrees',
+            reserveBytes: Number(process.env.WORKTREE_ADMISSION_RESERVE_BYTES || 2 * 1024 ** 3),
+            taskBytes: Number(process.env.WORKTREE_TASK_BUDGET_BYTES || 1024 ** 3),
+        }));
     }, workerOptions);
 
     worker.on('completed', async (job: Job<T>, result: R) => {
         // BullMQ emits this after moving the job out of active work.
         void syncPlanRefinementForJobAttempt(job as unknown as Job);
-        if (queueName === GITHUB_ISSUE_QUEUE_NAME) void settleIssueJobCompletion(job as unknown as Job);
         const duration = Date.now() - job.timestamp;
         logger.info({ jobId: job.id, jobName: job.name, result, duration }, 'Job completed successfully');
         try {
@@ -304,8 +321,8 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
         // BullMQ emits this after moving the job to delayed for its retry, or to failed for good.
         void syncPlanRefinementForJobAttempt(job as unknown as Job | undefined);
         if (queueName === GITHUB_ISSUE_QUEUE_NAME) {
-            void finalizeSubmissionIntakeAttempt(job as unknown as Job | undefined, err);
-            void settleIssueJobFailure(job as unknown as Job | undefined, err);
+            void finalizeSubmissionIntakeAttempt(job as unknown as Job | undefined, err)
+                .then(() => settleIssueDiskPressureFailure(job as unknown as Job | undefined, err));
         }
         const jobData = job?.data as unknown as IssueJobData | undefined;
         logger.error({

@@ -38,11 +38,6 @@ const { handleDispatchWithDeps } = await import('../../../src/jobs/issueJobDispa
 const { redisRetryOutcomeEvidence, reserveIssueRetryRequest } = await import('../../core/src/services/issueRetryRequest.js');
 const { enqueueIssueRetryRun, queueRetryRunEvidence } = await import('../../core/src/services/issueRetryRun.js');
 const { processDetectedIssue } = await import('../../core/src/daemon/issueDetection.js');
-// As the production issue worker, the suite's worker records each parent attempt on the issue's dispatch row.
-const { beginIssueJobAttempt, recordIssueJobAdmitted, SUPERSEDED_ISSUE_DISPATCH_RESULT } = await import('../../core/src/queue/issueDiskPressureDeferral.js');
-const { settleIssueJobCompletion, settleIssueJobFailure } = await import('../../core/src/queue/issueJobSettlement.js');
-const { findIssueDispatch, ISSUE_DISPATCH_ABANDON_AFTER_MS } = await import('../../core/src/queue/issueDispatch.js');
-const { db: coreDb } = await import('../../core/src/db/connection.js');
 export { reserveIssueRetryRequest, enqueueIssueRetryRun, queueRetryRunEvidence };
 export type RetryRunChild = import('../../core/src/services/issueRetryRun.js').RetryRunChild;
 
@@ -51,24 +46,7 @@ const REDIS_PORT = Number.parseInt(process.env.REDIS_PORT ?? '6379', 10);
 const RUN_ID = `${process.pid}-${Date.now()}-${randomUUID()}`;
 // The suite's own keys; nothing outside this namespace is written or deleted, but the sentinels.
 const NAMESPACE = `propr-itest:issue-retry:${RUN_ID}:`;
-/** The job ID issue 14's parent jobs had before each dispatch got its own; a job queued then still carries it. */
 export const JOB_ID = 'issue-integry-propr-14';
-/**
- * Issue 14's queued parent job is lost before any worker ran it, long enough
- * ago that a later request starts a new dispatch instead of waiting on it.
- */
-export async function loseParentJob(queue: Queue): Promise<void> {
-  const jobId = await parentJobId();
-  await (await queue.getJob(jobId))!.remove();
-  await coreDb('issue_dispatches').where({ job_id: jobId }).update({ updated_at: Date.now() - ISSUE_DISPATCH_ABANDON_AFTER_MS - 1 });
-}
-
-/** The parent (dispatcher) job of issue 14's latest dispatch: each dispatch has its own job ID. */
-export async function parentJobId(): Promise<string> {
-  const dispatch = await findIssueDispatch({ owner: 'integry', repo: 'propr', number: 14 });
-  assert.ok(dispatch, 'issue 14 has a dispatch');
-  return dispatch.job_id;
-}
 export const ORIGINAL = 'Retry with the original instructions';
 export const DAY_MS = 24 * 60 * 60_000;
 // Unrelated recovery evidence and a duplicate claim, outside the namespace, as another request or process
@@ -331,9 +309,6 @@ export async function withLiveQueue(body: (live: LiveQueue) => Promise<void>) {
     return { status: 'completed', issueNumber: job.data.number };
   };
   const dispatch = async (job: Job<IssueJobData>) => {
-    await beginIssueJobAttempt(job);
-    // As the issue worker: a job whose dispatch a newer request took over does not run.
-    if (!await recordIssueJobAdmitted(job)) return { ...SUPERSEDED_ISSUE_DISPATCH_RESULT };
     try {
       const result = await handleDispatchWithDeps(job, deps);
       dispatches.push(result);
@@ -350,16 +325,8 @@ export async function withLiveQueue(body: (live: LiveQueue) => Promise<void>) {
       { connection, prefix, concurrency: 2, ...options });
     worker = started;
     workers.push(started);
-    // A parent settles once its dispatch row has recorded the outcome, as the issue worker records it.
-    started.on('completed', async (job, result) => {
-      if (!job.data.isChildJob) await settleIssueJobCompletion(job);
-      (job.data.isChildJob ? childOutcomes : parents).push({ event: 'completed', job, result });
-    });
-    started.on('failed', async (job, error) => {
-      if (!job) return;
-      if (!job.data.isChildJob) await settleIssueJobFailure(job, error);
-      (job.data.isChildJob ? childOutcomes : parents).push({ event: 'failed', job, error });
-    });
+    started.on('completed', (job, result) => (job.data.isChildJob ? childOutcomes : parents).push({ event: 'completed', job, result }));
+    started.on('failed', (job, error) => { if (job) (job.data.isChildJob ? childOutcomes : parents).push({ event: 'failed', job, error }); });
     started.on('stalled', jobId => { stalls.push(jobId); });
     // A worker whose job another recovered cannot record its outcome; BullMQ reports that as an error event.
     started.on('error', () => {});

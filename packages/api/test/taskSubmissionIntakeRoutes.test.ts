@@ -5,7 +5,6 @@ import type { Request, Response } from 'express';
 import { closeConnection } from '@propr/core';
 import { up } from '../../core/src/db/migrations/20260922000000_add_task_submissions.js';
 import { up as identityMigration } from '../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js';
-import { up as issueDispatches } from '../../core/src/db/migrations/20261128000000_create_issue_dispatches.js';
 import type { IntakeJobState, SubmissionIntakeEvidence } from '../../core/src/services/taskSubmissionIntake.js';
 import { createTaskSubmissionRoutes } from '../routes/taskSubmissionRoutes.js';
 import { configureDemoMode } from '../demoMode.js';
@@ -28,8 +27,6 @@ async function fixture() {
   const db = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await up(db);
   await identityMigration(db);
-  // The intake's job is the issue's latest dispatch's; this legacy submission's issue has none, so its fixed job ID is read.
-  await issueDispatches(db);
   await db('task_submissions').insert({ id: 'cb70c6a3-45ed-4311-803e-84540911fc09', user_id: '297689653', submission_key: 'stable-key', payload_hash: 'hash',
     repository: 'owner/repo', payload: JSON.stringify({ instruction: 'Audit', agentAlias: 'astra', model: 'gpt-6-astra', routingLabel: 'llm-astra', trigger: 'AI', username: 'propr-ultrafix' }),
     attachments: '[]', state: 'queued', issue_number: 34, issue_url: 'https://github.com/owner/repo/issues/34' });

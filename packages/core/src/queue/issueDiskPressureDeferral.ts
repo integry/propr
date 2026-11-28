@@ -2,16 +2,14 @@
  * Issue jobs refused at worker admission for disk pressure.
  *
  * `StorageLifecycle.admit` refuses a job (`WorktreeDiskPressureError`) when the
- * disk that holds working copies is nearly full. The refused attempt never
- * reaches its processor, and the host frees space by itself (worktree sweeps,
- * finished tasks), so for an issue job the refusal is a wait, not a failure:
- * the same job is delayed on a backoff measured in minutes, without consuming
- * its attempt budget, until space returns or the total wait
+ * disk that holds working copies is nearly full. Nothing ran in that attempt
+ * and it changed nothing, and the host frees space by itself (worktree sweeps, finished
+ * tasks), so for an issue job the refusal is a wait, not a failure: the same
+ * job is delayed on a backoff measured in minutes, without consuming its
+ * attempt budget, until space returns or the total wait
  * (`WORKTREE_DISK_PRESSURE_MAX_WAIT_MS`) runs out. Only then does the job fail
  * for good, and the queue's failure handler reports it on the issue
- * (`issueDiskPressureRefusal.ts`). The issue's dispatch row (`issueDispatch.ts`)
- * follows: queued → deferred at a refusal, deferred → queued when the job is
- * picked up again, and → processing, with `started_at`, once an attempt is admitted.
+ * (`issueDiskPressureRefusal.ts`).
  *
  * A deferral is `job.moveToDelayed` followed by `DelayedError`, as for the
  * capacity waits: BullMQ keeps `attemptsMade` unchanged.
@@ -20,9 +18,6 @@
 import * as bullmq from 'bullmq';
 import { isWorktreeDiskPressureError, worktreeDiskPressureDetails, worktreeDiskPressureLogFields, worktreeDiskPressureMeasurementOf } from '../storage/lifecycle.js';
 import logger from '../utils/logger.js';
-
-/** Loaded only for jobs that have a dispatch row: importing the database opens it, which keeps importers' processes alive. */
-const dispatchRows = () => import('./issueDispatch.js');
 
 export const ISSUE_JOB_NAME = 'processGitHubIssue';
 
@@ -36,6 +31,8 @@ export interface IssueDiskPressureWaitData {
     diskPressureRetryAt?: number;
     /** What admission measured at the latest refusal, in words (`formatWorktreeDiskPressure`). */
     diskPressureDetails?: string;
+    /** An attempt of this job passed admission and entered its processor (`endIssueDiskPressureWait`). */
+    issueJobAdmitted?: boolean;
 }
 
 const MINUTE_MS = 60_000;
@@ -141,7 +138,6 @@ export async function deferIssueJobOnDiskPressure<T>(
         };
         await job.updateData(next);
         await job.moveToDelayed(decision.retryAt, job.token);
-        await recordDeferral(data, decision.retryAt, details, (fields, msg) => log.warn({ ...target, ...fields }, msg));
         log.warn({ ...target, ...measured, refusals: decision.deferrals, retryAt: new Date(decision.retryAt).toISOString(), delayMs: decision.delayMs },
             `Issue job refused for disk pressure: waiting for free disk space${details ? ` (${details})` : ''}`);
         const Delayed = bullmq.DelayedError;
@@ -150,56 +146,20 @@ export async function deferIssueJobOnDiskPressure<T>(
     }
 }
 
-/** The dispatch row of a top-level job moves to deferred. Best effort: the wait itself is on the job. */
-async function recordDeferral(data: unknown, retryAt: number, details: string | null, warn: (fields: object, msg: string) => void): Promise<void> {
-    const dispatchId = topLevelDispatchId(data);
-    if (!dispatchId) return;
-    await dispatchRows().then(rows => rows.markIssueDispatchDeferred(dispatchId, { retryAt, details }))
-        .catch(error => warn({ dispatchId, error: (error as Error).message }, 'Could not record the deferral on the issue dispatch'));
-}
-
-/** The dispatch a top-level issue job runs for; children share it but do not move it. */
-export function topLevelDispatchId(data: unknown): string | null {
-    const value = data as { isChildJob?: unknown; issueDispatchId?: unknown } | undefined;
-    return !value?.isChildJob && typeof value?.issueDispatchId === 'string' && value.issueDispatchId ? value.issueDispatchId : null;
-}
-
-/** An issue job was picked up: a deferred dispatch is queued again until admission decides. Best effort. */
-export async function beginIssueJobAttempt(job: Pick<DeferrableIssueJob, 'id' | 'data'>): Promise<void> {
-    const dispatchId = topLevelDispatchId(job.data);
-    if (!dispatchId) return;
-    await dispatchRows().then(rows => rows.markIssueDispatchAttempt(dispatchId))
-        .catch(error => logger.warn({ jobId: job.id, dispatchId, error: (error as Error).message }, 'Could not record the attempt on the issue dispatch'));
-}
-
-/** What a top-level issue job returns, without running, when its dispatch was taken over by a newer one. */
-export const SUPERSEDED_ISSUE_DISPATCH_RESULT = Object.freeze({ status: 'skipped', reason: 'issue_dispatch_superseded' });
-
 /**
- * Admission passed: the processor is about to run. Records it on the
- * dispatch (`started_at`, the evidence a later refusal report relies on), so
- * a failed write fails the attempt before the processor runs (an ordinary,
- * retryable failure). Also drops a disk-pressure wait the job went through,
- * so a later refusal starts a new wait.
- *
- * False when a newer dispatch replaced the job's dispatch on the issue's row:
- * a request took the issue over (its producer found this job missing, as when
- * it had not been added yet). The job must then not run its processor; the
- * dispatch that holds the issue serves it. A job whose dispatch ended but
- * still holds the row (a redelivery) runs, as its processor deduplicates it.
+ * Admission passed: the processor is about to run. Records that on the job
+ * (`issueJobAdmitted`), so a later final refusal (on a retry after an ordinary
+ * failure) does not report the job as never started, and drops a wait the job
+ * went through, so that later refusal starts a new wait. The marker is the
+ * evidence the refusal report relies on, so a failed write fails the attempt
+ * before the processor runs (an ordinary, retryable failure).
  */
-export async function recordIssueJobAdmitted(job: Pick<DeferrableIssueJob, 'id' | 'data' | 'updateData'>): Promise<boolean> {
-    const dispatchId = topLevelDispatchId(job.data);
+export async function endIssueDiskPressureWait(job: Pick<DeferrableIssueJob, 'id' | 'data' | 'updateData'>): Promise<void> {
     const data = (job.data ?? {}) as IssueJobDataWithWait;
-    if (dispatchId && await (await dispatchRows()).admitIssueDispatchAttempt(dispatchId) === 'superseded') {
-        logger.warn({ jobId: job.id, dispatchId, repository: `${data.repoOwner}/${data.repoName}`, issueNumber: data.number },
-            'Issue job skipped at admission: a newer dispatch of the issue took it over');
-        return false;
-    }
     const waitFields = new Set(['diskPressureDeferrals', 'diskPressureSince', 'diskPressureRetryAt', 'diskPressureDetails']);
-    if (!Object.keys(data).some(key => waitFields.has(key))) return true;
-    await job.updateData(Object.fromEntries(Object.entries(data).filter(([key]) => !waitFields.has(key))));
-    return true;
+    if (data.issueJobAdmitted === true && !Object.keys(data).some(key => waitFields.has(key))) return;
+    const rest = Object.fromEntries(Object.entries(data).filter(([key]) => !waitFields.has(key)));
+    await job.updateData({ ...rest, issueJobAdmitted: true });
 }
 
 type IssueJobDataWithWait = IssueDiskPressureWaitData & { correlationId?: unknown; repoOwner?: unknown; repoName?: unknown; number?: unknown; [key: string]: unknown };

@@ -3,7 +3,6 @@ import { after, test } from 'node:test';
 import knex, { type Knex } from 'knex';
 import { up } from '../src/db/migrations/20260922000000_add_task_submissions.js';
 import { up as identityMigration } from '../src/db/migrations/20260922010000_preserve_task_submission_identity.js';
-import { up as issueDispatches } from '../src/db/migrations/20261128000000_create_issue_dispatches.js';
 import { closeConnection } from '../src/db/connection.js';
 import { findIssueSubmission, insertTaskSubmission, resumeTaskSubmission, type TaskSubmission } from '../src/services/taskSubmissionService.js';
 import {
@@ -22,7 +21,6 @@ async function fixture() {
   const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
   await up(database);
   await identityMigration(database);
-  await issueDispatches(database);
   const row = await insertTaskSubmission(database, { user_id: '297689653', submission_key: 'key-1', payload_hash: 'hash', repository: 'owner/repo',
     payload: JSON.stringify({ instruction: 'Audit the repository', agentAlias: 'astra', model: 'gpt-6-astra', routingLabel: 'llm-astra', trigger: 'AI', username: 'ultrafix' }),
     attachments: JSON.stringify([{ id: 'a1', originalName: 'notes.txt', mimeType: 'text/plain', content: 'bm90ZXM=', extension: '.txt' }]) });
@@ -355,21 +353,5 @@ test('the queue evidence finds an intake\'s failures past any number of unrelate
     assert.deepEqual(pages, [0, FAILURE_LOG_PAGE, 2 * FAILURE_LOG_PAGE]);
     // And so a legacy submission waiting on that exhausted intake is settled.
     assert.equal((await reconcileSubmissionIntake(database, row, { job: async () => ({ state: 'absent' }), failures: () => store.failures(row) })).state, 'failed');
-  } finally { await database.destroy(); }
-});
-
-test('a failed intake job of a dispatch the issue has moved past does not settle the submission', async () => {
-  const { database, id } = await fixture();
-  try {
-    const dispatchJob = (dispatchId: string) => `issue-owner-repo-34-${dispatchId}`;
-    await database('issue_dispatches').insert({ repository: 'owner/repo', issue_number: 34, dispatch_id: 'newer', job_id: dispatchJob('newer'), state: 'queued', created_at: 1, updated_at: 1 });
-    const failed = { ...intakeJob(id, { data: { issueDispatchId: 'older' } }), id: dispatchJob('older') };
-    const absent = async (): Promise<IntakeJobState> => ({ state: 'absent' });
-    assert.equal(await finalizeSubmissionIntakeFailure(failed, new Error(ADMISSION), { database, job: absent }), 'superseded');
-    assert.equal((await read(database, id)).state, 'queued');
-    // The issue's current dispatch's own failure does settle it.
-    const current = { ...intakeJob(id, { data: { issueDispatchId: 'newer' } }), id: dispatchJob('newer') };
-    assert.equal(await finalizeSubmissionIntakeFailure(current, new Error(ADMISSION), { database, job: absent }), 'recorded');
-    assert.equal((await read(database, id)).state, 'failed');
   } finally { await database.destroy(); }
 });

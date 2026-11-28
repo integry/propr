@@ -2,7 +2,6 @@ import type { Knex } from 'knex';
 import { db } from '../db/connection.js';
 import type { IssueJobData } from '../queue/taskQueue.types.js';
 import { acquireDispatchLock, findIssueSubmission, type TaskSubmission } from './taskSubmissionService.js';
-import { findIssueDispatch } from '../queue/issueDispatch.js';
 
 /**
  * A submission's intake is the issue job the submission route enqueues once
@@ -14,14 +13,7 @@ export const SUBMISSION_INTAKE_JOB_NAME = 'processGitHubIssue';
 /** The attempts the route gives its intake job; exhausting them ends the intake. */
 export const SUBMISSION_INTAKE_ATTEMPTS = 3;
 
-/** The job ID issue jobs had before each dispatch got its own (`issueDispatch.ts`); jobs queued then still carry it. */
 export const submissionIntakeJobId = (owner: string, repo: string, issueNumber: number): string => `issue-${owner}-${repo}-${issueNumber}`;
-
-/** The intake's job: the issue's latest dispatch's job, or the legacy ID when the issue has no dispatch row. */
-export async function currentIntakeJobId(database: Knex, owner: string, repo: string, issueNumber: number): Promise<string> {
-  const dispatch = await findIssueDispatch({ owner, repo, number: issueNumber }, { database });
-  return dispatch?.job_id ?? submissionIntakeJobId(owner, repo, issueNumber);
-}
 
 /** The queue's view of the intake job, by its ID. */
 export type IntakeJobState =
@@ -122,9 +114,8 @@ export interface IntakeFinalizerDeps {
  * Settles a submission whose intake job failed for good. BullMQ sets
  * `finishedOn` only when it moves the job to failed rather than to its retry,
  * so an attempt it will retry, however it failed, leaves the submission
- * queued. A newer dispatch of the issue (its own job ID), or a newer delivery
- * under the same legacy job ID, live or finished, is the submission's intake
- * now, and decides it instead.
+ * queued. A newer delivery under the same job ID, live or finished, is the
+ * submission's intake now, and decides it instead.
  */
 export async function finalizeSubmissionIntakeFailure(job: FinalizableJob | undefined, error: Error, deps: IntakeFinalizerDeps): Promise<IntakeFinalization> {
   if (!job?.id || job.name !== SUBMISSION_INTAKE_JOB_NAME || job.data?.isChildJob || !job.data?.repoOwner || !job.data.repoName || !job.data.number) return 'ignored';
@@ -134,10 +125,7 @@ export async function finalizeSubmissionIntakeFailure(job: FinalizableJob | unde
   if (!submission || !awaitingIntake(submission)) return 'ignored';
   const jobId = job.id;
   const { timestamp, attemptsMade } = job;
-  const { repoOwner, repoName, number } = job.data;
   const establish = async (): Promise<IntakeFailure | null> => {
-    // A newer dispatch of the issue, under its own job ID, is the submission's intake now.
-    if (await currentIntakeJobId(database, repoOwner, repoName, number) !== jobId) return null;
     const current = await deps.job(jobId);
     const superseded = current.state !== 'absent' && (current.state !== 'failed' || current.timestamp !== timestamp);
     return superseded ? null : { reason: error.message, attempts: attemptsMade };
@@ -157,16 +145,15 @@ export async function finalizeSubmissionIntakeFailure(job: FinalizableJob | unde
 export async function reconcileSubmissionIntake(database: Knex, row: TaskSubmission, evidence: SubmissionIntakeEvidence): Promise<TaskSubmission> {
   if (!awaitingIntake(row)) return row;
   const [owner, repo] = row.repository.split('/');
+  const jobId = submissionIntakeJobId(owner, repo, row.issue_number!);
   const establish = async (): Promise<IntakeFailure | null> => {
-    const jobId = await currentIntakeJobId(database, owner, repo, row.issue_number!);
     const current = await evidence.job(jobId);
     if (current.state === 'failed') return { reason: current.reason };
     if (current.state !== 'absent') return null;
     const failures = await evidence.failures(row);
     if (!failures || failures.failures < SUBMISSION_INTAKE_ATTEMPTS) return null;
     // A delivery added while the log was read is the intake now.
-    const latest = await currentIntakeJobId(database, owner, repo, row.issue_number!);
-    return latest === jobId && (await evidence.job(jobId)).state === 'absent' ? { reason: failures.reason, attempts: failures.failures } : null;
+    return (await evidence.job(jobId)).state === 'absent' ? { reason: failures.reason, attempts: failures.failures } : null;
   };
   if (!await establish() || await settleSubmissionIntake(database, row.id, establish) !== 'recorded') return row;
   return (await database<TaskSubmission>('task_submissions').where({ id: row.id }).first()) ?? row;

@@ -15,8 +15,6 @@ import {
   buildDynamicLlmLabel,
   buildAgentModelLlmLabel,
   getIssueQueue,
-  enqueueIssueDispatch,
-  type IssueDispatchEnqueueOutcome,
   generateCorrelationId,
   withRetry,
   retryConfigs
@@ -68,11 +66,11 @@ export async function enqueueIssueImplementationJob(params: {
   retryRequesterId?: string;
   retryCommentId?: number;
   retryPublishedAt?: number;
-}): Promise<IssueDispatchEnqueueOutcome> {
+}): Promise<void> {
   const { owner, repo, issueNumber, userId, triggeringLabel } = params;
   const queue = await getIssueQueue();
-  // Deduplicated on the issue's dispatch row: a dispatch already queued or running serves this request.
-  return enqueueIssueDispatch(queue, { name: 'processGitHubIssue', data: {
+  const jobId = `issue-${owner}-${repo}-${issueNumber}`;
+  await queue.add('processGitHubIssue', {
     repoOwner: owner,
     repoName: repo,
     number: issueNumber,
@@ -82,12 +80,13 @@ export async function enqueueIssueImplementationJob(params: {
     ...(params.retryCommentId ? { retryCommentId: params.retryCommentId } : {}),
     ...(params.retryPublishedAt ? { retryPublishedAt: params.retryPublishedAt } : {}),
     correlationId: params.correlationId || generateCorrelationId()
-  }, opts: {
+  }, {
+    jobId,
     attempts: 3,
     backoff: { type: 'exponential', delay: 2000 },
     removeOnComplete: true,
     removeOnFail: true
-  } }, { log: params.correlationId ? logger.withCorrelation(params.correlationId) : logger });
+  });
 }
 
 async function publishImplementationLabels(params: {

@@ -140,9 +140,6 @@ export {
     shutdownQueue
 } from './queue/taskQueue.js';
 export {
-    enqueueIssueDispatch, findIssueDispatch, issueDispatchJobId, type IssueDispatch, type IssueDispatchEnqueueOutcome, type IssueDispatchState,
-} from './queue/issueDispatch.js';
-export {
     decideIssueDiskPressure,
     issueDiskPressureMaxWaitMs,
     ISSUE_DISK_PRESSURE_RETRY_DELAYS_MS,
