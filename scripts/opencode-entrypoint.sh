@@ -73,6 +73,29 @@ if [ -d "/home/node/workspace" ]; then
     fi
 fi
 
+sync_opencode_credentials() {
+    if [ -n "$opencode_source_data" ] && [ -d "$opencode_source_data" ]; then
+        for credential_file in "${opencode_credential_files[@]}"; do
+            runtime_path="$opencode_data_dir/$credential_file"
+            source_path="$opencode_source_data/$credential_file"
+            # OpenCode 2 never updates auth.json; sync owns write-backs, and
+            # copying the seeded file back would undo a host login.
+            if [ "${sync_database:-0}" = "1" ] && [ "$credential_file" = "auth.json" ]; then
+                continue
+            fi
+            if [ -f "$runtime_path" ]; then
+                temporary_path="${source_path}.propr-tmp-$$"
+                if cp -p "$runtime_path" "$temporary_path" && mv "$temporary_path" "$source_path"; then
+                    :
+                else
+                    rm -f "$temporary_path"
+                    echo "Warning: could not sync refreshed OpenCode credential file $credential_file" >&2
+                fi
+            fi
+        done
+    fi
+}
+
 if [ $# -gt 0 ]; then
     echo "Executing command: $@" >&2
     if [ "$(id -u)" = "0" ] && [ "$opencode_ephemeral" = "1" ]; then
@@ -98,26 +121,7 @@ if [ $# -gt 0 ]; then
         command_status=$?
         set -e
 
-        if [ -n "$opencode_source_data" ] && [ -d "$opencode_source_data" ]; then
-            for credential_file in "${opencode_credential_files[@]}"; do
-                runtime_path="$opencode_data_dir/$credential_file"
-                source_path="$opencode_source_data/$credential_file"
-                # OpenCode 2 never updates auth.json; sync owns write-backs, and
-                # copying the seeded file back would undo a host login.
-                if [ "$sync_database" = "1" ] && [ "$credential_file" = "auth.json" ]; then
-                    continue
-                fi
-                if [ -f "$runtime_path" ]; then
-                    temporary_path="${source_path}.propr-tmp-$$"
-                    if cp -p "$runtime_path" "$temporary_path" && mv "$temporary_path" "$source_path"; then
-                        :
-                    else
-                        rm -f "$temporary_path"
-                        echo "Warning: could not sync refreshed OpenCode credential file $credential_file" >&2
-                    fi
-                fi
-            done
-        fi
+        sync_opencode_credentials
 
         if [ "$sync_database" = "1" ]; then
             su-exec node python3 /opt/propr/opencode-credentials.py sync "$source_db" "$runtime_db"
@@ -127,6 +131,17 @@ if [ $# -gt 0 ]; then
         echo "Switching to node user..." >&2
         cd /home/node/workspace
         exec su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
+    elif [ "$opencode_ephemeral" = "1" ] && [ -n "$opencode_source_data" ] && [ -d "$opencode_source_data" ]; then
+        # Remote runtimes (Fly Machines, Sprites) start the entrypoint as node.
+        # Refreshed logins still go back to the per-run store copy, which the
+        # runtime returns to the agent configuration's credential store.
+        set +e
+        "$@"
+        command_status=$?
+        set -e
+
+        sync_opencode_credentials
+        exit "$command_status"
     else
         exec "$@"
     fi

@@ -18,7 +18,7 @@ import { flyConfig } from './fly/config.js';
 import { FlyPackageImages } from './fly/derivedImage.js';
 import { createFlyAgentMachine, dispatchFlyRun, flyDispatchUsage } from './fly/dispatch.js';
 import { applyOutputDiagnostics, OUTPUT_READ_LIMIT, scanFile, WorkspaceFiles } from './fly/files.js';
-import { prepareLaunch, unsupportedFlyMount } from './fly/launch.js';
+import { prepareLaunch, unsupportedFlyAgentType, unsupportedFlyMount } from './fly/launch.js';
 import { RUN } from './fly/wrapper.js';
 import { probe, waitForExit } from './fly/exitPoll.js';
 import { FlyStartInstalls, POLL_FAILURE_TOLERANCE } from './fly/startInstalls.js';
@@ -49,7 +49,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
         private readonly images: FlyPackageImages | undefined = client ? undefined : new FlyPackageImages()) {}
 
     unsupportedAgentConfig(config: AgentRunConfigSelection | null, spec: AgentRunSpec) {
-        if (!['claude', 'codex'].includes(spec.profile.agentType)) return 'Fly Machines supports Claude Code and Codex';
+        const refusal = unsupportedFlyAgentType(spec.profile.agentType);
+        if (refusal) return refusal;
         if (config?.cliVersionType && config.cliVersionType !== 'default') return 'Fly Machines uses the CLI version in PROPR_FLY_IMAGE';
     }
 
@@ -210,6 +211,8 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
             };
             const collectExitedMachine = async (machine: string) => {
                 await collectOutput(machine);
+                // Runtime home results (Vibe's usage export) that the provider's parsers read on the worker.
+                await prepared.collectRuntimeFiles(api, machine);
                 try {
                     await workspace.collect(api, machine);
                     workspaceSafeToDestroy = true;

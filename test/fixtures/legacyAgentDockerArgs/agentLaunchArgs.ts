@@ -65,7 +65,10 @@ export function legacyVibeDockerArgs(agent, params) {
     const { cliArgs, promptMountArgs } = agent.buildCliAndPromptArgs({ repositoryInspection, mode, maxTurns, promptFilePath, runtimeHomePath });
     const runtimeHomeMountArgs = runtimeHomePath ? ['-v', `${resolveHostBindPath(runtimeHomePath)}:/tmp/propr-vibe-home:rw`] : [];
     const dockerArgs = [
-        'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', 'bridge',
+        // Execute runs start as root and drop to node in the entrypoint, like every other agent (#3853).
+        'run', '--rm', '--name', containerName, '--security-opt', 'no-new-privileges',
+        ...(mode === 'execute' ? ['--cap-add', 'CHOWN'] : []), '--network', 'bridge',
+        ...(mode === 'execute' ? ['--user', '0:0'] : []),
         ...getAnalysisSandboxArgs(mode),
         '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMountMode}`,
         ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, mode === 'analysis')),
