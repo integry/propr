@@ -26,7 +26,10 @@ await mock.module('../packages/core/src/db/connection.js', { namedExports: {
         async first() { return { task_id: 'task-2683' }; },
         insert(value: Record<string, unknown> | Array<Record<string, unknown>>) {
             persisted.push({ table, value });
-            return Object.assign(Promise.resolve(), { returning: async () => [{ execution_id: 'execution-2683' }] });
+            return Object.assign(Promise.resolve(), {
+                returning: async () => [{ execution_id: 'execution-2683' }],
+                onConflict: () => ({ ignore: async () => undefined }),
+            });
         },
     }),
 } });

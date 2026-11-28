@@ -5,6 +5,7 @@ import { getOpenRouterId } from '../config/modelAliases.js';
 import { getModelPricing } from '../services/pricingService.js';
 import { calculateCostWithCachePricing } from './tokenCalculation.js';
 import { claimExecutionStage, releaseExecutionStage, metricsCorrelationId, insertExecutionRow, ALREADY_PERSISTED, type StageClaim } from './llmMetricsExecutionClaim.js';
+import { persistConversationDetails } from './llmMetricsDetails.js';
 import type { RedisConnectionOptions, ClaudeResult, IssueRef, RecordMetricsOptions, ModelPricing, ExtractedMetrics, AggregatedMetrics, PersistMetrics, ConversationDetailParams, ConversationDetail, ConversationStep, MessageContent, LLMMetricsSummary, ModelMetrics, DailyMetric, LLMMetricsSummaryResult, LLMMetricsData, TokenUsage } from './llmMetrics.types.js';
 
 const REDIS_HOST: string = process.env.REDIS_HOST ?? '127.0.0.1';
@@ -214,30 +215,19 @@ async function processConversationLog(params: ProcessConversationLogParams): Pro
         buildConversationDetail({ step, index, executionId, conversationLog: claudeResult.conversationLog!, totalTokens, costUsd })
     );
 
-    if (detailsArray.length > 0) {
-        logger.info({
-            correlationId, taskId,
-            sampleDetail: {
-                sequence: detailsArray[0].sequence_number, type: detailsArray[0].event_type,
-                hasContent: !!detailsArray[0].content, contentPreview: detailsArray[0].content?.substring(0, 100),
-                inputTokens: detailsArray[0].token_count_input, outputTokens: detailsArray[0].token_count_output,
-                toolName: detailsArray[0].tool_name
-            }
-        }, 'DEBUG: Sample detail before insert');
-        await db('llm_execution_details').insert(detailsArray);
-    }
+    await persistConversationDetails(detailsArray, { correlationId, taskId, executionId });
 }
 /** The level exactly as the agent ran it (`auto` included); blank or absent is unknown. */
 function normalizeStoredReasoningLevel(level: string | null | undefined): string | null {
     return typeof level === 'string' && level.trim() ? level.trim() : null;
 }
-interface PersistedExecution { executionId: number | string; taskId: string | null; }
+interface PersistedExecution { executionId: number | string; taskId: string | null; detailsPersisted: boolean; }
 /**
  * Writes the execution row and its details; the row once inserted, even if its
- * details then fail, `already_persisted` when the execution id already has a
+ * details then fail (the failure is logged as incomplete details), `already_persisted` when the execution id already has a
  * row, else null.
  */
-async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<PersistedExecution | typeof ALREADY_PERSISTED | null> {
+export async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | null, metrics: PersistMetrics): Promise<PersistedExecution | typeof ALREADY_PERSISTED | null> {
     const { sessionId, conversationId, executionTimeMs, model, success, numTurns, costUsd, tokenUsage, cacheUsageReported, correlationId, reasoningLevel } = metrics;
     let persisted: PersistedExecution | null = null;
     try {
@@ -266,12 +256,18 @@ async function persistToDatabase(claudeResult: ClaudeResult, taskId: string | nu
         };
         const executionId = await insertExecutionRow(db, executionData, claudeResult.executionId, { correlationId, taskId });
         if (executionId === ALREADY_PERSISTED) return executionId;
-        persisted = { executionId, taskId: effectiveTaskId };
+        persisted = { executionId, taskId: effectiveTaskId, detailsPersisted: false };
 
         await processConversationLog({ claudeResult, executionId, costUsd, correlationId, taskId: effectiveTaskId });
+        persisted.detailsPersisted = true;
         logger.debug({ correlationId, taskId: effectiveTaskId, executionId }, 'LLM metrics persisted to database');
     } catch (error) {
-        logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
+        if (persisted) {
+            logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId, executionId: persisted.executionId, detailCount: claudeResult.conversationLog?.length ?? 0 },
+                'LLM execution row persisted but its conversation details are incomplete');
+        } else {
+            logger.error({ error: (error as Error).message, stack: (error as Error).stack, correlationId, taskId }, 'Failed to persist LLM metrics to database');
+        }
     }
     return persisted;
 }

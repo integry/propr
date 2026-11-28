@@ -55,10 +55,14 @@ await mock.module('../packages/core/src/db/connection.js', { namedExports: {
                 }
                 executions.push(value as Record<string, unknown>);
             }
-            if (table === 'llm_execution_details') details.push(value);
-            if (table === 'llm_execution_details' && failNext.detailsInsert > 0) {
-                failNext.detailsInsert--;
-                return Promise.reject(new Error('details insert failed'));
+            if (table === 'llm_execution_details') {
+                details.push(value);
+                const conflictIgnore = (outcome: () => Promise<void>) => ({ onConflict: () => ({ ignore: outcome }) });
+                if (failNext.detailsInsert > 0) {
+                    failNext.detailsInsert--;
+                    return conflictIgnore(() => Promise.reject(new Error('details insert failed')));
+                }
+                return conflictIgnore(async () => undefined);
             }
             return Object.assign(Promise.resolve(), { returning: async () => [{ execution_id: `row-${executions.length}` }] });
         },
@@ -128,10 +132,11 @@ test('a failure while counting keeps the counters claimed; the next record inser
 });
 
 test('a row whose details fail to insert still counts as recorded', async () => {
-    failNext.detailsInsert = 1;
+    failNext.detailsInsert = 3;
     await record('details-fail');
-    assert.equal(failNext.detailsInsert, 0, 'the details insert was attempted and failed');
+    assert.equal(failNext.detailsInsert, 0, 'every details insert attempt failed');
     assert.equal(executions.length, 1);
+    assert.equal(claims.has('llm:metrics:persisted:details-fail'), true, 'the row claim is kept');
     await record('details-fail');
     assert.equal(executions.length, 1);
     assert.equal(failedCount(), 1);
