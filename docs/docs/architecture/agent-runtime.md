@@ -39,6 +39,8 @@ Docker starts an init process as PID 1 with `--init`. It reaps orphaned children
 
 Most entrypoints start as root so they can prepare runtime directories or fix container-local ownership, then drop to the `node` user before running the CLI. Entrypoints also mark Git directories as safe, install the `gh` wrapper when present, and emit diagnostics that are captured with the task logs.
 
+The Antigravity and OpenCode entrypoints keep running as root after the task returns, so they can write refreshed credentials and the transcript back to host mounts. The task could change anything `node` owns, so these steps run through the shared `scripts/privileged-post-task.sh` helper. Each step gets a fixed `PATH` (`/usr/sbin:/usr/bin:/sbin:/bin`) and an emptied environment, and calls binaries by absolute path. Task files count as data only: `scripts/task-file-transfer.py` reads them as `node` and refuses symlinks, hard links and files over a size limit. It then replaces the host file atomically, without following symlinks. The entrypoints and the helper are installed root-owned, so the task cannot rewrite them while they run. `scripts/smoke-test-entrypoint-privileges.sh` checks this against the built image.
+
 Existing-account credential and launcher paths must be absolute host paths. Shell shortcuts such as `~` and `$HOME` are not expanded by launcher configuration. Direct-login accounts instead save a portable `~/.propr/agent-credentials/<agent-id>/…` path that ProPR maps to its managed host root automatically.
 
 ## Timeouts And Loop Limits

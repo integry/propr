@@ -4,6 +4,10 @@
 
 set -e
 
+# Fixed PATH, absolute binaries and data-only task files for every root step
+# after the task returns (see the file). Root-owned; sourced before the task.
+. /opt/propr/privileged-post-task.sh
+
 if [ -z "$GH_TOKEN" ]; then
     echo "Warning: GH_TOKEN environment variable not set" >&2
     echo "GitHub operations may fail" >&2
@@ -160,7 +164,8 @@ if [ "$antigravity_ephemeral" = "1" ]; then
 
     if [ -n "${PROPR_ANTIGRAVITY_MCP_CONFIG:-}" ]; then
         antigravity_mcp_config_path="$antigravity_config_dir/config/mcp_config.json"
-        trap 'rm -f "$antigravity_mcp_config_path"' EXIT
+        # The runtime home is node's, so removal runs as node.
+        trap 'run_privileged_post_task propr_as_node /bin/rm -f -- "$antigravity_mcp_config_path"' EXIT
         antigravity_mcp_token_envs=$(write_antigravity_mcp_config "$antigravity_mcp_config_path") || exit 2
         echo "Configured run MCP servers for Antigravity" >&2
     fi
@@ -314,39 +319,35 @@ run_supervised_task() {
 # disposable HOME back to the mounted host config, then export the transcript.
 # Runs once per task, after the task has exited normally or after a forwarded
 # stop signal, so a refreshed token does not disappear with the container.
+# Everything the task left behind is data: run only through
+# run_privileged_post_task, and copy only with propr_copy_task_file_back.
+antigravity_state_max_bytes=1048576
+antigravity_transcript_max_bytes=268435456
 write_back_antigravity_state() {
+    local relative_path status
     if [ "${PROPR_REPOSITORY_INSPECTION:-0}" != "1" ] && [ -n "$antigravity_source_config" ] && [ -d "$antigravity_source_config" ]; then
         for relative_path in "${antigravity_state_files[@]}"; do
-            runtime_path="$antigravity_config_dir/$relative_path"
-            source_path="$antigravity_source_config/$relative_path"
-            if [ -f "$runtime_path" ]; then
-                mkdir -p "$(dirname "$source_path")"
-                temporary_path="${source_path}.propr-tmp-$$"
-                if cp -p "$runtime_path" "$temporary_path" && mv "$temporary_path" "$source_path"; then
-                    :
-                else
-                    rm -f "$temporary_path"
-                    echo "Warning: could not sync refreshed Antigravity state file $relative_path" >&2
-                fi
+            status=0
+            propr_copy_task_file_back "$antigravity_config_dir" "$relative_path" \
+                "$antigravity_source_config" "$relative_path" "$antigravity_state_max_bytes" 0600 --parents || status=$?
+            if [ "$status" != "0" ] && [ "$status" != "3" ]; then
+                echo "Warning: could not sync refreshed Antigravity state file $relative_path" >&2
             fi
         done
     fi
 
     # The worker mounts a private read-write directory for the transcript;
-    # export it before --rm discards the disposable runtime home.
+    # export it before --rm discards the disposable runtime home. The copy
+    # replaces rather than writes through anything the agent left there.
     if [ -n "${PROPR_ANTIGRAVITY_TRANSCRIPT_PATH:-}" ]; then
-        transcript_source=$(find "$antigravity_config_dir/antigravity-cli/brain" -type f -path '*/.system_generated/logs/transcript.jsonl' -print -quit 2>/dev/null || true)
-        if [ -n "$transcript_source" ]; then
-            # Replace rather than write through anything the agent left at the destination.
-            if mkdir -p "$(dirname "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH")" \
-                && rm -f "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH" \
-                && cp "$transcript_source" "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH"; then
-                chmod 0644 "$PROPR_ANTIGRAVITY_TRANSCRIPT_PATH" 2>/dev/null || true
-            else
-                echo "Warning: could not export transient Antigravity transcript" >&2
-            fi
-        else
+        status=0
+        propr_copy_task_file_back "$antigravity_config_dir/antigravity-cli/brain" "match:.system_generated/logs/transcript.jsonl" \
+            "${PROPR_ANTIGRAVITY_TRANSCRIPT_PATH%/*}" "${PROPR_ANTIGRAVITY_TRANSCRIPT_PATH##*/}" \
+            "$antigravity_transcript_max_bytes" 0644 --parents --force-mode || status=$?
+        if [ "$status" = "3" ]; then
             echo "Warning: no Antigravity transcript found to export" >&2
+        elif [ "$status" != "0" ]; then
+            echo "Warning: could not export transient Antigravity transcript" >&2
         fi
     fi
 }
@@ -368,10 +369,11 @@ if [ $# -gt 0 ]; then
             echo "Switching to node user with disposable Antigravity HOME..." >&2
         fi
         run_supervised_task "$antigravity_runtime_home" "$@"
+        # From here on the task has run: root steps follow privileged-post-task.sh.
         if [ -n "$antigravity_mcp_config_path" ]; then
-            rm -f "$antigravity_mcp_config_path"
+            run_privileged_post_task propr_as_node /bin/rm -f -- "$antigravity_mcp_config_path" || true
         fi
-        write_back_antigravity_state
+        run_privileged_post_task write_back_antigravity_state || true
         exit "$command_status"
     elif [ "$(id -u)" = "0" ]; then
         echo "Switching to node user..." >&2

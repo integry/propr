@@ -64,6 +64,8 @@ AGENT_BUNDLE_CONTENT_FILES=(
   scripts/antigravity-entrypoint.sh
   scripts/opencode-entrypoint.sh
   scripts/opencode-credentials.py
+  scripts/privileged-post-task.sh
+  scripts/task-file-transfer.py
   scripts/opencode-run.sh
   scripts/vibe-entrypoint.sh
   scripts/vibe-prompt-file-runner.py
