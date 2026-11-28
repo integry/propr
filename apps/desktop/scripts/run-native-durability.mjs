@@ -12,9 +12,12 @@ const EXPECTED = Object.freeze({
 });
 const expectedTotal = Object.values(EXPECTED).reduce((total, count) => total + count, 0);
 const tsxCli = fileURLToPath(import.meta.resolve('tsx/cli'));
+// The inventory checks below parse TAP. Node 23+ defaults to the spec reporter
+// even when stdout is a pipe, so request TAP explicitly.
 const child = spawn(process.execPath, [
   tsxCli,
   '--test',
+  '--test-reporter=tap',
   '--test-concurrency=1',
   'src/profile-store.test.ts',
   'src/profile-store.crash-recovery.test.ts',

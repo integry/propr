@@ -14,7 +14,7 @@ const harness = `
   childProcess.spawn = (executable, args) => {
     assert.equal(executable, process.execPath);
     assert.deepEqual(args.slice(1), [
-      '--test', '--test-concurrency=1',
+      '--test', '--test-reporter=tap', '--test-concurrency=1',
       'src/profile-store.test.ts', 'src/profile-store.crash-recovery.test.ts',
       'src/credential-service.test.ts',
       'src/pairing-response-lifecycle.test.ts',
