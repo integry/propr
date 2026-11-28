@@ -105,7 +105,7 @@ docker inspect <container>
 
 ### Authentication Issues
 
-For a direct-login account, check that the managed credential root is mounted and that the agent's generated path is still `~/.propr/agent-credentials/<agent-id>/…`. For reused host credentials, check that the CLI is authenticated and the expected directory is mounted into the agent's container path. For example, Claude Code expects its selected directory at `/home/node/.claude`, while Codex expects its selected directory at `/home/node/.codex`.
+For a direct-login account, check that the managed credential root is mounted and that the agent's generated path is still `~/.propr/agent-credentials/<agent-id>/…`. For reused host credentials, check that the CLI is authenticated and the expected directory is mounted into the agent's container path. For example, Claude Code expects its selected directory at `/home/node/.claude`, while Codex expects its selected directory at `/home/node/.codex`. For an Antigravity login kept in the OS keyring, see [Antigravity troubleshooting](#troubleshooting-run-agy-to-log-in-although-you-are-signed-in).
 
 ### Docker Permission Issues
 
@@ -180,9 +180,28 @@ ANTIGRAVITY_CONFIG_PATH=/home/your-user/.gemini
 ANTIGRAVITY_TIMEOUT_MS=86400000
 ```
 
-The entrypoint prepares Antigravity runtime directories under the mounted config path and looks for auth, OAuth, credential, or token files. The agent CLI is `agy`; ProPR passes the selected model with `--model <id>` after translating ProPR model IDs into Antigravity CLI model IDs.
+The entrypoint prepares Antigravity runtime directories under the mounted config path and looks for auth, OAuth, credential, or token files. Disposable runs copy only `antigravity-cli/antigravity-oauth-token` and `antigravity-cli/settings.json` from it. When the run ends, those files are copied back to the mounted directory, so a refreshed Google token is kept. This also happens when ProPR stops the container (cancel, cost cap, watchdog or deadline): the entrypoint forwards the stop signal to `agy`, waits for it to exit, copies the files back, and exits with `143`. Goal runs mount the host directory as the runtime home, so `agy` updates the token in place. The agent CLI is `agy`; ProPR passes the selected model with `--model <id>` after translating ProPR model IDs into Antigravity CLI model IDs.
 
 ProPR also passes `--print-timeout` set to the run's timeout (`ANTIGRAVITY_TIMEOUT_MS` for tasks). From Antigravity CLI 1.5.0, a run that hits that deadline exits with code `3`, prints an `AGY_ERROR` line and writes `[agy] print timeout after ...` to stderr. ProPR records such a task as timed out, with the CLI's explanation as the error, and does not accept the partial answer of an analysis run.
+
+#### Troubleshooting: "Run 'agy' to log in" although you are signed in
+
+On macOS and on a Linux desktop with a Secret Service keyring (gnome-keyring, KWallet), `agy` 1.5.x saves its sign-in token in the OS keyring. It writes only a marker, `~/.config/antigravity/credential-user-scope`, and no `~/.gemini/antigravity-cli/antigravity-oauth-token`. Agent containers have no keyring, so a task that reuses that `~/.gemini` stops after a few seconds with `Error: authentication required. Run 'agy' to log in, then retry.`, even though `agy models` works on the host.
+
+ProPR reports this case with an actionable reason instead:
+
+- The Settings agent card, `propr check` (`Agent login: antigravity (file token)`), `propr check agents` and the MCP `get_agent_configuration` tool (`credentialStates`) report the agent as not ready when its credential directory has no file token. The check looks only for the file; it never reads the token or the keyring. If the worker can see the host home, the message names the keyring marker it found.
+- A task that fails because the entrypoint found no auth file, or because `agy` printed `authentication required`, carries the same reason. The raw CLI output stays in the task logs.
+
+Fix it in one of two ways:
+
+1. Sign in once on the host with file storage forced. This writes the file token next to your keyring login, which keeps working:
+
+   ```bash
+   AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy
+   ```
+
+2. Use ProPR's managed login (**Log in to a new account** in Settings, or `propr agent login antigravity`). It runs `agy` inside a container with no keyring, so it always writes the file token.
 
 ### OpenCode
 
@@ -204,8 +223,8 @@ The entrypoint sets `OPENCODE_CONFIG_DIR=/home/node/.config/opencode` and prepar
 Install OpenCode on the host and initialize the directories ProPR can mount:
 
 ```bash
-curl -fsSL https://opencode.ai/install | bash
-# or: npm install -g opencode-ai
+curl -fsSL https://opencode.ai/v2/install | bash
+# or: npm install -g @opencode/cli
 
 mkdir -p ~/.config/opencode ~/.local/share/opencode
 opencode --version
@@ -216,18 +235,9 @@ OpenCode's config location is `~/.config/opencode`; configure OpenCode agents wi
 
 #### Auth Data
 
-OpenCode stores provider auth in `~/.local/share/opencode/auth.json`. When `HOST_OPENCODE_DATA_DIR` is set in the worker environment, ProPR mounts that host directory into OpenCode agent containers at `/home/node/.local/share/opencode`, read-write so the CLI can refresh auth metadata. When it is unset, ProPR infers the matching host data path for default config paths like `/home/your-user/.config/opencode` and mounts it when the directory exists.
+OpenCode 2 stores credentials in `~/.local/share/opencode/opencode.db`. Set `HOST_OPENCODE_DATA_DIR` to the host data directory when it differs from the sibling of the configured `~/.config/opencode` directory. Managed accounts use their own data directory.
 
-Without either data mount, make credentials available another way:
-
-- Pass provider API keys as agent `envVars`.
-- Copy `auth.json` under the mounted config tree and point `XDG_DATA_HOME` at it in the agent `envVars` (`XDG_DATA_HOME=/home/node/.config/opencode/xdg-data`). Re-sync the file after changing providers or refreshing OpenCode auth:
-
-```bash
-mkdir -p ~/.config/opencode/xdg-data/opencode && cp ~/.local/share/opencode/auth.json ~/.config/opencode/xdg-data/opencode/auth.json
-```
-
-By default the container receives `XDG_CONFIG_HOME=/home/node/.config` and `XDG_DATA_HOME=/home/node/.local/share`; the `envVars` override applies only for copied file-based auth. Authentication failures usually mean the configured config path does not point at the host's initialized OpenCode directory, `HOST_OPENCODE_DATA_DIR`/`XDG_DATA_HOME` does not point at mounted auth data, or the selected provider API key is missing or expired.
+Task and analysis containers import credential rows into a disposable database. Changes to refreshed credentials are written back only when the stored value still matches the original. ProPR tells the store formats apart by the database schema, not by how many credentials it holds. A host database with a `credential` table and series 2 tables (such as `session_v2`) is the host store, even when it is empty: OpenCode 2 `auth logout` never edits `auth.json`, so ProPR drops anything the disposable database imported from a leftover `auth.json` and never writes to that file. Otherwise the host is on series 1: it has only `auth.json`, an `opencode.db` without a `credential` table, or a series 1 database whose `credential` table series 1 never reads. In that case the run uses the credentials OpenCode imports from `auth.json`, and ProPR leaves the host database unchanged and never creates one. OAuth refreshes are written back to `auth.json` instead, in the series 1 format and keeping the file mode. An entry is only updated if the host still holds the value the run started with. The write-back also runs when ProPR stops the container: the entrypoint forwards the stop signal through `opencode-run`, which passes it on to OpenCode and waits for it to exit; only then does the entrypoint write back once, and exits with `143`. The sync is capped at a few seconds so the container exits before Docker's stop timeout, and a skipped or failed sync is logged as a warning. Provider API keys can be supplied through agent environment variables.
 
 #### Model-ID Translation
 
@@ -250,4 +260,4 @@ MISTRAL_API_KEY=...
 
 Vibe can use either a valid Vibe config directory or `MISTRAL_API_KEY`. The entrypoint copies config into a per-run runtime home, sets `HOME` and `VIBE_HOME` to that runtime directory, loads `.env` defaults from the Vibe home, and sets `VIBE_ACTIVE_MODEL` when ProPR selects a model.
 
-Implementation prompts are written to a temporary prompt file and passed through the Vibe prompt-file runner so the prompt does not need to appear directly in process arguments. Analysis runs can use read-only config mode and a shorter `VIBE_ANALYSIS_TIMEOUT_MS`.
+Implementation prompts are written to a temporary prompt file and passed to Vibe with its native `--prompt-file` option so the prompt does not need to appear directly in process arguments. Analysis runs can use read-only config mode and a shorter `VIBE_ANALYSIS_TIMEOUT_MS`.

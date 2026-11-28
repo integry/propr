@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { parseVibeOutput } from './vibeOutputParser.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
+import { readVibeExportTokenUsage, splitVibeTokenUsage } from './vibeExportUsage.js';
+export { appendVibeExportDirArg, VIBE_CONTAINER_RUNTIME_HOME } from './vibeExportUsage.js';
 
 const VALID_ENV_VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const GITHUB_CREDENTIAL_ENV_PATTERN = /^(?:GH|GITHUB)_.*(?:TOKEN|KEY|SECRET|PASSWORD|PAT|PRIVATE_KEY)$/;
@@ -55,8 +57,22 @@ export function readLatestVibeSessionMessages(runtimeHomePath: string | undefine
     catch { return ''; }
 }
 
-export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefined): { input_tokens?: number; output_tokens?: number } | undefined {
+export function readLatestVibeSessionTokenUsage(runtimeHomePath: string | undefined, sessionId?: string): { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number } | undefined {
     if (!runtimeHomePath) return undefined;
+    const exportedUsage = readVibeExportTokenUsage(runtimeHomePath);
+    if (exportedUsage) return exportedUsage;
+    if (sessionId && /^[a-zA-Z0-9_-]+$/.test(sessionId)) {
+        const sessionDir = path.join(runtimeHomePath, 'logs', 'session', 'unified', sessionId);
+        if (fs.existsSync(sessionDir)) {
+            try {
+                const current = JSON.parse(fs.readFileSync(path.join(sessionDir, 'CURRENT'), 'utf8'));
+                if (!/^\d{16}$/.test(current.generation)) return undefined;
+                const projection = path.join(sessionDir, 'generations', current.generation, 'projection-state.json');
+                const usage = JSON.parse(fs.readFileSync(projection, 'utf8')).snapshot?.session?.tokenUsage;
+                return splitVibeTokenUsage(usage?.inputTokens, usage?.outputTokens, usage?.cachedInputTokens);
+            } catch { return undefined; }
+        }
+    }
     const metaFile = findNewestFileByName(runtimeHomePath, 'meta.json');
     if (!metaFile) return undefined;
 
@@ -212,8 +228,8 @@ export function splitVibeCliArgs(input: string): string[] {
 }
 
 // Tied to the pinned mistral-vibe version in Dockerfile.agent; override via VIBE_CLI_ARGS if flags change.
-export function getDefaultVibeCliArgs(): string[] {
-    return ['--output', 'json'];
+export function getDefaultVibeCliArgs(stream: boolean): string[] {
+    return ['--output', stream ? 'streaming' : 'json'];
 }
 
 export function buildPromptWithRetryContext(prompt: string, isRetry: boolean, retryReason?: string): string {
@@ -383,7 +399,7 @@ export function hasUsableVibeConfigDir(configPath: string, mistralApiKey?: strin
 export function hasStructuredOutputArg(args: string[]): boolean {
     return args.some((arg, index) => (
         arg === '--json' ||
-        arg === '--output=json' ||
-        (arg === '--output' && args[index + 1] === 'json')
+        arg === '--output=json' || arg === '--output=streaming' ||
+        (arg === '--output' && ['json', 'streaming'].includes(args[index + 1]))
     ));
 }

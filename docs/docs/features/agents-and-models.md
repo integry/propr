@@ -42,6 +42,8 @@ Direct-login accounts use the portable saved path `~/.propr/agent-credentials/<a
 
 To reuse an account that is already authenticated on the host, select **Use existing config** and provide its config path. Launcher deployments also expose that path with the matching `HOST_*` setting. You can authenticate existing paths with a host CLI or `propr agent login <type>`; both CLI and Web login actions run the configured agent image, avoiding host/image CLI version drift. Gemini CLI was discontinued upstream; Gemini models route through Antigravity.
 
+For Antigravity, an existing `~/.gemini` works only if it contains the file token `antigravity-cli/antigravity-oauth-token`. On macOS and Linux desktops with a keyring, `agy` keeps its login in the OS keyring instead, which agent containers cannot read; ProPR then reports the agent as not ready. Sign in once with `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy` (your keyring login keeps working), or use the managed login, which runs `agy` in a container with no keyring and always writes the file token. See [Antigravity troubleshooting](../architecture/agent-runtime.md#troubleshooting-run-agy-to-log-in-although-you-are-signed-in).
+
 ## Goal sessions
 
 Codex, Claude and Antigravity run goals on their native goal support. Antigravity goals use its `/goal` command in a persistent CLI conversation: ProPR streams activity, saves the conversation ID, and delivers checkpoints, operator input, pause and cancel by interrupting at the next finished step and resuming that exact conversation. Availability is checked against the configured image's CLI capabilities.
@@ -227,7 +229,7 @@ OpenCode rotates its free models on its servers, and a retired one fails with "M
 
 OpenCode can also use any provider/model authenticated through its direct-login dialog or on the host. Run `opencode models` after a host `opencode auth login`, then register the IDs with ProPR's `opencode-` prefix (for example `opencode-openai/gpt-5.5`). Dynamic OpenCode labels use a `~` separator — `llm-<agent-alias>~<propr-opencode-model-id>`, for example `llm-opencode~opencode-openai/gpt-5.5`. The `~` format is a stable public contract: the labels persist on GitHub issues and are resolved for routing at execution time.
 
-For an existing host account, install the CLI, run `opencode auth login`, and use `~/.config/opencode` as the agent config path. Provider auth lands in `~/.local/share/opencode/auth.json`, which the worker mounts into agent containers when `HOST_OPENCODE_DATA_DIR` is set (or inferred from the default config path). A direct-login account instead keeps both directories inside its own managed agent root. See [OpenCode in the Agent Runtime Reference](../architecture/agent-runtime.md#opencode) for the full host setup and the auth-data fallback options.
+For an existing host account, install the CLI, run `opencode auth login`, and use `~/.config/opencode` as the agent config path. OpenCode 2 stores provider credentials in the database under `~/.local/share/opencode`, which the worker mounts into agent containers when `HOST_OPENCODE_DATA_DIR` is set (or inferred from the default config path). A direct-login account instead keeps both directories inside its own managed agent root. See [OpenCode in the Agent Runtime Reference](../architecture/agent-runtime.md#opencode) for the full host setup and the auth-data fallback options.
 
 ## Mistral Vibe Models
 
@@ -237,7 +239,7 @@ For an existing host account, install the CLI, run `opencode auth login`, and us
 | GLM 5.3 | `llm-vibe-glm53` | 1M |
 | GLM 5.2 | `llm-vibe-glm52` | 1M |
 
-Vibe uses CLI 2.25.8. GLM runs through Mistral with the same `MISTRAL_API_KEY` or Vibe credentials; no separate Z.ai account is needed. Select `zai-glm-5-3` (or `zai-glm-5-2`) in **AI Agents**, per-task model controls, or the CLI. Mistral Medium remains the default. Existing agents gain these choices on load; custom/local models, credentials, explicit CLI pins, and supported defaults are preserved. Retired hosted Devstral defaults move to Mistral Medium. Use the default CLI version for the verified GLM integration.
+Vibe uses CLI 3.1.5. GLM runs through Mistral with the same `MISTRAL_API_KEY` or Vibe credentials; no separate Z.ai account is needed. Select `zai-glm-5-3` (or `zai-glm-5-2`) in **AI Agents**, per-task model controls, or the CLI. Mistral Medium remains the default. Existing agents gain these choices on load; custom/local models, credentials, explicit CLI pins, and supported defaults are preserved. Retired hosted Devstral defaults move to Mistral Medium. Use the default CLI version for the verified GLM integration.
 
 ## Choosing Models per Phase
 

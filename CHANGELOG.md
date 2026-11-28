@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Extensions and ProPR MCP for OpenCode 2.x** (#3844)
+  - OpenCode 2.x runs now receive extension library MCP servers and skill
+    bundles, and agent definitions and automations can give OpenCode agents the
+    `propr` MCP server. Servers and the skill path go into the inline config
+    (`OPENCODE_CONFIG_CONTENT`) under `mcp.servers` and `skills.paths`: stdio
+    servers run through the stdio bridge with their secrets passed by name in
+    the container environment, and remote servers read their bearer token
+    through `{env:VAR}`. OpenCode 1.x stays unsupported.
+  - Extension runs use only the run's MCP servers and skills: project and
+    `~/.claude` sources are switched off, and the entrypoint gives OpenCode a
+    disposable config dir without the host's `mcp` and `skills` (providers and
+    other settings are kept).
+  - MCP tool calls made through OpenCode's Code Mode `execute` tool show under
+    the called tool's name (`<server>.<tool>`) in the live view and the task log.
+  - Brings in the OpenCode 2.4.2 runtime from #3820, which this builds on.
+
+- **Extensions and ProPR MCP for Vibe 3** (#3842)
+  - Vibe runs now receive extension library MCP servers and skill bundles, and
+    agent definitions and automations can give Vibe agents the `propr` MCP
+    server. MCP servers reach Vibe through `VIBE_MCP_SERVERS`: stdio servers run
+    through the stdio bridge with their secrets only in that entry's `env`, and
+    HTTP servers read their bearer token from `api_key_env`. Skills are
+    registered with Vibe's own `skill` tool through `VIBE_SKILL_PATHS`.
+  - Extension runs use only the run's MCP servers: the entrypoint removes
+    `mcp_servers` from the runtime copy of `config.toml`, turns Mistral cloud
+    connectors off and, when the run has skills, limits active skills to them.
+  - MCP tool calls (`mcp_<server>.<tool>`) show as tool calls and results in the
+    live view and the task log.
+
+- **One runtime capability map for extensions and ProPR MCP** (#3841)
+  - `AGENT_RUNTIME_CAPABILITIES` in `@propr/shared` now decides, per agent
+    type, whether a runtime receives extension library items and the ProPR MCP
+    server, and how skills reach it, with an optional CLI-version predicate
+    (OpenCode 1.x is never supported). Every extension and `propr_mcp` gate
+    reads it. Claude and Codex are unchanged; no other runtime is enabled yet.
+  - On a runtime without extension support, New Task shows *Extensions aren't
+    available for <agent>* instead of hiding the extensions panel, and each
+    auto-applied item that would otherwise apply is listed in the task's
+    `extensions.resolved` event as skipped with reason `runtime`.
+  - Per-runtime MCP rendering moved into one launch builder per agent type with
+    a shared `mcpServers` / `localMcpServers` / `exclusiveMcp` contract. The
+    extension library docs gained a runtime support table.
+
+- Upgraded bundled Mistral Vibe from 2.25.8 to 3.1.5. Tasks use native prompt files and stream Vibe’s structured responses. Vibe runs no longer exit before starting when `~/.vibe/config.toml` sets an absolute host `session_logging.save_dir`: session logs now always go to the container runtime home. The live task view shows Vibe 3 tool calls and their results again. [PyPI release](https://pypi.org/project/mistral-vibe/3.1.5/)
+
 - **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)
   - npm reported Claude Code 2.1.330 as `latest` and 2.1.323 as `stable`.
     All four Claude tool-policy runtime tests passed with the installed
@@ -75,6 +120,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/model` beside Gemini 4 Neon and Argon.
 
 ### Fixed
+
+- **Antigravity explains keyring-only `agy` logins** (#3837)
+  - On macOS and Linux desktops with gnome-keyring or KWallet, `agy` 1.5.x
+    keeps its sign-in in the OS keyring, which agent containers can't read.
+    Tasks then failed with "Run 'agy' to log in" although the host was signed in.
+  - The Settings agent card, `propr check`, `propr check agents` and the MCP
+    `get_agent_configuration` tool (`credentialStates`) now report such an agent
+    as not ready, and failed tasks carry the fix: sign in once with
+    `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy`, or use ProPR's managed login.
+    Raw CLI output stays in the task logs. Only file presence is checked; the
+    token and keyring are never read.
+  - Settings, `propr init stack`, local setup and the desktop wizard mention
+    the variable when they reuse an existing `~/.gemini`.
 
 - **Release Rollout runtime images**: a Release Rollout run that publishes the
   app, UI or managed agent image itself now passes the image references on to

@@ -215,8 +215,8 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     configPath: '~/.config/opencode',
     defaultModels: OPENCODE_MODELS.map(m => m.id),
     defaultAlias: 'opencode',
-    npmPackage: 'opencode-ai',
-    defaultCliVersion: '1.19.6'
+    npmPackage: '@opencode/cli',
+    defaultCliVersion: '2.4.2'
   },
   vibe: {
     dockerImage: 'propr/agent:latest',
@@ -224,7 +224,7 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultModels: VIBE_MODELS.map(m => m.id),
     defaultAlias: 'vibe',
     npmPackage: 'mistral-vibe',
-    defaultCliVersion: '2.25.8'
+    defaultCliVersion: '3.1.5'
   }
 };
 

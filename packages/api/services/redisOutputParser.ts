@@ -4,9 +4,11 @@ import {
   isOpenCodeJsonlEvent,
   normalizeOpenCodeTimestamp,
   normalizeOpenCodeUsage,
+  openCodeCodeModeToolDisplay,
 } from '@propr/core';
 import { extractOpenCodeAssistantSegments } from '../routes/liveDetailsOpenCodeParser.js';
-import { parseVibeTranscriptOutput, processVibeEvent } from './redisOutputParserVibe.js';
+import { parseVibeTranscriptOutput, processVibe3Entry, processVibeRoleRecord } from './redisOutputParserVibe.js';
+import { createAntigravityStreamProjectionState, isAntigravityStreamEnvelope, processAntigravityStreamEnvelope, type AntigravityStreamProjectionState } from './redisOutputParserAntigravity.js';
 
 /** Result from parsing Redis output */
 export interface ParsedRedisOutput {
@@ -36,6 +38,8 @@ interface ParseState {
   lastOpenCodeCumulativeTopLevelUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
   pendingAssistantMessage: string; pendingAssistantTimestamp: string | null; pendingAssistantInternalReasoning: boolean;
   antigravityStreamActive: boolean;
+  /** agy stream-json (`event:` envelope) projection state. */
+  antigravityStream: AntigravityStreamProjectionState;
   syntheticTimestampBaseMs: number | null;
   syntheticTimestampIndex: number;
   seenEventFingerprints: Set<string>;
@@ -450,7 +454,7 @@ function processOpenCodeEvent(
 
 interface OpenCodeRedisPart {
   type?: string; text?: string; content?: unknown; delta?: string; callID?: string; tokens?: Record<string, unknown>;
-  state?: { status?: string; input?: Record<string, unknown>; output?: string; error?: unknown; metadata?: { output?: string; exit?: number } };
+  state?: { status?: string; input?: Record<string, unknown>; output?: string; error?: unknown; metadata?: { output?: string; exit?: number; metadata?: unknown } };
   tool?: string; tool_name?: string; name?: string;
   input?: Record<string, unknown>; parameters?: Record<string, unknown>; args?: Record<string, unknown>;
   output?: string; result?: string; status?: string; id?: string; tool_id?: string;
@@ -614,6 +618,9 @@ function isOpenCodeToolUseType(type: string): boolean { return OPEN_CODE_TOOL_US
 function isOpenCodeToolResultType(type: string): boolean { return OPEN_CODE_TOOL_RESULT_TYPES.includes(type); }
 
 function buildOpenCodeToolUseEvent(source: OpenCodeRedisToolSource, timestamp: string): ConversationEvent {
+  // OpenCode 2 Code Mode: show an `execute` step under the MCP tools it called.
+  const codeMode = openCodeCodeModeToolDisplay(source);
+  if (codeMode) return { type: 'tool_use' as const, toolName: codeMode.toolName, input: codeMode.input, id: getOpenCodeToolId(source), timestamp };
   return { type: 'tool_use' as const, toolName: source.tool_name || source.tool || source.name, input: source.parameters || source.input || source.args || source.state?.input, id: getOpenCodeToolId(source), timestamp };
 }
 
@@ -804,6 +811,15 @@ function parseLine(line: string, state: ParseState): void {
       ? normalizeOpenCodeTimestamp(rawTimestamp)
       : rawTimestamp || getNextSyntheticTimestamp(state);
 
+    // agy 1.1.12+ stream-json envelopes (task runs and native goals).
+    if (isAntigravityStreamEnvelope(event)) {
+      processAntigravityStreamEnvelope(event, timestamp, state, flushTimestamp => flushPendingMessage(state, flushTimestamp));
+      return;
+    }
+
+    // Vibe 3 entries key on type/turnId, not role; effects carry no role at all.
+    if (processVibe3Entry(event, timestamp, state)) return;
+
     if (processCodexAppServerEvent(event, timestamp, state)) return;
 
     // Session-qualified OpenCode events overlap with Antigravity's tool
@@ -828,10 +844,7 @@ function parseLine(line: string, state: ParseState): void {
       // Try OpenCode
       if (processOpenCodeEvent(event, timestamp, state)) return;
       // Try Vibe transcript events
-      if (event.role === 'assistant' || event.role === 'tool' || event.role === 'system' || event.role === 'user') {
-        processVibeEvent(event, timestamp, state);
-        return;
-      }
+      if (processVibeRoleRecord(event, timestamp, state)) return;
       // Fall back to Antigravity stream event processing
       processAntigravityEvent(event, timestamp, state);
     }
@@ -859,6 +872,7 @@ function createParseState(options: RedisOutputParseOptions): ParseState {
     pendingAssistantTimestamp: null,
     pendingAssistantInternalReasoning: false,
     antigravityStreamActive: false,
+    antigravityStream: createAntigravityStreamProjectionState(),
     syntheticTimestampBaseMs: Number.isNaN(executionStartMs) ? null : executionStartMs,
     syntheticTimestampIndex: 0,
     seenEventFingerprints: new Set(),

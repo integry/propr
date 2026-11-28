@@ -355,7 +355,7 @@ test('non-Claude scout configs deny native tools and expose only repository MCP 
     assert.ok(codexArgs.includes('approval_policy="never"'));
     assert.ok(codexArgs.some(arg => arg.includes(`PROPR_SCOUT_REPOSITORY_ROOT=${JSON.stringify(REPOSITORY_SCOUT_CONTAINER_ROOT)}`)));
 
-    const openCodeConfig = JSON.parse(buildOpenCodeRepositoryScoutConfig()) as {
+    const openCodeConfig = JSON.parse(buildOpenCodeRepositoryScoutConfig(true)) as {
         permission: Record<string, string>;
         tools: Record<string, boolean>;
         mcp: Record<string, { environment: Record<string, string> }>;
@@ -400,16 +400,20 @@ test('OpenCode scout Docker args use the inline deny-first config and isolated r
     });
 
     assert.ok(args.includes(`/tmp/scout-worktree:${REPOSITORY_SCOUT_CONTAINER_ROOT}:ro`));
-    assert.ok(args.includes('--pure'));
+    assert.ok(args.includes('OPENCODE_CONFIG_PROJECT_DISABLE=1'));
+    assert.ok(args.includes('OPENCODE_CONFIG_DIR=/tmp/propr-opencode-scout-config'));
     assert.ok(args.includes('--auto'));
     assert.ok(!args.includes('--dangerously-skip-permissions'));
     assert.ok(!args.some(arg => arg.includes('direct-secret') || arg.includes('config-secret')));
     assert.ok(!args.some(arg => arg.startsWith('/tmp/git-processor:/tmp/git-processor:')));
     const inlineConfigArg = args.find(arg => arg.startsWith('OPENCODE_CONFIG_CONTENT='));
     assert.ok(inlineConfigArg);
-    const inlineConfig = JSON.parse(inlineConfigArg.slice('OPENCODE_CONFIG_CONTENT='.length)) as { permission: Record<string, string> };
-    assert.equal(inlineConfig.permission['*'], 'deny');
-    assert.equal(inlineConfig.permission['propr_repository_*'], 'allow');
+    const inlineConfig = JSON.parse(inlineConfigArg.slice('OPENCODE_CONFIG_CONTENT='.length));
+    assert.deepEqual(inlineConfig.permissions, [
+        { action: '*', resource: '*', effect: 'deny' },
+        { action: 'propr_repository_*', resource: '*', effect: 'allow' },
+    ]);
+    assert.equal(inlineConfig.mcp.servers.propr_repository.codemode, false);
 });
 
 test('Codex scout Docker args disable shell access and omit review credentials', async () => {

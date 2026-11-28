@@ -1801,7 +1801,7 @@ export interface TaskSubmission {
 
 /** Library items that would apply automatically to a task for this repository and agent. */
 export interface TaskSubmissionExtensions {
-  /** False when the agent's runtime does not use extensions (only Claude and Codex do). */
+  /** False when the agent's runtime does not use extensions (the runtime capability map enables Claude, Codex, Antigravity, Vibe and OpenCode 2.x). */
   qualified: boolean;
   /** Current library revision; tasks resolve the library again at launch. */
   revision: number;
@@ -1813,6 +1813,11 @@ export interface TaskSubmissionExtensions {
   skills: {
     name: string;
   }[];
+  /** Present when the agent's runtime does not use extensions but library items would otherwise apply; New Task shows a note naming the agent. */
+  unsupported?: {
+    agentAlias: string;
+    runtime: string;
+  };
 }
 
 /** A request to open a GitHub issue and start an implementation run for it. */

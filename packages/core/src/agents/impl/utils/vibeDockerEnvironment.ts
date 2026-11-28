@@ -1,10 +1,29 @@
-import type { AgentConfig } from '../../types.js';
+import type { AgentConfig, AgentToolPolicy } from '../../types.js';
+import { vibeToolPolicyArgs } from '../../mcpLaunch/vibeMcpLaunch.js';
 import logger from '../../../utils/logger.js';
 import { getForwardedVibeEnvVars } from './vibeAgentHelpers.js';
 import { buildVibeRepositoryScoutConfig } from './repositoryScoutMcpServer.js';
+import { VIBE_CONTAINER_RUNTIME_HOME } from './vibeExportUsage.js';
 
-export function buildVibeDockerEnvVars(config: AgentConfig, params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number; runtimeHomePath?: string; repositoryInspection?: boolean }): string[] {
-    const { cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection = false } = params;
+/**
+ * Container path for Vibe session logs. User configs carry an absolute host
+ * `session_logging.save_dir` that is missing (and uncreatable) in the
+ * container, so Vibe exits with code 2 before running. Vibe's environment
+ * layer outranks config.toml, so this pins the session store inside the
+ * runtime home, where `readLatestVibeSessionTokenUsage` looks for it.
+ */
+export const VIBE_CONTAINER_SESSION_SAVE_DIR = `${VIBE_CONTAINER_RUNTIME_HOME}/logs/session`;
+
+/**
+ * Stdio secret values live only inside VIBE_MCP_SERVERS. Their environment
+ * names go into the diagnostic credentials so captured output redacts them.
+ */
+export function vibeStdioSecretEnv(toolPolicy: AgentToolPolicy | undefined): Record<string, string> {
+    return Object.assign({}, ...(toolPolicy?.localMcpServers ?? []).map(server => server.env)) as Record<string, string>;
+}
+
+export function buildVibeDockerEnvVars(config: AgentConfig, params: { cleanModelName?: string; mode: 'execute' | 'analysis'; maxTurns: number; runtimeHomePath?: string; repositoryInspection?: boolean; toolPolicy?: AgentToolPolicy }): string[] {
+    const { cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection = false, toolPolicy } = params;
     const forwardedEnvVars = getForwardedVibeEnvVars(config.envVars, true);
     for (const envVar of forwardedEnvVars.skipped) logger.warn({ agentAlias: config.alias, envVar }, 'Skipping invalid Vibe Docker environment variable');
     const envVars = forwardedEnvVars.dockerArgs;
@@ -25,6 +44,7 @@ export function buildVibeDockerEnvVars(config: AgentConfig, params: { cleanModel
         })}`);
     }
     envVars.push('-e', 'VIBE_SOURCE_HOME=/home/node/.vibe');
+    envVars.push('-e', `VIBE_SESSION_LOGGING__SAVE_DIR=${VIBE_CONTAINER_SESSION_SAVE_DIR}`);
     if (runtimeHomePath) envVars.push('-e', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', '-e', 'HOME=/tmp/propr-vibe-home');
     if (mode === 'analysis') {
         const analysisDirs = ['VIBE_READ_ONLY_CONFIG=1', 'XDG_CACHE_HOME=/tmp/propr-vibe-cache', 'XDG_CONFIG_HOME=/tmp/propr-vibe-config', 'XDG_DATA_HOME=/tmp/propr-vibe-data', 'UV_CACHE_DIR=/tmp/propr-uv-cache', 'HOME=/tmp/propr-vibe-home', 'VIBE_RUNTIME_HOME=/tmp/propr-vibe-home', 'XDG_STATE_HOME=/tmp/propr-vibe-state', 'PIP_CACHE_DIR=/tmp/propr-pip-cache', 'PYTHONPYCACHEPREFIX=/tmp/propr-python-cache'];
@@ -35,5 +55,8 @@ export function buildVibeDockerEnvVars(config: AgentConfig, params: { cleanModel
         envVars.push('-e', `PROPR_REPOSITORY_SCOUT_VIBE_CONFIG=${buildVibeRepositoryScoutConfig()}`);
     }
     envVars.push('-e', `VIBE_MAX_TURNS=${maxTurns}`);
+    // Names only, after operator variables so their envVars cannot change them:
+    // docker copies the values (tokens, stdio secrets) from its own environment.
+    if (toolPolicy) for (const name of Object.keys(vibeToolPolicyArgs(toolPolicy).env)) envVars.push('-e', name);
     return envVars;
 }

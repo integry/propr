@@ -246,7 +246,7 @@ command fails:
 | Claude Code | `npm i -g @anthropic-ai/claude-code` | `~/.claude` |
 | Antigravity | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | `~/.gemini` |
 | Codex | see [Agents and Models](../features/agents-and-models.md) | `~/.codex` |
-| OpenCode | `curl -fsSL https://opencode.ai/install \| bash` | `~/.config/opencode` |
+| OpenCode | `curl -fsSL https://opencode.ai/v2/install \| bash` | `~/.config/opencode` |
 | Vibe | see [Agents and Models](../features/agents-and-models.md) | `~/.vibe` |
 
 See [Agents and Models](../features/agents-and-models.md) for each agent's exact

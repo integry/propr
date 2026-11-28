@@ -10,6 +10,11 @@ RUNTIME_VIBE_HOME="${VIBE_RUNTIME_HOME:-/tmp/propr-vibe-home}"
 VIBE_READ_ONLY_CONFIG="${VIBE_READ_ONLY_CONFIG:-0}"
 export HOME="$RUNTIME_VIBE_HOME"
 export VIBE_HOME="$RUNTIME_VIBE_HOME"
+# User configs written by Vibe carry an absolute host session_logging.save_dir
+# (e.g. /home/<user>/.vibe/logs/session) that does not exist in the container,
+# so Vibe exits before running. Vibe's env layer (VIBE_ prefix, __ nesting)
+# outranks config.toml, so pin session logs inside the runtime home.
+export VIBE_SESSION_LOGGING__SAVE_DIR="$RUNTIME_VIBE_HOME/logs/session"
 
 copy_vibe_home() {
     mkdir -p "$RUNTIME_VIBE_HOME"
@@ -22,9 +27,52 @@ copy_vibe_home() {
         fi
     fi
     normalize_vibe_config_paths
+    configure_exclusive_mcp
     configure_repository_scout
     configure_tool_permissions
     ensure_runtime_dirs
+}
+
+# Extension runs (PROPR_EXTENSION_EXCLUSIVE_MCP=1) get only the run's MCP
+# servers from VIBE_MCP_SERVERS. Vibe union-merges mcp_servers by name with
+# config.toml, so drop them from the runtime copy (the mounted source is never
+# touched). When the run limits skills through VIBE_ENABLED_SKILLS, also drop
+# the config's enabled_skills, which Vibe would concatenate with it. Mistral
+# cloud connectors would add tools too, so turn them off. Fails closed.
+strip_vibe_config_keys() {
+    "${PROPR_VIBE_PYTHON:-/opt/uv/tools/mistral-vibe/bin/python}" -I - "$@" <<'PY'
+import sys, tomllib, tomli_w
+path, keys = sys.argv[1], sys.argv[2:]
+with open(path, 'rb') as handle:
+    config = tomllib.load(handle)
+for key in keys:
+    config.pop(key, None)
+with open(path, 'wb') as handle:
+    tomli_w.dump(config, handle)
+PY
+}
+
+configure_exclusive_mcp() {
+    if [ "${PROPR_EXTENSION_EXCLUSIVE_MCP:-0}" != "1" ]; then
+        return
+    fi
+    export VIBE_ENABLE_CONNECTORS=false
+    if [ -z "${VIBE_MCP_SERVERS:-}" ]; then
+        export VIBE_MCP_SERVERS='[]'
+    fi
+    local config_file="$RUNTIME_VIBE_HOME/config.toml"
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+    local keys=(mcp_servers)
+    if [ -n "${VIBE_ENABLED_SKILLS:-}" ]; then
+        keys+=(enabled_skills)
+    fi
+    if ! strip_vibe_config_keys "$config_file" "${keys[@]}"; then
+        echo "Could not remove ambient MCP servers from the Vibe config for this extension run" >&2
+        exit 1
+    fi
+    echo "Using only this run's MCP servers" >&2
 }
 
 configure_repository_scout() {
@@ -60,14 +108,7 @@ configure_tool_permissions() {
         return
     fi
 
-    local config_file="$RUNTIME_VIBE_HOME/config.toml"
-    mkdir -p "$RUNTIME_VIBE_HOME"
-    touch "$config_file"
-    if grep -q '^[[:space:]]*bypass_tool_permissions[[:space:]]*=' "$config_file"; then
-        sed -i 's/^[[:space:]]*bypass_tool_permissions[[:space:]]*=.*/bypass_tool_permissions = true/' "$config_file" 2>/dev/null || true
-    else
-        printf '\n%s\n' 'bypass_tool_permissions = true' >> "$config_file"
-    fi
+    export VIBE_BYPASS_TOOL_PERMISSIONS=true
     echo "Enabled non-interactive Vibe tool execution" >&2
 }
 
@@ -219,6 +260,13 @@ expand_vibe_prompt_file_args() {
         return
     fi
 
+    # Current Vibe reads the mounted file natively. Older pinned versions
+    # need the Python adapter to keep prompt contents out of argv.
+    if vibe --help 2>/dev/null | grep -q -- '--prompt-file'; then
+        EXPANDED_VIBE_ARGS=("$@")
+        return
+    fi
+
     EXPANDED_VIBE_ARGS=("propr-vibe-prompt-file")
     shift
     while [ $# -gt 0 ]; do
@@ -293,7 +341,9 @@ git config --global --add safe.directory '*' 2>/dev/null || echo "Git safe direc
 if [ -x "/usr/local/bin/gh-wrapper" ]; then
     echo "Setting up GitHub CLI wrapper to filter operational comments" >&2
     mkdir -p /home/node/bin
-    ln -sf /usr/local/bin/gh-wrapper /home/node/bin/gh
+    if [ ! /home/node/bin/gh -ef /usr/local/bin/gh-wrapper ]; then
+        ln -sf /usr/local/bin/gh-wrapper /home/node/bin/gh
+    fi
     export PATH="/home/node/bin:$PATH"
 fi
 

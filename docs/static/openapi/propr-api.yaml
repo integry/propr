@@ -16157,7 +16157,7 @@ components:
       properties:
         qualified:
           type: boolean
-          description: False when the agent's runtime does not use extensions (only Claude and Codex do).
+          description: False when the agent's runtime does not use extensions (the runtime capability map enables Claude, Codex, Antigravity, Vibe and OpenCode 2.x).
         revision:
           type: integer
           description: Current library revision; tasks resolve the library again at launch.
@@ -16188,6 +16188,18 @@ components:
             required:
               - name
             additionalProperties: false
+        unsupported:
+          description: Present when the agent's runtime does not use extensions but library items would otherwise apply; New Task shows a note naming the agent.
+          type: object
+          properties:
+            agentAlias:
+              type: string
+            runtime:
+              type: string
+          required:
+            - agentAlias
+            - runtime
+          additionalProperties: false
       required:
         - qualified
         - revision

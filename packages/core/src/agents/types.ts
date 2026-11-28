@@ -52,6 +52,7 @@ export interface AgentToolPolicyMcpServer {
 /**
  * Per-run tool restrictions enforced with the runtime's native CLI switches
  * (Claude, Codex); other runtimes apply the web restriction through the prompt only.
+ * MCP servers are rendered by each runtime's builder in `./mcpLaunch`.
  */
 export interface AgentToolPolicy {
     /** Profiles replace inherited MCP catalogs rather than merging ambient endpoints. */
@@ -65,6 +66,12 @@ export interface AgentToolPolicy {
     dockerNetwork?: string;
     /** Internal operator-resolved stdio descriptors; never customer API input. */
     localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
+    /**
+     * Skill bundles staged read-only at `/opt/propr/extensions/<id>`, set for
+     * runtimes whose capability map entry has native skills (Antigravity, OpenCode, Vibe),
+     * which also register them through their own skill mechanism.
+     */
+    skills?: { id: string; name: string }[];
 }
 
 export interface AgentExtensionRequest {
@@ -420,6 +427,13 @@ export interface Agent {
      * Verifies the agent is ready (e.g. docker image exists).
      */
     healthCheck(): Promise<boolean>;
+
+    /**
+     * Actionable reason the configured credentials cannot work in the agent
+     * container, from a cheap local check (no provider call). `undefined`
+     * when no problem is visible.
+     */
+    credentialProblem?(): string | undefined;
 }
 
 // Re-export types that are commonly needed with agent types

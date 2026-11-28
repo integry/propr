@@ -312,24 +312,28 @@ export function buildRepositoryScoutMcpConfig(): string {
 }
 
 /** Inline config has the highest normal OpenCode precedence. */
-export function buildOpenCodeRepositoryScoutConfig(): string {
+export function buildOpenCodeRepositoryScoutConfig(legacyCli = false): string {
+    const server = {
+        type: 'local',
+        command: ['node', '-e', REPOSITORY_SCOUT_MCP_SERVER_SOURCE],
+        environment: { PROPR_SCOUT_REPOSITORY_ROOT: REPOSITORY_SCOUT_CONTAINER_ROOT },
+    };
+    const tools = `${REPOSITORY_SCOUT_SERVER_NAME}_*`;
+    if (!legacyCli) {
+        return JSON.stringify({
+            permissions: [
+                { action: '*', resource: '*', effect: 'deny' },
+                { action: tools, resource: '*', effect: 'allow' },
+            ],
+            mcp: { servers: { [REPOSITORY_SCOUT_SERVER_NAME]: { ...server, codemode: false } } },
+            snapshots: false,
+            update: 'disable',
+        });
+    }
     return JSON.stringify({
-        permission: {
-            '*': 'deny',
-            [`${REPOSITORY_SCOUT_SERVER_NAME}_*`]: 'allow',
-        },
-        tools: {
-            '*': false,
-            [`${REPOSITORY_SCOUT_SERVER_NAME}_*`]: true,
-        },
-        mcp: {
-            [REPOSITORY_SCOUT_SERVER_NAME]: {
-                type: 'local',
-                command: ['node', '-e', REPOSITORY_SCOUT_MCP_SERVER_SOURCE],
-                environment: { PROPR_SCOUT_REPOSITORY_ROOT: REPOSITORY_SCOUT_CONTAINER_ROOT },
-                enabled: true,
-            },
-        },
+        permission: { '*': 'deny', [tools]: 'allow' },
+        tools: { '*': false, [tools]: true },
+        mcp: { [REPOSITORY_SCOUT_SERVER_NAME]: { ...server, enabled: true } },
         plugin: [],
         instructions: [],
         share: 'disabled',
