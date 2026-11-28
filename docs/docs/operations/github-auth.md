@@ -356,6 +356,7 @@ API infers it in this order:
 | Hosted relay, callback on `localhost` | `connect` |
 | Hosted relay (`https://webhook.propr.dev/v1`) on any other host | `device` |
 | Another relay with `PROPR_GH_DEVICE_CLIENT_ID` set | `device` |
+| Your own App keeps GitHub API auth (`GH_AUTH_MODE=app`) next to a relay | `disabled`: `GH_INSTALLATION_ID` is that App's installation, not the relay App's |
 | Anything else | `disabled` |
 
 Set `PROPR_WEB_AUTH_MODE=device` to choose it explicitly. The instance needs
@@ -381,6 +382,10 @@ also `GH_INSTALLATION_ID` (which `propr relay enroll` writes).
    the same check Connect makes before it issues a sign-in. The instance
    whitelist then applies as for every sign-in.
 5. The API creates the normal browser session.
+
+Cancelling, or starting again, revokes the attempt at once. A poll that was
+already waiting on GitHub then neither signs the browser in nor brings the
+attempt back.
 
 **Tokens.** The user token is handled like a Connect sign-in: the same
 session, the same durable grant (encrypted at rest) for desktop, MCP and

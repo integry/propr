@@ -106,3 +106,34 @@ test("GitHub and Connect sign-in switch demo mode off explicitly, so a retained 
   // A stack .env that already says so is uploaded as is.
   assert.equal(prepare({}, { ...OAUTH_ENV, PROPR_DEMO_MODE: "0" }).secrets.PROPR_DEMO_MODE, "0");
 });
+
+test("an own GitHub App next to a hosted relay token is refused for device sign-in", () => {
+  // The own App keeps API auth, so GH_INSTALLATION_ID stays its installation,
+  // which no user's installation of the relay App can ever match.
+  const ownApp = { GH_APP_ID: "42", GH_INSTALLATION_ID: "777", HOST_GH_PRIVATE_KEY: "/keys/app.pem" };
+  const readKey = () => "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n";
+  const prepareOwnApp = (flags: Omit<DeployFlyOptions, "app">, envFile: Record<string, string>, githubToken: string | null = "gh") =>
+    prepareFlyDeploy({ app: "my-propr", legacyDocker: true, ...flags }, IMAGES, { PROPR_ADMIN_USERS: "owner", ...ownApp, ...envFile }, githubToken ?? undefined, readKey);
+  for (const [label, flags, envFile, githubToken] of [
+    ["existing relay token", {}, { PROPR_GH_RELAY_TOKEN: "existing" }, null],
+    ["existing relay token, logged in", {}, { PROPR_GH_RELAY_TOKEN: "existing", PROPR_GH_RELAY_URL: "https://webhook.propr.dev/v1" }, "gh"],
+    ["explicit app mode", {}, { PROPR_GH_RELAY_TOKEN: "existing", GH_AUTH_MODE: "app" }, null],
+  ] as const) {
+    assert.throws(() => prepareOwnApp(flags, envFile, githubToken), (error: Error) => {
+      assert.match(error.message, /nobody can sign in/, label);
+      assert.match(error.message, /GH_INSTALLATION_ID \(777\) is the installation of your own GitHub App/, label);
+      assert.match(error.message, /--relay/, label);
+      assert.match(error.message, /GH_OAUTH_CLIENT_ID and GH_OAUTH_CLIENT_SECRET/, label);
+      return true;
+    }, label);
+  }
+  // --relay enrolls the relay App's installation and hands it API auth: device sign-in works.
+  const switched = prepareOwnApp({ relay: true }, { PROPR_GH_RELAY_TOKEN: "existing" });
+  assert.equal(switched.relayPlan.kind, "enroll");
+  assert.equal(switched.relayPlan.keepOwnApp, false);
+  assert.equal(switched.browserAuth, "device");
+  // A stack that pins relay mode already holds the relay App's installation id.
+  assert.equal(prepareOwnApp({}, { PROPR_GH_RELAY_TOKEN: "existing", GH_AUTH_MODE: "relay" }, null).browserAuth, "device");
+  // The own App with its OAuth client is unaffected.
+  assert.equal(prepareOwnApp({}, { PROPR_GH_RELAY_TOKEN: "existing", ...OAUTH_ENV }, null).browserAuth, "github");
+});

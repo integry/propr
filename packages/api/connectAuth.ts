@@ -41,7 +41,10 @@ export function resolveBrowserAuthMode(
     if (usesHostedConnect && isSupportedLoopbackCallback(env.GH_OAUTH_CALLBACK_URL)) return 'connect';
     // The default client ID belongs to the hosted relay's App. An operator
     // relay signs in with device flow only once its own App's ID is set.
-    if (hasRelay && (isHostedRelay(env) || isConfiguredValue(env.PROPR_GH_DEVICE_CLIENT_ID))) return 'device';
+    // Device sign-in checks users against GH_INSTALLATION_ID, which is the
+    // own App's installation while that App keeps GitHub API auth.
+    if (hasRelay && !ownAppHoldsInstallation(env)
+        && (isHostedRelay(env) || isConfiguredValue(env.PROPR_GH_DEVICE_CLIENT_ID))) return 'device';
     return 'disabled';
 }
 
@@ -186,6 +189,11 @@ function isGitHubLogin(value: unknown): value is string {
 function isConfiguredValue(value: string | undefined): boolean {
     const normalized = value?.trim().toLowerCase();
     return Boolean(normalized && !normalized.startsWith('your_') && normalized !== 'changeme');
+}
+
+/** GH_AUTH_MODE=app: the own GitHub App mints tokens and GH_INSTALLATION_ID is its installation. */
+function ownAppHoldsInstallation(env: NodeJS.ProcessEnv): boolean {
+    return env.GH_AUTH_MODE?.trim().toLowerCase() === 'app';
 }
 
 function isHostedRelay(env: NodeJS.ProcessEnv): boolean {

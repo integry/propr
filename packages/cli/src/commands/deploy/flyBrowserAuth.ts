@@ -14,7 +14,10 @@
  *              signs browsers in with GitHub's device flow and the shared
  *              App's public client ID, so no OAuth App and no callback URL
  *              are needed. A non-hosted relay also needs
- *              PROPR_GH_DEVICE_CLIENT_ID (its own App's client ID);
+ *              PROPR_GH_DEVICE_CLIENT_ID (its own App's client ID). Device
+ *              sign-in checks the user against GH_INSTALLATION_ID, so it is
+ *              refused while that ID is an own App's installation rather
+ *              than the relay App's;
  *   - demo     PROPR_DEMO_MODE, where the read-only UI needs no sign-in.
  * Anything else is refused before provisioning.
  */
@@ -28,6 +31,8 @@ export type FlyBrowserAuth = "connect" | "github" | "device" | "demo";
 export interface FlyRelayOutcome {
   kind: "none" | "fill-url" | "enroll";
   baseUrl?: string;
+  /** The own GitHub App keeps API auth, and GH_INSTALLATION_ID stays its installation. */
+  keepOwnApp?: boolean;
 }
 
 /** Same placeholder rules as the API's isConfiguredValue (packages/api/connectAuth.ts). */
@@ -52,6 +57,19 @@ function hasOAuthClient(secrets: Readonly<Record<string, string>>): boolean {
  */
 export function flyWantsDeviceSignIn(plan: FlyDeployPlan, secrets: Readonly<Record<string, string>>): boolean {
   return !parseTruthyEnvValue(secrets.PROPR_DEMO_MODE) && !plan.tunnel && !hasOAuthClient(secrets);
+}
+
+/**
+ * Whether the Machine's GH_INSTALLATION_ID will be the own GitHub App's
+ * installation (the API's device sign-in checks users against it). An
+ * enrollment that hands API auth to the relay replaces it with the shared
+ * App's; otherwise an ID next to GH_APP_ID is the own App's unless the stack
+ * pins relay mode, the rule planFlyRelay applies (sharedAppInstallation).
+ */
+function installationIsOwnApp(secrets: Readonly<Record<string, string>>, relay: FlyRelayOutcome): boolean {
+  if (relay.kind === "enroll") return relay.keepOwnApp === true;
+  return Boolean(secrets.GH_APP_ID?.trim() && secrets.GH_INSTALLATION_ID?.trim())
+    && (secrets.GH_AUTH_MODE ?? "").trim().toLowerCase() !== "relay";
 }
 
 /** Same normalization as the API's hosted-relay check (origin + path, no trailing slash). */
@@ -83,6 +101,14 @@ export function planFlyBrowserAuth(
   const relayToken = Boolean(secrets.PROPR_GH_RELAY_TOKEN?.trim()) || relay.kind === "enroll";
   const relayUrl = relay.baseUrl ?? (secrets.PROPR_GH_RELAY_URL?.trim() || DEFAULT_PROPR_GH_RELAY_URL);
   const hostedRelay = normalizedRelayUrl(relayUrl) === normalizedRelayUrl(DEFAULT_PROPR_GH_RELAY_URL);
+  if (relayToken && installationIsOwnApp(secrets, relay)) {
+    throw new Error(
+      `${flyPublicUrl(plan.app)} would serve a UI nobody can sign in to: browsers would sign in with GitHub device flow through the relay's GitHub App, but GH_INSTALLATION_ID (${secrets.GH_INSTALLATION_ID?.trim()}) is the installation of your own GitHub App (GH_APP_ID), so every user would be refused as having no access to the relay App's installation. `
+        + "Pass --relay to hand GitHub API calls to the relay App (the deploy enrolls a relay token and writes that App's installation id), "
+        + "pass --tunnel-token and --tunnel-url from ProPR Connect to sign in through https://app.propr.dev, "
+        + `or add your own App's client id and secret (GH_OAUTH_CLIENT_ID and GH_OAUTH_CLIENT_SECRET, callback URL ${flyOAuthCallbackUrl(plan)}) to the stack .env.`,
+    );
+  }
   if (relayToken && (hostedRelay || isConfiguredValue(secrets.PROPR_GH_DEVICE_CLIENT_ID))) return "device";
   const relayHint = relayToken
     ? `The relay at ${relayUrl} is not the hosted ProPR relay, so device sign-in also needs PROPR_GH_DEVICE_CLIENT_ID (the client ID of that relay's GitHub App, with Device Flow enabled) in the stack .env. Or `
