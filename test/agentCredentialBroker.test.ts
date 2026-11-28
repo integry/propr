@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { mock, test } from 'node:test';
+import { describe, mock, test } from 'node:test';
 
 type Call = { command: string; args: string[]; options: Record<string, any> };
 const calls: Call[] = [];
@@ -29,6 +29,9 @@ const {
 const { AgentRunSpecBuilder, agentRunNetwork } = await import('../packages/core/src/agents/runtime/agentRunSpec.ts');
 const { renderDockerRunArgs } = await import('../packages/core/src/agents/runtime/dockerRunArgs.ts');
 const { runAgent } = await import('../packages/core/src/agents/runtime/registry.ts');
+const { writeCredentialStoreFiles } = await import('../packages/core/src/agents/credentials/credentialStoreWriter.ts');
+const { applyPastedCredential, removePastedCredential } = await import('../packages/core/src/agents/credentials/pastedCredentials.ts');
+const { OPERATOR_MUTATIONS_FILE } = await import('../packages/core/src/agents/credentials/operatorMutations.ts');
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-credential-broker-'));
 const runRoot = path.join(scratch, 'runs');
@@ -290,6 +293,92 @@ test('concurrent runs: the most recently refreshed token wins regardless of comp
         assert.equal(firstResults[0].outcome, 'written');
         assert.equal(secondResults[0].outcome, order === 'older-first' ? 'written-newer' : 'kept-canonical');
     }
+});
+
+describe('operator mutations while a run is active', () => {
+    const operatorLock = () => ({ lock: { lockRoot: path.join(runRoot, '.locks') } });
+    const codexRun = (root: string) => stageAgentRunCredentials(specWith([{ provider: 'codex', source: root, target: '/home/node/.codex' }]), { environment: brokerEnvironment })!;
+    const pastedKey = (key: string) => applyPastedCredential('openai-api-key', key, undefined).toString();
+
+    test('a removed Codex credential is not restored by a run staged before the removal', async () => {
+        const root = makeStore({ 'auth.json': '{"tokens":{"refresh_token":"r-old"}}' });
+        const run = codexRun(root);
+        assert.ok(!listFiles(stagedSource(run.spec, '/home/node/.codex')).includes(OPERATOR_MUTATIONS_FILE), 'the record is not part of the run copy');
+        await writeCredentialStoreFiles(root, () => [{ path: 'auth.json', content: removePastedCredential('codex-auth-json', fs.readFileSync(path.join(root, 'auth.json'))) }], operatorLock());
+        assert.equal(fs.existsSync(path.join(root, 'auth.json')), false);
+        refreshIn(stagedSource(run.spec, '/home/node/.codex'), 'auth.json', '{"tokens":{"refresh_token":"r-refreshed"}}', Date.now() + 60_000);
+        const results = await run.complete();
+        assert.deepEqual(results.map(result => result.outcome), ['kept-operator-change']);
+        assert.equal(fs.existsSync(path.join(root, 'auth.json')), false, 'the removal stays effective');
+    });
+
+    test('a replaced account is not overwritten by an older run whose refresh is more recent', async () => {
+        const root = makeStore({ 'auth.json': '{"tokens":{"refresh_token":"old-account"}}' });
+        const run = codexRun(root);
+        await writeCredentialStoreFiles(root, [{ path: 'auth.json', content: Buffer.from(pastedKey('sk-proj-replacementkey0000WXYZ')) }], operatorLock());
+        const replaced = Date.now() - 60_000;
+        fs.utimesSync(path.join(root, 'auth.json'), replaced / 1000, replaced / 1000);
+        // Without the fence, this later refresh time would win as written-newer.
+        refreshIn(stagedSource(run.spec, '/home/node/.codex'), 'auth.json', '{"tokens":{"refresh_token":"old-account-refreshed"}}', Date.now() + 60_000);
+        assert.deepEqual((await run.complete()).map(result => result.outcome), ['kept-operator-change']);
+        assert.equal(fs.readFileSync(path.join(root, 'auth.json'), 'utf8'), pastedKey('sk-proj-replacementkey0000WXYZ'));
+    });
+
+    test('a removed OpenCode auth.json is not recreated through the transport-neutral API', async () => {
+        const root = makeStore({ 'auth.json': '{"anthropic":{"type":"oauth","refresh":"r1"}}' });
+        const broker = new CredentialBroker({ lock: { lockRoot: path.join(runRoot, '.locks') } });
+        const bundle = broker.materialize([{ id: 'opencode-data', provider: 'opencode', store: 'data', canonicalRoot: root }]);
+        await writeCredentialStoreFiles(root, [{ path: 'auth.json', content: removePastedCredential('opencode-auth-json', undefined) }], operatorLock());
+        const results = await broker.commit(bundle, [{ storeId: 'opencode-data', path: 'auth.json', content: Buffer.from('{"anthropic":{"type":"oauth","refresh":"r2"}}'), mtimeMs: Date.now() + 60_000 }]);
+        assert.deepEqual(results.map(result => result.outcome), ['kept-operator-change']);
+        assert.equal(fs.existsSync(path.join(root, 'auth.json')), false);
+    });
+
+    test('runs staged after the mutation, and runs racing only each other, keep the usual write-back', async () => {
+        const root = makeStore({ 'auth.json': 'v0', 'config.toml': '' });
+        const before = codexRun(root);
+        // An operator change of another file of the store does not fence this one.
+        await writeCredentialStoreFiles(root, [{ path: 'config.toml', content: Buffer.from('model = "gpt"') }], operatorLock());
+        const later = codexRun(root);
+        await writeCredentialStoreFiles(root, [{ path: 'auth.json', content: Buffer.from('v1') }], operatorLock());
+        const after = codexRun(root);
+        const other = codexRun(root);
+        refreshIn(stagedSource(after.spec, '/home/node/.codex'), 'auth.json', 'v1-refreshed', Date.now() + 10_000);
+        refreshIn(stagedSource(other.spec, '/home/node/.codex'), 'auth.json', 'v1-other', Date.now() + 20_000);
+        assert.deepEqual((await after.complete()).map(result => result.outcome), ['written']);
+        assert.deepEqual((await other.complete()).map(result => result.outcome), ['written-newer'], 'recency still decides between runs');
+        assert.equal(fs.readFileSync(path.join(root, 'auth.json'), 'utf8'), 'v1-other');
+        refreshIn(stagedSource(before.spec, '/home/node/.codex'), 'auth.json', 'v0-refreshed', Date.now() + 30_000);
+        refreshIn(stagedSource(later.spec, '/home/node/.codex'), 'auth.json', 'v0-later', Date.now() + 40_000);
+        assert.deepEqual((await before.complete()).map(result => result.outcome), ['kept-operator-change']);
+        assert.deepEqual((await later.complete()).map(result => result.outcome), ['kept-operator-change']);
+        assert.equal(fs.readFileSync(path.join(root, 'auth.json'), 'utf8'), 'v1-other');
+    });
+
+    test('a run whose copy still matches the canonical file writes back even after a mutation', async () => {
+        const root = makeStore({ 'auth.json': 'v0' });
+        const run = codexRun(root);
+        // A same-content rewrite (removing a kind the file does not hold) changes nothing the run received.
+        await writeCredentialStoreFiles(root, [{ path: 'auth.json', content: Buffer.from('v0') }], operatorLock());
+        refreshIn(stagedSource(run.spec, '/home/node/.codex'), 'auth.json', 'v0-refreshed');
+        assert.deepEqual((await run.complete()).map(result => result.outcome), ['written']);
+        assert.equal(fs.readFileSync(path.join(root, 'auth.json'), 'utf8'), 'v0-refreshed');
+    });
+
+    test('an unreadable mutation record fences every path, and is replaced by the next mutation', async () => {
+        const root = makeStore({ 'auth.json': 'v0' });
+        fs.writeFileSync(path.join(root, OPERATOR_MUTATIONS_FILE), 'not json');
+        const run = codexRun(root);
+        fs.writeFileSync(path.join(root, 'auth.json'), 'v-other');
+        fs.utimesSync(path.join(root, 'auth.json'), 0, 0);
+        refreshIn(stagedSource(run.spec, '/home/node/.codex'), 'auth.json', 'v0-refreshed');
+        assert.deepEqual((await run.complete()).map(result => result.outcome), ['kept-operator-change']);
+        await writeCredentialStoreFiles(root, [{ path: 'auth.json', content: Buffer.from('v1') }], operatorLock());
+        const record = JSON.parse(fs.readFileSync(path.join(root, OPERATOR_MUTATIONS_FILE), 'utf8'));
+        assert.match(record.id, /^[0-9a-f]{16}$/);
+        assert.deepEqual(Object.keys(record.paths), ['auth.json']);
+        assert.equal(fs.statSync(path.join(root, OPERATOR_MUTATIONS_FILE)).mode & 0o777, 0o600);
+    });
 });
 
 test('concurrent completions in parallel serialise on the store lock', async () => {

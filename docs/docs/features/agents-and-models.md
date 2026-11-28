@@ -50,7 +50,7 @@ When adding Claude, Codex, Antigravity, or OpenCode in the Web UI, choose **Log 
 | Codex | ChatGPT login | the pasted `auth.json` | `~/.codex/auth.json` after `codex login` on another machine ([authentication](https://developers.openai.com/codex/auth)) |
 | OpenCode | Provider logins | the pasted `auth.json` in the OpenCode data store | `~/.local/share/opencode/auth.json` after `opencode auth login` |
 
-Storing one Claude method removes the other, so a stale key never wins over a new token. Other `settings.json` keys are kept. The values are write-only: the dialog, the API (`GET /api/agents/<id>/credentials`) and the logs only ever show whether a credential is set and its last four characters. To replace a credential, paste a new value; **Remove** deletes it. Vibe keeps its **Mistral API Key** field, which is stored in the agent configuration and redacted from API responses.
+Storing one Claude method removes the other, so a stale key never wins over a new token. Other `settings.json` keys are kept. The values are write-only: the dialog, the API (`GET /api/agents/<id>/credentials`) and the logs only ever show whether a credential is set and its last four characters. To replace a credential, paste a new value; **Remove** deletes it. Both also hold for runs already in progress: a run that started before the change does not write its refreshed copy of the old credential back over the replacement, or restore a removed one. The same applies to a new interactive login. Vibe keeps its **Mistral API Key** field, which is stored in the agent configuration and redacted from API responses.
 
 ### Interactive login without Docker
 

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { CredentialBrokerError, lstatInside, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside } from './broker.js';
 import { CredentialStoreLeaseRevokedError, withCredentialStoreLock, type CredentialStoreLockOptions } from './credentialStoreLock.js';
 import { credentialRunRoot } from './hostCredentialStaging.js';
+import { recordOperatorMutation } from './operatorMutations.js';
 
 /**
  * Writes files into a canonical credential store outside a run: credentials
@@ -11,6 +12,11 @@ import { credentialRunRoot } from './hostCredentialStaging.js';
  * produced. It takes the same store lock as the broker's write-back, so it
  * never interleaves with a run returning a refreshed token, and replaces each
  * file atomically with mode 0600.
+ *
+ * Every write is an operator mutation: it is recorded (see
+ * `operatorMutations.ts`) before anything is published, so a run staged
+ * before it cannot later overwrite the change or recreate a removed file
+ * with its own refreshed copy.
  */
 
 export interface CredentialStoreWrite {
@@ -76,6 +82,7 @@ export async function writeCredentialStoreFiles(
         const writes = typeof input === 'function' ? input() : input;
         checkWrites(canonical, writes);
         options.signal?.throwIfAborted();
+        recordOperatorMutation(canonical, writes.map(write => write.path), lease);
         for (const write of writes) {
             const target = path.join(canonical, write.path);
             if (write.content === null) {

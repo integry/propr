@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { isAgentLoginSupported } from '@propr/shared';
 import { admitCostExecution, refuseCostExecution, settleCostCapStop } from '../../claude/docker/dockerCostCap.js';
 import logger from '../../utils/logger.js';
 import { repositoryWorkflowExecution } from '../../workflow/workflowExecution.js';
@@ -27,6 +28,11 @@ import { remoteRuntimePackageSource } from './agentRuntimeRemotePackages.js';
 import { startRunPipeline } from './runPipeline.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
 import type { RemoteLoginProcess, RemoteLoginRequest } from './remoteLogin.js';
+import { isRemoteAgentType } from './remoteRunMounts.js';
+import type { AgentType } from '../types.js';
+
+/** Whether Fly Machines runs the agent type and it has an interactive login: Claude Code, Codex and OpenCode (Vibe has none). */
+export const flyLoginSupported = (type: AgentType): boolean => isRemoteAgentType(type) && isAgentLoginSupported(type);
 
 // Operator catalog executables are not part of the Fly image contract: those servers stay refused (explicit) or dropped (auto-applied).
 const FLY_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false });
@@ -59,7 +65,7 @@ export class FlyMachinesRuntime implements AgentRuntime<AgentRunOptions, Executi
      * PROPR_FLY_MACHINES_MAX slot and is destroyed when the returned process is closed.
      */
     async startLogin(request: RemoteLoginRequest): Promise<RemoteLoginProcess> {
-        if (!['claude', 'codex'].includes(request.agentType)) throw new Error('Fly Machines supports the Claude Code and Codex logins');
+        if (!flyLoginSupported(request.agentType)) throw new Error('Fly Machines supports the Claude Code, Codex and OpenCode logins');
         const config = flyConfig(this.environment);
         const { startFlyLogin } = await import('./fly/flyLogin.js');
         return startFlyLogin(this.client ?? new MachinesClient(config), config, request);

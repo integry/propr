@@ -9,6 +9,8 @@ import { FLY_LOGIN_DIR, flyLoginRelayScript, parseFlyLoginPoll, startFlyLogin } 
 import { MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.js';
 import type { FlyConfig } from '../packages/core/src/agents/runtime/fly/config.js';
 import { startSpriteLogin } from '../packages/core/src/agents/runtime/sprites/spritesLogin.js';
+import { FlyMachinesRuntime, flyLoginSupported } from '../packages/core/src/agents/runtime/flyMachinesRuntime.js';
+import { AGENT_LOGIN_DESCRIPTORS } from '../packages/shared/src/agentLogin.js';
 import { SpritePoolCapacityError, readSpritesCliPins } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.js';
 import { SPRITES_AGENT_TYPES } from '../packages/core/src/agents/runtime/sprites/spritesCliVersions.js';
 import { unsupportedFlyAgentType } from '../packages/core/src/agents/runtime/fly/launch.js';
@@ -154,6 +156,30 @@ describe('Fly Machines interactive login', () => {
             { pollMs: 1, slotWaitMs: 5000, capacityPollMs: 10 }),
         (error: Error) => !(error instanceof RemoteLoginCapacityError) && /cancelled by user/.test(error.message));
         assert.equal(calls.created.length, 0);
+    });
+
+    test('the runtime entry point runs every login-capable agent type Fly Machines runs, OpenCode included', async () => {
+        assert.deepEqual(['claude', 'codex', 'opencode', 'vibe', 'antigravity'].filter(type => flyLoginSupported(type as never)), ['claude', 'codex', 'opencode']);
+        const environment = { PROPR_FLY_API_TOKEN: 'fly-token-value', PROPR_FLY_APP: `opencode-${Date.now()}`, PROPR_FLY_IMAGE: 'registry.fly.io/agents:bundle' };
+        const { api, calls } = fakeMachines({ files: { '/home/node/.local/share/opencode/auth.json': '{"anthropic":{"type":"oauth","refresh":"r"}}' } });
+        const runtime = new FlyMachinesRuntime(api, environment);
+        const descriptor = AGENT_LOGIN_DESCRIPTORS.opencode;
+        const opencodeLogin = request({
+            agentType: 'opencode', command: [...descriptor.command], directories: [descriptor.containerConfigPath, '/home/node/.local/share/opencode'],
+        });
+        const login = await runtime.startLogin(opencodeLogin);
+        const relay = calls.created[0].config.processes[0].cmd![0];
+        assert.equal(relay, flyLoginRelayScript(opencodeLogin));
+        assert.match(relay, /opencode\W+auth\W+login/);
+        assert.match(relay, /mkdir -p -m 700 '\/home\/node\/.config\/opencode' '\/home\/node\/.local\/share\/opencode'/);
+        assert.equal((await login.readFile('/home/node/.local/share/opencode/auth.json'))?.toString(), '{"anthropic":{"type":"oauth","refresh":"r"}}');
+        await login.close();
+        assert.deepEqual(calls.destroyed, ['m-1']);
+        // Antigravity has a login but does not run on Fly Machines: refused before any Machine exists.
+        const refused = fakeMachines();
+        await assert.rejects(new FlyMachinesRuntime(refused.api, environment).startLogin(request({ agentType: 'antigravity', command: ['agy', 'login'] })),
+            /Claude Code, Codex and OpenCode logins/);
+        assert.equal(refused.calls.created.length, 0);
     });
 
     test('reports the organization machine limit (Free Plan) as a capacity error', async () => {
