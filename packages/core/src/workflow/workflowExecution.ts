@@ -244,7 +244,7 @@ label_output() {
 # instead of after the command ends or times out.
 run_command() {
     if [ "$current_uid" = "0" ]; then
-        su-exec node env HOME=/home/node USER=node LOGNAME=node timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2 &
+        su-exec node env HOME=/home/node USER=node LOGNAME=node PATH="\${PROPR_PI_NODE_PATH:-$PATH}" timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2 &
     else
         timeout --signal=TERM --kill-after=${KILL_GRACE_S}s "\${2:-${hookTimeoutS}}s" /bin/bash -c "$1" </dev/null >&2 &
     fi

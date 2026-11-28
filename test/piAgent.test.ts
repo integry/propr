@@ -182,9 +182,11 @@ describe('Pi Docker args', () => {
             const joined = args.join(' ');
             assert.ok(args.includes('-i'), 'stdin stays open for the prompt');
             assert.equal(valueAfter(args, '--user'), '0:0', 'the entrypoint starts as root only to seed the disposable home');
-            assert.ok(args.includes('/home/node/pi-entrypoint.sh'));
+            assert.ok(args.includes('/opt/propr/pi-entrypoint.sh'));
+            assert.match(args[args.indexOf('-lc') + 1], /^export PROPR_PI_NODE_PATH="\$PATH"\nexport PATH=\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin\n/);
             assert.ok(mounts(args).includes('/tmp/git-processor/worktrees/w1:/home/node/workspace:rw'));
-            assert.ok(mounts(args).includes(`${piDir}:/home/node/.pi/agent:rw`));
+            assert.ok(mounts(args).includes(`${piDir}:/root/propr-pi-source:rw`));
+            assert.ok(args.includes('PROPR_PI_SOURCE_DIR=/root/propr-pi-source'));
             assert.ok(args.includes('PROPR_AGENT_TYPE=pi'));
             assert.ok(args.includes(`PROPR_PI_RUNTIME_HOME=${PI_CONTAINER_RUNTIME_HOME}`));
             assert.ok(args.includes('--no-approve'));
@@ -202,7 +204,7 @@ describe('Pi Docker args', () => {
     test('never creates root-owned paths: no missing host dir mount, nothing mounted into the disposable home', () => {
         const missing = path.join(os.tmpdir(), `propr-pi-missing-${process.pid}`, 'agent');
         const { args } = buildPiDockerArgs({ config: piConfig({ envVars: { ANTHROPIC_API_KEY: 'k' } }), worktreePath: '/tmp/w', configPath: missing, modelName: MODEL, issueNumber: 1, gitMountArgs: [] }, '');
-        assert.equal(mounts(args).some(mount => mount.includes('/home/node/.pi')), false, 'Docker would create a missing host dir as root');
+        assert.equal(mounts(args).some(mount => mount.includes('/root/propr-pi-source')), false, 'Docker would create a missing host dir as root');
         assert.equal(fs.existsSync(missing), false);
         assert.equal(mounts(args).some(mount => mount.split(':')[1]?.startsWith(PI_CONTAINER_RUNTIME_HOME)), false);
         assert.equal(args.includes('GH_TOKEN'), false, 'no token, no token variable');
@@ -217,6 +219,36 @@ describe('Pi Docker args', () => {
         // The scout alone gets tools: only the repository MCP server's (test/piScoutAndExtensions.test.ts).
         const inspected = buildPiDockerArgs({ config: piConfig(), worktreePath: '/tmp/a', modelName: MODEL, issueNumber: 0, mode: 'analysis', repositoryInspection: true, gitMountArgs: [] }, '').args;
         assert.equal(valueAfter(inspected, '--tools')?.split(',').every(tool => tool.startsWith('mcp__propr_repository__')), true);
+    });
+
+    test('analysis and scout use the same protected credential source as tasks', () => {
+        const piDir = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-pi-analysis-source-'));
+        try {
+            for (const repositoryInspection of [false, true]) {
+                const { args } = buildPiDockerArgs({ config: piConfig(), worktreePath: '/tmp/a', configPath: piDir, modelName: MODEL, issueNumber: 0, mode: 'analysis', repositoryInspection, gitMountArgs: [] }, '');
+                assert.deepEqual(mounts(args).filter(mount => mount.startsWith(`${piDir}:`)), [`${piDir}:/root/propr-pi-source:rw`]);
+                assert.ok(args.includes('PROPR_PI_SOURCE_DIR=/root/propr-pi-source'));
+            }
+        } finally {
+            fs.rmSync(piDir, { recursive: true, force: true });
+        }
+    });
+
+    test('rejects a credential source also exposed through a writable workspace, git or goal mount', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-pi-source-overlap-'));
+        try {
+            const source = path.join(root, 'agent');
+            const alias = path.join(root, 'alias');
+            fs.mkdirSync(source);
+            fs.symlinkSync(source, alias);
+            const params = { config: piConfig(), configPath: alias, worktreePath: '/tmp/w', modelName: MODEL, issueNumber: 1, gitMountArgs: [] };
+            assert.throws(() => buildPiDockerArgs({ ...params, worktreePath: root }, ''), /credential source overlaps/);
+            assert.throws(() => buildPiDockerArgs({ ...params, gitMountArgs: ['-v', `${source}:/somewhere:rw`] }, ''), /credential source overlaps/);
+            assert.throws(() => buildPiDockerArgs({ ...params, goalSession: { hostDir: root, sessionId: 'goal' } }, ''), /credential source overlaps/);
+            assert.doesNotThrow(() => buildPiDockerArgs({ ...params, worktreePath: root, mode: 'analysis' }, ''));
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+        }
     });
 
     test('forwards only safe, non-reserved agent env vars', () => {

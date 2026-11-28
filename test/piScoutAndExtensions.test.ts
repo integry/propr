@@ -164,7 +164,7 @@ describe('Pi extension library launch', () => {
         assert.ok(args.includes('PROPR_EXTENSION_MCP_0_TOKEN') && args.includes('PROPR_EXTENSION_STDIO_1_0_SECRET') && args.includes(PI_MCP_CONFIG_ENV));
         assert.equal(configEnv[PI_MCP_CONFIG_ENV], piToolPolicyArgs(extensionPolicy()).mcpConfig);
         assert.deepEqual(listAfter(args, '--network'), ['propr_default']);
-        const piArgs = args.slice(args.lastIndexOf('/home/node/pi-entrypoint.sh'));
+        const piArgs = args.slice(args.lastIndexOf('/opt/propr/pi-entrypoint.sh'));
         assert.deepEqual(listAfter(piArgs, '--skill'), ['/opt/propr/extensions/bundle-a', '/opt/propr/extensions/bundle-b']);
         assert.ok(piArgs.includes('--no-skills') && piArgs.at(-1) === '--no-approve');
         assert.ok(piArgs.includes('--session-dir'));

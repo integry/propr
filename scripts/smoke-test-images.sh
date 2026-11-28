@@ -376,49 +376,55 @@ if [ -z "$pi_label" ] || [ "$pi_version" != "$pi_label" ]; then
 fi
 echo "✓ pi --version runs through the agent entrypoint"
 
-# ProPR starts Pi task containers as root (--user 0:0) with a mounted host Pi
-# dir as the credential source. Exercise OAuth write-back to a private source
-# owned by a different UID and check that the disposable state stays node-owned.
-pi_root_owned="$(docker run --rm --network none --user 0:0 \
-  -e PROPR_PI_SOURCE_DIR=/tmp/propr-pi-source \
-  --entrypoint sh "$AGENT_TAG" -c '
-    set -eu
-    mkdir -p /tmp/propr-pi-source/sessions /tmp/propr-pi-source/extensions
-    printf "%s" "{\"anthropic\":{\"type\":\"oauth\",\"access\":\"a\",\"refresh\":\"r\",\"expires\":1}}" > /tmp/propr-pi-source/auth.json
-    printf "%s" "{}" > /tmp/propr-pi-source/settings.json
-    printf "%s" "{}" > /tmp/propr-pi-source/mcp.json
-    chown -R 1001:1001 /tmp/propr-pi-source
-    chmod 700 /tmp/propr-pi-source
-    chown 1001:1002 /tmp/propr-pi-source/auth.json
-    chmod 600 /tmp/propr-pi-source/auth.json
+# Exercise the real source bind mount with a private UID 1001 store and with a
+# UID 1000 store that would be writable by the task without the root-only parent.
+for pi_source_uid in 1000 1001; do
+  pi_source="$DATA_DIR/pi-source-$pi_source_uid"
+  mkdir -p "$pi_source"
+  docker run --rm --network none --user 0:0 -v "$pi_source:/source:rw" --entrypoint sh "$AGENT_TAG" -ec '
+    mkdir -p /source/sessions /source/extensions
+    printf "%s" "{\"anthropic\":{\"type\":\"oauth\",\"access\":\"a\",\"refresh\":\"r\",\"expires\":1}}" > /source/auth.json
+    printf "%s" "{}" > /source/settings.json
+    printf "%s" "{}" > /source/mcp.json
+    chown -R "$1:$1" /source
+    chmod 700 /source
+    chown "$1:1002" /source/auth.json
+    chmod 600 /source/auth.json
+  ' pi-fixture "$pi_source_uid"
+  if ! docker run --rm --network none --user 0:0 --security-opt no-new-privileges \
+    -v "$pi_source:/root/propr-pi-source:rw" \
+    -e PROPR_PI_GOAL_SESSION_DIR=/tmp/goal-sessions \
+    --entrypoint sh "$AGENT_TAG" -ec '
+    mkdir -m 0755 /tmp/goal-sessions
     printf "%s" "{\"anthropic\":{\"type\":\"oauth\",\"access\":\"new-a\",\"refresh\":\"new-r\",\"expires\":2}}" > /tmp/propr-pi-refreshed.json
     chmod 644 /tmp/propr-pi-refreshed.json
-    /home/node/pi-entrypoint.sh sh -ec "
+    /opt/propr/pi-entrypoint.sh sh -ec "
       test \"\$(id -u)\" = 1000
-      test ! -r /tmp/propr-pi-source/auth.json
+      test ! -r /root/propr-pi-source/auth.json
+      test ! -w /root/propr-pi-source/auth.json
+      test ! -x /root/propr-pi-source
+      test ! -e /proc/self/fd/9
+      test \"\$(stat -c %a /tmp/goal-sessions)\" = 700
+      (umask 022 && printf %s {} > /tmp/goal-sessions/session.jsonl)
       cat /tmp/propr-pi-refreshed.json > \"\$PI_CODING_AGENT_DIR/auth.json\"
     "
-    grep -q "\"refresh\": \"new-r\"" /tmp/propr-pi-source/auth.json
-    test "$(stat -c "%u:%g:%a" /tmp/propr-pi-source/auth.json)" = "1001:1002:600"
-    test "$(stat -c "%u:%g:%a" /tmp/propr-pi-source)" = "1001:1001:700"
-    test "$(stat -c "%u:%g" /tmp/propr-pi-source/sessions)" = "1001:1001"
-    test ! -e /tmp/propr-pi-source/auth.json.lock
+    test "$(stat -c "%u:%g:%a" /tmp/goal-sessions/session.jsonl)" = "1000:1000:600"
+    grep -q "\"refresh\": \"new-r\"" /root/propr-pi-source/auth.json
+    test "$(stat -c "%u:%g:%a" /root/propr-pi-source/auth.json)" = "$1:1002:600"
+    test "$(stat -c "%u:%g:%a" /root/propr-pi-source)" = "$1:$1:700"
+    test "$(stat -c "%u:%g" /root/propr-pi-source/sessions)" = "$1:$1"
+    test ! -e /root/propr-pi-source/auth.json.lock
     test ! -e /tmp/propr-pi-home/agent/mcp.json
     test ! -e /tmp/propr-pi-home/agent/extensions
     test -f /tmp/propr-pi-home/agent/auth.json
-    find /tmp/propr-pi-home ! -user node -print
-  ' 2>"$DATA_DIR/pi-entrypoint.log")" || {
-  echo "✗ Pi entrypoint failed when started as root with a mounted source dir"
-  cat "$DATA_DIR/pi-entrypoint.log"
-  exit 1
-}
-if [ -n "$pi_root_owned" ]; then
-  echo "✗ Pi entrypoint left files not owned by node in the disposable runtime dir:"
-  echo "$pi_root_owned"
-  cat "$DATA_DIR/pi-entrypoint.log"
-  exit 1
-fi
-echo "✓ Pi entrypoint writes refreshes to a private UID 1001 source and keeps disposable state node-owned"
+    test -z "$(find /tmp/propr-pi-home ! -user node -print)"
+  ' pi-check "$pi_source_uid" 2>"$DATA_DIR/pi-entrypoint.log"; then
+    echo "✗ Pi entrypoint failed with a mounted UID $pi_source_uid source"
+    cat "$DATA_DIR/pi-entrypoint.log"
+    exit 1
+  fi
+done
+echo "✓ Pi isolates UID 1000 and UID 1001 credential sources, writes back refreshes, and restricts goal session permissions"
 
 # ProPR starts OpenCode task containers as root (--user 0:0) with disposable
 # state and a mounted host data directory. Everything the entrypoint runs

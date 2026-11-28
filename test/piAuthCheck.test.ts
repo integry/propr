@@ -66,7 +66,7 @@ describe('buildPiAuthCheckDockerArgs', () => {
                 configPath: dir, provider: 'openrouter',
             });
             assert.deepEqual(invocation.args.slice(-7), ['pi', 'auth', 'check', '--provider', 'openrouter', '--json', '--no-refresh']);
-            assert.ok(invocation.args.includes(`${dir}:/home/node/.pi/agent:ro`));
+            assert.ok(invocation.args.includes(`${dir}:/root/propr-pi-source:ro`));
             assert.equal(invocation.args[invocation.args.indexOf('--network') + 1], 'none');
             assert.ok(invocation.args.includes('--pull=never'));
             assert.ok(invocation.args.includes('PROPR_AGENT_TYPE=pi'));

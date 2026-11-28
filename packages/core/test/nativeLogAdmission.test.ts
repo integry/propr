@@ -196,6 +196,11 @@ test('self-managed launch gate refreshes multi-GB originals, refuses unsafe root
             // Unconfigured provider-looking roots are never opened or scanned.
             assertNativeLogAdmission(['run','-v',base + '/personal:/home/node/.claude:rw','image']);
             assert.ok(db.status().nativeSources.sources.some(s=>s.source==='unmapped-native-state'));
+            const piHome = base + '/managed/agent-pi/.pi/agent';
+            fs.mkdirSync(piHome + '/sessions/--repo--', {recursive:true});
+            fs.writeFileSync(piHome + '/sessions/--repo--/session.jsonl', '{}\\n');
+            assertNativeLogAdmission(['run','-v',piHome + ':/root/propr-pi-source:rw','image']);
+            assert.ok(db.status().nativeSources.sources.some(s=>s.agent==='agent-pi' && s.inventory?.sessionFiles===1));
             assert.equal(fs.readFileSync(outside,'utf8'),'OTHER-TENANT-CANARY');
             let created = 0, removed = 0;
             // The writer grows while entitlement admission is waiting. Capacity

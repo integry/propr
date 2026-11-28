@@ -278,8 +278,8 @@ COPY --chown=node:node \
     scripts/antigravity-entrypoint.sh \
     scripts/opencode-entrypoint.sh \
     scripts/vibe-entrypoint.sh \
-    scripts/pi-entrypoint.sh \
     /home/node/
+COPY --chmod=0755 scripts/pi-entrypoint.sh /opt/propr/pi-entrypoint.sh
 COPY scripts/extension-stdio-bridge.mjs /opt/propr/extension-stdio-bridge.mjs
 COPY scripts/opencode-credentials.py /opt/propr/opencode-credentials.py
 COPY scripts/pi-credentials.py /opt/propr/pi-credentials.py
@@ -296,6 +296,8 @@ RUN set -eu; \
     && link_npm_bin @openai/codex codex \
     && ln -sf /opt/opencode/bin/opencode /usr/local/bin/opencode \
     && link_npm_bin @earendil-works/pi-coding-agent pi \
+    && ln -s /opt/propr/pi-entrypoint.sh /home/node/pi-entrypoint.sh \
+    && chmod 0700 /root \
     && ln -s /opt/uv/tools/mistral-vibe/bin/vibe /usr/local/bin/vibe \
     && link_npm_bin agent-tank agent-tank \
     && ln -sf /home/node/.local/bin/agy /usr/local/bin/agy \
@@ -306,7 +308,6 @@ RUN set -eu; \
         /home/node/antigravity-entrypoint.sh \
         /home/node/opencode-entrypoint.sh \
         /home/node/vibe-entrypoint.sh \
-        /home/node/pi-entrypoint.sh \
         /usr/local/bin/opencode-run \
         /usr/local/bin/propr-vibe-prompt-file \
     && claude --version \

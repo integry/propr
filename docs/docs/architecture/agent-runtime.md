@@ -30,7 +30,7 @@ This table maps each agent type to the unified image, its type-specific entrypoi
 | Antigravity | `propr/agent` | `Dockerfile.agent` | `scripts/antigravity-entrypoint.sh` | `HOST_ANTIGRAVITY_DIR` (`~/.gemini`) | `/home/node/.gemini` |
 | OpenCode | `propr/agent` | `Dockerfile.agent` | `scripts/opencode-entrypoint.sh` | `HOST_OPENCODE_XDG_DIR` (`~/.config/opencode`) plus `HOST_OPENCODE_DATA_DIR` | `/home/node/.config/opencode` |
 | Mistral Vibe | `propr/agent` | `Dockerfile.agent` | `scripts/vibe-entrypoint.sh` | `HOST_VIBE_DIR` (`~/.vibe`) | `/home/node/.vibe` |
-| Pi | `propr/agent` | `Dockerfile.agent` | `scripts/pi-entrypoint.sh` | `HOST_PI_DIR` (`~/.pi/agent`) | `/home/node/.pi/agent` (source only; runs use a disposable copy) |
+| Pi | `propr/agent` | `Dockerfile.agent` | `scripts/pi-entrypoint.sh` | `HOST_PI_DIR` (`~/.pi/agent`) | `/root/propr-pi-source` (task and analysis source), `/home/node/.pi/agent` (login) |
 
 ## Container Configuration
 
@@ -281,7 +281,7 @@ Pi models are stored as `pi-<provider>/<model>` (for example `pi-anthropic/claud
 
 #### Credential Mount And Disposable Agent Directory
 
-The host Pi agent directory (an existing `~/.pi/agent`, `HOST_PI_DIR`/`PI_CONFIG_PATH`, or a managed `~/.propr/agent-credentials/<agent-id>/.pi/agent`) is mounted read-write at `/home/node/.pi/agent` (`PROPR_PI_SOURCE_DIR`). It is mounted only if it exists, because Docker would otherwise create it on the host owned by root. With API keys alone, Pi runs without it.
+For task and analysis runs the host Pi agent directory (an existing `~/.pi/agent`, `HOST_PI_DIR`/`PI_CONFIG_PATH`, or a managed `~/.propr/agent-credentials/<agent-id>/.pi/agent`) is mounted read-write under the root-only `/root` directory at `/root/propr-pi-source` (`PROPR_PI_SOURCE_DIR`). The entrypoint can write back OAuth refreshes through this mount. Pi and repository hooks run as `node` and cannot traverse it. The source cannot overlap another writable bind mount. With API keys alone, Pi runs without a source mount.
 
 The mounted directory is only a source. Each run gets a fresh, owner-only disposable agent directory at `/tmp/propr-pi-home/agent` (`PI_CODING_AGENT_DIR`), with its sessions under `sessions/`. The entrypoint imports only `auth.json`, `settings.json`, `models.json`, `AGENTS.md`, `SYSTEM.md` and `APPEND_SYSTEM.md`. Host `sessions/`, `extensions/` and `mcp.json` are never copied, and ProPR writes its own `mcp.json` from `PROPR_PI_MCP_CONFIG` when it needs MCP servers. Sessions, extensions and package installs from a run therefore never reach the host. The entrypoint refuses a runtime home that overlaps the host directory in either direction. Pi's update check, install telemetry and startup catalog fetches are turned off (`PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, `PI_OFFLINE=1`), and the restricted-network allowlist omits `pi.dev`. `--no-approve` keeps repository-provided `.pi/` extensions, settings and prompts from loading; `AGENTS.md` and `CLAUDE.md` context files still load.
 
@@ -299,6 +299,7 @@ After the run, `scripts/pi-credentials.py` writes OAuth token refreshes from the
 - Each provider entry is a compare-and-swap: it is written only while the host entry still equals what was imported, so a host login, logout or refresh during the run wins.
 - A login made inside a run is never written back, because it is not a refresh of an imported entry. Use a managed login or `pi auth login` on the host instead.
 - The write is atomic, under Pi's own `auth.json.lock` (the proper-lockfile lock Pi takes, stale after 30 seconds), through an owner-only temporary file. The replacement keeps the original file's UID, GID, and mode.
+- An `auth.json` symlink can be used when its target is inside the mounted credential source. The entrypoint checks the target again after acquiring the lock.
 - The sync also runs when the container is stopped mid-run: the entrypoint forwards `SIGTERM`, `SIGINT` and `SIGHUP` to Pi, waits for it to exit, and then syncs before exiting with Pi's status.
 
 #### Managed Login

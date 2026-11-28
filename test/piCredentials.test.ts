@@ -641,13 +641,24 @@ exit "\${PROPR_TEST_EXIT:-0}"
 
     test('drops to node through su-exec for every Pi call when started as root', () => {
         const script = fs.readFileSync(entrypoint, 'utf8');
-        assert.match(script, /\n        \/usr\/local\/bin\/su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);
-        assert.match(script, /\n        exec su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);
+        assert.match(script, /\n        \/usr\/local\/bin\/su-exec node \/usr\/bin\/env HOME=\/home\/node USER=node LOGNAME=node PATH="\$pi_node_path" "\$@"/);
+        assert.match(script, /\n        exec \/usr\/local\/bin\/su-exec node \/usr\/bin\/env HOME=\/home\/node USER=node LOGNAME=node PATH="\$pi_node_path" "\$@"/);
         for (const call of ['run_as_node /usr/bin/python3 -I "$pi_credentials_helper" seed', 'run_as_node pi --version', 'exec_as_node env --default-signal=INT,QUIT "$@"']) {
             assert.ok(script.includes(call), `${call} must run as node`);
         }
         // Outside run_as_node itself, nothing invokes pi or the helper directly.
         const direct = script.split('\n').filter(line => /(^|[\s;(])(pi|python3)\s/.test(line.trim()) && !line.includes('run_as_node') && !line.includes('exec_as_node') && !line.includes('set -- pi') && !line.trim().startsWith('#'));
         assert.deepEqual(direct, []);
+    });
+
+    test('keeps node’s bin directory out of the supervisor PATH and runs privileged maintenance with a clean environment', () => {
+        const script = fs.readFileSync(entrypoint, 'utf8');
+        assert.match(script, /export PATH="\$pi_trusted_path"/);
+        assert.match(script, /pi_node_path="\/home\/node\/bin:\$pi_node_path"/);
+        assert.doesNotMatch(script, /export PATH="\/home\/node\/bin:/);
+        const cleanup = script.slice(script.indexOf('restrict_goal_sessions()'), script.indexOf('prepare_goal_sessions()'));
+        assert.match(cleanup, /\/usr\/bin\/env -i \/usr\/bin\/chown -hR -- node:node "\$pi_goal_session_dir"/);
+        assert.match(cleanup, /\/usr\/bin\/env -i \/usr\/bin\/chmod -R -- u\+rwX,go-rwx "\$pi_goal_session_dir"/);
+        assert.match(script, /\| \/usr\/bin\/env -i \/usr\/bin\/python3 -I "\$pi_credentials_helper" sync-from-stdin/);
     });
 });

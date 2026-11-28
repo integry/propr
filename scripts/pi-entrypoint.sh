@@ -10,7 +10,18 @@
 
 set -euo pipefail
 
-pi_source_dir="${PROPR_PI_SOURCE_DIR:-/home/node/.pi/agent}"
+pi_node_path="${PROPR_PI_NODE_PATH:-$PATH}"
+pi_trusted_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+if [ "$EUID" = "0" ]; then
+    export PATH="$pi_trusted_path"
+fi
+
+pi_protected_source=/root/propr-pi-source
+if [ "${PROPR_PI_LOGIN:-}" = "1" ]; then
+    pi_source_dir="${PROPR_PI_SOURCE_DIR:-/home/node/.pi/agent}"
+else
+    pi_source_dir="${PROPR_PI_SOURCE_DIR:-$pi_protected_source}"
+fi
 pi_source_auth="$pi_source_dir/auth.json"
 case "$pi_source_auth" in
     /*) ;;
@@ -81,9 +92,9 @@ is_root() { [ "$EUID" = "0" ]; }
 # Pi and readers of its disposable credentials run as node.
 run_as_node() {
     if is_root; then
-        /usr/local/bin/su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
+        /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@"
     else
-        "$@"
+        PATH="$pi_node_path" "$@"
     fi
 }
 
@@ -91,8 +102,9 @@ run_as_node() {
 # the task itself and signals sent to it reach Pi rather than a subshell.
 exec_as_node() {
     if is_root; then
-        exec su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
+        exec /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@"
     else
+        export PATH="$pi_node_path"
         exec "$@"
     fi
 }
@@ -102,9 +114,9 @@ exec_as_node() {
 restrict_goal_sessions() {
     [ -n "$pi_goal_session_dir" ] || return 0
     if is_root; then
-        chown -R node:node "$pi_goal_session_dir"
+        /usr/bin/env -i /usr/bin/chown -hR -- node:node "$pi_goal_session_dir" || return
     fi
-    chmod -R u+rwX,go-rwx "$pi_goal_session_dir"
+    /usr/bin/env -i /usr/bin/chmod -R -- u+rwX,go-rwx "$pi_goal_session_dir"
 }
 
 prepare_goal_sessions() {
@@ -119,6 +131,14 @@ prepare_goal_sessions() {
 
 prepare_runtime_home() {
     local file import_path
+    # Repository setup may already have run as node. Claim the standard home
+    # before copying anything so setup cannot redirect privileged writes.
+    if is_root && [ "$pi_runtime_home" = /tmp/propr-pi-home ]; then
+        if ! mkdir -m 0700 -- "$pi_runtime_home"; then
+            echo "Could not create a private disposable Pi home at $pi_runtime_home" >&2
+            exit 73
+        fi
+    fi
     # A fresh dir every run, created owner-only: auth.json holds tokens.
     rm -rf -- "$pi_agent_dir" "$pi_runtime_home/propr-seeded-auth.json"
     (umask 077 && mkdir -p "$pi_agent_dir/sessions")
@@ -132,6 +152,11 @@ prepare_runtime_home() {
                 # Pin the source directory before importing auth.json so the
                 # privileged writer can only access the original destination.
                 pi_host_auth="$(realpath -m -- "$pi_source_auth")"
+                if [ "$pi_source_dir" = "$pi_protected_source" ] && [[ "$pi_host_auth" != "$pi_protected_source/"* ]]; then
+                    pi_host_auth=""
+                    echo "Warning: skipping Pi auth.json that resolves outside the credential source" >&2
+                    continue
+                fi
                 if { exec 9<"${pi_host_auth%/*}/"; }; then
                     import_path="/proc/self/fd/9/${pi_host_auth##*/}"
                 else
@@ -221,11 +246,11 @@ git config --global --add safe.directory '*' 2>/dev/null || echo "Git safe direc
 
 if [ -x "/usr/local/bin/gh-wrapper" ]; then
     echo "Setting up GitHub CLI wrapper to filter operational comments" >&2
-    mkdir -p /home/node/bin
-    if [ ! /home/node/bin/gh -ef /usr/local/bin/gh-wrapper ]; then
-        ln -sf /usr/local/bin/gh-wrapper /home/node/bin/gh
+    run_as_node /usr/bin/mkdir -p /home/node/bin 9<&-
+    if ! run_as_node /usr/bin/test /home/node/bin/gh -ef /usr/local/bin/gh-wrapper 9<&-; then
+        run_as_node /usr/bin/ln -sf /usr/local/bin/gh-wrapper /home/node/bin/gh 9<&-
     fi
-    export PATH="/home/node/bin:$PATH"
+    pi_node_path="/home/node/bin:$pi_node_path"
 fi
 
 if [ -d "/home/node/workspace" ] && ! is_root && [ "$(id -u)" != "1000" ]; then
@@ -234,7 +259,7 @@ fi
 
 if [ $# -eq 0 ]; then
     echo "No command provided, starting interactive shell" >&2
-    exec /bin/bash 9<&-
+    exec_as_node /bin/bash 9<&-
 fi
 
 # Callers may pass only Pi flags after the image.
@@ -302,7 +327,7 @@ if [ -n "$pi_seeded_auth" ]; then
     {
         printf '%s\n' "$pi_seeded_auth"
         run_as_node /usr/bin/python3 -I "$pi_credentials_helper" seed "$pi_agent_dir/auth.json" - 9<&-
-    } | /usr/bin/python3 -I "$pi_credentials_helper" sync-from-stdin "$pi_source_auth" "${pi_host_auth##*/}" \
+    } | /usr/bin/env -i /usr/bin/python3 -I "$pi_credentials_helper" sync-from-stdin "$pi_source_auth" "${pi_host_auth##*/}" \
         || echo "Warning: could not write refreshed Pi credentials back to the host" >&2
 fi
 

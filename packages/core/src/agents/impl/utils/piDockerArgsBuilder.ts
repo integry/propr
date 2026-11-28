@@ -1,6 +1,6 @@
 import fs from 'fs';
+import path from 'node:path';
 import type { AgentConfig, AgentToolPolicy } from '../../types.js';
-import { CONTAINER_CONFIG_PATHS } from '../../types.js';
 import type { PiThinkingLevel } from '../../../config/configManagerReasoning.js';
 import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
 import { agentContainerNetwork } from '../../agentContainerNetwork.js';
@@ -12,8 +12,8 @@ import { createContainerExecutionId } from './containerExecutionId.js';
 import { buildPiRepositoryScoutArgs, buildPiRepositoryScoutConfig, REPOSITORY_SCOUT_CONTAINER_ROOT } from './repositoryScoutMcpServer.js';
 import { PI_CONTAINER_GOAL_SESSION_DIR, PI_GOAL_SESSION_DIR_ENV, piGoalSessionCliArgs, type PiGoalSession } from './piGoalSession.js';
 
-/** Where the host Pi agent dir is mounted; pi-entrypoint.sh's PROPR_PI_SOURCE_DIR default. */
-export const PI_CONTAINER_SOURCE_DIR = CONTAINER_CONFIG_PATHS.pi;
+/** Root-only traversal protects the write-back mount from Pi and repository hooks. */
+export const PI_CONTAINER_SOURCE_DIR = '/root/propr-pi-source';
 /**
  * The disposable Pi home pi-entrypoint.sh creates fresh for each run and
  * chowns to node; nothing is bind-mounted under it, so no path in it is ever
@@ -28,7 +28,8 @@ export const PI_MCP_CONFIG_ENV = 'PROPR_PI_MCP_CONFIG';
 /** Variables pi-entrypoint.sh and ProPR own; a configured value would break the run's isolation. */
 const RESERVED_PI_ENV_NAMES = new Set([
     'PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR', 'PROPR_PI_SOURCE_DIR', 'PROPR_PI_RUNTIME_HOME',
-    'PROPR_PI_CREDENTIALS_HELPER', 'PROPR_PI_MCP_CONFIG', 'PROPR_PI_GOAL_SESSION_DIR', 'PROPR_PI_LOGIN', 'PROPR_AGENT_TYPE', 'HOME', 'USER', 'PATH',
+    'PROPR_PI_CREDENTIALS_HELPER', 'PROPR_PI_MCP_CONFIG', 'PROPR_PI_GOAL_SESSION_DIR', 'PROPR_PI_LOGIN', 'PROPR_PI_NODE_PATH',
+    'PROPR_AGENT_TYPE', 'HOME', 'USER', 'PATH',
 ]);
 
 export interface PiDockerArgsParams {
@@ -151,15 +152,32 @@ export function buildPiDockerArgs(params: PiDockerArgsParams, githubToken: strin
     const toolPolicy = analysis ? undefined : params.toolPolicy;
     const { secretEnv, configEnv, cliArgs: toolPolicyArgs } = buildPiContainerEnv({ config, githubToken, repositoryInspection, toolPolicy, environment: analysis ? undefined : params.environment });
     const workspaceMode = analysis ? 'ro' : 'rw';
-    // A missing host dir is not mounted: Docker would create it, root-owned, on the host.
-    // The mount is writable so refreshed OAuth tokens can be written back (pi-credentials.py).
-    const configMountArgs = configPath && fs.existsSync(configPath) ? ['-v', `${configPath}:${PI_CONTAINER_SOURCE_DIR}:rw`] : [];
+    const gitMountArgs = repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, analysis);
+    // Docker would create a missing host directory. Mount only an existing source.
+    const configMountArgs: string[] = [];
+    if (configPath && fs.existsSync(configPath)) {
+        const source = fs.realpathSync(configPath);
+        const writablePaths = analysis ? [] : [worktreePath];
+        if (goalSession) writablePaths.push(goalSession.hostDir);
+        for (const [index, arg] of gitMountArgs.entries()) {
+            if (arg !== '-v' && arg !== '--volume') continue;
+            const [hostPath, , mode] = (gitMountArgs[index + 1] ?? '').split(':');
+            if (hostPath && !mode?.split(',').includes('ro')) writablePaths.push(hostPath);
+        }
+        for (const hostPath of writablePaths) {
+            const writable = fs.existsSync(hostPath) ? fs.realpathSync(hostPath) : path.resolve(hostPath);
+            if (source === writable || source.startsWith(path.join(writable, path.sep)) || writable.startsWith(path.join(source, path.sep))) {
+                throw new Error('The Pi credential source overlaps a writable container mount');
+            }
+        }
+        configMountArgs.push('-v', `${configPath}:${PI_CONTAINER_SOURCE_DIR}:rw`);
+    }
     const containerName = buildPiContainerName(config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
     const dockerArgs = [
         'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--network', agentContainerNetwork(toolPolicy), '--user', '0:0',
         // The scout sees the repository only through its MCP server's root, never the working directory.
         '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : WORKSPACE}:${workspaceMode}`,
-        ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, analysis)),
+        ...gitMountArgs,
         ...configMountArgs,
         ...(goalSession ? ['-v', `${goalSession.hostDir}:${PI_CONTAINER_GOAL_SESSION_DIR}:rw`, '-e', `${PI_GOAL_SESSION_DIR_ENV}=${PI_CONTAINER_GOAL_SESSION_DIR}`] : []),
         '-e', 'PROPR_AGENT_TYPE=pi',

@@ -11,7 +11,7 @@ const ENTRYPOINT_PATHS: Record<AgentCliType, string> = {
     antigravity: '/home/node/antigravity-entrypoint.sh',
     opencode: '/home/node/opencode-entrypoint.sh',
     vibe: '/home/node/vibe-entrypoint.sh',
-    pi: '/home/node/pi-entrypoint.sh'
+    pi: '/opt/propr/pi-entrypoint.sh'
 };
 
 const GIT_IDENTITIES: Record<AgentCliType, { name: string; email: string }> = {
@@ -46,7 +46,7 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
     set +e
     if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id node >/dev/null 2>&1; then
         cd "$PROPR_WORKSPACE"
-        su-exec node env HOME=/home/node USER=node LOGNAME=node /bin/bash "$setup_script" </dev/null >&2
+        su-exec node env HOME=/home/node USER=node LOGNAME=node PATH="\${PROPR_PI_NODE_PATH:-$PATH}" /bin/bash "$setup_script" </dev/null >&2
         setup_exit=$?
     else
         cd "$PROPR_WORKSPACE"
@@ -97,14 +97,18 @@ export function wrapDockerRunArgsWithRepoSetup(
         : [...resourceArgs, ...setupEnv, ...beforeImage];
 
     const execution = repositoryWorkflowExecution.getStore();
+    const wrapper = execution ? buildWorkflowWrapper(execution.workflow, execution.marker) : REPO_SETUP_WRAPPER_SCRIPT;
+    // Pi's setup, validation and cleanup hooks can write to node's executable
+    // directories. Keep their PATH available only after dropping privileges.
+    const piPathSetup = agentType === 'pi'
+        ? 'export PROPR_PI_NODE_PATH="$PATH"\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+        : '';
     const args = [
         ...beforeImageWithSetupEnv,
         '--entrypoint', '/bin/bash',
         dockerImage,
         '-lc',
-        execution
-            ? buildWorkflowWrapper(execution.workflow, execution.marker)
-            : REPO_SETUP_WRAPPER_SCRIPT,
+        piPathSetup + wrapper,
         ENTRYPOINT_PATHS[agentType],
         ...afterImage
     ];

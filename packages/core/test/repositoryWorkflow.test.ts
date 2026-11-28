@@ -369,9 +369,14 @@ test('execution context isolates concurrent policies, wraps every agent and adds
             await new Promise(resolve => setTimeout(resolve, 5));
             const context = repositoryWorkflowExecution.getStore()!;
             assert.equal(context.workflow.baseBranch, baseBranch);
-            for (const type of ['claude', 'codex', 'opencode', 'antigravity', 'vibe'] as const) {
+            for (const type of ['claude', 'codex', 'opencode', 'antigravity', 'vibe', 'pi'] as const) {
                 const args = wrapDockerRunArgsWithRepoSetup(['run', '--rm', 'image'], 'image', type);
-                assert.match(args[args.indexOf('image') + 2], /run_command/);
+                const wrapperIndex = args.indexOf('image') + 2;
+                assert.match(args[wrapperIndex], /run_command/);
+                if (type === 'pi') {
+                    assert.match(args[wrapperIndex], /^export PROPR_PI_NODE_PATH="\$PATH"\nexport PATH=\/usr\/local\/sbin:\/usr\/local\/bin:\/usr\/sbin:\/usr\/bin:\/sbin:\/bin\n/);
+                    assert.equal(args[wrapperIndex + 1], '/opt/propr/pi-entrypoint.sh');
+                }
             }
             observeStderr(`\n${context.marker}:validation:0:0\n${context.marker}:validation:1:timeout`);
             return makeResult('');

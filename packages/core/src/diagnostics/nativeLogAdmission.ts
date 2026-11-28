@@ -11,7 +11,7 @@ const targets: Record<string, DiagnosticProvider> = {
     '/home/node/.gemini': 'antigravity', '/home/node/.gemini-source': 'antigravity',
     '/home/node/.local/share/opencode-source': 'opencode',
     '/home/node/.local/share/opencode': 'opencode', '/home/node/.vibe': 'vibe',
-    '/home/node/.pi/agent': 'pi',
+    '/home/node/.pi/agent': 'pi', '/root/propr-pi-source': 'pi',
 };
 const suffixes: Record<DiagnosticProvider, string> = {
     codex: '.codex', claude: '.claude', antigravity: '.gemini',

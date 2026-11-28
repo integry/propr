@@ -5,7 +5,10 @@ set -e
 agent_type="${PROPR_AGENT_TYPE:-}"
 if [ -z "$agent_type" ] && [ "$#" -gt 0 ]; then
     case "$1" in
-        /home/node/claude-entrypoint.sh|/home/node/codex-entrypoint.sh|/home/node/antigravity-entrypoint.sh|/home/node/opencode-entrypoint.sh|/home/node/vibe-entrypoint.sh|/home/node/pi-entrypoint.sh)
+        /home/node/pi-entrypoint.sh|/opt/propr/pi-entrypoint.sh)
+            exec /opt/propr/pi-entrypoint.sh "${@:2}"
+            ;;
+        /home/node/claude-entrypoint.sh|/home/node/codex-entrypoint.sh|/home/node/antigravity-entrypoint.sh|/home/node/opencode-entrypoint.sh|/home/node/vibe-entrypoint.sh)
             exec "$1" "${@:2}"
             ;;
     esac
@@ -32,7 +35,10 @@ if [ -z "$agent_type" ] && [ "$#" -gt 0 ]; then
 fi
 
 case "$agent_type" in
-    claude|codex|antigravity|opencode|vibe|pi)
+    pi)
+        exec /opt/propr/pi-entrypoint.sh "$@"
+        ;;
+    claude|codex|antigravity|opencode|vibe)
         exec "/home/node/${agent_type}-entrypoint.sh" "$@"
         ;;
     agent-tank)
