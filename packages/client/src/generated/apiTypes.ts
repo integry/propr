@@ -902,6 +902,37 @@ export interface InstanceRepositoryInventory {
   }>;
 }
 
+/** The Sprites this instance created, from the Sprites organization of its token. */
+export interface InstanceSprites {
+  /** A Sprites token (`SPRITES_TOKEN` or `PROPR_SPRITES_TOKEN`) is set on this instance. */
+  configured: boolean;
+  /** Name prefix of this instance's Sprites; null until the agent pool has a marker. */
+  prefix: string | null;
+  count: number;
+  /** Pool Sprites running an agent or being provisioned; these block removal. */
+  busy: number;
+  sprites: Array<{
+    /** Starts with the instance prefix `propr-<marker>-`. */
+    name: string;
+    status: string | null;
+    createdAt: string | null;
+  }>;
+}
+
+/** Remove every Sprite of this instance. */
+export interface InstanceSpritesRemoveRequest {
+  /** The number of Sprites the administrator confirmed. */
+  count: number;
+}
+
+/** Result of removing this instance's Sprites. */
+export interface InstanceSpritesRemoved {
+  deleted: number;
+  /** Names that could not be deleted. */
+  failed: string[];
+  [key: string]: unknown;
+}
+
 export interface InstanceStorageCapabilities {
   version: 1;
   instanceId: string;

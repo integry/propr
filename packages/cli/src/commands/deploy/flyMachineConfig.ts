@@ -28,7 +28,7 @@ import {
   LEGACY_DOCKER_DEFAULT_ROOTFS_GB,
   LEGACY_DOCKER_SHARED_ENV,
 } from "./flyLegacyDocker.js";
-import { flyMcpInstanceId } from "./flyGeneratedSecrets.js";
+import { flyMcpInstanceId, flyPublicUrl } from "@propr/shared";
 
 export const FLY_DATA_PATH = "/usr/src/app/data";
 export const FLY_DB_FILENAME = `${FLY_DATA_PATH}/propr.sqlite`;
@@ -119,10 +119,7 @@ export interface FlyDeployPlan {
   secretNames?: readonly string[];
 }
 
-/** The Machine's public origin through the Fly proxy. */
-export function flyPublicUrl(app: string): string {
-  return `https://${app}.fly.dev`;
-}
+export { flyPublicUrl };
 
 /** Fly app names: lowercase letters, digits and dashes, 2–63 chars, not starting/ending with a dash. */
 export function validateFlyAppName(name: string): string | null {
@@ -257,6 +254,13 @@ export function containerSecrets(names: Iterable<string>): Array<{ env_var: stri
   return [...new Set(names)].sort().map((name) => ({ env_var: name, name }));
 }
 
+/**
+ * redis-server persistence flags: append-only file on the volume, never evict
+ * BullMQ keys. The Fly dashboard launch runs Redis inside the app container
+ * with the same flags (scripts/fly-launch-entrypoint.sh, pinned by a test).
+ */
+export const FLY_REDIS_PERSISTENCE_FLAGS = "--appendonly yes --save 300 1 --maxmemory-policy noeviction";
+
 /** Redis: loopback only, append-only file on the volume, never evict BullMQ keys. */
 export function buildRedisContainer(redisImage: string): JsonObject {
   return {
@@ -265,7 +269,7 @@ export function buildRedisContainer(redisImage: string): JsonObject {
     cmd: [
       "sh", "-c",
       `mkdir -p ${FLY_REDIS_DIR} && exec redis-server --bind 127.0.0.1 --port ${FLY_REDIS_PORT} --dir ${FLY_REDIS_DIR} `
-        + "--appendonly yes --save 300 1 --maxmemory-policy noeviction",
+        + FLY_REDIS_PERSISTENCE_FLAGS,
     ],
     healthchecks: [{ name: "redis", exec: { command: ["redis-cli", "-h", "127.0.0.1", "ping"] }, interval: 10, timeout: 5, grace_period: 5 }],
     restart: { policy: "always" },

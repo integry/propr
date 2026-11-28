@@ -103,7 +103,7 @@ A release goes through these steps, in order:
 
 The pull request that prepares the release metadata:
 
-1. Bumps the version in the root `package.json`, every release-versioned `@propr` workspace, the desktop package, the matching `package-lock.json` records and internal dependency ranges, `PROPR_VERSION` and the launcher manifest. Independently versioned packages keep their own versions.
+1. Bumps the version in the root `package.json`, every release-versioned `@propr` workspace, the desktop package, the matching `package-lock.json` records and internal dependency ranges, `PROPR_VERSION` and the launcher manifest, then regenerates the Fly dashboard launch `fly.toml` with `npx tsx packages/cli/scripts/render-fly-launch-toml.ts` so it pins `propr/app:<version>`. Independently versioned packages keep their own versions.
 2. Renames `## [Unreleased]` in `CHANGELOG.md` to `## [<version>] - <date>`, adds a new empty `## [Unreleased]` above it and updates the comparison links.
 3. Writes the release summary, `release-notes/v<version>.md` (see below).
 4. Passes `EXPECTED_VERSION=<version> RELEASE_TAG=v<version> RELEASE_CANDIDATE=true npm run release:verify`.

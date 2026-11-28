@@ -8,3 +8,7 @@ export const canManageInstanceStorage = (user: CurrentUser | null): user is Curr
 /** Follow-up handoffs held for an operator. */
 export const canManageHeldFollowups = (user: CurrentUser | null): user is CurrentUser =>
   user?.role === 'admin' && userHasPermission(user, 'instance.manage_runtime');
+
+/** The instance's agent runtime resources (Sprites cleanup). */
+export const canManageAgentRuntime = (user: CurrentUser | null): user is CurrentUser =>
+  user?.role === 'admin' && userHasPermission(user, 'instance.manage_runtime');

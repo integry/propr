@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
@@ -772,4 +772,26 @@ test('a warm Sprite is reused only when both its runtime packages and its packag
     assert.notEqual(fresh.packagesDigest, a.packagesDigest);
     await pool.close();
     assert.ok(provider.deleted.includes(a.sprite.name) && provider.deleted.includes(b.sprite.name));
+});
+
+test('the Fly launch wizard shows the Sprite name prefix the inventory uses, fresh and persisted', async () => {
+    const { spritesNamePrefix } = await import('../src/flyLaunch/runtimeValidation.ts');
+    const { redis, provider } = fixture();
+    const dir = mkdtempSync(path.join(data, 'wizard-prefix-'));
+    // Before the control plane ever ran: the wizard derives it from the instance id alone.
+    const shown = spritesNamePrefix('propr-dash', dir);
+    const inventory = await SpriteInventory.open(provider, { DATA_DIR: dir, PROPR_INSTANCE_ID: 'propr-dash' }, redis);
+    assert.equal(shown, inventory.prefix);
+    assert.match(shown, /^propr-[0-9a-f]{16}-$/);
+    // A marker persisted on the volume (here a different one) wins in both.
+    const other = mkdtempSync(path.join(data, 'wizard-prefix-'));
+    const first = await SpriteInventory.open(provider, { DATA_DIR: other }, new Redis({ port: port++ }));
+    const persisted = readdirSync(other).find(name => name.startsWith('sprites-deployment-'))!;
+    const marker = readFileSync(path.join(other, persisted), 'utf8').trim();
+    assert.equal(first.prefix, `propr-${marker}-`);
+    const instanceFile = path.join(other, `sprites-deployment-${shown.slice(6, -1)}`);
+    writeFileSync(instanceFile, marker);
+    assert.equal(spritesNamePrefix('propr-dash', other), `propr-${marker}-`);
+    const restored = await SpriteInventory.open(provider, { DATA_DIR: other, PROPR_INSTANCE_ID: 'propr-dash' }, new Redis({ port: port++ }));
+    assert.equal(restored.prefix, `propr-${marker}-`);
 });

@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Deploy from the Fly dashboard** (#3827)
+  - A committed root `fly.toml`, generated from the `propr deploy fly`
+    builders, lets **Launch an App → From GitHub** run the control plane with
+    ProPR and Redis (Valkey) in one container. It pulls the released
+    `propr/app:<version>` image (no build); `release:verify` keeps the pin at
+    the package version. `deploy/fly/source/fly.toml`, picked with the
+    dashboard's Config path, builds a modified fork from source instead. The
+    prebuilt path works from the next release: an older image logs how to
+    use the source config and stays stopped.
+  - The launch configs size the Machine at 512 MB with 512 MB of swap, so an
+    always-on instance fits the Free Plan's $5 credit (about $3.20 a month);
+    `fly scale memory 1024` raises it. `propr deploy fly` keeps 1 GB.
+  - Secrets the CLI generates are generated on first boot and kept on the
+    volume (mode 0600); Fly secrets still win. `propr deploy fly` instances
+    are unchanged.
+  - A first-visit setup wizard, bound to a one-time code in the Machine's
+    logs, connects GitHub, signs the first administrator in, and checks a
+    Sprites or Fly Machines runtime.
+  - GitHub is a choice. The default is the shared ProPR App through ProPR
+    Connect, as `propr deploy fly` sets it up: install the App, sign in
+    with GitHub's device flow (a one-time code; or paste a GitHub token
+    while the App doesn't enable device flow), never stored, and the wizard
+    enrolls a relay token
+    labelled `fly:<app>@<host>`. It then stores relay auth with
+    `routing_websocket` intake, so no public webhook or own App is needed.
+    Browser sign-in uses a GitHub OAuth App you register. The advanced
+    choice creates your own App with the manifest flow, as before.
+  - Idle shutdown (off by default) needs no stop token in this layout. On
+    the ProPR App path it registers the instance's `/wake` URL with Connect,
+    which wakes the Machine and replays cached deliveries. A
+    **Build Fly agent image** workflow builds the Fly Machines agent image
+    without a terminal.
+  - The agent runtime step shows one short form at a time. Sprites links
+    Fly's Sprites tokens page and suggests a token scoped to this instance's
+    Sprite name prefix (`propr-<marker>-`), at most 1 Sprite. Fly Machines is
+    prefilled: the agent app with a one-line create command, the published
+    `propr/agent:<version>` image (building your own is under Advanced) and
+    3 minus this app's Machines. After a check, the next step shows what it
+    found, for example `Token works · 3 of 3 Sprites free`.
+  - The wizard has ProPR's look (logo, favicon, colors, buttons and cards),
+    a small "on Fly.io" badge linking the app's dashboard page, and a step
+    progress bar. Submit buttons show a spinner and a progress label and
+    ignore a second click. External links open in a new tab.
+  - Deleting the Fly app leaves its Sprites behind: they belong to the
+    Sprites organization and keep using its Sprite slots. **Settings →
+    Maintenance → Agent runtime → Remove all Sprites of this instance**
+    (`GET /api/admin/sprites`, `POST /api/admin/sprites/remove`) deletes every
+    `propr-<marker>-*` Sprite after a confirmation that names the count. It
+    refuses while a run uses a Sprite. The wizard's Sprites step and
+    `setup-fly.md` (Removing ProPR) say to run it before deleting the app.
+
 - **Opt-in idle shutdown for the control plane** (#3770)
   - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`
     (for example `15m`), or Settings → Maintenance → Idle shutdown, stops the

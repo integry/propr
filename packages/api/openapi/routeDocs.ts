@@ -6,6 +6,7 @@ import { SYSTEM_ROUTE_DOCS } from './routeDocsSystem.js';
 import { EXTENSION_OAUTH_ROUTE_DOCS } from './routeDocsExtensionOAuth.js';
 import { TASK_ROUTE_DOCS } from './routeDocsTasks.js';
 import { IDLE_SHUTDOWN_ROUTE_DOCS } from './routeDocsIdleShutdown.js';
+import { INSTANCE_SPRITES_ROUTE_DOCS } from './routeDocsInstanceSprites.js';
 import type { RouteDoc } from './types.js';
 
 /**
@@ -22,4 +23,5 @@ export const ROUTE_DOCS: Readonly<Record<string, RouteDoc>> = {
   ...TASK_ROUTE_DOCS,
   ...PLAN_QUEUE_ROUTE_DOCS,
   ...IDLE_SHUTDOWN_ROUTE_DOCS,
+  ...INSTANCE_SPRITES_ROUTE_DOCS,
 };

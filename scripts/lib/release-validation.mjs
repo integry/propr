@@ -21,6 +21,7 @@ export function validateRelease({
   packages,
   externalInternalDependencies = [],
   launcherManifest,
+  flyLaunchToml,
   changelog,
   releaseNotes,
 }) {
@@ -79,6 +80,13 @@ export function validateRelease({
     } else if (image !== `${repository}:${version}`) {
       errors.push(`Launcher ${name} image must use the ${repository} image repository`);
     }
+  }
+
+  // The Fly dashboard launch's root fly.toml pulls the released app image
+  // (packages/cli/scripts/render-fly-launch-toml.ts regenerates it).
+  const flyImages = [...(flyLaunchToml ?? "").matchAll(/^\s*image\s*=\s*"([^"]*)"/gm)].map((match) => match[1]);
+  if (flyImages.length !== 1 || flyImages[0] !== `${RELEASE_IMAGE_REPOSITORIES.app}:${version}`) {
+    errors.push(`fly.toml [build] image must be ${RELEASE_IMAGE_REPOSITORIES.app}:${version}; found ${flyImages.join(", ") || "none"} (run npx tsx packages/cli/scripts/render-fly-launch-toml.ts)`);
   }
 
   if (tag && tag !== `v${version}`) {

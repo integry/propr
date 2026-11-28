@@ -214,6 +214,7 @@ propr setup
 | Follow the full local walkthrough | [Local setup](https://docs.propr.dev/docs/tutorials/setup-local) |
 | Run it for a team or in production | [Server setup](https://docs.propr.dev/docs/tutorials/setup-server) · [Secure VPS deployment](https://docs.propr.dev/docs/tutorials/setup-vps) |
 | Have your coding agent install it | [Safe agent installation prompt](https://docs.propr.dev/docs/tutorials/setup#give-this-to-your-coding-agent) |
+| Launch on Fly from the browser, no terminal | [Deploy from the Fly dashboard](https://docs.propr.dev/docs/tutorials/setup-fly#deploy-from-the-fly-dashboard): fork this repository, then **Launch an App → From GitHub** in the [Fly dashboard](https://fly.io/dashboard) |
 | Install without Node.js on the host | [Launch from the `propr/launcher` image](https://docs.propr.dev/docs/tutorials/setup) |
 | Use the desktop app (release candidate) | [Desktop guide](apps/desktop/README.md) |
 | Look around before installing | [Live demo](https://demo.propr.dev) |

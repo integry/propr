@@ -65,6 +65,7 @@ const errors = validateRelease({
   packages,
   externalInternalDependencies: rootPackage.proprRelease?.externalInternalDependencies ?? [],
   launcherManifest: readJson("docker/launcher/manifest.json"),
+  flyLaunchToml: readFileSync(join(root, "fly.toml"), "utf8"),
   changelog: readFileSync(join(root, "CHANGELOG.md"), "utf8"),
   releaseNotes: existsSync(notesPath) ? readFileSync(notesPath, "utf8") : undefined,
 });

@@ -89,7 +89,7 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = [
   {
     id: 'maintenance',
     label: 'Maintenance',
-    description: 'Operator upkeep: instance data, held follow-ups and idle shutdown.',
+    description: 'Operator upkeep: instance data, held follow-ups, idle shutdown and agent runtime Sprites.',
     icon: Wrench,
     hideWhenEmpty: true
   },
