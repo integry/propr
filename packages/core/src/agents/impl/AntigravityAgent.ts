@@ -212,7 +212,7 @@ export class AntigravityAgent implements Agent {
             providerModel: response.reportedModel ?? response.modelUsed, modifiedFiles: [],
             commitMessage: null, summary: response.summary ?? undefined, prompt, sessionId, conversationId: response.conversationId, conversationLog: response.conversationLog,
             tokenUsage: finalTokenUsage, usageMetrics: usageMetrics ?? undefined,
-            error: success ? undefined : (printTimeout ? executionError : undefined) || antigravityRunLoginFailure(result, this.getHostConfigPath(), this.config.envVars) || result.stderr || executionError || 'Antigravity execution failed',
+            error: success ? undefined : this.resolveRunFailureMessage(result, executionError, !!printTimeout),
             terminationReason
         };
 
@@ -222,6 +222,9 @@ export class AntigravityAgent implements Agent {
         else { logger.info({ issueNumber: issueRef.number, model: resolvedModel, agentAlias: this.config.alias }, 'Antigravity agent execution succeeded'); verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent); }
         return agentResult;
     }
+
+    /** A print timeout names itself first; otherwise a login failure beats raw stderr. */
+    private resolveRunFailureMessage(result: { stdout: string; stderr: string; exitCode: number | null }, executionError: string | undefined, printTimedOut: boolean): string { return (printTimedOut ? executionError : undefined) || antigravityRunLoginFailure(result, this.getHostConfigPath(), this.config.envVars) || result.stderr || executionError || 'Antigravity execution failed'; }
 
     private async resolveSessionOutput(stdout: string, transcriptPath?: string, taskId?: string) {
         const parsedOutput = parseAntigravityJsonl(stdout);
