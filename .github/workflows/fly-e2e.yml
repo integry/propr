@@ -1,6 +1,8 @@
 name: Fly end-to-end smoke
 
 on:
+  push:
+    branches: [fly-e2e-run]
   workflow_dispatch:
     inputs:
       agent_runtime:
@@ -38,15 +40,15 @@ concurrency:
 
 jobs:
   fixture:
-    if: github.event_name == 'workflow_dispatch' || vars.FLY_E2E_NIGHTLY == 'true'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || vars.FLY_E2E_NIGHTLY == 'true'
     runs-on: ubuntu-latest
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
     steps:
       - id: check
         env:
-          AGENT_RUNTIME: ${{ inputs.agent_runtime || 'sprites' }}
-          EXTENSIONS: ${{ (github.event_name == 'workflow_dispatch' && inputs.extensions) || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_EXTENSIONS == 'true') }}
+          AGENT_RUNTIME: ${{ inputs.agent_runtime || 'fly-machines' }}
+          EXTENSIONS: ${{ true || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_EXTENSIONS == 'true') }}
           FLY_E2E_TOKEN: ${{ secrets.FLY_E2E_TOKEN != '' }}
           FLY_E2E_SPRITES_TOKEN: ${{ secrets.FLY_E2E_SPRITES_TOKEN != '' }}
           FLY_E2E_APP_ENV: ${{ secrets.FLY_E2E_APP_ENV != '' }}
@@ -84,7 +86,7 @@ jobs:
       REGION: iad
       IDLE_AFTER: 2m
       # The nightly schedule has no inputs, so it always runs on Sprites.
-      AGENT_RUNTIME: ${{ inputs.agent_runtime || 'sprites' }}
+      AGENT_RUNTIME: ${{ inputs.agent_runtime || 'fly-machines' }}
       # Fly Machines start agents in a separate app with their own image and token.
       AGENT_APP: propr-e2e-agents-${{ github.run_id }}-${{ github.run_attempt }}
       # A small instance runtime package absent from Dockerfile.agent's explicit apt
@@ -97,7 +99,7 @@ jobs:
       SPRITE_DISTRO_PACKAGE: libssl3t64
       # Manual runs follow the input; nightly runs opt in with the repository variable.
       # The extensions mode runs on the selected agent runtime (Sprites or Fly Machines).
-      EXTENSIONS: ${{ (github.event_name == 'workflow_dispatch' && inputs.extensions) || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_EXTENSIONS == 'true') }}
+      EXTENSIONS: ${{ true || (github.event_name == 'schedule' && vars.FLY_E2E_NIGHTLY_EXTENSIONS == 'true') }}
       RUN_TOKEN: ${{ github.run_id }}-${{ github.run_attempt }}
       # A small, well-known npm MCP server with a deterministic `echo` tool, pinned to an exact version and integrity.
       EXT_PACKAGE: '@modelcontextprotocol/server-everything'
@@ -113,7 +115,7 @@ jobs:
       # The OAuth fixture runs in the pool the run's agents don't use: the Free plan allows three Sprites and three
       # Machines per org. Sprites runs host it on a Fly Machine in its own disposable app (with the control plane,
       # 2 of 3 Machines); Fly Machines runs host it on a disposable Sprite, leaving the Machines to the agents.
-      OAUTH_FIXTURE_HOST: ${{ (inputs.agent_runtime || 'sprites') == 'sprites' && 'fly-machine' || 'sprite' }}
+      OAUTH_FIXTURE_HOST: ${{ (inputs.agent_runtime || 'fly-machines') == 'sprites' && 'fly-machine' || 'sprite' }}
       # The Sprite's or Fly app's name.
       OAUTH_FIXTURE_NAME: propr-e2e-oauth-${{ github.run_id }}-${{ github.run_attempt }}
       # Core refreshes one minute before expiry, so a 90 s token forces refreshes during the run.
@@ -196,7 +198,7 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
           APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
-          SPRITES_TOKEN: ${{ (inputs.agent_runtime || 'sprites') == 'sprites' && secrets.FLY_E2E_SPRITES_TOKEN || '' }}
+          SPRITES_TOKEN: ${{ (inputs.agent_runtime || 'fly-machines') == 'sprites' && secrets.FLY_E2E_SPRITES_TOKEN || '' }}
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
           OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID }}
           OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET }}
