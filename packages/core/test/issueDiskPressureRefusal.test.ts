@@ -221,3 +221,33 @@ test('a refused retry of a job whose earlier attempt ran says the latest attempt
   // Without an admitted attempt the job never started, and the comment says so.
   assert.match(diskPressureRefusalCommentBody(refusedJob(2), { inPlan: true, now: NOW }), /No attempt of this run started, so nothing was changed: no branch, commit or pull request was created\./);
 });
+
+for (const status of ['processing', 'pending'] as const) {
+  test(`a replacement run that takes over a ${status} plan issue while the refusal is reported keeps its status and its execution unblocked`, async () => {
+    await createEpicExecutionQueue({ draftId: 'draft', repository: 'acme/repo', issues: [1, 2] }, deps);
+    await startEpicQueueHead('draft', deps);
+    await database('plan_issues').where({ issue_number: 1 }).update({ status });
+    const before = (await getEpicExecutionQueue('draft'))!.items[0];
+    // The refused job was removed on failure; a replacement under its job ID records its task after the refusal read
+    // the plan issue as linked (no task), before the refusal writes anything.
+    const takeOver = async () => {
+      await database('tasks').insert({ task_id: 'task-replacement', correlation_id: 'corr-replacement' });
+      await database('plan_issues').where({ issue_number: 1 }).update({ status: 'processing', task_id: 'task-replacement' });
+    };
+    const racing = new Proxy(database, {
+      get(target, property, receiver) {
+        if (property !== 'transaction') return Reflect.get(target, property, receiver);
+        return async (...args: Parameters<typeof database.transaction>) => { await takeOver(); return target.transaction(...args); };
+      },
+    }) as typeof database;
+
+    const outcome = await reportIssueDiskPressureRefusal(refusedJob(1), { octokit, database: racing, now: () => NOW });
+    assert.deepEqual(outcome, { commented: true, planIssueReleased: false, queueBlocked: false });
+    assert.deepEqual([(await planIssue(1)).status, (await planIssue(1)).task_id], ['processing', 'task-replacement']);
+    const head = (await getEpicExecutionQueue('draft'))!.items[0];
+    assert.deepEqual([head.state, head.blockedKind ?? null, head.blockedReason ?? null, head.dispatchedAt], [before.state, null, null, before.dispatchedAt],
+      'the replacement\'s execution is neither blocked for the old refusal nor has its claim renewed');
+    assert.equal(await database('epic_queue_blocked_events').count({ n: '*' }).first().then(row => Number(row?.n)), 0);
+    assert.equal(comments.length, 1, 'the issue still gets the report');
+  });
+}

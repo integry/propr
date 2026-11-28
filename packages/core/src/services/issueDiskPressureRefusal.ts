@@ -14,7 +14,8 @@
  * changed only while it is not finished and is linked to this run: no task owns
  * it yet, or its task is one this job created (same correlation ID). Finished
  * plan issues, historical ones and those another run took over keep their
- * status. Best effort: never throws.
+ * status and their queued execution, also when the takeover happens while
+ * the refusal is being reported. Best effort: never throws.
  */
 import type { Knex } from 'knex';
 import { db } from '../db/connection.js';
@@ -179,10 +180,18 @@ async function isLinkedToRun(database: Knex, planIssue: { task_id?: string | nul
     return task?.correlation_id === correlationId;
 }
 
+/** The plan issue's status or task changed after the refusal read it: that run owns it, so nothing of the refusal is written. */
+class PlanIssueTakenOver extends Error {}
+
+const sameTask = (a: string | null | undefined, b: string | null | undefined) => (a || null) === (b || null);
+
 /**
  * The plan issue of a refused run: its queued execution blocked on the reason and, while it is `processing`,
  * back to `pending`. Only the newest plan issue of the issue, and only while it is not finished and is linked
- * to this run (`isLinkedToRun`); the update itself is conditioned on the row, status and task read here.
+ * to this run (`isLinkedToRun`). Both writes run in one transaction that first reads the row again and goes on
+ * only while its status and task are still as read: a run that took the issue over after the first read (a
+ * replacement job recording its task) keeps its status and its execution, which is not blocked for this
+ * refusal. SQLite transactions are serializable, so the takeover lands either before that read or after the commit.
  */
 async function releasePlanIssue(
     { database, now, log }: { database: Knex; now: () => number; log: Log }, job: RefusedIssueJob, repository: string, issueNumber: number,
@@ -198,20 +207,33 @@ async function releasePlanIssue(
         log.info(target, 'The plan issue is finished or not linked to the refused run; its status is left as is');
         return { draftId, linked: false, released: false, queueBlocked: false };
     }
-    // Blocked with a renewed claim: once the issue is pending again, the recovery sweep must not dispatch it again at once.
-    const queueBlocked = await markEpicQueueIssueDispatchRefused({ draftId, issueNumber, reason: diskPressureRefusedReason(issueNumber) }, { database, now })
-        .catch(error => { log.warn({ ...target, error: (error as Error).message }, 'Could not block the epic execution queue issue'); return false; });
-    if (planIssue.status !== PlanIssueStatus.PROCESSING) return { draftId, linked: true, released: false, queueBlocked };
-    // Only this row, and only while it still is as read: a run that took it over meanwhile owns its status.
-    const released = await updatePlanIssuesWithStatusJournal(
-        rows => rows.where({ id: planIssue.id, status: PlanIssueStatus.PROCESSING })
-            .where(row => planIssue.task_id ? row.where('task_id', planIssue.task_id) : row.whereNull('task_id').orWhere('task_id', '')),
-        { status: PlanIssueStatus.PENDING, updated_at: database.fn.now() }, PlanIssueStatus.PENDING,
-    ) > 0;
-    if (!released) {
-        log.info(target, 'The refused plan issue moved on meanwhile; its status is left as is');
-        return { draftId, linked: true, released, queueBlocked };
+    let settled: { released: boolean; queueBlocked: boolean };
+    try {
+        settled = await database.transaction(async trx => {
+            const current = await trx('plan_issues').where({ id: planIssue.id }).first('status', 'task_id') as
+                { status: string; task_id: string | null } | undefined;
+            if (!current || current.status !== planIssue.status || !sameTask(current.task_id, planIssue.task_id)) throw new PlanIssueTakenOver();
+            // Blocked with a renewed claim: once the issue is pending again, the recovery sweep must not dispatch it again at once.
+            const queueBlocked = await markEpicQueueIssueDispatchRefused(
+                { draftId, issueNumber, reason: diskPressureRefusedReason(issueNumber) }, { database: trx, now },
+            ).catch(error => { log.warn({ ...target, error: (error as Error).message }, 'Could not block the epic execution queue issue'); return false; });
+            if (planIssue.status !== PlanIssueStatus.PROCESSING) return { released: false, queueBlocked };
+            // Conditioned on the row as read too; a change here undoes the queue block with it.
+            const released = await updatePlanIssuesWithStatusJournal(
+                rows => rows.where({ id: planIssue.id, status: PlanIssueStatus.PROCESSING })
+                    .where(row => planIssue.task_id ? row.where('task_id', planIssue.task_id) : row.whereNull('task_id').orWhere('task_id', '')),
+                { status: PlanIssueStatus.PENDING, updated_at: trx.fn.now() }, PlanIssueStatus.PENDING, { database: trx },
+            ) > 0;
+            if (!released) throw new PlanIssueTakenOver();
+            return { released, queueBlocked };
+        });
+    } catch (error) {
+        if (!(error instanceof PlanIssueTakenOver)) throw error;
+        log.info(target, 'The refused plan issue moved on meanwhile; its status and execution are left as is');
+        return { draftId, linked: true, released: false, queueBlocked: false };
     }
+    const { released, queueBlocked } = settled;
+    if (!released) return { draftId, linked: true, released, queueBlocked };
     // Follow-on effects of the status change, for this row's draft only; best effort, the release stands.
     try {
         await notifyEpicQueue(draftId, issueNumber, PlanIssueStatus.PENDING);
