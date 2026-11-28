@@ -56,7 +56,7 @@ export function createAgentHealthCheck(dependencies: {
   // Docker image. Undefined for Docker agents, which keep the image checks and the model probe.
   remoteReadiness?: (config: AgentConfig) => Promise<RemoteRuntimeReadiness | undefined>;
   /** Why the agent's credential store cannot authenticate a remote run, or undefined when it has credentials. */
-  remoteCredentialProblem?: (config: AgentConfig) => string | undefined;
+  remoteCredentialProblem?: (config: AgentConfig) => Promise<string | undefined> | string | undefined;
   now?: () => number;
 }) {
   const now = dependencies.now ?? Date.now;
@@ -81,15 +81,15 @@ export function createAgentHealthCheck(dependencies: {
       return { agentId: config.id, status: 'error', errorCode: 'runtime_unavailable',
         error: redactSecrets(error instanceof Error ? error.message : 'Could not check the agent runtime.').slice(0, 2000) };
     }
-    return readiness && remoteResult(config, readiness);
+    return readiness && await remoteResult(config, readiness);
   }
 
-  function remoteResult(config: AgentConfig, readiness: RemoteRuntimeReadiness): AgentHealthResult {
+  async function remoteResult(config: AgentConfig, readiness: RemoteRuntimeReadiness): Promise<AgentHealthResult> {
     const base = { agentId: config.id, runtime: readiness.runtime };
     if (!readiness.ready) {
       return { ...base, status: 'error', errorCode: 'runtime_unavailable', error: redactSecrets(readiness.error || 'The agent runtime is unavailable.').slice(0, 2000) };
     }
-    const credentialProblem = dependencies.remoteCredentialProblem?.(config);
+    const credentialProblem = await dependencies.remoteCredentialProblem?.(config);
     if (credentialProblem) return { ...base, status: 'error', errorCode: 'auth_required', error: credentialProblem, ...(readiness.detail ? { detail: readiness.detail } : {}) };
     const model = agentHealthModel(config);
     return { ...base, status: 'ready', ...(model ? { model } : {}), ...(readiness.detail ? { detail: readiness.detail } : {}) };

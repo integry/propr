@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import {
+  AGENT_MODELS,
   getPastedAgentCredentialDefinition,
   isManagedAgentConfigPath,
   supportsPastedAgentCredentials,
@@ -7,14 +8,19 @@ import {
   type PastedAgentCredentialKind,
 } from '@propr/shared';
 import {
+  AGENT_DEFAULTS,
   applyPastedCredential,
   CredentialBrokerError,
   describePastedCredentials,
+  environmentCredentialPresent,
   isLoginCredentialEntry,
+  loadSettings,
   PastedCredentialError,
   providerCredentialManifest,
   readCredentialStoreFile,
   removePastedCredential,
+  resolveConfigPath,
+  storedConfigCredentialPresent,
   storedLoginPresent,
   withoutPastedClaudeAuthentication,
   writeCredentialStoreFiles,
@@ -202,26 +208,69 @@ export async function storeReturnedLoginFiles(
 }
 
 /**
- * Why a remote run of the agent would have nothing to authenticate with, or
- * undefined when its store holds a pasted credential or a login file the
- * provider manifest declares (or its configuration sets the provider's API key
- * variable). Login files are checked for every provider, including those
- * without pasted credentials (Antigravity); a provider whose manifest declares
- * neither is not judged here.
+ * The Vibe config directory a run reads, resolved as its execution resolves it
+ * (`VIBE_CONFIG_PATH` first; no managed-login path rules). An unmapped default
+ * throws, which execution also reports when no API key is available.
  */
-export function remoteCredentialProblem(agent: AgentConfig): string | undefined {
+function vibeExecutionStores(agent: AgentConfig): AgentCredentialStores {
+  return { config: resolveConfigPath(process.env.VIBE_CONFIG_PATH || agent.configPath || AGENT_DEFAULTS.vibe.configPath) };
+}
+
+/** Whether an OpenCode agent offers a built-in free model, which runs without any provider credential. */
+function offersCredentialFreeModel(agent: AgentConfig): boolean {
+  const free = new Set(AGENT_MODELS.opencode.map(model => model.id));
+  return agent.supportedModels.some(model => free.has(model));
+}
+
+export interface RemoteCredentialProblemOptions {
+  /** ProPR settings, read for Vibe's Mistral key setting. Defaults to the stored settings. */
+  loadSettings?: () => Promise<Record<string, unknown>>;
+}
+
+/**
+ * Why a remote run of the agent would have nothing to authenticate with, or
+ * undefined when it has a credential execution supplies to the run: a pasted
+ * credential or a login file the provider manifest declares; a key in the
+ * agent's env vars (and, for Vibe, the ProPR environment or Mistral key
+ * setting); a key in a manifest secret environment file (Vibe's `.env`); or
+ * a provider `options.apiKey` in OpenCode's config file. An OpenCode agent
+ * offering a built-in free model needs none. Login files are checked for every
+ * provider, including those without pasted credentials (Antigravity); a
+ * provider whose manifest declares neither is not judged here.
+ */
+export async function remoteCredentialProblem(
+  agent: AgentConfig, options: RemoteCredentialProblemOptions = {},
+): Promise<string | undefined> {
   const pasted = supportsPastedAgentCredentials(agent.type);
   if (!pasted && loginCredentialPaths(agent).length === 0) return undefined;
-  const apiKeyEnv = providerCredentialManifest(agent.type, 'config')?.apiKeyEnv ?? [];
-  if (apiKeyEnv.some(name => agent.envVars?.[name]?.trim())) return undefined;
+  if (agent.type === 'opencode' && offersCredentialFreeModel(agent)) return undefined;
+  if (environmentCredentialPresent(agent)) return undefined;
+  let storeProblem: string | undefined;
   try {
-    const read = reader(resolveAgentCredentialStores(agent));
-    if (storedLoginPresent(agent.type, read)) return undefined;
+    // Vibe resolves its config directory as its run does (VIBE_CONFIG_PATH, no managed login path).
+    const stores = agent.type === 'vibe' ? vibeExecutionStores(agent) : resolveAgentCredentialStores(agent);
+    const read = reader(stores);
+    if (storedLoginPresent(agent.type, read) || storedConfigCredentialPresent(agent.type, read)) return undefined;
     if (pasted && describePastedCredentials(agent.type, read).some(credential => credential.set)) return undefined;
   } catch (error) {
-    return (error as Error).message;
+    storeProblem = (error as Error).message;
+  }
+  if (agent.type === 'vibe' && await settingsMistralKeyPresent(agent, options)) return undefined;
+  if (storeProblem) return storeProblem;
+  if (agent.type === 'vibe') {
+    return 'No Mistral API key or Vibe login is available to this agent. Set MISTRAL_API_KEY or add a .env or credentials.json to its config directory, then check again.';
   }
   return pasted
     ? 'No credentials are stored for this agent. Paste an API key or token under Edit agent → Credentials, or log in.'
     : 'No login is stored for this agent. Log in from Edit agent, then check again.';
+}
+
+async function settingsMistralKeyPresent(agent: AgentConfig, options: RemoteCredentialProblemOptions): Promise<boolean> {
+  try {
+    const settings = await (options.loadSettings ?? loadSettings)();
+    return environmentCredentialPresent(agent, { settings, env: {} });
+  } catch {
+    // As at run time: unreadable settings contribute no key.
+    return false;
+  }
 }

@@ -384,6 +384,7 @@ export {
     withoutPastedClaudeAuthentication,
     type CredentialFileReader,
 } from './agents/credentials/pastedCredentials.js';
+export { environmentCredentialPresent, storedConfigCredentialPresent } from './agents/credentials/configuredCredentials.js';
 export { readCredentialStoreFile, writeCredentialStoreFiles, type CredentialStoreWrite, type CredentialStoreWrites, type CredentialStoreWriterOptions } from './agents/credentials/credentialStoreWriter.js';
 export {
     withCredentialStoreLock, CredentialStoreLockTimeoutError, CredentialStoreLeaseRevokedError, type CredentialStoreLease, type CredentialStoreLockOptions,

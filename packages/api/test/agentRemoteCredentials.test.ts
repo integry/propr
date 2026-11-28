@@ -80,12 +80,12 @@ describe('pasted agent credentials', () => {
     const settings = JSON.parse(fs.readFileSync(path.join(storeDir(claude), 'settings.json'), 'utf8'));
     assert.equal(settings.env.ANTHROPIC_API_KEY, 'sk-ant-api03-supersecretvalueWXYZ');
     assert.equal(fs.statSync(path.join(storeDir(claude), 'settings.json')).mode & 0o777, 0o600);
-    assert.equal(remoteCredentialProblem(claude), undefined);
+    assert.equal(await remoteCredentialProblem(claude), undefined);
   });
 
   test('a Codex API key or auth.json replaces auth.json; wrong-provider kinds are refused', async () => {
     const codex = agent('codex');
-    assert.match(remoteCredentialProblem(codex) ?? '', /No credentials are stored/);
+    assert.match((await remoteCredentialProblem(codex)) ?? '', /No credentials are stored/);
     await setAgentPastedCredential(codex, 'openai-api-key', 'sk-proj-abcdefghijklmnopqrst');
     assert.equal(JSON.parse(fs.readFileSync(path.join(storeDir(codex), 'auth.json'), 'utf8')).OPENAI_API_KEY, 'sk-proj-abcdefghijklmnopqrst');
     await assert.rejects(setAgentPastedCredential(codex, 'anthropic-api-key', 'sk-ant-x'), AgentCredentialInputError);
@@ -101,7 +101,7 @@ describe('pasted agent credentials', () => {
     const afterStaleKeyRemove = await clearAgentPastedCredential(codex, 'openai-api-key');
     assert.deepEqual(JSON.parse(fs.readFileSync(authFile, 'utf8')), login);
     assert.equal(afterStaleKeyRemove.credentials.find(item => item.kind === 'codex-auth-json')?.set, true);
-    assert.equal(remoteCredentialProblem(codex), undefined);
+    assert.equal(await remoteCredentialProblem(codex), undefined);
 
     await setAgentPastedCredential(codex, 'openai-api-key', 'sk-proj-abcdefghijklmnopqrst');
     await clearAgentPastedCredential(codex, 'codex-auth-json');
@@ -154,9 +154,9 @@ describe('pasted agent credentials', () => {
 
   test('an Antigravity agent without its login file is not ready on a remote runtime', async () => {
     const antigravity = agent('antigravity');
-    assert.match(remoteCredentialProblem(antigravity) ?? '', /No login is stored/);
+    assert.match((await remoteCredentialProblem(antigravity)) ?? '', /No login is stored/);
     await storeReturnedLoginFiles(antigravity, [{ store: 'config', path: 'antigravity-cli/antigravity-oauth-token', content: Buffer.from('{"refresh_token":"r"}') }]);
-    assert.equal(remoteCredentialProblem(antigravity), undefined);
+    assert.equal(await remoteCredentialProblem(antigravity), undefined);
   });
 
   test('returned login files are limited to the manifest login files', async () => {
