@@ -96,6 +96,11 @@ export const knownGitHubReauthReason = (value: unknown): GitHubReauthReason | un
   typeof value === 'string' && Object.prototype.hasOwnProperty.call(GITHUB_REAUTH_REASON_MESSAGES, value) ? value as GitHubReauthReason : undefined
 );
 
+/** Browser login path after a 401: an unrenewable device sign-in is explained on the login page. */
+export const browserLoginPathFor = (code: unknown, reason: unknown): string => (
+  code === 'GITHUB_REAUTH_REQUIRED' && reason === 'device_sign_in_expired' ? '/login?error=device_sign_in_expired' : '/login'
+);
+
 export interface DesktopAuthenticationCompleteEventDetail {
   profileId: string;
 }

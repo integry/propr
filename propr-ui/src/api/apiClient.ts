@@ -3,7 +3,7 @@ import { normalizeApiBaseUrl, ProprClient, ProprClientError } from '@propr/clien
 import type { DesktopBridge } from '../../../apps/desktop/src/shared/contract';
 import { getRuntimeApiBaseUrlState, pathWithActiveHostedTunnelFlow } from '../config/runtimeConfig';
 import { currentUiPathname, isDesktopRuntime, navigateToUiPath } from '../config/runtimeMode';
-import { DESKTOP_ACCESS_INVALID_EVENT, DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, GITHUB_REAUTH_REASON_MESSAGES, knownGitHubReauthReason } from '../desktop/types';
+import { DESKTOP_ACCESS_INVALID_EVENT, DESKTOP_GITHUB_AUTHORIZATION_REQUIRED_EVENT, GITHUB_REAUTH_REASON_MESSAGES, browserLoginPathFor, knownGitHubReauthReason } from '../desktop/types';
 import { demoModeUnavailableResponse } from './demoModeRequestGate';
 
 export interface DesktopConnectionScope {
@@ -328,7 +328,7 @@ const throwUnauthorizedResponse = async (data: ApiErrorBody | null, response: Re
   if (currentUiPathname() === '/login') throw new Error('Authentication required');
   // Preserve only the validated active flow so login/OAuth cannot be driven by
   // arbitrary raw URL input or copied sessionStorage.
-  navigateToUiPath(pathWithActiveHostedTunnelFlow('/login'));
+  navigateToUiPath(pathWithActiveHostedTunnelFlow(browserLoginPathFor(data?.code, data?.reason)));
   throw new Error('Authentication required');
 };
 

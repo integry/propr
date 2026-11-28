@@ -2,11 +2,17 @@ import type { Knex } from 'knex';
 import { db, issueOAuthGrantRevision, type VisualPreviewOAuthCredentialGrant } from '@propr/core';
 import type { GitHubUser } from './authTypes.js';
 import { ConnectGrantRenewer, isRelayRenewable, type RenewableGrantRow } from './connectGrantRenewer.js';
+import {
+  DEVICE_SIGN_IN_EXPIRED,
+  RelayRefreshHttpError,
+  deviceRefreshRequiresReauth,
+  isDeviceGrant,
+} from './deviceGrantRenewal.js';
+import { requestGrantRefresh } from './githubRefreshRequest.js';
 import { decryptToken, encryptToken } from './githubUserGrantCrypto.js';
 import { visualPreviewOAuthCredentialService } from './services/visualPreviewOAuth.js';
 
 const REFRESH_BUFFER_MS = 5 * 60_000;
-const REFRESH_TIMEOUT_MS = 20_000;
 const USER_TOKEN_PATTERN = /^(?:gho_|ghu_|ghp_|github_pat_)/;
 
 interface GrantRow extends RenewableGrantRow {
@@ -23,14 +29,6 @@ interface GrantRow extends RenewableGrantRow {
   login_revision: number | string;
   created_at: string;
   updated_at: string;
-}
-
-interface RefreshResponse {
-  access_token?: string;
-  refresh_token?: string;
-  expires_in?: number;
-  refresh_token_expires_in?: number;
-  error?: string;
 }
 
 export type GitHubUserGrantResolution =
@@ -165,6 +163,9 @@ export class GitHubUserGrantService {
         return this.resolveCurrentRow(githubUserId);
       }
       const refreshed = await this.refreshOnce(row);
+      if (refreshed === 'reauth_required' && isDeviceGrant(row)) {
+        return { status: 'reauth_required', reason: DEVICE_SIGN_IN_EXPIRED };
+      }
       if (refreshed !== 'refreshed') return { status: refreshed };
       row = await this.database<GrantRow>('github_user_grants')
         .where({ github_user_id: githubUserId })
@@ -188,8 +189,11 @@ export class GitHubUserGrantService {
   private async refresh(row: GrantRow): Promise<'refreshed' | 'reauth_required' | 'temporarily_unavailable'> {
     try {
       const refreshToken = decryptToken(row.refresh_token_encrypted!, this.environment);
-      const response = await this.requestRefresh(row.source, refreshToken);
+      const response = await requestGrantRefresh(this.fetchImpl, this.environment, row.source, refreshToken);
       if (response.error) {
+        if (isDeviceGrant(row) && deviceRefreshRequiresReauth({ error: response.error })) {
+          return this.markDeviceReauthRequired(row, { error: response.error });
+        }
         if (isUnrecoverableRefreshError(response.error)) {
           const marked = await this.markReauthRequiredIfCurrent(row, response.error);
           return marked ? 'reauth_required' : 'refreshed';
@@ -215,9 +219,25 @@ export class GitHubUserGrantService {
       });
       return 'refreshed';
     } catch (error) {
+      if (error instanceof RelayRefreshHttpError && isDeviceGrant(row) && deviceRefreshRequiresReauth(error)) {
+        return this.markDeviceReauthRequired(row, error);
+      }
       console.warn('GitHub user grant refresh failed:', (error as Error).message);
       return 'temporarily_unavailable';
     }
+  }
+
+  /** The relay can never renew this device grant: the user signs in again. */
+  private async markDeviceReauthRequired(
+    row: GrantRow,
+    failure: { status?: number; error?: string },
+  ): Promise<'reauth_required' | 'refreshed'> {
+    console.warn(`Device sign-in grant for ${row.github_username} cannot be renewed `
+      + `(${failure.status === undefined ? '' : `HTTP ${failure.status}`}${failure.error ? ` ${failure.error}` : ''}); `
+      + 'a new sign-in is required');
+    const marked = await this.markReauthRequiredIfCurrent(row, DEVICE_SIGN_IN_EXPIRED);
+    // Not marked: a newer sign-in or renewal replaced this credential.
+    return marked ? 'reauth_required' : 'refreshed';
   }
 
   private currentRowQuery(row: GrantRow) {
@@ -385,34 +405,6 @@ export class GitHubUserGrantService {
       : sharedLoginRevision > durableLoginRevision;
   }
 
-  private async requestRefresh(source: GrantRow['source'], refreshToken: string): Promise<RefreshResponse> {
-    let endpoint: string;
-    let headers: Record<string, string> = { accept: 'application/json', 'content-type': 'application/json' };
-    let body: Record<string, string>;
-    if (source === 'connect') {
-      const relayUrl = this.environment.PROPR_GH_RELAY_URL?.trim().replace(/\/+$/, '');
-      const relayToken = this.environment.PROPR_GH_RELAY_TOKEN?.trim();
-      if (!relayUrl || !relayToken) throw new Error('ProPR Connect credentials are unavailable for GitHub reauthorization');
-      const refreshUrl = new URL(`${relayUrl}/auth/instance-grants/refresh`);
-      if (refreshUrl.protocol !== 'https:' && refreshUrl.hostname !== 'localhost' && refreshUrl.hostname !== '127.0.0.1') {
-        throw new Error('PROPR_GH_RELAY_URL must use HTTPS');
-      }
-      endpoint = refreshUrl.toString();
-      headers = { ...headers, authorization: `Bearer ${relayToken}` };
-      body = { refresh_token: refreshToken };
-    } else {
-      const clientId = this.environment.GH_OAUTH_CLIENT_ID?.trim();
-      const clientSecret = this.environment.GH_OAUTH_CLIENT_SECRET?.trim();
-      if (!clientId || !clientSecret) throw new Error('GitHub OAuth client credentials are unavailable for token refresh');
-      endpoint = 'https://github.com/login/oauth/access_token';
-      body = { client_id: clientId, client_secret: clientSecret, grant_type: 'refresh_token', refresh_token: refreshToken };
-    }
-    const response = await this.fetchImpl(endpoint, {
-      method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
-    });
-    if (!response.ok) throw new Error(`GitHub user grant refresh failed with HTTP ${response.status}`);
-    return response.json() as Promise<RefreshResponse>;
-  }
 }
 
 export const githubUserGrantService = new GitHubUserGrantService(

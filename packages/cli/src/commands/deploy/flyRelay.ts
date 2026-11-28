@@ -38,6 +38,8 @@ export interface FlyRelayOptions {
 export interface FlyRelayContext {
   /** Connect browser sign-in is selected (the tunnel flags were given). */
   connect: boolean;
+  /** Browsers sign in with device flow through the relay (no tunnel, OAuth client or demo). */
+  deviceSignIn?: boolean;
   /** GitHub token from `propr login`, if any. */
   githubToken?: string;
 }
@@ -144,9 +146,10 @@ export function planFlyRelay(options: FlyRelayOptions, secrets: Record<string, s
   const keepOwnApp = keepsOwnApp(options, secrets);
   if (keepOwnApp) assertOwnAppInstallation(secrets);
   if (!enroll) {
-    // Connect reads PROPR_GH_RELAY_URL without the hosted default the GitHub
-    // API path applies, so pin it next to an existing token.
-    if (context.connect && !secrets.PROPR_GH_RELAY_URL?.trim()) return { kind: "fill-url", baseUrl: relayBaseUrl(options, secrets), keepOwnApp };
+    // Connect and device sign-in read PROPR_GH_RELAY_URL without the hosted
+    // default the GitHub API path applies, so pin it next to an existing token.
+    const signInNeedsUrl = context.connect || (context.deviceSignIn === true && hasRelayToken);
+    if (signInNeedsUrl && !secrets.PROPR_GH_RELAY_URL?.trim()) return { kind: "fill-url", baseUrl: relayBaseUrl(options, secrets), keepOwnApp };
     return { kind: "none", keepOwnApp };
   }
   if (!context.githubToken) {

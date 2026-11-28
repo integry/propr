@@ -8,11 +8,12 @@ import { createClient } from 'redis';
 import { randomBytes } from 'node:crypto';
 import type { Express, Request, Response, NextFunction, RequestHandler } from 'express';
 import { issueOAuthGrantRevision } from '@propr/core';
-import { validateSessionSecret } from '@propr/shared';
+import { pollGitHubDeviceToken, requestGitHubDeviceCode, validateSessionSecret } from '@propr/shared';
 import { validateGitHubToken } from './authBearer.js';
 import { desktopAuthService, INSTANCE_TOKEN_PREFIX } from './desktopAuthService.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenWithResult } from './authGithubTokens.js';
+import { githubReauthResponseBody } from './deviceGrantRenewal.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
@@ -44,6 +45,7 @@ import './authTypes.js';
 import { timeApiStage } from './apiPerformanceTiming.js';
 import { createCorsOriginValidator } from './corsValidation.js';
 import { loopbackOAuthStartRedirect } from './authLoopbackOrigin.js';
+import { registerDeviceSignInRoutes, type DeviceSignInDependencies } from './deviceAuth.js';
 
 declare module 'express-session' {
     interface SessionData {
@@ -170,6 +172,12 @@ export function createConnectCallbackHandler(
 }
 
 async function completeAuthenticatedSessionWithPreviewCredential(req: Request, res: Response): Promise<void> {
+    await captureLoginGrants(req);
+    completeAuthenticatedSession(req, res);
+}
+
+/** Durable grant capture shared by every browser sign-in path. Never fails the login. */
+async function captureLoginGrants(req: Request): Promise<void> {
     if (req.user && isUserWhitelisted(req.user.username)) {
         const grantRevision = issueOAuthGrantRevision();
         try {
@@ -196,7 +204,46 @@ async function completeAuthenticatedSessionWithPreviewCredential(req: Request, r
     // The GitHub profile is in hand once per session: cache it so whatever this
     // user creates renders with their avatar without a GitHub lookup.
     if (req.user) await rememberCreator(req.user);
-    completeAuthenticatedSession(req, res);
+}
+
+/**
+ * Finish a device sign-in poll with the normal session: whitelist first, then
+ * Passport login (which regenerates the session id), grant capture, and a
+ * JSON answer instead of a redirect.
+ */
+export function createDeviceFinishLogin(
+    captureGrants: (req: Request) => Promise<void> = captureLoginGrants,
+): DeviceSignInDependencies['finishLogin'] {
+    return (req, res, user) => {
+        const fail = (status: number, error: string, message: string) => {
+            res.status(status).json({ status: 'failed', error, message });
+        };
+        if (!isUserWhitelisted(user.username)) {
+            fail(403, 'not_authorized', 'This GitHub account is not authorized to use this instance.');
+            return;
+        }
+        req.login(user, { session: true, keepSessionInfo: true }, (loginError) => {
+            if (loginError) {
+                console.error('Device sign-in session login failed:', (loginError as Error).message);
+                fail(503, 'session_unavailable', 'GitHub sign-in could not be saved because the instance session store is unavailable. Try again shortly.');
+                return;
+            }
+            void (async () => {
+                await captureGrants(req);
+                const authSession = req.session as AuthSession;
+                delete authSession.redirectTo;
+                delete authSession.connectOAuthState;
+                req.session.save((saveError) => {
+                    if (saveError) {
+                        console.error('Device sign-in session save failed:', saveError.message);
+                        fail(503, 'session_unavailable', 'GitHub sign-in could not be saved because the instance session store is unavailable. Try again shortly.');
+                        return;
+                    }
+                    res.json({ status: 'complete' });
+                });
+            })();
+        });
+    };
 }
 
 /** Protect extension management without changing unrelated session routes. */
@@ -242,6 +289,12 @@ export function createOAuthStartHandler(browserAuthMode: BrowserAuthMode, demoMo
 
         if (demoModeAtStartup) {
             res.redirect(redirectTo || getDefaultRedirectUrl());
+            return;
+        }
+
+        // Device sign-in has no redirect leg: the login page runs it in place.
+        if (browserAuthMode === 'device') {
+            res.redirect(`${process.env.FRONTEND_URL}/login`);
             return;
         }
 
@@ -299,7 +352,9 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         ? ['GH_OAUTH_CLIENT_ID', 'GH_OAUTH_CLIENT_SECRET', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL']
         : browserAuthMode === 'connect'
             ? ['PROPR_GH_RELAY_URL', 'PROPR_GH_RELAY_TOKEN', 'GH_OAUTH_CALLBACK_URL', 'FRONTEND_URL']
-            : ['FRONTEND_URL'];
+            : browserAuthMode === 'device'
+                ? ['PROPR_GH_RELAY_URL', 'PROPR_GH_RELAY_TOKEN', 'FRONTEND_URL']
+                : ['FRONTEND_URL'];
     const missingVars = requiredEnvVars.filter(v => !process.env[v]);
     if (missingVars.length > 0) {
         throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
@@ -412,6 +467,20 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
         );
     } else if (browserAuthMode === 'connect') {
         app.get('/api/auth/github/callback', createConnectCallbackHandler());
+    } else if (browserAuthMode === 'device') {
+        app.get('/api/auth/github/callback', (_req: Request, res: Response) => {
+            res.redirect(`${process.env.FRONTEND_URL}/login`);
+        });
+        registerDeviceSignInRoutes(app, {
+            env: process.env,
+            now: Date.now,
+            fetchImpl: fetch,
+            requestCode: requestGitHubDeviceCode,
+            pollToken: pollGitHubDeviceToken,
+            // Lazy: suites mock @propr/core with an enumerated export list.
+            relayInstallationToken: async () => (await import('@propr/core')).getGitHubInstallationToken(),
+            finishLogin: createDeviceFinishLogin(),
+        });
     } else {
         app.get('/api/auth/github/callback', (_req: Request, res: Response) => {
             redirectAuthError(res, 'web_auth_not_configured');
@@ -448,6 +517,11 @@ export function setupAuth(app: Express, demoModeAtStartup = isDemoMode()): Socke
 
     app.get('/api/auth/demo-mode', (_req: Request, res: Response) => {
         res.json({ demoMode: demoModeAtStartup });
+    });
+
+    // Which sign-in the login page offers. Public, like demo-mode.
+    app.get('/api/auth/sign-in-method', (_req: Request, res: Response) => {
+        res.json({ mode: demoModeAtStartup ? 'demo' : browserAuthMode });
     });
 
     return { engineMiddleware, close };
@@ -558,8 +632,9 @@ export async function ensureAuthenticated(
     // Session-based auth (Passport)
     if (req.isAuthenticated()) {
         if (req.user?.githubAuthInvalid) {
+            const reauthBody = githubReauthResponseBody(req.user);
             await clearSessionForReauth(req);
-            res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
+            res.status(401).json(reauthBody);
             return;
         }
 
@@ -576,8 +651,9 @@ export async function ensureAuthenticated(
         if (isGitHubTokenExpired(req)) {
             const refreshResult = await timeApiStage('auth.session-grant-sync', () => refreshGitHubTokenWithResult(req, true));
             if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
+                const reauthBody = githubReauthResponseBody(req.user);
                 if (req.user?.githubAuthInvalid) await clearSessionForReauth(req);
-                res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
+                res.status(401).json(reauthBody);
                 return;
             }
             if (refreshResult.status === 'temporarily-unavailable') {
@@ -591,8 +667,9 @@ export async function ensureAuthenticated(
             // whose recorded expiry is still in the future.
             const refreshResult = await timeApiStage('auth.session-grant-sync', () => refreshGitHubTokenWithResult(req));
             if (req.user?.githubAuthInvalid) {
-                if (req.user?.githubAuthInvalid) await clearSessionForReauth(req);
-                res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
+                const reauthBody = githubReauthResponseBody(req.user);
+                await clearSessionForReauth(req);
+                res.status(401).json(reauthBody);
                 return;
             }
             if (refreshResult.status === 'temporarily-unavailable') {

@@ -374,6 +374,13 @@ chmod 600 /srv/propr/.env
 Leave `REDIS_EXTERNAL_PORT` unset — Redis then stays on the internal Docker
 network and is never published to the host at all.
 
+:::tip[Relay-enrolled stacks can skip the OAuth App]
+If the stack uses the shared ProPR App through the relay (`PROPR_GH_RELAY_TOKEN`),
+leave `GH_OAUTH_CLIENT_ID`/`GH_OAUTH_CLIENT_SECRET` out: browsers then sign in
+with [GitHub device sign-in](../operations/github-auth.md#device-sign-in), which
+needs no OAuth App or callback URL and works behind any hostname.
+:::
+
 :::note[OAuth App vs. GitHub App]
 `GH_OAUTH_CLIENT_ID`/`GH_OAUTH_CLIENT_SECRET` come from a GitHub **OAuth App**
 (used for the browser sign-in flow) — these are separate from the **GitHub App**

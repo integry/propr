@@ -12,6 +12,8 @@ export interface GitHubUser {
     oauthSource?: 'github' | 'connect';
     /** Set when ProPR Connect can renew this credential through the relay. */
     connectRenewal?: 'relay';
+    /** Set for GitHub device sign-ins, whose failed renewals ask for a new code. */
+    signInMethod?: 'device';
     githubAuthInvalid?: boolean;
 }
 

@@ -31,14 +31,16 @@ The deployed API needs a way to sign browsers in, and the command stops before c
 | Sign-in | What the deploy needs |
 | --- | --- |
 | ProPR Connect, from `https://app.propr.dev` | `--tunnel-token` and `--tunnel-url` (see [GitHub relay and Connect](#github-relay-and-connect)). The command enrolls the relay token Connect needs. |
+| GitHub device sign-in, on `https://<app>.fly.dev` | A relay token: the one the command enrolls when you are logged in with `propr login`, or `PROPR_GH_RELAY_TOKEN` in the stack `.env`. No tunnel and no OAuth App. Browsers sign in at the app's own URL with a code from GitHub (see [Device sign-in](./github-auth.md#device-sign-in)). A relay other than the hosted one also needs `PROPR_GH_DEVICE_CLIENT_ID`. |
 | GitHub OAuth, on `https://<app>.fly.dev` | `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET` in the stack `.env`, from a GitHub App or OAuth App whose callback URL is `https://<app>.fly.dev/api/auth/github/callback`. The deploy sets that callback itself and prints it. |
 | None (read-only demo) | `PROPR_DEMO_MODE=true` in the stack `.env`. A later deploy that selects Connect or GitHub sign-in sets `PROPR_DEMO_MODE=false`, so the retained Fly secret cannot keep the API in demo mode. |
 
-A relay token alone does not sign browsers in on Fly: the automatic Connect sign-in for relay-only stacks works only with a loopback callback, as on a local stack. Fly secret values cannot be read back, so an OAuth client left on the app by an earlier deploy does not count; keep it in the stack `.env`. The summary prints a `Sign-in:` line with the method the deploy chose.
+A relay-only deploy (no tunnel flags, no OAuth client, not a demo) uses device sign-in, and the command pins `PROPR_GH_RELAY_URL` next to an existing relay token so the API finds it. An OAuth client in the stack `.env` takes precedence over device sign-in. Device sign-in checks users against `GH_INSTALLATION_ID`, so a stack whose own GitHub App (`GH_APP_ID`) keeps GitHub API calls next to a relay token is refused: pass `--relay` to hand API calls to the relay App, use the tunnel flags, or add the own App's OAuth client. Fly secret values cannot be read back, so an OAuth client left on the app by an earlier deploy does not count; keep it in the stack `.env`. The summary prints a `Sign-in:` line with the method the deploy chose.
 
 ```bash
-# GitHub OAuth instead of Connect: GH_OAUTH_CLIENT_ID and GH_OAUTH_CLIENT_SECRET in the stack .env
+# Device sign-in on https://my-propr.fly.dev: logged in with `propr login`, no tunnel flags
 propr deploy fly --app my-propr
+# GitHub OAuth instead: the same command with GH_OAUTH_CLIENT_ID and GH_OAUTH_CLIENT_SECRET in the stack .env
 ```
 
 ## How it reaches Fly

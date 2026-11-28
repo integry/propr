@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   buildConnectAuthorizationUrl,
+  resolveDeviceClientId,
   redeemConnectAuthorizationCode,
   resolveBrowserAuthMode,
 } from '../connectAuth.js';
@@ -60,7 +61,7 @@ test('off-tunnel relay inference uses the shared canonical loopback rule', () =>
       PROPR_GH_RELAY_URL: 'https://webhook.propr.dev/v1',
       PROPR_GH_RELAY_TOKEN: 'prt_secret',
       GH_OAUTH_CALLBACK_URL: callbackUrl,
-    }), 'disabled', callbackUrl);
+    }), 'device', callbackUrl);
   }
 });
 
@@ -71,6 +72,47 @@ test('off-tunnel custom relay enrollment does not infer hosted Connect auth', ()
     PROPR_GH_RELAY_TOKEN: 'prt_secret',
     GH_OAUTH_CALLBACK_URL: 'http://localhost:4000/api/auth/github/callback',
   }), 'disabled');
+});
+
+test('browser sign-in mode for every combination of OAuth client, tunnel, callback and relay', () => {
+  const relay = { PROPR_GH_RELAY_URL: 'https://webhook.propr.dev/v1', PROPR_GH_RELAY_TOKEN: 'prt_secret' };
+  const oauth = { GH_OAUTH_CLIENT_ID: 'real-client-id', GH_OAUTH_CLIENT_SECRET: 'real-client-secret' };
+  const tunnel = { PROPR_UI_TUNNEL_ENABLED: 'true' };
+  const loopback = { GH_OAUTH_CALLBACK_URL: 'http://localhost:4000/api/auth/github/callback' };
+  const publicHost = { GH_OAUTH_CALLBACK_URL: 'https://my-propr.fly.dev/api/auth/github/callback' };
+  const privateHost = { GH_OAUTH_CALLBACK_URL: 'https://propr.internal.example/api/auth/github/callback' };
+  const cases: Array<[string, NodeJS.ProcessEnv, string]> = [
+    ['own OAuth client only', { ...oauth }, 'github'],
+    ['own OAuth client on a public host', { ...oauth, ...publicHost }, 'github'],
+    ['own OAuth client next to a relay', { ...oauth, ...relay, ...publicHost }, 'github'],
+    ['tunnel with a relay', { ...tunnel, ...relay }, 'connect'],
+    ['tunnel with a relay and an OAuth client', { ...tunnel, ...relay, ...oauth }, 'connect'],
+    ['tunnel without a relay', { ...tunnel }, 'disabled'],
+    ['relay on loopback', { ...relay, ...loopback }, 'connect'],
+    ['relay-only on a public host', { ...relay, ...publicHost }, 'device'],
+    ['relay-only on a private host', { ...relay, ...privateHost }, 'device'],
+    ['relay-only without a callback URL', { ...relay }, 'device'],
+    ['relay token without a relay URL', { PROPR_GH_RELAY_TOKEN: 'prt_secret', ...publicHost }, 'disabled'],
+    ['nothing configured', { ...publicHost }, 'disabled'],
+    ['operator relay without its client ID', { PROPR_GH_RELAY_URL: 'https://relay.example.com/v1', PROPR_GH_RELAY_TOKEN: 'prt_secret', ...publicHost }, 'disabled'],
+    ['operator relay with its client ID', { PROPR_GH_RELAY_URL: 'https://relay.example.com/v1', PROPR_GH_RELAY_TOKEN: 'prt_secret', PROPR_GH_DEVICE_CLIENT_ID: 'Iv23custom', ...publicHost }, 'device'],
+    ['own App keeping API auth next to a relay', { ...relay, GH_AUTH_MODE: 'app', GH_APP_ID: '42', GH_INSTALLATION_ID: '777', ...publicHost }, 'disabled'],
+    ['own App keeping API auth next to an operator relay with its client ID', { PROPR_GH_RELAY_URL: 'https://relay.example.com/v1', PROPR_GH_RELAY_TOKEN: 'prt_secret', PROPR_GH_DEVICE_CLIENT_ID: 'Iv23custom', GH_AUTH_MODE: ' App ', ...publicHost }, 'disabled'],
+    ['own App configured but relay mode pinned', { ...relay, GH_AUTH_MODE: 'relay', GH_APP_ID: '42', GH_INSTALLATION_ID: '777', ...publicHost }, 'device'],
+    ['explicit device', { PROPR_WEB_AUTH_MODE: 'Device', ...oauth }, 'device'],
+    ['explicit github wins over device inference', { PROPR_WEB_AUTH_MODE: 'github', ...relay }, 'github'],
+    ['explicit disabled wins over device inference', { PROPR_WEB_AUTH_MODE: 'disabled', ...relay }, 'disabled'],
+  ];
+  for (const [label, env, expected] of cases) {
+    assert.equal(resolveBrowserAuthMode(env), expected, label);
+  }
+});
+
+test('device sign-in uses the shared App client ID unless overridden', () => {
+  assert.equal(resolveDeviceClientId({}), 'Iv23liTCmmSNYyD0NtZA');
+  assert.equal(resolveDeviceClientId({ PROPR_GH_DEVICE_CLIENT_ID: '  ' }), 'Iv23liTCmmSNYyD0NtZA');
+  assert.equal(resolveDeviceClientId({ PROPR_GH_DEVICE_CLIENT_ID: 'your_client_id' }), 'Iv23liTCmmSNYyD0NtZA');
+  assert.equal(resolveDeviceClientId({ PROPR_GH_DEVICE_CLIENT_ID: ' Iv23custom ' }), 'Iv23custom');
 });
 
 test('literal example OAuth placeholders do not enable GitHub web auth', () => {

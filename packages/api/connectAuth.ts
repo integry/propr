@@ -1,6 +1,7 @@
 import type { GitHubUser } from './authTypes.js';
 import { parseConnectExpiry } from './connectGrantRenewal.js';
 import {
+    DEFAULT_PROPR_GH_DEVICE_CLIENT_ID,
     DEFAULT_PROPR_GH_RELAY_URL,
     canonicalProprHttpUrlOrigin,
     isProprLoopbackHostname,
@@ -11,13 +12,20 @@ export const DEFAULT_PROPR_CONNECT_ORIGIN = 'https://connect.propr.dev';
 const CONNECT_REDEEM_TIMEOUT_MS = 20_000;
 const GITHUB_USER_URL = 'https://api.github.com/user';
 
-export type BrowserAuthMode = 'connect' | 'github' | 'disabled';
+export type BrowserAuthMode = 'connect' | 'github' | 'device' | 'disabled';
 
+/**
+ * Pick how browsers sign in. Precedence: explicit PROPR_WEB_AUTH_MODE; relay
+ * with a managed tunnel (connect); the instance's own OAuth client (github);
+ * hosted relay with a loopback callback (connect); relay-only enrollment on
+ * any other host (device: GitHub device flow with the shared App's public
+ * client ID); otherwise disabled.
+ */
 export function resolveBrowserAuthMode(
     env: NodeJS.ProcessEnv = process.env,
 ): BrowserAuthMode {
-    const explicit = env.PROPR_WEB_AUTH_MODE?.trim().toLowerCase();
-    if (explicit === 'connect' || explicit === 'github' || explicit === 'disabled') return explicit;
+    const explicit = explicitBrowserAuthMode(env.PROPR_WEB_AUTH_MODE);
+    if (explicit) return explicit;
 
     const hasRelay = Boolean(env.PROPR_GH_RELAY_URL?.trim() && env.PROPR_GH_RELAY_TOKEN?.trim());
     const usesHostedConnect = hasRelay && isHostedConnectPath(env);
@@ -31,7 +39,26 @@ export function resolveBrowserAuthMode(
         return 'github';
     }
     if (usesHostedConnect && isSupportedLoopbackCallback(env.GH_OAUTH_CALLBACK_URL)) return 'connect';
+    // The default client ID belongs to the hosted relay's App. An operator
+    // relay signs in with device flow only once its own App's ID is set.
+    // Device sign-in checks users against GH_INSTALLATION_ID, which is the
+    // own App's installation while that App keeps GitHub API auth.
+    if (hasRelay && !ownAppHoldsInstallation(env)
+        && (isHostedRelay(env) || isConfiguredValue(env.PROPR_GH_DEVICE_CLIENT_ID))) return 'device';
     return 'disabled';
+}
+
+const BROWSER_AUTH_MODES: readonly BrowserAuthMode[] = ['connect', 'github', 'device', 'disabled'];
+
+function explicitBrowserAuthMode(value: string | undefined): BrowserAuthMode | undefined {
+    const normalized = value?.trim().toLowerCase();
+    return BROWSER_AUTH_MODES.find(mode => mode === normalized);
+}
+
+/** The public client ID device sign-in uses: the override, else the shared App's. */
+export function resolveDeviceClientId(env: NodeJS.ProcessEnv = process.env): string {
+    const configured = env.PROPR_GH_DEVICE_CLIENT_ID?.trim();
+    return configured && isConfiguredValue(configured) ? configured : DEFAULT_PROPR_GH_DEVICE_CLIENT_ID;
 }
 
 /** The login bridge and its narrowly scoped browser integration share one authority parser. */
@@ -162,6 +189,15 @@ function isGitHubLogin(value: unknown): value is string {
 function isConfiguredValue(value: string | undefined): boolean {
     const normalized = value?.trim().toLowerCase();
     return Boolean(normalized && !normalized.startsWith('your_') && normalized !== 'changeme');
+}
+
+/** GH_AUTH_MODE=app: the own GitHub App mints tokens and GH_INSTALLATION_ID is its installation. */
+function ownAppHoldsInstallation(env: NodeJS.ProcessEnv): boolean {
+    return env.GH_AUTH_MODE?.trim().toLowerCase() === 'app';
+}
+
+function isHostedRelay(env: NodeJS.ProcessEnv): boolean {
+    return normalizeServiceUrl(env.PROPR_GH_RELAY_URL) === normalizeServiceUrl(DEFAULT_PROPR_GH_RELAY_URL);
 }
 
 function isHostedConnectPath(env: NodeJS.ProcessEnv): boolean {

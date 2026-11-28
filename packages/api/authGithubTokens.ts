@@ -4,6 +4,14 @@ import {
     updateVisualPreviewCredentialForCurrentOwner,
     visualPreviewOAuthCredentialService,
 } from './services/visualPreviewOAuth.js';
+import {
+    DEVICE_SIGN_IN_EXPIRED,
+    deviceRefreshRequiresReauth,
+    isDeviceGrant,
+    readRefreshErrorCode,
+    type RelayRefreshFailure,
+} from './deviceGrantRenewal.js';
+import { buildTokenRefreshRequest } from './githubRefreshRequest.js';
 import { githubUserGrantService } from './githubUserGrantService.js';
 import type { GitHubUserGrantService } from './githubUserGrantService.js';
 
@@ -43,6 +51,12 @@ const defaultRefreshDependencies: Required<GitHubTokenRefreshDependencies> = {
 
 function isUnrecoverableRefreshError(error?: string): boolean {
     return error === 'bad_refresh_token' || error === 'invalid_grant';
+}
+
+/** Device sign-ins also give up on a relay without the refresh route (deviceGrantRenewal.ts). */
+function refreshRequiresReauth(user: NonNullable<Request['user']>, failure: RelayRefreshFailure): boolean {
+    if (isDeviceGrant(user)) return deviceRefreshRequiresReauth(failure);
+    return failure.status === undefined && isUnrecoverableRefreshError(failure.error);
 }
 
 export function isGitHubTokenExpired(req: Request): boolean {
@@ -169,6 +183,11 @@ async function synchronizeFromStoredGrant(
         || stored.refreshToken !== user.refreshToken
     );
     if (force && !alreadyRotated) stored = await service.resolve(user.id, true);
+    // The stored device grant could not be renewed: neither can this session's copy.
+    if (stored.status === 'reauth_required' && stored.reason === DEVICE_SIGN_IN_EXPIRED && isDeviceGrant(user)) {
+        await markGitHubSessionReauthRequired(req, DEVICE_SIGN_IN_EXPIRED);
+        return { status: 'reauth-required' };
+    }
     if (stored.status === 'missing' || stored.status === 'reauth_required') return null;
     if (stored.status === 'temporarily_unavailable') return { status: 'temporarily-unavailable' };
 
@@ -221,43 +240,6 @@ async function adoptSharedGrantAfterRejectedRefresh(
     }
 }
 
-function buildTokenRefreshRequest(user: NonNullable<Request['user']>): { endpoint: string; init: RequestInit } {
-    if (user.oauthSource === 'connect') {
-        const relayUrl = process.env.PROPR_GH_RELAY_URL?.trim().replace(/\/+$/, '');
-        const relayToken = process.env.PROPR_GH_RELAY_TOKEN?.trim();
-        if (!relayUrl || !relayToken) throw new Error('ProPR Connect credentials are unavailable for token refresh');
-        const endpoint = new URL(`${relayUrl}/auth/instance-grants/refresh`);
-        if (endpoint.protocol !== 'https:' && endpoint.hostname !== 'localhost' && endpoint.hostname !== '127.0.0.1') {
-            throw new Error('PROPR_GH_RELAY_URL must use HTTPS');
-        }
-        return {
-            endpoint: endpoint.toString(),
-            init: {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'Authorization': `Bearer ${relayToken}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ refresh_token: user.refreshToken }),
-            },
-        };
-    }
-    return {
-        endpoint: 'https://github.com/login/oauth/access_token',
-        init: {
-            method: 'POST',
-            headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                client_id: process.env.GH_OAUTH_CLIENT_ID,
-                client_secret: process.env.GH_OAUTH_CLIENT_SECRET,
-                grant_type: 'refresh_token',
-                refresh_token: user.refreshToken,
-            }),
-        },
-    };
-}
-
 /** Refresh a durable server credential without constructing a browser session.
  * The caller serializes access to, and persists, this user credential.
  */
@@ -278,9 +260,12 @@ export async function refreshStoredGitHubCredential(user: NonNullable<Request['u
     }
     const request = buildTokenRefreshRequest(user);
     const response = await fetch(request.endpoint, { ...request.init, signal: AbortSignal.timeout(TOKEN_REFRESH_TIMEOUT_MS), redirect: 'error' });
-    if (!response.ok) return { status: 'temporarily-unavailable' };
+    if (!response.ok) {
+        const failure = { status: response.status, error: await readRefreshErrorCode(response) };
+        return { status: refreshRequiresReauth(user, failure) ? 'reauth-required' : 'temporarily-unavailable' };
+    }
     const data = await response.json() as GitHubTokenRefreshResponse;
-    if (data.error) return { status: isUnrecoverableRefreshError(data.error) ? 'reauth-required' : 'temporarily-unavailable' };
+    if (data.error) return { status: refreshRequiresReauth(user, { error: data.error }) ? 'reauth-required' : 'temporarily-unavailable' };
     if (!data.access_token) return { status: 'temporarily-unavailable' };
     user.accessToken = data.access_token;
     if (data.refresh_token) user.refreshToken = data.refresh_token;
@@ -360,20 +345,26 @@ async function performGitHubTokenRefresh(
         });
         if (!response.ok) {
             console.error(`GitHub token refresh failed with status ${response.status}`);
+            if (isDeviceGrant(user)
+                && deviceRefreshRequiresReauth({ status: response.status, error: await readRefreshErrorCode(response) })) {
+                await markGitHubSessionReauthRequired(req, DEVICE_SIGN_IN_EXPIRED);
+                return { status: 'reauth-required' };
+            }
             return { status: 'temporarily-unavailable' };
         }
 
         const data = await response.json() as GitHubTokenRefreshResponse;
         if (data.error) {
             console.error(`GitHub token refresh error: ${data.error} - ${data.error_description}`);
-            if (isUnrecoverableRefreshError(data.error)) {
+            if (refreshRequiresReauth(user, { error: data.error })) {
                 const adopted = await synchronizeFromStoredGrant(req, false, dependencies.userGrantService);
                 if (adopted?.accessToken) return { ...adopted, status: 'refreshed' };
                 const sharedAdoption = await adoptSharedGrantAfterRejectedRefresh(req, dependencies.visualPreviewService);
                 if (sharedAdoption) return sharedAdoption;
                 await markGitHubSessionReauthRequired(req, data.error);
+                return { status: 'reauth-required' };
             }
-            return { status: isUnrecoverableRefreshError(data.error) ? 'reauth-required' : 'temporarily-unavailable' };
+            return { status: 'temporarily-unavailable' };
         }
         if (!data.access_token) {
             console.error('GitHub token refresh response missing access_token');

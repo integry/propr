@@ -19,6 +19,8 @@ export interface RequestRateLimitPolicies {
   operator: RequestRateLimitPolicy;
   pairingStart: RequestRateLimitPolicy;
   pairingPoll: RequestRateLimitPolicy;
+  deviceSignInStart: RequestRateLimitPolicy;
+  deviceSignInPoll: RequestRateLimitPolicy;
   webhook: RequestRateLimitPolicy;
 }
 
@@ -29,6 +31,8 @@ const DEFAULT_POLICIES: RequestRateLimitPolicies = {
   operator: { identifier: 'operator-recovery', limit: 30, windowMs: 60_000 },
   pairingStart: { identifier: 'desktop-pairing-start', limit: 10, windowMs: 15 * 60_000 },
   pairingPoll: { identifier: 'desktop-pairing-poll', limit: 180, windowMs: 15 * 60_000 },
+  deviceSignInStart: { identifier: 'device-sign-in-start', limit: 10, windowMs: 15 * 60_000 },
+  deviceSignInPoll: { identifier: 'device-sign-in-poll', limit: 300, windowMs: 15 * 60_000 },
   webhook: { identifier: 'webhook', limit: 300, windowMs: 60_000 },
 };
 
@@ -128,6 +132,16 @@ export function resolveRequestRateLimitPolicies(
       identifier: 'desktop-pairing-poll',
       limit: positiveInteger(environment, 'PROPR_PAIRING_POLL_RATE_LIMIT_MAX', DEFAULT_POLICIES.pairingPoll.limit),
       windowMs: windowMilliseconds(environment, 'PROPR_PAIRING_POLL_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.pairingPoll.windowMs),
+    },
+    deviceSignInStart: {
+      identifier: 'device-sign-in-start',
+      limit: positiveInteger(environment, 'PROPR_DEVICE_SIGN_IN_START_RATE_LIMIT_MAX', DEFAULT_POLICIES.deviceSignInStart.limit),
+      windowMs: windowMilliseconds(environment, 'PROPR_DEVICE_SIGN_IN_START_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.deviceSignInStart.windowMs),
+    },
+    deviceSignInPoll: {
+      identifier: 'device-sign-in-poll',
+      limit: positiveInteger(environment, 'PROPR_DEVICE_SIGN_IN_POLL_RATE_LIMIT_MAX', DEFAULT_POLICIES.deviceSignInPoll.limit),
+      windowMs: windowMilliseconds(environment, 'PROPR_DEVICE_SIGN_IN_POLL_RATE_LIMIT_WINDOW_MS', DEFAULT_POLICIES.deviceSignInPoll.windowMs),
     },
     webhook: {
       identifier: 'webhook',

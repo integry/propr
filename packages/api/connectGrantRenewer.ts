@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { Knex } from 'knex';
 import { issueOAuthGrantRevision } from '@propr/core';
 import type { GitHubUser } from './authTypes.js';
+import { DEVICE_SIGN_IN } from './deviceGrantRenewal.js';
 import {
   RELAY_RENEWAL,
   RENEWAL_LEASE_MS,
@@ -36,6 +37,17 @@ export function isRelayRenewable(row: RenewableGrantRow): boolean {
   return row.source === 'connect' && row.renewal === RELAY_RENEWAL;
 }
 
+/**
+ * 'relay': relay-held renewal. 'device': a device sign-in renewed with its own
+ * refresh token, whose unrecoverable renewal failures require a new code.
+ * null: any other refresh-token renewal.
+ */
+function captureRenewal(user: Pick<GitHubUser, 'oauthSource' | 'connectRenewal' | 'signInMethod'>): string | null {
+  if (user.oauthSource !== 'connect') return null;
+  if (user.connectRenewal === RELAY_RENEWAL) return RELAY_RENEWAL;
+  return user.signInMethod === DEVICE_SIGN_IN ? DEVICE_SIGN_IN : null;
+}
+
 function timestamp(value: number | string | null): number | undefined {
   if (value === null) return undefined;
   const parsed = Number(value);
@@ -65,11 +77,11 @@ export class ConnectGrantRenewer {
   ) {}
 
   /** Renewal columns for a new sign-in, which replaces the renewal mode. Older relays send none. */
-  async captureColumns(user: Pick<GitHubUser, 'oauthSource' | 'connectRenewal'>): Promise<Record<string, unknown>> {
+  async captureColumns(user: Pick<GitHubUser, 'oauthSource' | 'connectRenewal' | 'signInMethod'>): Promise<Record<string, unknown>> {
     this.renewalColumns ??= this.database.schema.hasColumn('github_user_grants', 'renewal').catch(() => false);
     if (!await this.renewalColumns) return {};
     return {
-      renewal: user.oauthSource === 'connect' && user.connectRenewal === RELAY_RENEWAL ? RELAY_RENEWAL : null,
+      renewal: captureRenewal(user),
       renewal_lease_owner: null,
       renewal_lease_until_ms: null,
       renewal_retry_after_ms: null,

@@ -29,9 +29,9 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 333
+    total: 337
     documented: 95
-    undocumented: 238
+    undocumented: 242
 servers:
   - url: "{origin}"
     description: Your ProPR API origin, for example the value of `API_PUBLIC_URL`.
@@ -1779,6 +1779,54 @@ paths:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: public
       x-legacy-error: true
+  /api/auth/device/cancel:
+    post:
+      operationId: postApiAuthDeviceCancel
+      summary: POST /api/auth/device/cancel
+      description: This route is registered but not documented yet.
+      tags:
+        - Authentication
+      security: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-undocumented: true
+      x-legacy-error: true
+  /api/auth/device/poll:
+    post:
+      operationId: postApiAuthDevicePoll
+      summary: POST /api/auth/device/poll
+      description: This route is registered but not documented yet.
+      tags:
+        - Authentication
+      security: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-undocumented: true
+      x-legacy-error: true
+  /api/auth/device/start:
+    post:
+      operationId: postApiAuthDeviceStart
+      summary: POST /api/auth/device/start
+      description: This route is registered but not documented yet.
+      tags:
+        - Authentication
+      security: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-undocumented: true
+      x-legacy-error: true
   /api/auth/github:
     get:
       operationId: startGitHubLogin
@@ -1820,6 +1868,22 @@ paths:
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: public
+      x-legacy-error: true
+  /api/auth/sign-in-method:
+    get:
+      operationId: getApiAuthSignInMethod
+      summary: GET /api/auth/sign-in-method
+      description: This route is registered but not documented yet.
+      tags:
+        - Authentication
+      security: []
+      responses:
+        "200":
+          description: Success. The response body is not documented yet.
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: public
+      x-undocumented: true
       x-legacy-error: true
   /api/auth/user:
     get:

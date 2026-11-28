@@ -54,6 +54,10 @@ export const DIRECT_ROUTE_REGISTRATIONS: readonly RegisteredRoute[] = [
   { method: 'get', path: '/api/auth/logout', auth: 'public', source: 'auth.ts' },
   { method: 'get', path: '/api/auth/user', auth: 'member', source: 'auth.ts' },
   { method: 'get', path: '/api/auth/demo-mode', auth: 'public', source: 'auth.ts' },
+  { method: 'get', path: '/api/auth/sign-in-method', auth: 'public', source: 'auth.ts' },
+  { method: 'post', path: '/api/auth/device/start', auth: 'public', source: 'deviceAuth.ts' },
+  { method: 'post', path: '/api/auth/device/poll', auth: 'public', source: 'deviceAuth.ts' },
+  { method: 'post', path: '/api/auth/device/cancel', auth: 'public', source: 'deviceAuth.ts' },
 
   { method: 'get', path: '/api/desktop/discovery', auth: 'public', source: 'desktopApiBoundary.ts' },
   { method: 'post', path: '/api/desktop/pairings', auth: 'public', source: 'desktopApiBoundary.ts' },

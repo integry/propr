@@ -28,6 +28,16 @@ export const DEFAULT_PROPR_ROUTING_URL = 'wss://webhook.propr.dev';
 export const DEFAULT_PROPR_GH_RELAY_URL = 'https://webhook.propr.dev/v1';
 
 /**
+ * Public client ID of the shared `propr-dev` GitHub App behind the hosted
+ * relay (PROPR_GH_DEVICE_CLIENT_ID overrides it, for example for a self-hosted
+ * relay with its own App). Relay-enrolled instances sign browsers in with
+ * GitHub's device flow, which needs only this public ID: no client secret and
+ * no callback URL, so it works on any hostname, port or private network.
+ * Device Flow must be enabled in the App's settings.
+ */
+export const DEFAULT_PROPR_GH_DEVICE_CLIENT_ID = 'Iv23liTCmmSNYyD0NtZA';
+
+/**
  * Default endpoint contract for a ProPR API published on the local machine.
  * Keep consumers on these derived values so desktop connection prompts, local
  * setup, and the launcher cannot silently choose different ports.
