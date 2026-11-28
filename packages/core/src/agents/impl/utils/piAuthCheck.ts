@@ -23,7 +23,7 @@ export function buildPiAuthCheckDockerArgs(params: { config: AgentConfig; config
     const containerName = `${(config.alias || 'pi').replace(/[^a-zA-Z0-9_.-]/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 64) || 'pi'}-auth-check-${createContainerExecutionId(params.taskId)}`;
     return {
         args: [
-            'run', '--rm', '-i', '--name', containerName.slice(0, 128), '--security-opt', 'no-new-privileges', '--network', 'none', '--user', '0:0',
+            'run', '--pull=never', '--rm', '-i', '--name', containerName.slice(0, 128), '--security-opt', 'no-new-privileges', '--network', 'none', '--user', '0:0',
             ...configMountArgs,
             '-e', 'PROPR_AGENT_TYPE=pi',
             '-e', `PROPR_PI_SOURCE_DIR=${PI_CONTAINER_SOURCE_DIR}`,

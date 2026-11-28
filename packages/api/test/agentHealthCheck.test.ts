@@ -180,16 +180,16 @@ test('distinguishes authentication, quota, HTTP 429, and unrelated failures for 
   assert.equal((await check(config.id))?.errorCode, 'rate_limit');
 });
 
-test('agents with a credential check answer from it without running a prompt', async () => {
+test('Pi checks the default model provider without running a prompt', async () => {
   const pi: AgentConfig = {
     id: 'pi', type: 'pi', alias: 'pi', enabled: true, configPath: '~/.pi/agent', dockerImage: 'propr/agent:test',
     supportedModels: ['pi-openrouter/mistralai/devstral-2512', 'pi-anthropic/claude-sonnet-5-5'], defaultModel: 'pi-openrouter/mistralai/devstral-2512',
   };
   const outcomes = [
-    { status: 'ready', provider: 'anthropic', authType: 'oauth' },
-    { status: 'not_ready', provider: 'anthropic', reason: 'credentials_not_configured', message: 'Pi has no credentials for anthropic.' },
-    { status: 'invalid', provider: 'anthropic', reason: 'invalid_state', message: 'Pi\'s anthropic credentials are invalid (invalid_state).' },
-    { status: 'not_ready', provider: 'anthropic', reason: 'provider_not_found', message: 'Pi does not know the provider "anthropic".' },
+    { status: 'ready', provider: 'openrouter', authType: 'api_key' },
+    { status: 'not_ready', provider: 'openrouter', reason: 'credentials_not_configured', message: 'Pi has no credentials for openrouter.' },
+    { status: 'invalid', provider: 'openrouter', reason: 'invalid_state', message: 'Pi\'s openrouter credentials are invalid (invalid_state).' },
+    { status: 'not_ready', provider: 'openrouter', reason: 'provider_not_found', message: 'Pi does not know the provider "openrouter".' },
   ] as const;
   const checkedModels: string[] = [];
   const check = createAgentHealthCheck({
@@ -199,16 +199,48 @@ test('agents with a credential check answer from it without running a prompt', a
       checkCredentials: async (model: string) => { checkedModels.push(model); return outcomes[checkedModels.length - 1]; },
     }),
   });
-  assert.deepEqual(await check('pi'), { agentId: 'pi', model: 'pi-anthropic/claude-sonnet-5-5', status: 'ready' });
+  assert.deepEqual(await check('pi'), { agentId: 'pi', model: pi.defaultModel, status: 'ready' });
   const notReady = await check('pi', true);
   assert.equal(notReady?.status, 'error');
   assert.equal(notReady?.errorCode, 'auth_required');
-  assert.match(notReady?.error ?? '', /no credentials for anthropic/);
+  assert.match(notReady?.error ?? '', /no credentials for openrouter/);
   const invalid = await check('pi', true);
   assert.equal(invalid?.errorCode, 'auth_required');
   assert.match(invalid?.error ?? '', /invalid/);
   assert.equal((await check('pi', true))?.errorCode, 'unknown', 'an unknown provider is not a login problem');
-  assert.deepEqual(checkedModels, Array(4).fill('pi-anthropic/claude-sonnet-5-5'), 'the probe model picks the provider');
+  assert.deepEqual(checkedModels, Array(4).fill(pi.defaultModel));
+  assert.equal(agentHealthModel({ ...pi, defaultModel: undefined }), pi.supportedModels[0]);
+  assert.equal(agentHealthModel({ ...pi, defaultModel: undefined, supportedModels: [] }), undefined);
+});
+
+test('Pi rechecks readiness when the default provider changes during the credential probe', async () => {
+  const anthropic = 'pi-anthropic/claude-sonnet-5-5';
+  const openrouter = 'pi-openrouter/mistralai/devstral-2512';
+  let pi: AgentConfig = { ...config, id: 'pi', type: 'pi', supportedModels: [anthropic, openrouter], defaultModel: anthropic };
+  const checkedModels: string[] = [];
+  let finish!: () => void;
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [pi],
+    createAgent: () => ({
+      analyze: async () => { throw new Error('A credential check must not run a prompt'); },
+      checkCredentials: async model => {
+        checkedModels.push(model);
+        if (model === anthropic) {
+          await new Promise<void>(resolve => { finish = resolve; });
+          return { status: 'ready', provider: 'anthropic' };
+        }
+        return { status: 'not_ready', provider: 'openrouter' };
+      },
+    }),
+  });
+  const pending = check(pi.id);
+  await new Promise(resolve => setImmediate(resolve));
+  pi = { ...pi, defaultModel: openrouter };
+  finish();
+  assert.deepEqual(await pending, {
+    agentId: 'pi', model: openrouter, status: 'error', errorCode: 'auth_required', error: 'Credentials are not configured.',
+  });
+  assert.deepEqual(checkedModels, [anthropic, openrouter]);
 });
 
 test('an unreadable login is not ready with its actionable reason, without a provider call', async () => {

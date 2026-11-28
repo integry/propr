@@ -7,7 +7,6 @@ import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAcce
 import logger from '../../utils/logger.js';
 import type { Agent, AgentConfig, AgentCredentialCheckResult, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { executeDockerCommand, type ExecutionResult as DockerCommandResult } from '../../claude/docker/dockerExecutor.js';
-import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
 import { isAgentCapacityError } from '../agentCapacity.js';
 import { resolveConfigPath, AgentConfigPathUnavailableError, loadModelReasoningLevel, resolveAgentModelReasoningLevel, resolvePiReasoningLevel, type PiThinkingLevel } from '../../config/configManager.js';
@@ -16,7 +15,7 @@ import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysi
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { analysisReasoningLevelField, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
 import { buildPromptWithRetryContext, buildLogMetadata } from './utils/vibeAgentHelpers.js';
-import { buildPiDockerArgs, forwardablePiEnvVars, type PiDockerArgsParams, type PiDockerInvocation } from './utils/piDockerArgsBuilder.js';
+import { buildPiDockerArgs, type PiDockerArgsParams, type PiDockerInvocation } from './utils/piDockerArgsBuilder.js';
 import { buildPiFailureMessage, isSuccessfulPiResult, parsePiOutput, type ParsedPiOutput } from './utils/piOutputParser.js';
 import { buildPiAuthCheckDockerArgs, runPiAuthCheck, type PiAuthCheckRunner } from './utils/piAuthCheck.js';
 import { toPiCliModel } from './piModelIds.js';
@@ -241,23 +240,12 @@ export class PiAgent implements Agent {
     }
 
     async healthCheck(): Promise<boolean> {
-        logger.debug({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Running health check for Pi agent...');
+        const model = this.config.defaultModel || this.config.supportedModels[0];
+        if (!model) return false;
         try {
-            const imageExists = await agentDockerImageExists(this.config.dockerImage, 10000);
-            if (!imageExists) {
-                logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage }, 'Health check failed: Docker image not found');
-                return false;
-            }
-            const configPath = this.resolveOptionalConfigPath();
-            const hasAuthFile = !!configPath && fs.existsSync(path.join(configPath, 'auth.json'));
-            const hasApiKey = Object.keys(forwardablePiEnvVars(this.config.envVars)).some(name => /_(API_KEY|TOKEN)$/.test(name));
-            if (!hasAuthFile && !hasApiKey) {
-                logger.warn({ agentAlias: this.config.alias, configPath }, 'Health check warning: no Pi credentials found (run `pi auth login` for ~/.pi/agent or set a provider API key)');
-            }
-            logger.info({ agentAlias: this.config.alias, dockerImage: this.config.dockerImage, hasAuthFile, hasApiKey }, 'Health check passed');
-            return true;
-        } catch (error) {
-            logger.error({ agentAlias: this.config.alias, error: (error as Error).message }, 'Health check failed with error');
+            return (await this.checkCredentials(model)).status === 'ready';
+        } catch {
+            logger.warn({ agentAlias: this.config.alias }, 'Pi credential check could not run');
             return false;
         }
     }

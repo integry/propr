@@ -140,7 +140,11 @@ test('native fixtures capture with a verified credential context or refuse with 
         const stores = { codex: 'auth.json', claude: '.credentials.json', antigravity: 'oauth_creds.json', opencode: 'auth.json', vibe: 'credentials.json', pi: 'auth.json' };
         for (const provider of providers) {
             fs.mkdirSync(homes[provider], { recursive: true });
-            fs.writeFileSync(path.join(homes[provider], stores[provider]), JSON.stringify({ access_token: `opaque-${provider}-store-canary` }));
+            const token = `opaque-${provider}-store-canary`;
+            const credentials = provider === 'pi'
+                ? { openrouter: { type: 'api_key', key: token } }
+                : { access_token: token };
+            fs.writeFileSync(path.join(homes[provider], stores[provider]), JSON.stringify(credentials));
         }
         const result = run(root, `
             const outcomes = {};

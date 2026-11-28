@@ -1,4 +1,4 @@
-import { after, describe, test } from 'node:test';
+import { after, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -68,6 +68,7 @@ describe('buildPiAuthCheckDockerArgs', () => {
             assert.deepEqual(invocation.args.slice(-7), ['pi', 'auth', 'check', '--provider', 'openrouter', '--json', '--no-refresh']);
             assert.ok(invocation.args.includes(`${dir}:/home/node/.pi/agent:ro`));
             assert.equal(invocation.args[invocation.args.indexOf('--network') + 1], 'none');
+            assert.ok(invocation.args.includes('--pull=never'));
             assert.ok(invocation.args.includes('PROPR_AGENT_TYPE=pi'));
             assert.deepEqual(invocation.secretEnv, { OPENROUTER_API_KEY: 'sk-or-secret' }, 'reserved Pi variables are not forwarded');
             assert.ok(invocation.args.includes('OPENROUTER_API_KEY'));
@@ -82,6 +83,19 @@ describe('buildPiAuthCheckDockerArgs', () => {
         assert.ok(!invocation.args.includes('-v'));
         assert.throws(() => buildPiAuthCheckDockerArgs({ config: piConfig(), provider: '--json' }), /Invalid Pi provider/);
     });
+});
+
+test('Pi status health checks credentials for the default model or the first supported model', async () => {
+    const anthropic = 'pi-anthropic/claude-sonnet-5-5';
+    const openrouter = 'pi-openrouter/mistralai/devstral-2512';
+    for (const defaultModel of [openrouter, undefined]) {
+        const agent = new PiAgent(piConfig({ supportedModels: [anthropic, openrouter], defaultModel }));
+        const credentials = mock.method(agent, 'checkCredentials', async (model: string) => model === openrouter
+            ? { status: 'ready', provider: 'openrouter' }
+            : { status: 'not_ready', provider: 'anthropic' });
+        assert.equal(await agent.healthCheck(), defaultModel === openrouter);
+        assert.deepEqual(credentials.mock.calls.map(call => call.arguments), [[defaultModel ?? anthropic]]);
+    }
 });
 
 describe('PiAgent.checkCredentials', () => {

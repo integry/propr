@@ -4,16 +4,17 @@ import { AGENT_MODELS } from '@propr/shared';
 
 // Prefer inexpensive, quick models already offered by this configuration.
 // Codex login accounts may not offer API-only nano models, so prefer Luna.
-const PROBE_MODELS: Record<AgentConfig['type'], string[]> = {
+const PROBE_MODELS: Record<Exclude<AgentConfig['type'], 'pi'>, string[]> = {
   claude: ['claude-haiku-5-5', 'claude-haiku-4-5-20251001', ...AGENT_MODELS.claude.map(model => model.id).filter(id => id.includes('sonnet'))],
   codex: ['gpt-6-luna', 'gpt-5.6-luna', 'gpt-5.3-codex-spark', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5-nano', 'gpt-5-mini', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'],
   antigravity: AGENT_MODELS.antigravity.map(model => model.id).filter(id => id.includes('flash')),
   opencode: ['opencode-deepseek-v4.1-flash-free', 'opencode-nemotron-3.5-lightning-free', 'opencode-big-pickle', ...AGENT_MODELS.opencode.map(model => model.id)],
   vibe: ['mistral-medium-3.5'],
-  pi: ['pi-anthropic/claude-haiku-5-5', 'pi-anthropic/claude-sonnet-5-5'],
 };
 
 export function agentHealthModel(config: AgentConfig): string | undefined {
+  // Pi checks credentials for one provider without invoking a model.
+  if (config.type === 'pi') return config.defaultModel || config.supportedModels[0];
   return PROBE_MODELS[config.type].find(model => config.supportedModels.includes(model))
     ?? (config.defaultModel && config.supportedModels.includes(config.defaultModel) ? config.defaultModel : undefined)
     ?? config.supportedModels[0];
