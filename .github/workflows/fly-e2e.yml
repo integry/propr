@@ -332,19 +332,21 @@ jobs:
           [[ $RUNTIME_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ && $SPRITE_DISTRO_PACKAGE =~ ^[a-z0-9][a-z0-9+.-]*$ ]]
           packages=$(jq -cn --arg pkg "$RUNTIME_PACKAGE" --arg distro "$SPRITE_DISTRO_PACKAGE" --arg runtime "$AGENT_RUNTIME" \
             '[$pkg] + (if $runtime == "sprites" then [$distro] else [] end) | sort')
-          setup=$(sed -e "s/__RUNTIME_PACKAGES__/$packages/" -e "s/__AGENT_RUNTIME__/$AGENT_RUNTIME/" -e "s/__AGENT__/$AGENT/" <<'JS' | base64 -w0
+          # agent-credential-store.mjs resolves the agent's configPath the way the credential install does.
+          setup=$({ cat .github/fly-e2e/agent-credential-store.mjs
+            sed -e "s/__RUNTIME_PACKAGES__/$packages/" -e "s/__AGENT_RUNTIME__/$AGENT_RUNTIME/" -e "s/__AGENT__/$AGENT/" <<'JS'
           const {
             saveAgents, closeConnection, AGENT_DEFAULTS, agentRuntimePackagesDigest,
             requestAgentRuntimePackageBuild, buildAgentRuntimePackageProfile,
           } = await import('@propr/core');
-          const { getManagedAgentConfigPath } = await import('@propr/shared');
           // The selected agent, with its id and alias the agent type, on the managed credential directory.
           const type = '__AGENT__';
+          const store = await agentCredentialStore(type);
           const { dockerImage, defaultModels, defaultCliVersion } = AGENT_DEFAULTS[type];
-          const defaultModel = process.env[`PROPR_E2E_${type.toUpperCase()}_MODEL`]?.trim()
+          const defaultModel = store.env.get(`PROPR_E2E_${type.toUpperCase()}_MODEL`)?.trim()
             || (type === 'claude' ? 'claude-sonnet-5-5' : defaultModels[0]);
           await saveAgents([{ id: type, type, alias: type, enabled: true,
-            configPath: getManagedAgentConfigPath(type, type), dockerImage,
+            configPath: store.configPath, dockerImage,
             supportedModels: [...new Set([...defaultModels, defaultModel])], defaultModel }]);
           console.log('PROPR_E2E_AGENT ' + JSON.stringify({ type, defaultModel, cliVersion: defaultCliVersion }));
           // Settings → Agent runtime packages → Apply: the API records the list
@@ -362,7 +364,7 @@ jobs:
           if (state.status !== 'ready' || !state.appliedBy || state.activePackages.join() !== packages.join()
             || accepted?.packages.join() !== packages.join()) process.exit(1);
           JS
-          )
+          } | base64 -w0)
           flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'" |
             tee "$OUT/runtime-packages.log"
           applied=$(sed -n 's/^PROPR_RUNTIME_PACKAGES //p' "$OUT/runtime-packages.log" | tr -d '\r' | tail -n 1)
@@ -388,30 +390,10 @@ jobs:
           else
             # The same install for the other agents: their credential file, into their managed credential
             # directory on the volume. Every runtime then copies it to the run as that agent configuration's store.
-            install=$(sed -e "s/__AGENT__/$AGENT/" -e "s/__KEY__/$AGENT_CREDENTIAL_KEY/" -e "s/__FILE__/$AGENT_CREDENTIAL_FILE/" <<'JS' | base64 -w0
-          import { chmod, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-          import { randomUUID } from 'node:crypto';
-          import { join } from 'node:path';
-          import { getManagedAgentConfigPath, getManagedAgentConfigRelativePath } from '@propr/shared';
-          const config = getManagedAgentConfigPath('__AGENT__', '__AGENT__');
-          const dir = join(process.env.PROPR_MANAGED_CREDENTIALS_DIR, getManagedAgentConfigRelativePath(config));
-          const content = Buffer.from(process.env.__KEY__ || '', 'base64');
-          if (!content.length) throw new Error('__KEY__ decoded to an empty file');
-          await mkdir(dir, { recursive: true, mode: 0o700 });
-          await chmod(dir, 0o700);
-          const file = join(dir, '__FILE__');
-          const temp = join(dir, `.credential-${randomUUID()}`);
-          try {
-            await writeFile(temp, content, { flag: 'wx', mode: 0o600 });
-            await rename(temp, file);
-          } finally {
-            await rm(temp, { force: true });
-          }
-          const { size } = await stat(file);
-          if (!size) throw new Error('Installed __FILE__ is empty');
-          console.log(size);
-          JS
-            )
+            # The store and the managed credential directory resolve as in the agent save above (vibe's
+            # store has no managed login layout, so it gets an absolute path in the same directory).
+            install=$(cat .github/fly-e2e/agent-credential-store.mjs .github/fly-e2e/install-agent-credential.mjs |
+              sed -e "s/__AGENT__/$AGENT/g" -e "s/__KEY__/$AGENT_CREDENTIAL_KEY/g" -e "s/__FILE__/$AGENT_CREDENTIAL_FILE/g" | base64 -w0)
             flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $install | base64 -d | node --input-type=module'"
           fi
 

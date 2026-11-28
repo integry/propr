@@ -1,6 +1,9 @@
 # Source this file. The smoke configures each agent the way an operator does: one file of the
 # agent configuration's credential store, carried in FLY_E2E_APP_ENV as single-line base64 and
 # installed into the agent's managed credential directory on the volume (see setup-fly.md).
+# agent-credential-store.mjs locates that directory (PROPR_MANAGED_CREDENTIALS_DIR, else
+# $DATA_DIR/agent-credentials, read from the app process because an SSH session lacks the app's env)
+# for both the agent save and install-agent-credential.mjs. Vibe's store gets an absolute path there.
 # The optional secret FLY_E2E_APP_ENV_EXTRA, in the same KEY=value line format, is appended to
 # FLY_E2E_APP_ENV wherever the app env is used (app_env_with_extra), so keys such as VIBE_ENV_B64
 # or OPENCODE_CONFIG_B64 can be added without rewriting the main secret. Its keys must not repeat
