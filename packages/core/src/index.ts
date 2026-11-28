@@ -381,6 +381,7 @@ export * from './agents/credentials/broker.js';
 export * from './agents/credentials/providerManifests.js';
 export {
     applyPastedCredential, describePastedCredentials, MAX_PASTED_CREDENTIAL_BYTES, PastedCredentialError, removePastedCredential, storedLoginPresent,
+    withoutPastedClaudeAuthentication,
     type CredentialFileReader,
 } from './agents/credentials/pastedCredentials.js';
 export { readCredentialStoreFile, writeCredentialStoreFiles, type CredentialStoreWrite, type CredentialStoreWrites, type CredentialStoreWriterOptions } from './agents/credentials/credentialStoreWriter.js';

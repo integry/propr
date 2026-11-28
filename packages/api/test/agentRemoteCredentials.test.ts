@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { Response } from 'express';
-import { closeConnection, credentialRunRoot, RemoteLoginCapacityError, shutdownQueue, withCredentialStoreLock, type AgentConfig, type RemoteLoginProcess, type RemoteLoginRequest } from '@propr/core';
+import { closeConnection, credentialRunRoot, MAX_RETURNED_CREDENTIAL_BYTES, RemoteLoginCapacityError, shutdownQueue, withCredentialStoreLock, type AgentConfig, type RemoteLoginProcess, type RemoteLoginRequest } from '@propr/core';
 import { getManagedAgentConfigPath } from '@propr/shared';
 import type { FlatRequest } from '../requestTypes.js';
 import { createAgentLoginRoutes } from '../routes/agentLoginRoutes.js';
@@ -145,6 +145,48 @@ describe('pasted agent credentials', () => {
     await storeReturnedLoginFiles(opencode, [{ store: 'data', path: 'auth.json', content: Buffer.from('{"anthropic":{"type":"api","key":"k"}}') }]);
     assert.ok(fs.existsSync(path.join(root, opencode.id, '.local/share/opencode/auth.json')));
     await assert.rejects(storeReturnedLoginFiles(opencode, [{ store: 'config', path: 'opencode.json', content: Buffer.from('{}') }]), /Unexpected login file/);
+  });
+
+  test('an oversized existing settings.json is refused, not overwritten, by set and remove', async () => {
+    const claude = agent('claude');
+    fs.mkdirSync(storeDir(claude), { recursive: true });
+    const settingsPath = path.join(storeDir(claude), 'settings.json');
+    const oversized = JSON.stringify({ model: 'opus', padding: 'x'.repeat(MAX_RETURNED_CREDENTIAL_BYTES) });
+    fs.writeFileSync(settingsPath, oversized);
+    await assert.rejects(setAgentPastedCredential(claude, 'anthropic-api-key', 'sk-ant-api03-supersecretvalueWXYZ'),
+      (error: Error) => error instanceof AgentCredentialInputError && /settings\.json could not be read/.test(error.message));
+    await assert.rejects(clearAgentPastedCredential(claude, 'anthropic-api-key'), AgentCredentialInputError);
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), oversized);
+    // Status reporting stays tolerant.
+    assert.equal(readAgentCredentialStatus(claude).credentials.some(item => item.set), false);
+  });
+
+  test('a Claude interactive login drops a pasted key from settings.json and keeps other settings', async () => {
+    const claude = agent('claude');
+    await setAgentPastedCredential(claude, 'anthropic-api-key', 'sk-ant-api03-pastedkeyvalue00001');
+    const settingsPath = path.join(storeDir(claude), 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings, model: 'opus', env: { ...settings.env, DISABLE_TELEMETRY: '1' } }));
+    const descriptor = { type: 'claude' as const, containerConfigPath: '/home/node/.claude', command: ['claude', '/login'] };
+    const stored = await collectRemoteLoginFiles(claude, descriptor, {
+      async readFile(file) { return file.endsWith('/.credentials.json') ? Buffer.from('{"claudeAiOauth":{"refreshToken":"r"}}') : undefined; },
+    });
+    assert.equal(stored, 1);
+    assert.ok(fs.existsSync(path.join(storeDir(claude), '.credentials.json')));
+    const after = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepEqual(after, { model: 'opus', env: { DISABLE_TELEMETRY: '1' } });
+    assert.equal(readAgentCredentialStatus(claude).credentials.some(item => item.set), false);
+    assert.equal(readAgentCredentialStatus(claude).loginPresent, true);
+  });
+
+  test('a Claude login whose settings.json cannot be read stores nothing', async () => {
+    const claude = agent('claude');
+    fs.mkdirSync(storeDir(claude), { recursive: true });
+    const settingsPath = path.join(storeDir(claude), 'settings.json');
+    fs.writeFileSync(settingsPath, 'x'.repeat(MAX_RETURNED_CREDENTIAL_BYTES + 1));
+    await assert.rejects(storeReturnedLoginFiles(claude, [{ store: 'config', path: '.credentials.json', content: Buffer.from('{}') }]), AgentCredentialInputError);
+    assert.ok(!fs.existsSync(path.join(storeDir(claude), '.credentials.json')));
+    assert.equal(fs.statSync(settingsPath).size, MAX_RETURNED_CREDENTIAL_BYTES + 1);
   });
 });
 

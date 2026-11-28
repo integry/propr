@@ -8,6 +8,7 @@ import {
 } from '@propr/shared';
 import {
   applyPastedCredential,
+  CredentialBrokerError,
   describePastedCredentials,
   isLoginCredentialEntry,
   PastedCredentialError,
@@ -15,9 +16,11 @@ import {
   readCredentialStoreFile,
   removePastedCredential,
   storedLoginPresent,
+  withoutPastedClaudeAuthentication,
   writeCredentialStoreFiles,
   type AgentConfig,
   type CredentialStoreKind,
+  type CredentialStoreWrite,
 } from '@propr/core';
 import { AgentLoginInputError, resolveAgentLoginConfigPath, resolveOpenCodeDataPath } from './agentLoginDocker.js';
 
@@ -59,6 +62,11 @@ function storeRoot(stores: AgentCredentialStores, store: CredentialStoreKind): s
   return root;
 }
 
+/**
+ * Tolerant reader for status reporting only: an unreadable file reads as
+ * absent. Mutations must use {@link strictRead}, or a failed read would be
+ * merged as an empty document and overwrite the existing file.
+ */
 function reader(stores: AgentCredentialStores) {
   return (store: CredentialStoreKind, relative: string): Buffer | undefined => {
     const root = store === 'data' ? stores.data : stores.config;
@@ -66,6 +74,15 @@ function reader(stores: AgentCredentialStores) {
     try { return readCredentialStoreFile(root, relative); }
     catch { return undefined; }
   };
+}
+
+/** The current file for a read-modify-write: missing reads as undefined, any read failure is refused. */
+function strictRead(root: string, relative: string): Buffer | undefined {
+  try { return readCredentialStoreFile(root, relative); }
+  catch (error) {
+    const reason = error instanceof CredentialBrokerError ? error.message : (error as NodeJS.ErrnoException).code ?? 'read failed';
+    throw new AgentCredentialInputError(`The existing ${relative} could not be read, so it was left unchanged (${reason})`);
+  }
 }
 
 function prepareStore(agent: AgentConfig, root: string): void {
@@ -105,10 +122,9 @@ async function rewrite(
   prepareStore(agent, root);
   // Read and merge under the store lock that publishes the result, so a
   // concurrent edit of the same file is never overwritten with a stale merge.
-  const read = reader(stores);
   try {
     await writeCredentialStoreFiles(root, () => [
-      { path: definition.path, content: change(definition.kind, read(definition.store, definition.path)) },
+      { path: definition.path, content: change(definition.kind, strictRead(root, definition.path)) },
     ]);
   } catch (error) {
     if (error instanceof PastedCredentialError) throw new AgentCredentialInputError(error.message);
@@ -124,6 +140,15 @@ export function setAgentPastedCredential(agent: AgentConfig, kind: unknown, valu
 
 export function clearAgentPastedCredential(agent: AgentConfig, kind: unknown): Promise<AgentCredentialStatusResponse> {
   return rewrite(agent, kind, removePastedCredential);
+}
+
+const CLAUDE_SETTINGS = 'settings.json';
+
+/** The settings.json rewrite that drops pasted Claude authentication, read under the store lock. */
+function pastedAuthenticationCleanup(agent: AgentConfig, store: CredentialStoreKind, root: string): CredentialStoreWrite[] {
+  if (agent.type !== 'claude' || store !== 'config') return [];
+  const next = withoutPastedClaudeAuthentication(strictRead(root, CLAUDE_SETTINGS));
+  return next ? [{ path: CLAUDE_SETTINGS, content: next }] : [];
 }
 
 export interface ReturnedLoginFile {
@@ -145,6 +170,10 @@ export function loginCredentialPaths(agent: AgentConfig): { store: CredentialSto
  * session's cancellation) is checked under each store's lock immediately
  * before publication, so a session cancelled or timed out while this waited
  * for the lock stores nothing further.
+ *
+ * Storing a Claude login also removes the pasted authentication variables
+ * from the same store's settings.json, in the same locked publication, so a
+ * previously pasted key or token no longer overrides the new login.
  */
 export async function storeReturnedLoginFiles(
   agent: AgentConfig, files: readonly ReturnedLoginFile[], signal?: AbortSignal,
@@ -160,7 +189,13 @@ export async function storeReturnedLoginFiles(
     }
     const root = storeRoot(stores, store);
     prepareStore(agent, root);
-    await writeCredentialStoreFiles(root, writes.map(file => ({ path: file.path, content: file.content })), { signal });
+    const loginWrites: CredentialStoreWrite[] = writes.map(file => ({ path: file.path, content: file.content }));
+    try {
+      await writeCredentialStoreFiles(root, () => [...loginWrites, ...pastedAuthenticationCleanup(agent, store, root)], { signal });
+    } catch (error) {
+      if (error instanceof PastedCredentialError) throw new AgentCredentialInputError(error.message);
+      throw error;
+    }
     written += writes.length;
   }
   return written;

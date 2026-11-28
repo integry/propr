@@ -147,6 +147,24 @@ export function removePastedCredential(kind: PastedAgentCredentialKind, current:
     return null;
 }
 
+/**
+ * Claude's settings.json once an interactive login is stored: the pasted
+ * authentication variables are removed (they would override the new login),
+ * other settings are kept. Undefined when nothing changes; an unreadable
+ * existing file is refused rather than overwritten.
+ */
+export function withoutPastedClaudeAuthentication(current: Buffer | undefined): Buffer | undefined {
+    const settings = existingObject(current, 'settings.json');
+    if (!isObject(settings.env)) return undefined;
+    const env = { ...settings.env };
+    const names = Object.values(CLAUDE_ENV).filter(name => name! in env) as string[];
+    if (names.length === 0) return undefined;
+    for (const name of names) delete env[name];
+    const next: JsonObject = { ...settings, env };
+    if (Object.keys(env).length === 0) delete next.env;
+    return serialize(next);
+}
+
 const last4 = (value: string) => value.length >= 8 ? value.slice(-4) : undefined;
 
 function safeObject(current: Buffer | undefined): JsonObject | undefined {
