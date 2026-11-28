@@ -41,9 +41,11 @@ const { enqueueIssueJobReplacingFinished } = await import('../src/queue/issueJob
 let redis: Redis | null = null;
 let worker: Worker | null = null;
 const processed: string[] = [];
-const failures: Array<{ id?: string; attemptsMade: number; finishedOn?: number; message: string }> = [];
+const failures: Array<{ id?: string; attemptsMade: number; finishedOn?: number; message: string; data?: Record<string, unknown> }> = [];
 /** Job IDs whose processor throws once, to leave a failed job retained under that ID. */
 const failOnce = new Set<string>();
+/** Job IDs whose processor throws once and then makes admission refuse the retry. */
+const refuseAfterFailure = new Set<string>();
 
 before(async () => {
   const client = new Redis({ host: REDIS_HOST, port: REDIS_PORT, connectTimeout: 250, lazyConnect: true, maxRetriesPerRequest: null, retryStrategy: () => null });
@@ -61,10 +63,14 @@ before(async () => {
   redis = client;
   worker = await createWorker(GITHUB_ISSUE_QUEUE_NAME, async job => {
     processed.push(String(job.id));
+    if (refuseAfterFailure.delete(String(job.id))) {
+      process.env.WORKTREE_ADMISSION_RESERVE_BYTES = REFUSE;
+      throw new Error('processor failed');
+    }
     if (failOnce.delete(String(job.id))) throw new Error('processor failed');
     return { status: 'dispatched' };
   }, { concurrency: 1 });
-  worker.on('failed', (job, error) => { if (job) failures.push({ id: job.id, attemptsMade: job.attemptsMade, finishedOn: job.finishedOn, message: error.message }); });
+  worker.on('failed', (job, error) => { if (job) failures.push({ id: job.id, attemptsMade: job.attemptsMade, finishedOn: job.finishedOn, message: error.message, data: job.data }); });
 });
 
 after(async () => {
@@ -81,7 +87,8 @@ after(async () => {
   await fs.remove(root);
 });
 
-beforeEach(() => { process.env.WORKTREE_ADMISSION_RESERVE_BYTES = REFUSE; });
+beforeEach(() => { process.env.WORKTREE_ADMISSION_RESERVE_BYTES = REFUSE; delete process.env.WORKTREE_DISK_PRESSURE_MAX_WAIT_MS; });
+after(() => { delete process.env.WORKTREE_DISK_PRESSURE_MAX_WAIT_MS; });
 
 async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, what: string, ms = 15_000): Promise<T> {
   const deadline = Date.now() + ms;
@@ -140,6 +147,24 @@ test('an issue job whose wait for disk space ran out fails for good on that refu
   assert.ok(failure.message.includes(`(filesystem ${path.join(root, 'worktrees')}:`), 'the measured filesystem path is reported');
   await until(() => jobState(jobId(42)), value => value.state === 'absent', 'removal on failure');
   assert.equal(failures.filter(entry => entry.id === jobId(42)).length, 1);
+});
+
+test('a retry refused after an admitted attempt failed keeps the evidence that the job already ran', async t => {
+  if (!requireRedis(t)) return;
+  // Waiting disabled: the refused retry spends the last attempt and fails for good.
+  process.env.WORKTREE_DISK_PRESSURE_MAX_WAIT_MS = '0';
+  process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
+  refuseAfterFailure.add(jobId(47));
+  await (await getIssueQueue()).add('processGitHubIssue', issueJob(47), { ...jobOptions(47), attempts: 2 });
+  const final = await until(async () => failures.find(entry => entry.id === jobId(47) && entry.attemptsMade === 2), Boolean, 'the refused retry');
+  assert.ok(final);
+  assert.deepEqual(processed.filter(id => id === jobId(47)), [jobId(47)], 'only the first attempt entered the processor');
+  assert.match(final.message, /^Worktree disk pressure: admission reserve unavailable/);
+  assert.equal(final.data?.issueJobAdmitted, true, 'the final refusal knows an earlier attempt ran, so it is not reported as never started');
+  const { diskPressureRefusalCommentBody } = await import('../src/services/issueDiskPressureRefusal.js');
+  const body = diskPressureRefusalCommentBody({ data: final.data ?? {} }, { inPlan: false });
+  assert.doesNotMatch(body, /Nothing was changed/);
+  assert.match(body, /could not retry this issue/);
 });
 
 test('re-enqueuing an issue after a failed attempt retained under its job ID runs the job', async t => {

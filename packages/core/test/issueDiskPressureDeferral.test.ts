@@ -112,11 +112,20 @@ test('a failure is final once BullMQ will not retry it', () => {
 test('an admitted job drops the ended wait, so a later refusal starts a new one', async () => {
   const { job, calls } = fakeJob({ correlationId: 'corr', diskPressureDeferrals: 3, diskPressureSince: 5, diskPressureRetryAt: 9 });
   await endIssueDiskPressureWait(job);
-  assert.deepEqual(calls.data, [{ repoOwner: 'acme', repoName: 'repo', number: 7, correlationId: 'corr' }]);
+  assert.deepEqual(calls.data, [{ repoOwner: 'acme', repoName: 'repo', number: 7, correlationId: 'corr', issueJobAdmitted: true }]);
   await endIssueDiskPressureWait(job);
-  assert.equal(calls.data.length, 1, 'a job without a wait is not rewritten');
+  assert.equal(calls.data.length, 1, 'an admitted job without a wait is not rewritten');
   const now = 50 * HOUR;
   await assert.rejects(deferIssueJobOnDiskPressure(job, refuse, { now: () => now, maxWaitMs: HOUR }), (error: Error) => error.name === 'DelayedError');
   assert.equal((job.data as { diskPressureSince: number }).diskPressureSince, now);
   assert.equal((job.data as { diskPressureDeferrals: number }).diskPressureDeferrals, 1);
+});
+
+test('admission records on the job that an attempt entered its processor, and fails the attempt if it cannot', async () => {
+  const { job, calls } = fakeJob();
+  await endIssueDiskPressureWait(job);
+  assert.deepEqual(calls.data, [{ repoOwner: 'acme', repoName: 'repo', number: 7, issueJobAdmitted: true }], 'a first attempt without a wait is marked too');
+  // A later final refusal relies on the marker to say whether the job ever started, so it is not best effort.
+  const unwritable = { ...fakeJob().job, async updateData() { throw new Error('Connection is closed.'); } };
+  await assert.rejects(endIssueDiskPressureWait(unwritable), /Connection is closed/);
 });

@@ -1,7 +1,9 @@
 /**
  * An issue job the worker refused for disk pressure until its wait for free
- * space ran out (`issueDiskPressureDeferral.ts`) never reached its processor:
- * no task, no comment, no label change. Without this the issue looks ignored
+ * space ran out (`issueDiskPressureDeferral.ts`): the refused attempt never
+ * reached its processor, so nothing told the issue. When no earlier attempt
+ * was admitted either (`issueJobAdmitted`), the job never started at all: no
+ * task, no comment, no label change. Without this the issue looks ignored
  * and its plan keeps reporting it as in progress. This posts one comment that
  * says what stopped the run and how to retry, and takes the plan issue out of
  * `processing` (back to `pending`, with its queued execution blocked on the
@@ -24,6 +26,8 @@ export interface RefusedIssueJob {
     data: {
         repoOwner?: string; repoName?: string; number?: number; triggeringLabel?: string; correlationId?: string;
         diskPressureDeferrals?: number; diskPressureSince?: number; diskPressureDetails?: string;
+        /** An earlier attempt passed admission and entered the processor. */
+        issueJobAdmitted?: boolean;
     };
 }
 
@@ -52,11 +56,23 @@ export function diskPressureRefusalCommentBody(
     { inPlan, now = Date.now(), details = null }: { inPlan: boolean; now?: number; details?: string | null },
 ): string {
     const label = job.data.triggeringLabel || 'AI';
+    // Only the absence of an admitted attempt supports saying that the job changed nothing.
+    const startedBefore = job.data.issueJobAdmitted === true;
     return [
-        '❌ **ProPR could not start on this issue: the worker had no free disk space.**',
-        '',
-        'The ProPR worker refused to start this issue because the disk that holds its working copies is nearly full.'
-            + `${waitedText(job, now)} Nothing was changed: no branch, commit or pull request was created.`,
+        ...(startedBefore
+            ? [
+                '❌ **ProPR could not retry this issue: the worker had no free disk space.**',
+                '',
+                'An earlier attempt on this issue started and failed. The ProPR worker then refused to start its retry'
+                    + ` because the disk that holds its working copies is nearly full.${waitedText(job, now)}`
+                    + ' The refused retry changed nothing, but work from the earlier attempt (a task, a branch, commits or a pull request) may remain.',
+            ]
+            : [
+                '❌ **ProPR could not start on this issue: the worker had no free disk space.**',
+                '',
+                'The ProPR worker refused to start this issue because the disk that holds its working copies is nearly full.'
+                    + `${waitedText(job, now)} Nothing was changed: no branch, commit or pull request was created.`,
+            ]),
         '',
         ...(details ? ['Measured at the last refusal:', '', '```', details, '```', ''] : []),
         `To run it again once space has been freed on the worker host, remove the \`${label}\` label from this issue and add it again`

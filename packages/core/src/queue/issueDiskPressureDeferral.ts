@@ -2,8 +2,8 @@
  * Issue jobs refused at worker admission for disk pressure.
  *
  * `StorageLifecycle.admit` refuses a job (`WorktreeDiskPressureError`) when the
- * disk that holds working copies is nearly full. Nothing ran and nothing
- * changed, and the host frees space by itself (worktree sweeps, finished
+ * disk that holds working copies is nearly full. Nothing ran in that attempt
+ * and it changed nothing, and the host frees space by itself (worktree sweeps, finished
  * tasks), so for an issue job the refusal is a wait, not a failure: the same
  * job is delayed on a backoff measured in minutes, without consuming its
  * attempt budget, until space returns or the total wait
@@ -31,6 +31,8 @@ export interface IssueDiskPressureWaitData {
     diskPressureRetryAt?: number;
     /** What admission measured at the latest refusal, in words (`formatWorktreeDiskPressure`). */
     diskPressureDetails?: string;
+    /** An attempt of this job passed admission and entered its processor (`endIssueDiskPressureWait`). */
+    issueJobAdmitted?: boolean;
 }
 
 const MINUTE_MS = 60_000;
@@ -145,19 +147,19 @@ export async function deferIssueJobOnDiskPressure<T>(
 }
 
 /**
- * Admission passed: a wait the job went through has ended, so a later refusal
- * (on a retry after an ordinary failure) starts a new wait. Best effort.
+ * Admission passed: the processor is about to run. Records that on the job
+ * (`issueJobAdmitted`), so a later final refusal (on a retry after an ordinary
+ * failure) does not report the job as never started, and drops a wait the job
+ * went through, so that later refusal starts a new wait. The marker is the
+ * evidence the refusal report relies on, so a failed write fails the attempt
+ * before the processor runs (an ordinary, retryable failure).
  */
 export async function endIssueDiskPressureWait(job: Pick<DeferrableIssueJob, 'id' | 'data' | 'updateData'>): Promise<void> {
-    const data = job.data as IssueJobDataWithWait | undefined;
-    if (!data || data.diskPressureSince === undefined) return;
+    const data = (job.data ?? {}) as IssueJobDataWithWait;
     const waitFields = new Set(['diskPressureDeferrals', 'diskPressureSince', 'diskPressureRetryAt', 'diskPressureDetails']);
+    if (data.issueJobAdmitted === true && !Object.keys(data).some(key => waitFields.has(key))) return;
     const rest = Object.fromEntries(Object.entries(data).filter(([key]) => !waitFields.has(key)));
-    try {
-        await job.updateData(rest);
-    } catch (error) {
-        logger.warn({ jobId: job.id, error: (error as Error).message }, 'Could not clear an ended disk-pressure wait from the job');
-    }
+    await job.updateData({ ...rest, issueJobAdmitted: true });
 }
 
 type IssueJobDataWithWait = IssueDiskPressureWaitData & { correlationId?: unknown; repoOwner?: unknown; repoName?: unknown; number?: unknown; [key: string]: unknown };

@@ -139,3 +139,23 @@ test('the comment states what admission measured, from the final error or from t
   assert.equal(refusalDetails({ data: { diskPressureDetails: details } }), details);
   assert.equal(diskPressureRefusalCommentBody({ data: {} }, { inPlan: false }).includes('Measured'), false);
 });
+
+test('a refused retry of a job whose earlier attempt ran does not claim that nothing was changed', async () => {
+  // An earlier attempt passed admission, recorded its task on the plan issue and failed; its retry was refused.
+  await database('plan_issues').where({ issue_number: 2 }).update({ status: 'processing', task_id: 'task-2' });
+  const job = { ...refusedJob(2), data: { ...refusedJob(2).data, issueJobAdmitted: true } };
+  const outcome = await reportIssueDiskPressureRefusal(job, { octokit, database, now: () => NOW });
+  assert.equal(outcome.commented, true);
+  const body = String(comments[0].params.body);
+  assert.doesNotMatch(body, /could not start on this issue/);
+  assert.doesNotMatch(body, /Nothing was changed/);
+  assert.doesNotMatch(body, /no branch, commit or pull request was created/);
+  assert.match(body, /could not retry this issue: the worker had no free disk space/);
+  assert.match(body, /An earlier attempt on this issue started and failed/);
+  assert.match(body, /The refused retry changed nothing, but work from the earlier attempt .* may remain\./);
+  assert.match(body, /waited about 60 minutes/);
+  assert.equal((await planIssue(2)).status, 'processing', 'the task the earlier attempt recorded keeps the plan issue');
+
+  // Without an admitted attempt the job never started, and the comment says so.
+  assert.match(diskPressureRefusalCommentBody(refusedJob(2), { inPlan: true, now: NOW }), /Nothing was changed: no branch, commit or pull request was created\./);
+});

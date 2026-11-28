@@ -228,8 +228,10 @@ async function finalizeSubmissionIntakeAttempt(job: Job | undefined, err: Error)
 
 /**
  * An issue job that failed for good on a disk-pressure refusal (its wait for
- * free space ran out, or waiting is disabled and its retries are spent) never
- * reached its processor, so nothing told the issue or its plan. Best effort.
+ * free space ran out, or waiting is disabled and its retries are spent): the
+ * refused attempt never reached its processor, so nothing told the issue or its
+ * plan. Earlier attempts may have run (`issueJobAdmitted`); the report says
+ * which. Best effort.
  */
 async function reportIssueDiskPressureFailure(job: Job | undefined, err: Error): Promise<void> {
     if (!job || job.name !== ISSUE_JOB_NAME || !isWorktreeDiskPressureError(err) || !isFinalJobFailure(job, err)) return;
