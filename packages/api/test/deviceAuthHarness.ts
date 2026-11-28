@@ -24,6 +24,8 @@ export interface FakeGitHub {
   calls: Array<{ url: string; body?: string; authorization?: string }>;
   tokenAnswers: TokenAnswer[];
   deviceCodeAnswer: Record<string, unknown>;
+  /** Per-request device code answers and holds, taken in request order before `deviceCodeAnswer`. */
+  deviceCodeRequests: Array<{ answer?: Record<string, unknown>; hold?: Promise<void> }>;
   installations: Array<{ id: number; account: { id: number; login: string } }>;
   relayRepositories: Array<{ owner: { id: number } }>;
   /** Awaited before GitHub answers a token poll or an installation listing. */
@@ -41,6 +43,7 @@ export function fakeGitHub(): FakeGitHub {
       expires_in: 900,
       interval: 5,
     },
+    deviceCodeRequests: [],
     installations: [{ id: 4242, account: { id: 99, login: 'acme' } }],
     relayRepositories: [{ owner: { id: 99 } }],
     holds: {},
@@ -48,7 +51,11 @@ export function fakeGitHub(): FakeGitHub {
       const url = String(input);
       const headers = new Headers(init?.headers);
       fake.calls.push({ url, body: typeof init?.body === 'string' ? init.body : undefined, authorization: headers.get('authorization') ?? undefined });
-      if (url === 'https://github.com/login/device/code') return Response.json(fake.deviceCodeAnswer);
+      if (url === 'https://github.com/login/device/code') {
+        const request = fake.deviceCodeRequests.shift();
+        await request?.hold;
+        return Response.json(request?.answer ?? fake.deviceCodeAnswer);
+      }
       if (url === 'https://github.com/login/oauth/access_token') {
         await fake.holds.tokenPoll;
         return Response.json(fake.tokenAnswers.shift() ?? { error: 'authorization_pending' });
@@ -76,7 +83,10 @@ export interface Harness {
   close: () => Promise<void>;
 }
 
-export async function startHarness(env: NodeJS.ProcessEnv = {}): Promise<Harness> {
+export async function startHarness(
+  env: NodeJS.ProcessEnv = {},
+  captureGrants: (req: express.Request) => Promise<void> = async () => {},
+): Promise<Harness> {
   const github = fakeGitHub();
   const clock = { now: Date.parse('2026-11-28T10:00:00Z') };
   const app = express();
@@ -94,7 +104,7 @@ export async function startHarness(env: NodeJS.ProcessEnv = {}): Promise<Harness
     requestCode: requestGitHubDeviceCode,
     pollToken: pollGitHubDeviceToken,
     relayInstallationToken: async () => RELAY_INSTALLATION_TOKEN,
-    finishLogin: createDeviceFinishLogin(async () => {}),
+    finishLogin: createDeviceFinishLogin(captureGrants),
   };
   registerDeviceSignInRoutes(app, deps, { PROPR_DEVICE_SIGN_IN_START_RATE_LIMIT_MAX: '100' });
   app.get('/me', (req, res) => {
@@ -120,6 +130,12 @@ export async function startHarness(env: NodeJS.ProcessEnv = {}): Promise<Harness
 export class Browser {
   cookie = '';
   constructor(private readonly origin: string) {}
+  /** Another tab of the same browser: it shares this session cookie. */
+  tab(): Browser {
+    const tab = new Browser(this.origin);
+    tab.cookie = this.cookie;
+    return tab;
+  }
   async post(path: string, body: unknown = {}) {
     const response = await fetch(`${this.origin}${path}`, {
       method: 'POST',

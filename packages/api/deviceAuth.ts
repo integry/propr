@@ -10,7 +10,10 @@
  * Every attempt is bound to the browser session that started it: the device
  * code stays server-side, the user code is returned only in the start
  * response, and a poll must name the attempt it continues. One code per
- * attempt; starting again replaces it.
+ * attempt; starting again replaces it. A start holds a fresh start id in the
+ * session while GitHub is asked for its code, and commits the code (or its
+ * error) only if that id is still the session's latest start, so an older
+ * start that GitHub answers late cannot displace a newer one.
  *
  * Cancelling or replacing an attempt revokes it. A poll answers only after
  * GitHub (and the profile and installation checks) have been awaited, so it
@@ -34,9 +37,19 @@ import {
     type GitHubDeviceToken,
 } from '@propr/shared';
 import type { GitHubUser } from './authTypes.js';
-import type { AuthSession } from './authSession.js';
+import {
+    currentAttempt,
+    endAttempt,
+    ownsStart,
+    revokeSessionAttempts,
+    saveSession,
+    type DeviceAuthSession,
+    type DeviceLoginAttempt,
+} from './deviceAuthAttempts.js';
 import { resolveDeviceClientId } from './connectAuth.js';
 import { createRequestRateLimiter, resolveRequestRateLimitPolicies } from './requestRateLimits.js';
+
+export type { DeviceAuthSession, DeviceLoginAttempt } from './deviceAuthAttempts.js';
 
 const GITHUB_API = 'https://api.github.com';
 const GITHUB_API_TIMEOUT_MS = 20_000;
@@ -44,21 +57,6 @@ const MAX_INSTALLATION_PAGES = 10;
 /** Starts allowed per browser session per window, on top of the per-IP limiter. */
 export const DEVICE_SESSION_START_LIMIT = 5;
 export const DEVICE_SESSION_START_WINDOW_MS = 15 * 60_000;
-
-export interface DeviceLoginAttempt {
-    attempt: string;
-    deviceCode: string;
-    userCode: string;
-    verificationUri: string;
-    expiresAt: number;
-    intervalSeconds: number;
-    nextPollAt: number;
-}
-
-export type DeviceAuthSession = AuthSession & {
-    deviceLogin?: DeviceLoginAttempt;
-    deviceLoginStarts?: number[];
-};
 
 /** Errors a browser can see, each with fixed copy. */
 export type DeviceSignInErrorCode =
@@ -121,53 +119,6 @@ function sendError(res: Response, code: DeviceSignInErrorCode): void {
 
 function noStore(res: Response): void {
     res.set('Cache-Control', 'no-store');
-}
-
-function saveSession(req: Request): Promise<void> {
-    return new Promise((resolve, reject) => req.session.save(error => (error ? reject(error) : resolve())));
-}
-
-function reloadSession(req: Request): Promise<void> {
-    return new Promise((resolve, reject) => req.session.reload(error => (error ? reject(error) : resolve())));
-}
-
-/**
- * Attempts cancelled or replaced in this process, until their code expires.
- * The stored session is the cross-request record, but a request that loaded
- * it before a cancel could still write it back; this set makes the revocation
- * stick for every request this process serves.
- */
-const revokedAttempts = new Map<string, number>();
-
-function revokeAttempt(attempt: DeviceLoginAttempt | undefined, now: number): void {
-    for (const [id, expiresAt] of revokedAttempts) if (expiresAt <= now) revokedAttempts.delete(id);
-    // Kept a little past expiry too: a poll in flight at expiry still checks it.
-    if (attempt) revokedAttempts.set(attempt.attempt, Math.max(attempt.expiresAt, now) + 60_000);
-}
-
-/**
- * Re-read the session after an await and return the attempt only if it is
- * still the active, unrevoked one. Callers must write or sign in synchronously
- * after this resolves, so no other await separates the check from the effect.
- */
-async function currentAttempt(req: Request, attemptId: string): Promise<DeviceLoginAttempt | undefined> {
-    if (revokedAttempts.has(attemptId)) return undefined;
-    try {
-        await reloadSession(req);
-    } catch {
-        // The session is gone (logged out, destroyed or the store lost it).
-        return undefined;
-    }
-    if (revokedAttempts.has(attemptId)) return undefined;
-    const stored = (req.session as DeviceAuthSession).deviceLogin;
-    return stored?.attempt === attemptId ? stored : undefined;
-}
-
-/** Drop the attempt from the session if it is still the active one; never restore a replaced one. */
-async function endAttempt(req: Request, attemptId: string): Promise<void> {
-    if (!(await currentAttempt(req, attemptId))) return;
-    delete (req.session as DeviceAuthSession).deviceLogin;
-    await saveSession(req).catch(() => undefined);
 }
 
 async function githubGet(fetchImpl: typeof fetch, path: string, token: string): Promise<FetchResponse> {
@@ -271,8 +222,11 @@ export function deviceSignInUser(profile: GitHubUserProfile, token: GitHubDevice
             ? now + token.refreshTokenExpiresInSeconds * 1000
             : undefined,
         // Same App as Connect: renewal goes through the relay, which holds the
-        // App's secret, exactly as for a Connect sign-in.
+        // App's secret, exactly as for a renewable Connect sign-in. Grant
+        // capture persists relay renewal only with this marker. A token
+        // without a refresh token does not expire and has nothing to renew.
         oauthSource: 'connect',
+        ...(token.refreshToken ? { connectRenewal: 'relay' as const } : {}),
     };
 }
 
@@ -299,10 +253,12 @@ export function createDeviceStartHandler(deps: DeviceSignInDependencies): Reques
             return;
         }
         session.deviceLoginStarts = [...starts, now];
-        // Replacing an attempt revokes it before GitHub is asked for a new
-        // code, so a poll of the old one that finishes meanwhile cannot sign in.
-        revokeAttempt(session.deviceLogin, now);
-        delete session.deviceLogin;
+        // Replacing an attempt revokes it, and any start still waiting on
+        // GitHub, before GitHub is asked for a new code: a poll of the old
+        // attempt or an older start that finishes meanwhile cannot take over.
+        revokeSessionAttempts(session, now);
+        const startId = randomBytes(24).toString('base64url');
+        session.deviceLoginStart = startId;
         try {
             await saveSession(req);
         } catch (error) {
@@ -317,13 +273,25 @@ export function createDeviceStartHandler(deps: DeviceSignInDependencies): Reques
         } catch (error) {
             const flowCode = error instanceof GitHubDeviceFlowError ? error.code : 'device_login_failed';
             console.warn(`Device sign-in could not start: ${flowCode}`);
+            // A newer start or a cancel owns the session now: leave it alone.
+            if (!(await ownsStart(req, startId))) {
+                sendError(res, 'device_login_missing');
+                return;
+            }
+            delete (req.session as DeviceAuthSession).deviceLoginStart;
             await saveSession(req).catch(() => undefined);
             sendError(res, flowCode === 'invalid_response' ? 'device_login_failed' : flowCode);
             return;
         }
 
+        // Replaced or cancelled while GitHub was being asked: this code is never shown.
+        if (!(await ownsStart(req, startId))) {
+            sendError(res, 'device_login_missing');
+            return;
+        }
+        const current = req.session as DeviceAuthSession;
         const attempt: DeviceLoginAttempt = {
-            attempt: randomBytes(24).toString('base64url'),
+            attempt: startId,
             deviceCode: code.deviceCode,
             userCode: code.userCode,
             verificationUri: code.verificationUri,
@@ -331,7 +299,8 @@ export function createDeviceStartHandler(deps: DeviceSignInDependencies): Reques
             intervalSeconds: code.intervalSeconds,
             nextPollAt: now + code.intervalSeconds * 1000,
         };
-        session.deviceLogin = attempt;
+        current.deviceLogin = attempt;
+        delete current.deviceLoginStart;
         try {
             await saveSession(req);
         } catch (error) {
@@ -477,11 +446,11 @@ export function createDeviceCancelHandler(deps: Pick<DeviceSignInDependencies, '
         noStore(res);
         if (!requiresJson(req, res)) return;
         const session = req.session as DeviceAuthSession;
-        if (session.deviceLogin) {
-            // Revoked first: a poll already waiting on GitHub must not sign in
-            // or write the attempt back, whatever happens to this save.
-            revokeAttempt(session.deviceLogin, deps.now());
-            delete session.deviceLogin;
+        if (session.deviceLogin || session.deviceLoginStart) {
+            // Revoked first: a poll already waiting on GitHub, or a start
+            // still waiting for its code, must not sign in or write an
+            // attempt back, whatever happens to this save.
+            revokeSessionAttempts(session, deps.now());
             await saveSession(req).catch(() => undefined);
         }
         res.json({ status: 'cancelled' });
