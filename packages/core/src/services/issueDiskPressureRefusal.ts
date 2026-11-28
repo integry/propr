@@ -12,7 +12,13 @@
  * ended (its dispatcher neither runs nor will run again) and the queue holds
  * no other job of the issue that may still start, such as an execution child
  * the dispatcher queued before it failed, or a sibling still waiting, delayed
- * or running. The current dispatch answers for a refused child whose own
+ * or running. A refusal while the run has not ended stays pending on the
+ * current dispatch (`refusal_release`): a child refused while its dispatcher
+ * still runs (it may have queued the child before finishing its own work) is
+ * released when that dispatcher's own settlement ends the dispatch
+ * (`releaseRefusedRunOnDispatchEnd`), and one refused while a sibling is in
+ * flight by that sibling's refusal. The release is claimed on the row, so it
+ * happens once. The current dispatch answers for a refused child whose own
  * dispatch a newer one replaced on the row: the newer dispatcher's add of the
  * same execution deduplicated against this child (child job IDs are
  * deterministic), so the child carries the older dispatch ID but is the newer
@@ -30,7 +36,9 @@ import { worktreeDiskPressureDetails } from '../storage/lifecycle.js';
 import { PlanIssueStatus, publishPlanIssueActivity } from '../config/planIssueManager.js';
 import { notifyEpicQueue, updatePlanIssuesWithStatusJournal } from '../config/planIssueStatusJournal.js';
 import { diskPressureRefusedReason, markEpicQueueIssueDispatchRefused } from './taskPlanning/epicQueueBlockedHead.js';
-import { findIssueDispatch, findIssueDispatchById, settleIssueDispatch, type IssueDispatch } from '../queue/issueDispatch.js';
+import {
+    claimIssueDispatchRefusalRelease, findIssueDispatchById, recordIssueDispatchRefusal, settleIssueDispatch, type IssueDispatch,
+} from '../queue/issueDispatch.js';
 import { ISSUE_JOB_NAME } from '../queue/issueDiskPressureDeferral.js';
 
 export interface DiskPressureRefusalOctokit {
@@ -154,10 +162,10 @@ async function wasLastInFlight(
 
 /**
  * The plan issue that points at this dispatch, back to pending, while it is
- * still pending or processing. Called only once this refusal ended the
- * issue's run (no execution of the issue is left in flight) with the issue's
- * current dispatch, so a plan issue a newer dispatch took over since (it
- * points at that one) and historical or finished plan issues keep their status.
+ * still pending or processing. Called only once the issue's run ended (no
+ * execution of the issue is left in flight) with the issue's current
+ * dispatch, so a plan issue a newer dispatch took over since (it points at
+ * that one) and historical or finished plan issues keep their status.
  */
 async function releasePlanIssue(
     database: Knex, dispatchId: string, issueNumber: number, { now, log }: { now: () => number; log: Log },
@@ -185,6 +193,23 @@ async function releasePlanIssue(
     return { released, queueBlocked };
 }
 
+const NOT_RELEASED = Object.freeze({ released: false, queueBlocked: false });
+
+/**
+ * The plan issue of `current`, released for the refusal pending on it once the
+ * issue's run has ended (see `wasLastInFlight`). Claimed on the row first, so
+ * of a refusal and a dispatcher's settlement that both find the run ended,
+ * one releases it.
+ */
+async function releaseIfRunEnded(
+    job: RefusedIssueJob, current: IssueDispatch, issueNumber: number,
+    { database, now, issueQueue, log }: { database: Knex; now: () => number; issueQueue?: RefusalIssueQueue; log: Log },
+): Promise<{ released: boolean; queueBlocked: boolean }> {
+    if (current.refusal_release !== 'pending' || !await wasLastInFlight(job, current, { issueQueue, log })) return NOT_RELEASED;
+    if (!await claimIssueDispatchRefusalRelease(current.dispatch_id, { database })) return NOT_RELEASED;
+    return releasePlanIssue(database, current.dispatch_id, issueNumber, { now, log });
+}
+
 interface SettleContext { database: Knex; now: () => number; error?: unknown; issueQueue?: RefusalIssueQueue; log: Log; outcome: DiskPressureRefusalOutcome }
 
 /**
@@ -199,25 +224,50 @@ async function settleRefusedDispatch(
     { database, now, error, issueQueue, log, outcome }: SettleContext,
 ): Promise<{ dispatch: IssueDispatch | null; inPlan: boolean; superseded: boolean }> {
     const child = Boolean(job.data.isChildJob);
-    // Only the top-level job moves its dispatch; a refused child reports on the dispatch as it stands.
+    // Only the top-level job moves its dispatch, recording its refusal with its end; a refused child reports on
+    // the dispatch as it stands and records its refusal on it, before reading whether the run ended.
     if (!child) {
         outcome.dispatchEnded = await settleIssueDispatch(dispatchId, 'failed', {
-            database, now, error: error instanceof Error ? error.message : undefined, details: refusalDetails(job, error),
+            database, now, error: error instanceof Error ? error.message : undefined, details: refusalDetails(job, error), refused: true,
         });
     }
-    const dispatch = await findIssueDispatchById(dispatchId, { database });
-    if (!dispatch && !child) return { dispatch, inPlan: false, superseded: true };
-    // Read after the top-level settle above, so a parent's own dispatch is seen ended.
-    const current = dispatch ?? await findIssueDispatch(issue, { database });
-    // The plan issue pointing at the current dispatch is released only when the refusal ended the issue's run.
-    const runEnded = current !== null && (child || outcome.dispatchEnded) && await wasLastInFlight(job, current, { issueQueue, log });
-    if (runEnded) {
-        const plan = await releasePlanIssue(database, current.dispatch_id, issue.number, { now, log });
+    const current = child ? await recordIssueDispatchRefusal(issue, { database }) : await findIssueDispatchById(dispatchId, { database });
+    if (!current && !child) return { dispatch: null, inPlan: false, superseded: true };
+    // The child's own dispatch, unless a newer one replaced it on the row (the current one answers for the child then).
+    const dispatch = current?.dispatch_id === dispatchId ? current : null;
+    // A parent's refusal that did not end its dispatch (it had already ended) is not the end of the issue's run.
+    if (current && (child || outcome.dispatchEnded)) {
+        const plan = await releaseIfRunEnded(job, current, issue.number, { database, now, issueQueue, log });
         outcome.planIssueReleased = plan.released;
         outcome.queueBlocked = plan.queueBlocked;
     }
     const inPlan = Boolean(await database('plan_issues').where({ issue_dispatch_id: current?.dispatch_id ?? dispatchId }).first('id'));
     return { dispatch, inPlan, superseded: false };
+}
+
+/**
+ * The issue's dispatch ended through its dispatcher's own settlement (it
+ * completed, or failed for good other than for disk pressure). A refusal of
+ * one of the issue's executions recorded on it while it was still active left
+ * the plan issue to this dispatcher: it is released now, once no other job of
+ * the issue is in flight. The refusal was reported on the issue when it
+ * happened. Best effort: never throws.
+ */
+export async function releaseRefusedRunOnDispatchEnd(
+    job: RefusedIssueJob, dispatch: IssueDispatch,
+    { database = db, now = Date.now, issueQueue }: { database?: Knex; now?: () => number; issueQueue?: RefusalIssueQueue } = {},
+): Promise<boolean> {
+    const log = job.data.correlationId ? logger.withCorrelation(job.data.correlationId) : logger;
+    const target = { jobId: job.id, dispatchId: dispatch.dispatch_id, issueNumber: job.data.number };
+    if (typeof job.data.number !== 'number') return false;
+    try {
+        const { released, queueBlocked } = await releaseIfRunEnded(job, dispatch, job.data.number, { database, now, issueQueue, log });
+        if (released) log.warn({ ...target, queueBlocked }, 'Released the plan issue of an execution refused for disk pressure while its dispatcher ran');
+        return released;
+    } catch (error) {
+        log.warn({ ...target, error: (error as Error).message }, 'Could not release the plan issue of an execution refused for disk pressure');
+        return false;
+    }
 }
 
 export async function reportIssueDiskPressureRefusal(

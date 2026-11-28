@@ -30,12 +30,14 @@ const database = knex({ client: 'better-sqlite3', connection: { filename: ':memo
 const log = { info() {}, warn() {}, error() {}, debug() {}, withCorrelation: () => log };
 const comments: string[] = [];
 const starts: number[] = [];
+/** Drafts whose status was rechecked: one per release of a plan issue. */
+const draftChecks: string[] = [];
 const startIssue = async ({ issueNumber }: { issueNumber: number }) => { starts.push(issueNumber); };
 await mock.module('../src/db/connection.js', { namedExports: { db: database } });
 await mock.module('../src/utils/logger.js', { defaultExport: log });
 await mock.module('../src/utils/eventPublisher.js', { namedExports: { getEventPublisher: () => ({ publishActivity: async () => {} }) } });
 await mock.module('../src/config/planIssueDefaults.js', { namedExports: { resolvePlanIssueDefaultSelection: async () => ({}) } });
-await mock.module('../src/services/taskPlanningService.js', { namedExports: { checkAndUpdateDraftStatus: async () => {} } });
+await mock.module('../src/services/taskPlanningService.js', { namedExports: { checkAndUpdateDraftStatus: async (draftId: string) => { draftChecks.push(draftId); } } });
 await mock.module('../src/services/taskPlanning/epicIssueLabelHandoff.js', { namedExports: { releaseEpicIssueLabels: async () => {} } });
 await mock.module('../src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => ({
   request: async (_route: string, params: { body: string }) => { comments.push(params.body); return {}; },
@@ -49,6 +51,7 @@ await mock.module('../src/webhook/planIssueTrigger.js', { namedExports: {
 const { enqueueIssueDispatch, findIssueDispatch, settleIssueDispatch, ISSUE_DISPATCH_ABANDON_AFTER_MS } = await import('../src/queue/issueDispatch.js');
 const { beginIssueJobAttempt, deferIssueJobOnDiskPressure, recordIssueJobAdmitted } = await import('../src/queue/issueDiskPressureDeferral.js');
 const { settleIssueJobCompletion, settleIssueJobFailure } = await import('../src/queue/issueJobSettlement.js');
+const { releaseRefusedRunOnDispatchEnd } = await import('../src/services/issueDiskPressureRefusal.js');
 const { WorktreeDiskPressureError } = await import('../src/storage/lifecycle.js');
 const { createEpicExecutionQueue, getEpicExecutionQueue, startEpicQueueHead } = await import('../src/services/taskPlanning/epicExecutionQueue.js');
 const { diskPressureRefusedReason } = await import('../src/services/taskPlanning/epicQueueBlockedHead.js');
@@ -72,6 +75,8 @@ class AddOnlyQueue {
   jobs = new Map<string, FakeJob>();
   /** Set to hold the next add until it is released, as a producer suspended between its claim and its add. */
   held: { reached: () => void; gate: Promise<void> } | null = null;
+  /** Set to hold the next read's response after the queue answered it, as a reply still on its way to the producer. */
+  heldRead: { reached: () => void; gate: Promise<void> } | null = null;
   async add(name: string, data: Record<string, unknown>, opts: { jobId: string; attempts?: number }) {
     const held = this.held;
     this.held = null;
@@ -80,7 +85,13 @@ class AddOnlyQueue {
     if (!this.jobs.has(opts.jobId)) this.jobs.set(opts.jobId, new FakeJob(opts.jobId, name, data, opts.attempts ?? 1));
     return this.jobs.get(opts.jobId);
   }
-  async getJob(jobId: string) { return this.jobs.get(jobId); }
+  async getJob(jobId: string) {
+    const found = this.jobs.get(jobId);
+    const held = this.heldRead;
+    this.heldRead = null;
+    if (held) { held.reached(); await held.gate; }
+    return found;
+  }
   async getJobs(states: string[]) { return [...this.jobs.values()].filter(entry => states.includes(entry.state)); }
 }
 
@@ -129,15 +140,15 @@ const step = {
   /** Admission passes; the processor runs. */
   admit: (async () => { await recordIssueJobAdmitted(job()); }) as Step,
   /** The processor fails; BullMQ retries the job. */
-  failAndRetry: (async () => { job().attemptsMade++; job().state = 'delayed'; await settleIssueJobFailure(job(), new Error('processor failed')); }) as Step,
+  failAndRetry: (async () => { job().attemptsMade++; job().state = 'delayed'; await settleIssueJobFailure(job(), new Error('processor failed'), { issueQueue: queue }); }) as Step,
   /** The processor fails on the last attempt. */
   failFinally: (async () => {
     job().attemptsMade = job().opts.attempts; job().state = 'failed'; job().finishedOn = Date.now();
-    await settleIssueJobFailure(job(), new Error('processor failed'));
+    await settleIssueJobFailure(job(), new Error('processor failed'), { issueQueue: queue });
   }) as Step,
   /** Admission refuses again after the total wait ran out: the job fails for good on that refusal. */
   refuseFinally: (async () => { await refuseFinally(job()); }) as Step,
-  complete: (async () => { job().state = 'completed'; await settleIssueJobCompletion(job()); }) as Step,
+  complete: (async () => { job().state = 'completed'; await settleIssueJobCompletion(job(), { issueQueue: queue }); }) as Step,
   /** The issue joins a newer plan after the dispatch was enqueued: that plan issue does not point at it. */
   newerDraft: (async () => {
     await database('task_drafts').insert({ draft_id: 'newer', context_config: '{}' });
@@ -262,6 +273,7 @@ beforeEach(async () => {
   jobs = [];
   comments.length = 0;
   starts.length = 0;
+  draftChecks.length = 0;
 });
 
 async function setUpPlan(plan: PlanSetup): Promise<void> {
@@ -606,4 +618,258 @@ test('F8: a parent refused for good leaves its plan issue as it is when the queu
   await refuseFinally(job(), { getJobs: async () => { throw new Error('Connection is closed.'); } });
   assert.equal((await database('issue_dispatches').first())!.state, 'failed');
   assert.equal(await planStatus(), 'processing');
+});
+
+/** A one-shot gate: `reached` resolves once the held side arrives, `open` lets it go on. */
+function gate(): { hold: { reached: () => void; gate: Promise<void> }; reached: Promise<void>; open: () => void } {
+  let arrive!: () => void;
+  let open!: () => void;
+  const reached = new Promise<void>(resolve => { arrive = resolve; });
+  return { hold: { reached: arrive, gate: new Promise<void>(resolve => { open = resolve; }) }, reached, open };
+}
+
+const dispatchRow = async () => (await database('issue_dispatches').first())!;
+
+/** A plan issue whose dispatcher passed admission and is running (its dispatch is processing). */
+async function runningDispatcher(plan: PlanSetup = 'epic-queue'): Promise<FakeJob> {
+  await setUpPlan(plan);
+  await step.enqueue([]);
+  await database('plan_issues').where({ draft_id: 'draft' }).whereIn('status', ['pending']).update({ status: 'processing' });
+  await step.pickUp([]);
+  await step.admit([]);
+  assert.equal((await dispatchRow()).state, 'processing');
+  return job();
+}
+
+/**
+ * The dispatcher adds an execution child: the queue accepts it at once, while
+ * the dispatcher still awaits the add's response and its receipt work after it.
+ * `respond` lets the dispatcher's processor return.
+ */
+function dispatcherAddingChild(parent: FakeJob, suffix = 'child'): { child: FakeJob; respond: () => void; processor: Promise<void> } {
+  let respond!: () => void;
+  const response = new Promise<void>(resolve => { respond = resolve; });
+  const childId = `${parent.id}-${suffix}`;
+  const processor = (async () => {
+    await queue.add('processGitHubIssue', { ...parent.data, isChildJob: true }, { jobId: childId, attempts: 1 });
+    await response;
+  })();
+  const child = queue.jobs.get(childId)!;
+  assert.ok(child, 'the queue accepted the child before the dispatcher got its response');
+  return { child, respond, processor };
+}
+
+/** With waiting disabled (`WORKTREE_DISK_PRESSURE_MAX_WAIT_MS=0`), admission refuses the child's single attempt: it fails for good. */
+async function refuseChildWithoutWaiting(child: FakeJob, issueQueue?: { getJobs(states: string[]): Promise<FakeJob[]> }): Promise<void> {
+  child.state = 'active';
+  await beginIssueJobAttempt(child);
+  const error = await deferIssueJobOnDiskPressure(child, async () => { throw refusal(); }, { maxWaitMs: 0 }).catch(failure => failure as Error);
+  assert.equal((error as Error).name, 'WorktreeDiskPressureError', 'the refusal fails the attempt as it is');
+  child.attemptsMade++; child.state = 'failed'; child.finishedOn = Date.now();
+  await settleIssueJobFailure(child, error as Error, { issueQueue: issueQueue ?? queue });
+}
+
+async function assertBlockedForRetry(): Promise<void> {
+  assert.equal(await planStatus(), 'pending', 'the plan issue is no longer processing');
+  const head = (await getEpicExecutionQueue('draft'))!.items[0];
+  assert.deepEqual([head.state, head.blockedKind, head.blockedReason], ['blocked', 'dispatch_failed', diskPressureRefusedReason(ISSUE)]);
+  await startEpicQueueHead('draft', { startIssue, now: () => Date.now() + 60_000 });
+  assert.deepEqual(starts, [], 'the refused issue is not dispatched again at once');
+}
+
+const dispatcherEnds: Array<{ name: string; state: string; end: (parent: FakeJob) => Promise<void> }> = [
+  { name: 'completes', state: 'completed', end: async () => { await step.complete([]); } },
+  { name: 'fails for good', state: 'failed', end: async () => { await step.failFinally([]); } },
+  { name: 'fails, is retried and then completes', state: 'completed', end: async parent => {
+    await step.failAndRetry([]);
+    assert.equal(await planStatus(), 'processing', 'the retry may still queue an execution');
+    await step.pickUp([]);
+    await step.admit([]);
+    // The retry adds the same execution again; the refused child's ID deduplicates it.
+    await queue.add('processGitHubIssue', { ...parent.data, isChildJob: true }, { jobId: `${parent.id}-child`, attempts: 1 });
+    await step.complete([]);
+  } },
+];
+
+for (const ending of dispatcherEnds) {
+  test(`F9: a child refused while its dispatcher still runs blocks the plan issue once the dispatcher ${ending.name}`, async () => {
+    const parent = await runningDispatcher();
+    const { child, respond, processor } = dispatcherAddingChild(parent);
+    await refuseChildWithoutWaiting(child);
+    assert.equal(await planStatus(), 'processing', 'the dispatcher still runs and may queue more');
+    assert.equal((await dispatchRow()).refusal_release, 'pending', 'the refusal is kept for the dispatcher\'s settlement');
+    assert.equal(comments.length, 1, 'the refusal is reported on the issue when it happens');
+    respond();
+    await processor;
+    await ending.end(parent);
+    await assertBlockedForRetry();
+    const row = await dispatchRow();
+    assert.deepEqual([row.state, row.refusal_release], [ending.state, 'released']);
+    assert.deepEqual(draftChecks, ['draft'], 'released once');
+    assert.equal(comments.length, 1, 'the release adds no second report');
+    assert.match(comments[0], /or retry the issue from its plan\./);
+  });
+}
+
+test('F9: a dispatcher ending with a sibling of the refused child still in flight leaves the plan issue to it', async () => {
+  const parent = await runningDispatcher('processing');
+  const first = dispatcherAddingChild(parent, 'first');
+  const second = dispatcherAddingChild(parent, 'second');
+  await refuseChildWithoutWaiting(first.child);
+  first.respond(); second.respond();
+  await Promise.all([first.processor, second.processor]);
+  await step.complete([]);
+  assert.equal(await planStatus(), 'processing', 'the waiting sibling may still run');
+  assert.equal((await dispatchRow()).refusal_release, 'pending');
+  await refuseChildWithoutWaiting(second.child);
+  assert.equal(await planStatus(), 'pending');
+  assert.deepEqual(draftChecks, ['draft'], 'released once, by the last refusal');
+});
+
+test('F9: a dispatcher ending leaves its plan issue as it is when the queue cannot be read', async () => {
+  const parent = await runningDispatcher('processing');
+  const { child, respond, processor } = dispatcherAddingChild(parent);
+  await refuseChildWithoutWaiting(child);
+  respond();
+  await processor;
+  parent.state = 'completed';
+  await settleIssueJobCompletion(parent, { issueQueue: { getJobs: async () => { throw new Error('Connection is closed.'); } } });
+  assert.equal(await planStatus(), 'processing', 'executions in flight are unknown, so nothing is released');
+  assert.deepEqual([(await dispatchRow()).state, (await dispatchRow()).refusal_release], ['completed', 'pending']);
+});
+
+test('F9: a dispatcher ending without a refused execution leaves its plan issue as it is', async () => {
+  const parent = await runningDispatcher('processing');
+  const { respond, processor } = dispatcherAddingChild(parent);
+  respond();
+  await processor;
+  queue.jobs.get(`${parent.id}-child`)!.state = 'completed';
+  await step.complete([]);
+  assert.equal(await planStatus(), 'processing');
+  assert.equal((await dispatchRow()).refusal_release, null);
+  assert.deepEqual(draftChecks, []);
+});
+
+test('F9: a retained child refused while a newer dispatcher runs is released when that dispatcher completes', async () => {
+  await setUpPlan('epic-queue');
+  const [child] = await completedDispatcherWithChildren(1);
+  child.state = 'delayed';
+  const newer = await request();
+  jobs = [queue.jobs.get(newer.jobId)!];
+  await step.pickUp([]);
+  await step.admit([]);
+  await refuseChild(child);
+  assert.equal(await planStatus(), 'processing');
+  // The newer dispatcher's add of the same execution deduplicated against the refused child; it completes.
+  await queue.add('processGitHubIssue', { ...job().data, isChildJob: true }, { jobId: child.id });
+  await step.complete([]);
+  await assertBlockedForRetry();
+  const row = await dispatchRow();
+  assert.deepEqual([row.dispatch_id, row.state, row.refusal_release], [newer.dispatchId, 'completed', 'released']);
+});
+
+test('F9: a dispatcher settlement and a child refusal that both find the run ended release the plan issue once', async () => {
+  const parent = await runningDispatcher();
+  const { child, respond, processor } = dispatcherAddingChild(parent);
+  respond();
+  await processor;
+  // The dispatcher's end is written first; the child's refusal records itself, finds the run ended and reads the queue.
+  parent.state = 'completed';
+  await settleIssueDispatch(parent.data.issueDispatchId as string, 'completed', { database });
+  const read = gate();
+  const slowQueue = { getJobs: async (states: string[]) => { const found = await queue.getJobs(states); read.hold.reached(); await read.hold.gate; return found; } };
+  const refused = refuseChildWithoutWaiting(child, slowQueue);
+  await read.reached;
+  // Meanwhile the dispatcher's settlement reads the pending refusal and finds nothing in flight either.
+  assert.equal(await releaseRefusedRunOnDispatchEnd(parent, await dispatchRow(), { database, issueQueue: queue }), true);
+  read.open();
+  await refused;
+  await assertBlockedForRetry();
+  assert.deepEqual(draftChecks, ['draft'], 'released once');
+});
+
+test('F9: a parent and its child refused at the same moment release the plan issue once', async () => {
+  await setUpPlan('epic-queue');
+  const { child } = await dispatcherFailedAfterQueueingChild();
+  await step.pickUp([]);
+  // The parent's final refusal ends its dispatch and reads the queue; the child is refused meanwhile.
+  const read = gate();
+  const slowQueue = { getJobs: async (states: string[]) => { const found = await queue.getJobs(states); read.hold.reached(); await read.hold.gate; return found; } };
+  child.state = 'failed';
+  const parentRefused = refuseFinally(job(), slowQueue);
+  await read.reached;
+  child.state = 'active';
+  await refuseChildWithoutWaiting(child);
+  read.open();
+  await parentRefused;
+  await assertBlockedForRetry();
+  assert.deepEqual(draftChecks, ['draft'], 'released once');
+});
+
+test('F10: a request whose read found the job missing does not take over the dispatch admitted meanwhile', async () => {
+  await setUpPlan('processing');
+  // Producer A commits its dispatch and is suspended before adding its job, past the abandonment age.
+  const add = gate();
+  queue.held = add.hold;
+  const producerA = request();
+  await add.reached;
+  const claimedA = await dispatchRow();
+  await database('issue_dispatches').update({ updated_at: Date.now() - ISSUE_DISPATCH_ABANDON_AFTER_MS - 1 });
+  // Producer B reads A's job: the queue answers that it is absent, and that answer is still on its way.
+  const read = gate();
+  queue.heldRead = read.hold;
+  const producerB = request();
+  await read.reached;
+  // A resumes and adds its job; a worker admits it and A's dispatcher enters its processor.
+  add.open();
+  assert.equal((await producerA).status, 'added');
+  const jobA = queue.jobs.get(claimedA.job_id)!;
+  jobA.state = 'active';
+  await beginIssueJobAttempt(jobA);
+  assert.equal(await recordIssueJobAdmitted(jobA), true, 'A runs');
+  // B receives the stale answer and must not replace A's dispatch.
+  read.open();
+  const outcomeB = await producerB;
+  assert.deepEqual([outcomeB.status, outcomeB.dispatchId], ['already_queued', claimedA.dispatch_id]);
+  const row = await dispatchRow();
+  assert.deepEqual([row.dispatch_id, row.state, typeof row.started_at], [claimedA.dispatch_id, 'processing', 'number']);
+  assert.deepEqual([...queue.jobs.keys()], [claimedA.job_id], 'no second dispatcher was queued');
+  assert.equal((await database('plan_issues').where({ draft_id: 'draft' }).first()).issue_dispatch_id, claimedA.dispatch_id);
+});
+
+test('F10: a dispatch found abandoned and unchanged since is still taken over', async () => {
+  await step.enqueue([]);
+  const stale = await dispatchRow();
+  // The job is gone long after the row last changed; the read's answer arrives while the row stays as it was.
+  await step.abandon([]);
+  const read = gate();
+  queue.heldRead = read.hold;
+  const producer = request();
+  await read.reached;
+  read.open();
+  const outcome = await producer;
+  assert.equal(outcome.status, 'added');
+  assert.notEqual(outcome.dispatchId, stale.dispatch_id);
+});
+
+test('F10: a producer whose add failed after the job was accepted does not end the dispatch its worker ran', async () => {
+  let ran: FakeJob | undefined;
+  const accepted = new AddOnlyQueue();
+  accepted.add = async (name: string, data: Record<string, unknown>, opts: { jobId: string; attempts?: number }) => {
+    // Redis accepted the job, and before the producer got a reply a worker ran it and removed it on completion.
+    const added = new FakeJob(opts.jobId, name, data, opts.attempts ?? 1);
+    added.state = 'active';
+    await beginIssueJobAttempt(added);
+    assert.equal(await recordIssueJobAdmitted(added), true);
+    added.state = 'completed';
+    ran = added;
+    throw new Error('Connection is closed.');
+  };
+  const data = { repoOwner: 'acme', repoName: 'repo', number: ISSUE };
+  await assert.rejects(enqueueIssueDispatch(accepted, { name: 'processGitHubIssue', data, opts: {} }, { database }), /Connection is closed/);
+  let row = await dispatchRow();
+  assert.deepEqual([row.state, row.error], ['processing', null], 'the job the producer could not find is not ended as never queued');
+  await settleIssueJobCompletion(ran!);
+  row = await dispatchRow();
+  assert.deepEqual([row.state, row.error], ['completed', null]);
 });

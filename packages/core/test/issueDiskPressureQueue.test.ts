@@ -38,7 +38,7 @@ Object.assign(process.env, {
 
 const { closeConnection, db, runMigrations } = await import('../src/db/connection.js');
 const { createWorker, getIssueQueue, shutdownQueue, GITHUB_ISSUE_QUEUE_NAME } = await import('../src/queue/taskQueue.js');
-const { claimIssueDispatch, enqueueIssueDispatch, findIssueDispatch, settleIssueDispatch } = await import('../src/queue/issueDispatch.js');
+const { claimIssueDispatch, enqueueIssueDispatch, findIssueDispatch, settleIssueDispatch, ISSUE_DISPATCH_ABANDON_AFTER_MS } = await import('../src/queue/issueDispatch.js');
 
 let redis: Redis | null = null;
 let worker: Worker | null = null;
@@ -48,6 +48,21 @@ const failures: Array<{ id?: string; attemptsMade: number; finishedOn?: number; 
 const failOnce = new Set<string>();
 /** Job IDs whose processor throws once and then makes admission refuse the retry. */
 const refuseAfterFailure = new Set<string>();
+/** Job IDs whose processor runs this before it returns. */
+const during = new Map<string, (job: Job) => Promise<void>>();
+
+/** The suite's processor; a test's second worker runs it too. */
+async function processor(job: Job): Promise<{ status: string }> {
+  processed.push(String(job.id));
+  const hook = during.get(String(job.id));
+  if (hook) { during.delete(String(job.id)); await hook(job); }
+  if (refuseAfterFailure.delete(String(job.id))) {
+    process.env.WORKTREE_ADMISSION_RESERVE_BYTES = REFUSE;
+    throw new Error('processor failed');
+  }
+  if (failOnce.delete(String(job.id))) throw new Error('processor failed');
+  return { status: 'dispatched' };
+}
 
 before(async () => {
   await runMigrations();
@@ -64,15 +79,7 @@ before(async () => {
     return;
   }
   redis = client;
-  worker = await createWorker(GITHUB_ISSUE_QUEUE_NAME, async job => {
-    processed.push(String(job.id));
-    if (refuseAfterFailure.delete(String(job.id))) {
-      process.env.WORKTREE_ADMISSION_RESERVE_BYTES = REFUSE;
-      throw new Error('processor failed');
-    }
-    if (failOnce.delete(String(job.id))) throw new Error('processor failed');
-    return { status: 'dispatched' };
-  }, { concurrency: 1 });
+  worker = await createWorker(GITHUB_ISSUE_QUEUE_NAME, processor, { concurrency: 1 });
   worker.on('failed', (job, error) => { if (job) failures.push({ id: job.id, attemptsMade: job.attemptsMade, finishedOn: job.finishedOn, message: error.message, data: job.data }); });
 });
 
@@ -207,7 +214,7 @@ test('a job whose dispatch a newer request took over completes at admission with
   const ref = { owner: OWNER, repo: 'repo', number: 48 };
   const superseded = await enqueue(48, {}, { delay: 300, removeOnComplete: false });
   // A newer request took the issue over while this job was not yet picked up (as when its producer added it late).
-  const takeover = await claimIssueDispatch(ref, { abandoned: superseded.dispatchId });
+  const takeover = await claimIssueDispatch(ref, { abandoned: (await dispatchOf(48))! });
   assert.equal(takeover.status, 'claimed');
   const { job } = await until(() => jobState(superseded.jobId), value => value.state === 'completed', 'the superseded job to end');
   assert.deepEqual(job?.returnvalue, { status: 'skipped', reason: 'issue_dispatch_superseded' });
@@ -247,4 +254,90 @@ test('a refused child releases its plan issue only once its dispatch has no sibl
   await until(async () => (await planIssue())?.status, status => status === 'pending', 'the plan issue release');
   assert.deepEqual(processed.filter(id => id === firstId || id === laterId), [], 'no child entered its processor');
   assert.equal((await dispatchOf(49))?.state, 'completed', 'a child does not move the dispatch');
+});
+
+/** A plan issue for `number`, linked to the issue's next dispatch and marked processing once it is queued. */
+async function planIssueFor(number: number): Promise<{ draftId: string; status: () => Promise<string | undefined> }> {
+  const repository = `${OWNER}/repo`;
+  const draftId = `00000000-0000-4000-8000-${String(number).padStart(4, '0')}${String(process.pid).padStart(8, '0').slice(-8)}`;
+  await db('task_drafts').insert({ draft_id: draftId, user_id: 'user', repository, status: 'in_progress' });
+  await db('plan_issues').insert({ draft_id: draftId, repository, issue_number: number, status: 'pending' });
+  return { draftId, status: async () => (await db('plan_issues').where({ draft_id: draftId, issue_number: number }).first())?.status };
+}
+
+test('F9: a child refused while its dispatcher still runs releases the plan issue once the dispatcher completes', async t => {
+  if (!requireRedis(t)) return;
+  // Waiting disabled: the child's single attempt fails for good on its refusal.
+  process.env.WORKTREE_DISK_PRESSURE_MAX_WAIT_MS = '0';
+  process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
+  const plan = await planIssueFor(51);
+  const queue = await getIssueQueue();
+  const parent = await enqueue(51, {}, { delay: 200 });
+  await db('plan_issues').where({ draft_id: plan.draftId }).update({ status: 'processing' });
+  const childId = `${parent.jobId}-child`;
+  let planWhileDispatcherRan: string | undefined;
+  during.set(parent.jobId, async () => {
+    // The dispatcher queues its execution child, which another worker picks up and admission refuses,
+    // while the dispatcher still has work to do after the add.
+    process.env.WORKTREE_ADMISSION_RESERVE_BYTES = REFUSE;
+    await queue.add('processGitHubIssue', issueJob(51, { isChildJob: true, issueDispatchId: parent.dispatchId }), { attempts: 1, removeOnComplete: true, removeOnFail: true, jobId: childId });
+    await until(() => dispatchOf(51), row => row?.refusal_release === 'pending', 'the child\'s refusal recorded while its dispatcher runs');
+    planWhileDispatcherRan = await plan.status();
+  });
+  // A second worker, so the child is picked up while the first one runs the dispatcher.
+  const second = await createWorker(GITHUB_ISSUE_QUEUE_NAME, processor, { concurrency: 1 });
+  try {
+    await until(plan.status, status => status === 'pending', 'the plan issue release once the dispatcher completed');
+  } finally {
+    await second.close(true);
+  }
+  assert.equal(planWhileDispatcherRan, 'processing', 'the refusal left the plan issue to the dispatcher still running');
+  const row = await dispatchOf(51);
+  assert.deepEqual([row?.dispatch_id, row?.state, row?.refusal_release], [parent.dispatchId, 'completed', 'released']);
+  assert.deepEqual(processed.filter(id => id === childId), [], 'the child never entered its processor');
+  assert.equal(processed.filter(id => id === parent.jobId).length, 1);
+});
+
+test('F10: a request whose queue read raced the dispatch\'s admission is served by the admitted dispatch', async t => {
+  if (!requireRedis(t)) return;
+  process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
+  const queue = await getIssueQueue();
+  const hold = () => { let reached!: () => void; let open!: () => void;
+    const arrived = new Promise<void>(resolve => { reached = resolve; }); const gate = new Promise<void>(resolve => { open = resolve; });
+    return { arrived, reached, gate, open }; };
+  const add = hold();
+  const read = hold();
+  const processorHeld = hold();
+  // Producer A: suspended between its claim and its add.
+  const producerA = enqueueIssueDispatch({ add: async (...args: Parameters<typeof queue.add>) => { add.reached(); await add.gate; return queue.add(...args); }, getJob: id => queue.getJob(id) },
+    { name: 'processGitHubIssue', data: issueJob(52), opts: jobOptions });
+  await add.arrived;
+  const claimedA = (await dispatchOf(52))!;
+  await db('issue_dispatches').where({ dispatch_id: claimedA.dispatch_id }).update({ updated_at: Date.now() - ISSUE_DISPATCH_ABANDON_AFTER_MS - 1 });
+  // Producer B: Redis answers that A's job is absent; that answer is held on its way back.
+  let reads = 0;
+  const producerB = enqueueIssueDispatch({ add: (...args: Parameters<typeof queue.add>) => queue.add(...args), getJob: async id => {
+    const found = await queue.getJob(id);
+    if (reads++ === 0) { read.reached(); await read.gate; }
+    return found;
+  } }, { name: 'processGitHubIssue', data: issueJob(52), opts: jobOptions });
+  await read.arrived;
+  // A adds its job; the worker admits it and A's dispatcher runs until the end of the test.
+  during.set(claimedA.job_id, async () => { processorHeld.reached(); await processorHeld.gate; });
+  add.open();
+  assert.equal((await producerA).status, 'added');
+  await processorHeld.arrived;
+  assert.equal((await dispatchOf(52))?.state, 'processing');
+  read.open();
+  try {
+    const outcomeB = await producerB;
+    assert.deepEqual([outcomeB.status, outcomeB.dispatchId], ['already_queued', claimedA.dispatch_id]);
+    const jobs = (await queue.getJobs(['waiting', 'delayed', 'active', 'prioritized'])).filter(entry => entry.data.repoOwner === OWNER && entry.data.number === 52);
+    assert.deepEqual(jobs.map(entry => entry.id), [claimedA.job_id], 'no second dispatcher was queued');
+  } finally {
+    processorHeld.open();
+  }
+  await until(() => dispatchOf(52), row => row?.state === 'completed', 'A\'s dispatch to complete');
+  assert.equal((await dispatchOf(52))?.dispatch_id, claimedA.dispatch_id);
+  assert.equal(processed.filter(id => id.startsWith(`issue-${OWNER}-repo-52-`)).length, 1, 'one dispatcher ran');
 });

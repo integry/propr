@@ -4,7 +4,12 @@
 // removing a BullMQ job. The row's state follows the dispatch's job:
 // queued → (deferred → queued)* → processing → (queued → …) → completed | failed.
 // `started_at` records that an attempt of this dispatch entered its processor,
-// which is what a refusal report may rely on.
+// which is what a refusal report may rely on. `revision` counts the changes of
+// the dispatch's state, so a request that found the dispatch abandoned takes
+// it over only if it has not moved since. `refusal_release` is `pending` while
+// a disk-pressure refusal of one of the issue's executions waits for the
+// issue's run to end before its plan issue is released, and `released` once
+// that release was claimed (by the refusal or by the dispatcher's settlement).
 //
 // `plan_issues.issue_dispatch_id` points a plan issue at the dispatch that
 // runs it, so a dispatch's outcome changes only that plan issue, and only
@@ -21,6 +26,8 @@ export async function up(knex) {
       table.string('dispatch_id', 64).notNullable();
       table.string('job_id').notNullable();
       table.string('state', 16).notNullable();
+      table.integer('revision').notNullable().defaultTo(0);
+      table.string('refusal_release', 16).nullable();
       // Epoch milliseconds throughout.
       table.bigInteger('started_at').nullable();
       table.bigInteger('retry_at').nullable();
