@@ -154,12 +154,14 @@ describe('privileged-post-task.sh', () => {
             // A planted `env` first on PATH must not run: the step names /usr/bin/env.
             fs.writeFileSync(path.join(dir, 'env'), '#!/bin/sh\necho planted\n', { mode: 0o755 });
             const script = [
-                `. ${JSON.stringify(HELPER)}`,
+                // The helper path arrives as $1 so no path text is spliced into the script.
+                '. "$1"',
+                'shift',
                 'shell_only=kept',
                 'step() { printf "%s|%s|" "$shell_only" "$PWD"; /usr/bin/env | /usr/bin/sort | /usr/bin/tr "\\n" " "; }',
                 'run_privileged_post_task WANTED=yes step',
             ].join('\n');
-            const result = spawnSync('/bin/bash', ['-c', script], {
+            const result = spawnSync('/bin/bash', ['-c', script, 'privileged-post-task-test', HELPER], {
                 env: { PATH: `${dir}:/usr/bin:/bin`, SECRET_TOKEN: 'leak', BASH_ENV: path.join(dir, 'env'), LD_PRELOAD: 'nope' }, encoding: 'utf8', cwd: dir,
             });
             assert.equal(result.status, 0, result.stderr);
