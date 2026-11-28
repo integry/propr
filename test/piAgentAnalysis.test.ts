@@ -5,6 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Analysis workspaces go to a scratch host-shared root for this suite.
+const analysisRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-pi-analysis-root-'));
+process.env.PI_ANALYSIS_ROOT = analysisRoot;
+
 // The container run is replaced by recorded Pi 1.6.1 output; every other export stays real.
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/pi');
 const SCOUT_FIXTURE = fs.readFileSync(path.join(FIXTURES, 'pi-1.6.1-json-scout-mcp.jsonl'), 'utf8');
@@ -34,15 +38,23 @@ after(async () => {
 const MODEL = 'pi-openrouter/mistralai/devstral-2512';
 const TOKEN = 'tok-propr-mcp-secret';
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-pi-analysis-'));
-after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+after(() => {
+    fs.rmSync(workspace, { recursive: true, force: true });
+    fs.rmSync(analysisRoot, { recursive: true, force: true });
+});
 
-function createAgent() {
-    return new PiAgent({ id: 'pi-test', type: 'pi', alias: 'pi-test', enabled: true, dockerImage: 'propr/agent:latest', configPath: '/nonexistent/propr-pi-test/agent', supportedModels: [MODEL], defaultModel: MODEL });
+function createAgent(overrides: Record<string, unknown> = {}) {
+    return new PiAgent({ id: 'pi-test', type: 'pi', alias: 'pi-test', enabled: true, dockerImage: 'propr/agent:latest', configPath: '/nonexistent/propr-pi-test/agent', supportedModels: [MODEL], defaultModel: MODEL, ...overrides });
 }
 
 function lastRun(): DockerRun {
     assert.ok(runs.length > 0, 'a container ran');
     return runs[runs.length - 1];
+}
+
+function valueAfterArg(args: string[], flag: string): string | undefined {
+    const index = args.indexOf(flag);
+    return index >= 0 ? args[index + 1] : undefined;
 }
 
 function piArgs(args: string[]): string[] {
@@ -64,6 +76,40 @@ describe('PiAgent.analyze', () => {
         assert.equal(piArgs(args).includes('--tools'), false);
         assert.equal(PI_MCP_CONFIG_ENV in (options.extraEnvVars as Record<string, string>), false);
         assert.match(String(options.stdinData), /Summarize this change[\s\S]*Do not run any commands/);
+    });
+
+    test('the empty analysis workspace lives under the host-shared analysis root and is removed afterwards', async () => {
+        await createAgent().analyze('Summarize this change', { executionType: 'pr-summary', suppressLlmLog: true, skipUsageTracking: true });
+        const mount = lastRun().args.find(arg => arg.endsWith(':/home/node/workspace:ro'));
+        const hostPath = mount!.slice(0, -':/home/node/workspace:ro'.length);
+        assert.equal(path.dirname(hostPath), analysisRoot);
+        assert.match(path.basename(hostPath), /^analysis-/);
+        assert.equal(fs.existsSync(hostPath), false, 'the workspace is cleaned up');
+    });
+
+    test('the default analysis root is the host-shared git-processor dir, not the worker tmpdir', () => {
+        const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../packages/core/src/agents/impl/PiAgent.ts'), 'utf8');
+        assert.match(source, /const DEFAULT_PI_ANALYSIS_ROOT = '\/tmp\/git-processor\/pi-analysis';/);
+        assert.match(source, /process\.env\.PI_ANALYSIS_ROOT \|\| DEFAULT_PI_ANALYSIS_ROOT/);
+        assert.doesNotMatch(source, /os\.tmpdir\(\)/);
+    });
+
+    test('an analysis sends the model suffix as the one thinking level and reports it', async () => {
+        const suffixed = 'pi-anthropic/claude-opus-5-5:high';
+        const analyze = (reasoningLevel?: string) => createAgent({ supportedModels: [suffixed] }).analyze('Summarize', {
+            model: suffixed, reasoningLevel: reasoningLevel as never, executionType: 'pr-summary', suppressLlmLog: true, skipUsageTracking: true,
+        });
+        const fromSuffix = await analyze();
+        let pi = piArgs(lastRun().args);
+        assert.equal(valueAfterArg(pi, '--model'), 'anthropic/claude-opus-5-5');
+        assert.equal(valueAfterArg(pi, '--thinking'), 'high');
+        assert.equal(pi.filter(arg => arg === '--thinking').length, 1);
+        assert.equal(fromSuffix.reasoningLevel, 'high');
+        const explicit = await analyze('medium');
+        pi = piArgs(lastRun().args);
+        assert.equal(valueAfterArg(pi, '--model'), 'anthropic/claude-opus-5-5');
+        assert.equal(valueAfterArg(pi, '--thinking'), 'medium');
+        assert.equal(explicit.reasoningLevel, 'medium');
     });
 
     test('the repository scout gets only the scout MCP tools, on the repository root, with the generated mcp.json', async () => {

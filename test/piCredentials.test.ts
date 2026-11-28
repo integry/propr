@@ -582,6 +582,8 @@ exit "\${PROPR_TEST_EXIT:-0}"
                 env: { ...env, PROPR_TEST_RETARGET_AUTH: replacement }, encoding: 'utf8',
             });
             assert.equal(result.status, 0, result.stderr);
+            // A symlinked auth.json is never written back, and the warning says what that costs.
+            assert.match(result.stderr, /auth\.json is a symlink; refreshed credentials will not be written back, so the host login goes stale/);
             assert.equal(fs.readlinkSync(link), replacement);
             for (const target of [original, replacement]) {
                 assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), hostAuth());
@@ -762,6 +764,16 @@ exit "\${PROPR_TEST_EXIT:-0}"
         assert.match(postTask, /\| \/usr\/bin\/env -i PATH="\$POST_TASK_PATH" \/usr\/bin\/python3 -I -B "\$pi_credentials_helper" sync-from-stdin/);
         assert.match(script, /restrict_goal_sessions_after_task\(\) \{\n[^}]*run_post_task_as_node \/bin\/chmod -R -- u\+rwX,go-rwx "\$pi_goal_session_dir"/);
         assert.doesNotMatch(script.slice(script.indexOf('restrict_goal_sessions_after_task()'), script.indexOf('prepare_goal_sessions()')), /chown/, 'no recursive chown over the tree the task just wrote');
+        // Only the store directory returns to the worker's UID, non-recursively
+        // and through the descriptor pinned before the task.
+        assert.match(script, /exec 8<"\$pi_goal_session_dir\/" \|\| return\n\s+pi_goal_session_owner="\$\(\/usr\/bin\/stat -L -c %u:%g -- \/proc\/self\/fd\/8\)"/);
+        assert.match(script, /restore_goal_session_owner\(\) \{\n[^}]*\/usr\/bin\/env -i \/bin\/chown -- "\$pi_goal_session_owner" \/proc\/self\/fd\/8\n\}/);
+        assert.ok(lines.indexOf('exec 8<&-') > lines.findIndex(line => line.startsWith('restore_goal_session_owner')), 'the pinned store is closed after it is handed back');
+        // No node process ever inherits the pinned store descriptor.
+        for (const fn of ['run_as_node', 'exec_as_node', 'run_post_task_as_node']) {
+            const body = script.slice(script.indexOf(`${fn}() {`), script.indexOf('\n}\n', script.indexOf(`${fn}() {`)));
+            assert.equal((body.match(/"\$@" 8<&-/g) ?? []).length, 2, `${fn} closes fd 8 in both branches`);
+        }
         // Every external command after the task is called by absolute path.
         const external = /(^|[\s;|&({])(cp|chown|chmod|python3|mkdir|rm|ln|mv|realpath|env|su-exec|stat|find|cat|install|git|sh|bash)(\s|$)/;
         assert.deepEqual(lines.filter(line => external.test(line)), [], 'bare external commands after the task');

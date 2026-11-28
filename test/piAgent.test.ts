@@ -10,13 +10,14 @@ import { buildPiExecutionResult } from '../packages/core/src/agents/impl/utils/p
 import { agentResultToMetricsResult } from '../packages/core/src/agents/impl/utils/failedAgentExecution.js';
 import { buildPiCliArgs, buildPiDockerArgs, forwardablePiEnvVars, PI_CONTAINER_RUNTIME_HOME, PI_CONTAINER_SESSION_DIR } from '../packages/core/src/agents/impl/utils/piDockerArgsBuilder.js';
 import { isSuccessfulPiResult, parsePiOutput, parsePiJsonLines } from '../packages/core/src/agents/impl/utils/piOutputParser.js';
-import { toPiCliModel, toPiOpenRouterId, toProprPiModelId } from '../packages/core/src/agents/impl/piModelIds.js';
+import { resolvePiThinkingLevel, toPiCliModel, toPiOpenRouterId, toProprPiModelId } from '../packages/core/src/agents/impl/piModelIds.js';
 import { resolvePiReasoningLevel } from '../packages/core/src/config/configManagerReasoning.js';
 import { getAgentTypeFromModel, getModelShortName, getOpenRouterId, resolveModelAlias } from '../packages/core/src/config/modelAliases.js';
 import { AgentActivityWatchdog, type AgentWatchdogTrip } from '../packages/core/src/claude/docker/agentActivityWatchdog.js';
 import { classifyAgentOutputLine } from '../packages/core/src/claude/docker/agentOutputActivity.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 import { closeConnection } from '../packages/core/src/db/connection.js';
+import { getPiLoginProviders, normalizePiModelId } from '../packages/shared/src/agentLogin.js';
 
 after(async () => {
     await closeConnection();
@@ -168,9 +169,12 @@ describe('Pi Docker args', () => {
         assert.deepEqual(buildPiCliArgs({ modelName: MODEL, thinkingLevel: 'high', mode: 'execute' }), [
             'pi', '-p', '--mode', 'json', '--model', 'openrouter/mistralai/devstral-2512', '--thinking', 'high', '--session-dir', PI_CONTAINER_SESSION_DIR, '--no-approve',
         ]);
-        // A thinking suffix on the ProPR id stays on --model; an explicit level overrides it.
-        assert.deepEqual(buildPiCliArgs({ modelName: 'pi-anthropic/claude-opus-5-5:low', mode: 'execute' }).slice(4, 8), ['--model', 'anthropic/claude-opus-5-5:low', '--thinking', 'low']);
-        assert.equal(valueAfter(buildPiCliArgs({ modelName: 'pi-anthropic/claude-opus-5-5:low', thinkingLevel: 'max', mode: 'execute' }), '--thinking'), 'max');
+        // A thinking suffix on the ProPR id never reaches --model: one level is sent, as --thinking.
+        assert.deepEqual(buildPiCliArgs({ modelName: 'pi-anthropic/claude-opus-5-5:low', mode: 'execute' }).slice(4, 8), ['--model', 'anthropic/claude-opus-5-5', '--thinking', 'low']);
+        const overridden = buildPiCliArgs({ modelName: 'pi-anthropic/claude-opus-5-5:low', thinkingLevel: 'max', mode: 'execute' });
+        assert.equal(valueAfter(overridden, '--model'), 'anthropic/claude-opus-5-5');
+        assert.equal(valueAfter(overridden, '--thinking'), 'max');
+        assert.equal(overridden.filter(arg => arg === '--thinking').length, 1);
         assert.equal(buildPiCliArgs({ modelName: MODEL, mode: 'execute' }).includes('--thinking'), false, 'no level leaves the model default');
     });
 
@@ -264,6 +268,15 @@ describe('Pi agent type wiring', () => {
     test('model ids map between ProPR and Pi', () => {
         assert.deepEqual(toPiCliModel('pi-openrouter/qwen/qwen3-coder:free'), { model: 'openrouter/qwen/qwen3-coder:free', provider: 'openrouter' });
         assert.deepEqual(toPiCliModel('pi:pi-anthropic/claude-opus-5-5:xhigh'), { model: 'anthropic/claude-opus-5-5', provider: 'anthropic', thinking: 'xhigh' });
+        // IDs are normalized when created (UI, API, CLI): provider lowercased, model part as typed.
+        assert.equal(normalizePiModelId(' Pi-OpenRouter/Qwen/Qwen3-Coder:HIGH '), 'pi-openrouter/Qwen/Qwen3-Coder:HIGH');
+        assert.equal(normalizePiModelId('pi:pi-Anthropic/claude-opus-5-5'), 'pi:pi-anthropic/claude-opus-5-5');
+        assert.equal(normalizePiModelId('claude-opus-5-5'), 'claude-opus-5-5');
+        // So the login, the credential check and --model agree on the provider.
+        const id = normalizePiModelId('pi-OpenRouter/qwen/qwen3-coder');
+        assert.equal(getPiLoginProviders([id])[0], toPiCliModel(id).provider);
+        // Provider ids are lowercase wherever they are compared; the model part keeps its case.
+        assert.deepEqual(toPiCliModel('pi-OpenRouter/Qwen/Qwen3-Coder'), { model: 'openrouter/Qwen/Qwen3-Coder', provider: 'openrouter' });
         assert.equal(toProprPiModelId('anthropic/claude-sonnet-5-5'), 'pi-anthropic/claude-sonnet-5-5');
         assert.equal(toPiOpenRouterId('pi-openrouter/qwen/qwen3-coder:free'), 'qwen/qwen3-coder:free');
         assert.throws(() => toPiCliModel('pi-claude'), /provider and model/);
@@ -276,6 +289,18 @@ describe('Pi agent type wiring', () => {
         assert.equal(resolveModelAlias('pi-devstral2'), MODEL);
         assert.equal(getOpenRouterId(MODEL), 'mistralai/devstral-2512');
         assert.equal(getOpenRouterId('pi-openrouter/qwen/qwen3-coder'), 'qwen/qwen3-coder');
+    });
+
+    test('one thinking level wins: task level, then the agent’s model setting, then the model suffix, then the global default', () => {
+        const suffixed = 'pi-anthropic/claude-opus-5-5:high';
+        // An explicit per-model suffix beats the global default (the reported bug: `:high` with a global `low`).
+        assert.equal(resolvePiThinkingLevel({ modelId: suffixed, globalDefault: 'low' }), 'high');
+        assert.equal(resolvePiThinkingLevel({ modelId: 'pi-anthropic/claude-opus-5-5', globalDefault: 'low' }), 'low');
+        assert.equal(resolvePiThinkingLevel({ modelId: suffixed, agentModel: 'xhigh', globalDefault: 'low' }), 'xhigh');
+        // A task's explicit reasoning label beats both.
+        assert.equal(resolvePiThinkingLevel({ modelId: suffixed, explicit: 'medium', agentModel: 'xhigh', globalDefault: 'low' }), 'medium');
+        assert.equal(resolvePiThinkingLevel({ modelId: 'pi-anthropic/claude-opus-5-5' }), null);
+        assert.equal(resolvePiThinkingLevel({ modelId: 'not-a-pi-model', globalDefault: 'max' }), 'max');
     });
 
     test('ProPR reasoning levels map to Pi thinking levels', () => {

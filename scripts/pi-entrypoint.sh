@@ -115,9 +115,9 @@ is_root() { [ "$EUID" = "0" ]; }
 # Pi and readers of its disposable credentials run as node.
 run_as_node() {
     if is_root; then
-        /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@"
+        /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@" 8<&-
     else
-        PATH="$pi_node_path" "$@"
+        PATH="$pi_node_path" "$@" 8<&-
     fi
 }
 
@@ -125,10 +125,10 @@ run_as_node() {
 # the task itself and signals sent to it reach Pi rather than a subshell.
 exec_as_node() {
     if is_root; then
-        exec /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@"
+        exec /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@" 8<&-
     else
         export PATH="$pi_node_path"
-        exec "$@"
+        exec "$@" 8<&-
     fi
 }
 
@@ -141,9 +141,9 @@ POST_TASK_PATH=/usr/sbin:/usr/bin:/sbin:/bin
 # and the fixed PATH, so neither the task's PATH nor its environment applies.
 run_post_task_as_node() {
     if is_root; then
-        /usr/local/bin/su-exec node /usr/bin/env -i HOME=/nonexistent PATH="$POST_TASK_PATH" "$@"
+        /usr/local/bin/su-exec node /usr/bin/env -i HOME=/nonexistent PATH="$POST_TASK_PATH" "$@" 8<&-
     else
-        /usr/bin/env -i PATH="$POST_TASK_PATH" "$@"
+        /usr/bin/env -i PATH="$POST_TASK_PATH" "$@" 8<&-
     fi
 }
 
@@ -152,9 +152,19 @@ run_post_task_as_node() {
 # run root claims the store (an earlier run or the host may have left other
 # owners); afterwards everything in it was created by the node task, so node
 # itself restricts it and root never walks a tree the task just wrote.
+#
+# The store itself belongs to the ProPR worker, whatever its UID: the worker
+# lists the saved sessions at the next boundary and deletes the store with the
+# goal. So root records the store's owner and pins the directory (fd 8, never
+# passed to a node process) before claiming it for the run, and afterwards
+# hands back only that directory, through the pinned descriptor, so a path the
+# task swapped cannot redirect it. The session files inside stay node's.
+pi_goal_session_owner=""
 restrict_goal_sessions_before_task() {
     [ -n "$pi_goal_session_dir" ] || return 0
     if is_root; then
+        exec 8<"$pi_goal_session_dir/" || return
+        pi_goal_session_owner="$(/usr/bin/stat -L -c %u:%g -- /proc/self/fd/8)" || return
         /usr/bin/env -i /bin/chown -hR -- node:node "$pi_goal_session_dir" || return
     fi
     /usr/bin/env -i /bin/chmod -R -- u+rwX,go-rwx "$pi_goal_session_dir"
@@ -173,6 +183,13 @@ prepare_goal_sessions() {
     fi
     restrict_goal_sessions_before_task
     echo "Using persisted Pi goal sessions at $pi_goal_session_dir" >&2
+}
+
+# Non-recursive, through the descriptor pinned before the task: only the store
+# directory returns to the worker, never anything the task created in it.
+restore_goal_session_owner() {
+    [ -n "$pi_goal_session_owner" ] || return 0
+    /usr/bin/env -i /bin/chown -- "$pi_goal_session_owner" /proc/self/fd/8
 }
 
 prepare_runtime_home() {
@@ -205,7 +222,7 @@ prepare_runtime_home() {
                     continue
                 fi
                 if [ -L "$pi_source_auth" ]; then
-                    echo "Warning: Pi auth.json is a symlink; refreshed credentials will not be written back" >&2
+                    echo "Warning: Pi auth.json is a symlink; refreshed credentials will not be written back, so the host login goes stale once Pi rotates its refresh token. Replace the symlink with the file itself" >&2
                     pi_host_auth=""
                 elif { exec 9<"${pi_host_auth%/*}/"; }; then
                     import_path="/proc/self/fd/9/${pi_host_auth##*/}"
@@ -392,5 +409,7 @@ fi
 exec 9<&-
 
 restrict_goal_sessions_after_task || echo "Warning: could not restrict Pi goal session permissions" >&2
+restore_goal_session_owner || echo "Warning: could not return the Pi goal session dir to its owner; the worker may not resume or delete it" >&2
+exec 8<&-
 
 exit "$command_status"

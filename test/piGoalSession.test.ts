@@ -211,6 +211,47 @@ describe('Pi goal session store', () => {
         await removePiGoalSessions('goal-never-ran');
     });
 
+    // pi-entrypoint.sh hands the store back to the worker after each run and
+    // keeps the session files node's (UID 1000, mode 0600). A worker with any
+    // other UID can then list and delete them but not read them: mode 000 files
+    // stand in for node-owned ones, as this suite cannot run as two users.
+    test('a worker whose UID is not node’s resumes and deletes a goal it cannot read the sessions of', async () => {
+        const hostDir = piGoalSessionDir('goal-other-uid');
+        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+        const saved = path.join(hostDir, '2026-11-28T10-00-00-000Z_session-u.jsonl');
+        fs.writeFileSync(saved, '{}\n', { mode: 0o600 });
+        fs.chmodSync(saved, 0o000);
+        const chmod = mock.method(fs, 'chmodSync');
+        try {
+            const session = preparePiGoalSession('goal-other-uid', 'session-u');
+            assert.equal(session.resumeFile, path.basename(saved));
+            assert.equal(chmod.mock.calls.length, 0, 'an owner-only store is not chmodded again');
+        } finally { chmod.mock.restore(); }
+        await removePiGoalSessions('goal-other-uid');
+        assert.equal(fs.existsSync(hostDir), false);
+    });
+
+    test('a store the worker does not own fails with a clear permission error', async () => {
+        const hostDir = piGoalSessionDir('goal-foreign');
+        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+        // Group/other bits left by a foreign owner: chmod as the worker is refused.
+        fs.chmodSync(hostDir, 0o750);
+        const chmod = mock.method(fs, 'chmodSync', () => { throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }); });
+        try {
+            assert.throws(() => preparePiGoalSession('goal-foreign'), /Cannot prepare the Pi goal session store .*goal-foreign: permission denied .*owned by the user ProPR runs as/);
+        } finally { chmod.mock.restore(); }
+        // Listing a store the worker cannot read.
+        fs.chmodSync(hostDir, 0o300);
+        try {
+            if (process.getuid?.() !== 0) assert.throws(() => findPiGoalSessionFile(hostDir, 'session-x'), /Cannot list the Pi goal session store/);
+        } finally { fs.chmodSync(hostDir, 0o700); }
+        const rm = mock.method(fs.promises, 'rm', async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); });
+        try {
+            await assert.rejects(removePiGoalSessions('goal-foreign'), /Cannot delete the Pi goal session store .*goal-foreign: permission denied/);
+        } finally { rm.mock.restore(); }
+        await removePiGoalSessions('goal-foreign');
+    });
+
     test('docker args mount the goal store instead of the disposable session dir and pass goal variables by name', () => {
         const session = preparePiGoalSession('goal-args');
         const invocation = buildPiDockerArgs({

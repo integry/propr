@@ -93,9 +93,12 @@ export function forwardablePiEnvVars(envVars: Record<string, string> | undefined
 export function buildPiCliArgs(params: { modelName: string; thinkingLevel?: PiThinkingLevel | null; mode: 'execute' | 'analysis'; repositoryInspection?: boolean; toolPolicyArgs?: string[]; goalSession?: PiGoalSession }): string[] {
     if (params.repositoryInspection && params.mode !== 'analysis') throw new Error('Repository inspection requires analysis mode');
     if (params.goalSession && params.mode !== 'execute') throw new Error('A Pi goal session requires execute mode');
+    // One source of truth for the thinking level: `--thinking` only. The
+    // caller's level already ranks the model id's suffix against ProPR's
+    // levels; the suffix alone applies when no level was resolved.
     const { model, thinking } = toPiCliModel(params.modelName);
     const effectiveThinking = params.thinkingLevel ?? thinking;
-    const args = ['pi', '-p', '--mode', 'json', '--model', thinking ? `${model}:${thinking}` : model];
+    const args = ['pi', '-p', '--mode', 'json', '--model', model];
     if (effectiveThinking) args.push('--thinking', effectiveThinking);
     if (params.mode === 'analysis') {
         // Lightweight analysis keeps nothing and runs no tool that can write.

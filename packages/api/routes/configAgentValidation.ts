@@ -5,6 +5,7 @@ import {
   getReasoningLevelsForAgentType,
   isAgentLoginSupported,
   isReasoningLevel,
+  normalizePiModelId,
 } from '@propr/shared';
 
 const ALIAS_REGEX = /^[a-z0-9-]+$/;
@@ -17,7 +18,9 @@ export function normalizeAgentAlias(alias: string): string {
 function normalizeSupportedModel(agentType: AgentConfig['type'], model: string): string {
   const trimmed = model.trim();
   if (trimmed === 'default') return trimmed;
-  return agentType === 'opencode' ? toProprOpenCodeModelId(trimmed) : trimmed;
+  if (agentType === 'opencode') return toProprOpenCodeModelId(trimmed);
+  // Pi provider ids are lowercase wherever they are compared (login, credential check, --model).
+  return agentType === 'pi' ? normalizePiModelId(trimmed) : trimmed;
 }
 
 function isAgentRecord(agent: unknown): agent is Record<string, unknown> {

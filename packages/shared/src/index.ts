@@ -361,6 +361,7 @@ export {
   getAgentLoginDescriptor,
   getPiLoginProviders,
   isValidAgentLoginProvider,
+  normalizePiModelId,
   getManagedAgentConfigPath,
   getManagedAgentConfigRelativePath,
   isAgentLoginSupported,

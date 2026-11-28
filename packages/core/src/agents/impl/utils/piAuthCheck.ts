@@ -6,7 +6,6 @@ import { createContainerExecutionId } from './containerExecutionId.js';
 
 const STATUSES = new Set<AgentCredentialCheckResult['status']>(['ready', 'not_ready', 'invalid']);
 /** `pi auth check` exit codes. */
-const STATUS_BY_EXIT_CODE: Record<number, AgentCredentialCheckResult['status']> = { 0: 'ready', 1: 'not_ready', 2: 'invalid' };
 const REASON_CODE = /^[a-z0-9_.-]{1,64}$/i;
 
 /**
@@ -69,12 +68,13 @@ function code(value: unknown): string | undefined {
 /**
  * Reads `pi auth check --json` output: one JSON object such as
  * `{"status":"not_ready","provider":"anthropic","reason":"credentials_not_configured"}`.
- * The exit code (0 ready, 1 not_ready, 2 invalid) decides when the JSON is
- * missing or unreadable; any other exit code is not a check result.
+ * Only that result line is a check result. Pi's exit codes (0 ready,
+ * 1 not_ready, 2 invalid) overlap the entrypoint's own failures (`set -e`
+ * exits 1), so an exit code without the result line is never trusted.
  */
 export function parsePiAuthCheckOutput(stdout: string, exitCode: number | null, provider: string): AgentCredentialCheckResult {
     const parsed = findResultLine(stdout);
-    const status = parsed?.status ?? (exitCode === null ? undefined : STATUS_BY_EXIT_CODE[exitCode]);
+    const status = parsed?.status;
     if (!status) throw new Error(`pi auth check failed${exitCode === null ? '' : ` with exit code ${exitCode}`} without a result`);
     const reportedProvider = code(parsed?.provider) ?? provider;
     const reason = code(parsed?.reason);
@@ -98,11 +98,16 @@ export const runDockerForPiAuthCheck: PiAuthCheckRunner = (args, env, timeoutMs)
     });
 });
 
-/** Runs the check; a docker or entrypoint failure (exit code above 2) is an error, not a result. */
+/**
+ * Runs the check. Without Pi's JSON result line the run is a docker or
+ * entrypoint failure, reported with its stderr, whatever the exit code (an
+ * entrypoint `set -e` failure exits 1, the same as "no credentials").
+ */
 export async function runPiAuthCheck(invocation: PiDockerInvocation, provider: string, options: { timeoutMs?: number; run?: PiAuthCheckRunner } = {}): Promise<AgentCredentialCheckResult> {
     const { stdout, stderr, exitCode } = await (options.run ?? runDockerForPiAuthCheck)(invocation.args, invocation.secretEnv, options.timeoutMs ?? 60_000);
-    if (exitCode !== null && exitCode > 2 && !/^\s*\{/m.test(stdout)) {
-        throw new Error(`pi auth check could not run (exit code ${exitCode}): ${stderr.trim().split('\n').slice(-3).join(' ').slice(0, 500)}`);
+    if (!findResultLine(stdout)) {
+        const detail = stderr.trim().split('\n').slice(-3).join(' ').slice(0, 500) || 'no output';
+        throw new Error(`pi auth check could not run (exit code ${exitCode ?? 'none'}): ${detail}`);
     }
     return parsePiAuthCheckOutput(stdout, exitCode, provider);
 }

@@ -47,7 +47,7 @@ For Antigravity, an existing `~/.gemini` works only if it contains the file toke
 
 ### Pi
 
-Pi routes to many providers, so its model IDs name the provider: `pi-<provider>/<model>` runs as `pi --model <provider>/<model>` (for example `pi-openrouter/mistralai/devstral-2512`). Add any provider/model Pi knows to the agent's supported models; an optional `:<thinking>` suffix (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) pins a thinking level, and a configured ProPR reasoning level overrides it (`ultra` and `ultracode` run at `max`). PR titles show the underlying model.
+Pi routes to many providers, so its model IDs name the provider: `pi-<provider>/<model>` runs as `pi --model <provider>/<model>` (for example `pi-openrouter/mistralai/devstral-2512`). Add any provider/model Pi knows to the agent's supported models; an optional `:<thinking>` suffix (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) pins a thinking level. ProPR sends exactly one level, as `--thinking` (the suffix never reaches `--model`): a task's explicit reasoning level wins, then the agent's reasoning setting for that model, then the suffix, then the global default (`ultra` and `ultracode` run at `max`). Provider IDs are stored lowercase. PR titles show the underlying model.
 
 Pi has three credential choices in the agent dialog:
 

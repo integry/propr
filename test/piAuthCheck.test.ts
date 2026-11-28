@@ -41,12 +41,12 @@ describe('parsePiAuthCheckOutput', () => {
         assert.match(unknown.message ?? '', /does not know the provider "nosuch"/);
     });
 
-    test('skips entrypoint noise and falls back to the exit code when there is no JSON', () => {
+    test('skips entrypoint noise and never trusts an exit code without the JSON result line', () => {
         const noisy = 'Pi CLI version: 1.6.1\n{"status":"ready","provider":"google","authType":"api_key"}\n';
         assert.equal(parsePiAuthCheckOutput(noisy, 0, 'google').status, 'ready');
-        assert.equal(parsePiAuthCheckOutput('ready\n', 0, 'google').status, 'ready');
-        assert.equal(parsePiAuthCheckOutput('', 1, 'google').status, 'not_ready');
-        assert.equal(parsePiAuthCheckOutput('', 2, 'google').status, 'invalid');
+        assert.throws(() => parsePiAuthCheckOutput('ready\n', 0, 'google'), /exit code 0 without a result/);
+        assert.throws(() => parsePiAuthCheckOutput('', 1, 'google'), /exit code 1 without a result/);
+        assert.throws(() => parsePiAuthCheckOutput('', 2, 'google'), /exit code 2 without a result/);
         assert.throws(() => parsePiAuthCheckOutput('', 125, 'google'), /exit code 125/);
         assert.throws(() => parsePiAuthCheckOutput('', null, 'google'), /without a result/);
     });
@@ -112,6 +112,15 @@ describe('PiAgent.checkCredentials', () => {
         await assert.rejects(
             runPiAuthCheck({ args: [], secretEnv: {}, configEnv: {} }, 'anthropic', { run: async () => ({ stdout: '', stderr: 'docker: Error response from daemon', exitCode: 125 }) }),
             /could not run \(exit code 125\): docker: Error response/,
+        );
+        // An entrypoint failure under `set -e` exits 1 like "no credentials": without the result line it is a runtime error.
+        await assert.rejects(
+            runPiAuthCheck({ args: [], secretEnv: {}, configEnv: {} }, 'anthropic', { run: async () => ({ stdout: 'Pi CLI version: 1.6.1\n', stderr: 'Could not create a private disposable Pi home at /tmp/propr-pi-home', exitCode: 1 }) }),
+            /could not run \(exit code 1\): Could not create a private disposable Pi home/,
+        );
+        await assert.rejects(
+            runPiAuthCheck({ args: [], secretEnv: {}, configEnv: {} }, 'anthropic', { run: async () => ({ stdout: '', stderr: '', exitCode: 2 }) }),
+            /could not run \(exit code 2\): no output/,
         );
     });
 });

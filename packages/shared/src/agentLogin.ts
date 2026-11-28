@@ -125,6 +125,18 @@ export function getPiLoginProviders(models: readonly string[], defaultModel?: st
 }
 
 /**
+ * A Pi model id with its provider lowercased (`pi-OpenRouter/Qwen` →
+ * `pi-openrouter/Qwen`). Pi provider ids are lowercase, and the login, the
+ * credential check and `pi --model` all compare them that way; the model part
+ * keeps its case. Other ids are returned trimmed and otherwise unchanged.
+ */
+export function normalizePiModelId(modelId: string): string {
+  const trimmed = modelId.trim();
+  const match = /^((?:[^:/]+:)?)pi-([^/]+)(\/.*)$/i.exec(trimmed);
+  return match ? `${match[1]}pi-${match[2].toLowerCase()}${match[3]}` : trimmed;
+}
+
+/**
  * The full command for a login. Provider-scoped logins (Pi) require a valid
  * provider and always use the headless flow: `--no-browser` for an account
  * (device code, or a pasted redirect URL), `--api-key` to save a key.

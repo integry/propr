@@ -31,7 +31,7 @@ import {
 } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
 import { createAgentPoolCommand } from "./agentPoolCommands.js";
-import { redactAgentConfigsSecrets } from "@propr/shared";
+import { normalizePiModelId, redactAgentConfigsSecrets } from "@propr/shared";
 
 const AGENT_TYPE_LIST = AGENT_TYPES.join(", ");
 
@@ -323,6 +323,12 @@ Examples:
               `Error: Invalid agent type '${type}'. Must be one of: ${AGENT_TYPE_LIST}`
             );
             process.exit(1);
+          }
+
+          if (type === "pi") {
+            // Pi provider ids are lowercase everywhere they are compared.
+            models = models.map(normalizePiModelId);
+            if (defaultModel) defaultModel = normalizePiModelId(defaultModel);
           }
 
           if (models.length === 0) {

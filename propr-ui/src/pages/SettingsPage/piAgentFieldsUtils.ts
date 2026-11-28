@@ -27,6 +27,30 @@ export function piApiKeyEnvNames(supportedModels: string[], defaultModel: string
   return names;
 }
 
+/**
+ * Provider-key variables only a type's own fields show (Pi's API keys, Vibe's
+ * Mistral key). The modal has no generic env-var editor, so these are dropped
+ * when the agent changes type: kept, they would stay saved but invisible, and
+ * e.g. an ANTHROPIC_API_KEY would make Claude Code bill that key instead of the login.
+ */
+export function providerKeyEnvNames(
+  type: AgentConfig['type'],
+  agent: Pick<AgentConfig, 'supportedModels' | 'defaultModel' | 'envVars'>,
+): string[] {
+  if (type === 'pi') return piApiKeyEnvNames(agent.supportedModels, agent.defaultModel, agent.envVars ?? {});
+  if (type === 'vibe') return ['MISTRAL_API_KEY'];
+  return [];
+}
+
+/** The env vars left after a type change from `previousType`. */
+export function envVarsAfterTypeChange(
+  previousType: AgentConfig['type'],
+  agent: Pick<AgentConfig, 'supportedModels' | 'defaultModel' | 'envVars'>,
+): Record<string, string> {
+  const dropped = new Set(providerKeyEnvNames(previousType, agent));
+  return Object.fromEntries(Object.entries(agent.envVars ?? {}).filter(([name]) => !dropped.has(name)));
+}
+
 /** Providers the agent's models use first, then the rest of the catalog. */
 export function piLoginProviderChoices(agent: Pick<AgentConfig, 'supportedModels' | 'defaultModel'>): string[] {
   const fromModels = getPiLoginProviders(agent.supportedModels, agent.defaultModel);

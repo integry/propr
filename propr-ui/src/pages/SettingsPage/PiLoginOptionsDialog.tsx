@@ -22,7 +22,13 @@ const PiLoginOptionsDialog: React.FC<PiLoginOptionsDialogProps> = ({ agent, onSt
   const [customProvider, setCustomProvider] = useState('');
   const provider = (selected === OTHER_PROVIDER ? customProvider : selected).trim().toLowerCase();
   const info = getPiProviderInfo(provider);
-  const [apiKey, setApiKey] = useState(info ? !info.accountLogin : false);
+  // The method follows the resolved provider (a listed one or a typed custom
+  // id): a choice made for one provider never carries over to another.
+  // Providers without an account sign-in only take an API key.
+  const [methodChoice, setMethodChoice] = useState<{ provider: string; apiKey: boolean } | undefined>();
+  const keyOnly = info !== undefined && !info.accountLogin;
+  const apiKey = keyOnly || (methodChoice?.provider === provider ? methodChoice.apiKey : false);
+  const setApiKey = (value: boolean) => setMethodChoice({ provider, apiKey: value });
   const dialogRef = useRef<HTMLDivElement>(null);
   const valid = isValidAgentLoginProvider(provider);
 
@@ -38,12 +44,7 @@ const PiLoginOptionsDialog: React.FC<PiLoginOptionsDialogProps> = ({ agent, onSt
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  const changeProvider = (next: string) => {
-    setSelected(next);
-    const nextInfo = getPiProviderInfo(next);
-    // Providers without an account sign-in only take an API key.
-    if (nextInfo) setApiKey(!nextInfo.accountLogin);
-  };
+  const changeProvider = (next: string) => setSelected(next);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -123,7 +124,7 @@ const PiLoginOptionsDialog: React.FC<PiLoginOptionsDialogProps> = ({ agent, onSt
                     key={option.label}
                     type="button"
                     aria-pressed={apiKey === option.value}
-                    disabled={!option.value && info !== undefined && !info.accountLogin}
+                    disabled={!option.value && keyOnly}
                     onClick={() => setApiKey(option.value)}
                     className={`rounded-md border px-3 py-2 text-left text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       apiKey === option.value

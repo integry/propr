@@ -1,5 +1,4 @@
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { executeWithExtensions } from '../../extensions/extensionLaunch.js';
 import { assertToolPolicySupported, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
@@ -14,11 +13,11 @@ import type { ModelReasoningLevel } from '../../config/configManagerReasoning.js
 import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
 import type { ExecutionType } from '../../utils/llmMetrics.types.js';
 import { analysisReasoningLevelField, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
-import { buildPromptWithRetryContext, buildLogMetadata } from './utils/vibeAgentHelpers.js';
+import { buildPromptWithRetryContext, buildLogMetadata, resolveHostBindPath } from './utils/vibeAgentHelpers.js';
 import { buildPiDockerArgs, type PiDockerArgsParams, type PiDockerInvocation } from './utils/piDockerArgsBuilder.js';
 import { buildPiFailureMessage, isSuccessfulPiResult, parsePiOutput, type ParsedPiOutput } from './utils/piOutputParser.js';
 import { buildPiAuthCheckDockerArgs, runPiAuthCheck, type PiAuthCheckRunner } from './utils/piAuthCheck.js';
-import { toPiCliModel } from './piModelIds.js';
+import { resolvePiThinkingLevel, toPiCliModel } from './piModelIds.js';
 import { buildPiExecutionResult, reportedPiReasoningLevel } from './utils/piExecutionResult.js';
 import { failedExecutionResult } from './utils/failedAgentExecution.js';
 import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
@@ -29,7 +28,17 @@ export { UsageLimitError };
 export { parsePiOutput, parsePiConversationLog, isSuccessfulPiResult } from './utils/piOutputParser.js';
 
 const DEFAULT_PI_ANALYSIS_TIMEOUT_MS = 1800000;
-const PI_ANALYSIS_ROOT = path.join(os.tmpdir(), 'propr-pi-analysis');
+/**
+ * Analysis workspaces live under the host-shared git-processor dir (as for
+ * OpenCode): in a containerized deployment the host daemon resolves the bind
+ * mount against the host, so a worker-local tmpdir would make Docker create a
+ * root-owned host directory that the worker's cleanup never removes.
+ */
+const DEFAULT_PI_ANALYSIS_ROOT = '/tmp/git-processor/pi-analysis';
+
+function piAnalysisRoot(): string {
+    return path.resolve((process.env.PI_ANALYSIS_ROOT || DEFAULT_PI_ANALYSIS_ROOT).replace(/\/+$/, '') || DEFAULT_PI_ANALYSIS_ROOT);
+}
 
 /** The run that threw as a failed result, keeping a finished run's tokens, cost, session and trace. */
 function buildFailedExecutionResult(error: Error, context: { executionTimeMs: number; model?: string; prompt?: string; completed?: AgentExecutionResult }): AgentExecutionResult {
@@ -190,7 +199,8 @@ export class PiAgent implements Agent {
             const thinkingLevel = await this.resolveThinkingLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel);
             const gitAccess = await prepareAnalysisGitAccess(options, analysisWorkspace);
             const invocation = this.buildDockerArgs({
-                worktreePath: analysisWorkspace, gitMountArgs: gitAccess.gitMountArgs, modelName: effectiveModel, thinkingLevel,
+                // The host daemon resolves bind mounts, so mount the host-visible path.
+                worktreePath: readOnlyWorkspacePath ? analysisWorkspace : resolveHostBindPath(analysisWorkspace), gitMountArgs: gitAccess.gitMountArgs, modelName: effectiveModel, thinkingLevel,
                 issueNumber: 0, taskId, executionType, mode: 'analysis', repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands,
             }, gitAccess.githubToken);
             const { result, usageMetrics } = await executeWithUsageTracking('pi', async () => executeDockerCommand('docker', invocation.args, {
@@ -263,11 +273,17 @@ export class PiAgent implements Agent {
         return result;
     }
 
+    /** The run's one thinking level; see {@link resolvePiThinkingLevel} for the precedence. `auto` defers to the next source. */
     private async resolveThinkingLevel(reasoningLevel: ModelReasoningLevel | undefined, model: string, useConfiguredReasoningLevel = true): Promise<PiThinkingLevel | null> {
-        const configured = reasoningLevel ?? (useConfiguredReasoningLevel
-            ? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model) ?? await loadModelReasoningLevel()
-            : '');
-        return resolvePiReasoningLevel(configured);
+        const agentModelLevel = useConfiguredReasoningLevel ? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model) : undefined;
+        const sources = {
+            explicit: reasoningLevel ? resolvePiReasoningLevel(reasoningLevel) : null,
+            agentModel: agentModelLevel ? resolvePiReasoningLevel(agentModelLevel) : null,
+            modelId: model,
+        };
+        // The global default is only read when nothing more specific applies.
+        if (!useConfiguredReasoningLevel || resolvePiThinkingLevel(sources)) return resolvePiThinkingLevel(sources);
+        return resolvePiThinkingLevel({ ...sources, globalDefault: resolvePiReasoningLevel(await loadModelReasoningLevel()) });
     }
 
     /**
@@ -284,8 +300,9 @@ export class PiAgent implements Agent {
     }
 
     private createAnalysisWorkspace(): string {
-        fs.mkdirSync(PI_ANALYSIS_ROOT, { recursive: true });
-        return fs.mkdtempSync(path.join(PI_ANALYSIS_ROOT, 'analysis-'));
+        const root = piAnalysisRoot();
+        fs.mkdirSync(root, { recursive: true, mode: 0o755 });
+        return fs.mkdtempSync(path.join(root, 'analysis-'));
     }
 
     private diagnosticContext(invocation: PiDockerInvocation) {

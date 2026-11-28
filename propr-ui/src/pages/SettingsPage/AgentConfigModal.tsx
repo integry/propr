@@ -25,6 +25,7 @@ import AgentTypeSelector from './AgentTypeSelector';
 import CliVersionSelector from './CliVersionSelector';
 import ModelSelector from './ModelSelector';
 import PiAgentFields from './PiAgentFields';
+import { envVarsAfterTypeChange } from './piAgentFieldsUtils';
 import { buildSelectableModels } from './modelSelectionHelpers';
 
 interface AgentConfigModalProps {
@@ -136,6 +137,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           : prev.configPath,
       supportedModels: defaults.defaultModels,
       defaultModel: defaults.defaultModels[0],
+      // The previous type's provider keys have no field in the new type.
+      envVars: envVarsAfterTypeChange(prev.type, prev),
       // Reset version to default when changing agent type
       cliVersionType: 'default',
       cliVersion: undefined,

@@ -9,7 +9,12 @@ import { randomUUID } from 'crypto';
  * disposable home, so the entrypoint never deletes or reseeds it.
  */
 export const PI_CONTAINER_GOAL_SESSION_DIR = '/home/node/.propr-pi-goal-session';
-/** pi-entrypoint.sh makes this mounted directory owner-only before and after the run. */
+/**
+ * pi-entrypoint.sh makes this mounted directory owner-only before and after the
+ * run. It hands the directory itself back to its owner (the worker, whatever
+ * its UID) after the run; the session files in it stay owned by the
+ * container's node user, so the worker lists and deletes them but never reads them.
+ */
 export const PI_GOAL_SESSION_DIR_ENV = 'PROPR_PI_GOAL_SESSION_DIR';
 const DEFAULT_PI_GOAL_SESSIONS_ROOT = path.join('/tmp/git-processor', 'pi-goal-sessions');
 
@@ -47,15 +52,36 @@ export function findPiGoalSessionFile(hostDir: string, sessionId: string): strin
     try { names = fs.readdirSync(hostDir); }
     catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-        throw error;
+        throw sessionStoreAccessError(error, hostDir, 'list');
     }
     const suffix = `_${sessionId}.jsonl`;
     return names.filter(name => name.endsWith(suffix) && fs.statSync(path.join(hostDir, name)).isFile()).sort().pop();
 }
 
+function isPermissionError(error: unknown): boolean {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    return code === 'EACCES' || code === 'EPERM';
+}
+
+/** EACCES/EPERM as an actionable error: the store is owned by another user than this worker. */
+function sessionStoreAccessError(error: unknown, dir: string, action: string): unknown {
+    if (!isPermissionError(error)) return error;
+    const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+    return new Error(
+        `Cannot ${action} the Pi goal session store ${dir}: permission denied for ProPR's user${uid === undefined ? '' : ` (UID ${uid})`}. ` +
+        'It must be owned by the user ProPR runs as; fix its ownership (for example chown it to that user) and retry.',
+        { cause: error },
+    );
+}
+
+/** Creates the directory owner-only; an existing one is only chmodded when it is not owner-only already. */
 function ensureOwnerOnlyDir(dir: string): void {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.chmodSync(dir, 0o700);
+    try {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        if ((fs.statSync(dir).mode & 0o077) !== 0) fs.chmodSync(dir, 0o700);
+    } catch (error) {
+        throw sessionStoreAccessError(error, dir, 'prepare');
+    }
 }
 
 /**
@@ -91,7 +117,9 @@ export function piGoalSessionCliArgs(session: PiGoalSession): string[] {
 
 /** Removes a goal's saved Pi sessions; used when the goal is deleted. */
 export async function removePiGoalSessions(goalId: string, root: string = piGoalSessionsRoot()): Promise<void> {
-    await fs.promises.rm(piGoalSessionDir(goalId, root), { recursive: true, force: true });
+    const dir = piGoalSessionDir(goalId, root);
+    try { await fs.promises.rm(dir, { recursive: true, force: true }); }
+    catch (error) { throw sessionStoreAccessError(error, dir, 'delete'); }
 }
 
 /**
