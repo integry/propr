@@ -42,7 +42,7 @@ Exhausting the $5 automatically switches the organization to Pay As You Go and b
 You can launch ProPR from the [Fly dashboard](https://fly.io/dashboard) with **Launch an App → From GitHub**, without installing `flyctl` or the ProPR CLI. By default Fly pulls the released `propr/app` image, so there is no build, and ProPR's first-visit setup wizard does the rest in the browser.
 
 1. **Fork** `integry/propr` into your GitHub account or organization.
-2. In the Fly dashboard, choose **Launch an App → From GitHub**, pick the fork and the `main` branch (or a release tag), and choose the organization, app name and region. Leave **Config path** at the default. The fork's root `fly.toml` supplies the image (`propr/app:<version>`, pinned to that commit's release), the `propr_data` 1 GB volume, a shared-CPU 1x Machine with 1 GB, the `/health` check and auto-start. Nothing is built: the deploy takes about a minute. Do not add secrets; the instance generates them.
+2. In the Fly dashboard, choose **Launch an App → From GitHub**, pick the fork and the `main` branch (or a release tag), and choose the organization, app name and region. Leave **Config path** at the default. The fork's root `fly.toml` supplies the image (`propr/app:<version>`, pinned to that commit's release), the `propr_data` 1 GB volume, a shared-CPU 1x Machine with 512 MB and 512 MB of swap (see [Machine size](#machine-size)), the `/health` check and auto-start. Nothing is built: the deploy takes about a minute. Do not add secrets; the instance generates them.
 3. When the deploy finishes, open the app's **Live Logs** (or run `fly logs`) and find the line `ProPR setup code: XXXX-XXXX-XXXX`.
 4. Open `https://<app>.fly.dev/setup` and enter the code. The first browser to enter it claims the instance; anyone else, even with the code, is shut out. A restart before the claim prints a new code.
 5. **Connect GitHub.** Choose one of two paths:
@@ -118,6 +118,20 @@ How events reach a stopped Machine depends on the GitHub path:
 - **ProPR App path (Connect intake).** GitHub delivers to Connect, not to the Machine. Ticking idle shutdown registers `https://<app>.fly.dev/wake` as this relay token's Connect wake target (`PUT /v1/wake-target`); if Connect refuses it, Finish shows the error and you can retry or leave idle shutdown off. While the Machine is stopped, Connect keeps its deliveries (on the free tier the newest 25, for one hour; see [Idle shutdown](../operations/idle-shutdown.md)). When one arrives, Connect pings `/wake`, Fly's proxy starts the Machine, and the instance asks for the cached deliveries once it reconnects. Before stopping, the instance sends Connect the wake hint and stops only after Connect acknowledges it. A relay without idle wake support never acknowledges, so the Machine then stays up rather than miss events.
 - **Your own App (direct webhooks).** A webhook starts the Machine through Fly's proxy. A cold start takes 15 to 20 seconds, and GitHub gives up on a webhook after 10 seconds without retrying it. The instance recovers the failed deliveries from the App's delivery history after it wakes. If you left it off, the idle shutdown control in Settings works as on any instance. If you turned it on in the wizard, that choice acts like environment configuration and wins over the Settings control; set the Fly secret `PROPR_IDLE_SHUTDOWN=off` to turn it off.
 
+### Machine size
+
+The launch configs start with a **512 MB** Machine and `swap_size_mb = 512`, so an always-on instance fits the Free Plan's $5 monthly credit: about $3.20 per month running 24/7, against about $5.70 at 1 GB. `propr deploy fly` keeps its 1 GB default.
+
+Measured on the full stack (ProPR and Valkey in one container, MCP on, webhook intake), the container used about 380 MB at the boot peak, about 280 MB idle, and about 300 MB under heavy HTTP load (UI, API and MCP, about 1,000 concurrent requests) with the 512 MB cap, with no OOM kill or restart. Those measurements did not include repository clones, inline indexing or a live agent run. The swap absorbs short spikes from these, so they slow down rather than kill the Machine. Check **Metrics** in the app's dashboard after your first runs.
+
+For large repositories, heavy indexing, or a Machine that keeps using swap, give it 1 GB:
+
+```bash
+fly scale memory 1024 --app <app>
+```
+
+Or open the app's **Scaling** page in the dashboard and pick 1 GB. The change restarts the Machine, and the volume keeps everything. A later deploy from the fork applies `fly.toml` again and goes back to 512 MB. To keep 1 GB, edit `memory` under `[[vm]]` in your fork's `fly.toml` (or in `deploy/fly/source/fly.toml`).
+
 ### Updates
 
 Fly redeploys the app from the fork. Keep the fork current with GitHub's **Sync fork** button. If the app is connected with deploy-on-push (the dashboard's GitHub deployment settings), each sync deploys the new version; otherwise use **Deploy** in the dashboard. With the root `fly.toml`, a release changes only its pinned `propr/app:<version>` tag, so the deploy pulls the new image; with `deploy/fly/source/fly.toml` it rebuilds. The release's metadata pull request bumps the pinned tag on `main` before the release tag publishes that image, so if a deploy right after a release cannot pull the image, deploy again once the release's **Docker Images** run has finished. Database migrations run on boot, as on every other deploy. The wizard does not reappear and the volume keeps every secret and setting.
@@ -134,9 +148,10 @@ Fly redeploys the app from the fork. Keep the fork current with GitHub's **Sync 
 | Browser sign-in | GitHub OAuth: the sign-in OAuth App you register (ProPR App path) or your own App's client | Connect through the hosted tunnel (`--tunnel-token`), or GitHub OAuth from the env file |
 | Agent runtime | Sprites or Fly Machines, chosen and checked in the wizard | `--agent-runtime` and the env file; also legacy Docker |
 | Idle shutdown | Off by default; wizard opt-in, no stop token needed; registers the Connect wake URL on the ProPR App path | Off by default; `--idle-shutdown` plus an app-scoped stop token |
+| Machine memory | 512 MB plus 512 MB swap; `fly scale memory 1024` for more | 1 GB |
 | Updates | Sync the fork; Fly redeploys | Rerun `propr deploy fly` |
 
-Both use the same env, health check, volume, VM size and stop settings: the committed `fly.toml` and `deploy/fly/source/fly.toml` are generated from the CLI's builders (`npx tsx packages/cli/scripts/render-fly-launch-toml.ts`), and a test keeps them from drifting from the CLI and from each other (they differ only in `[build]`).
+Both use the same env, health check, volume, CPU and stop settings (the dashboard launch defaults to 512 MB plus swap, the CLI to 1 GB): the committed `fly.toml` and `deploy/fly/source/fly.toml` are generated from the CLI's builders (`npx tsx packages/cli/scripts/render-fly-launch-toml.ts`), and a test keeps them from drifting from the CLI and from each other (they differ only in `[build]`).
 
 ## Deploy the Machine
 

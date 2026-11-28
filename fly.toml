@@ -8,6 +8,8 @@
 # allInOne drains on SIGTERM; give it time to finish acks and close SQLite.
 kill_signal = "SIGTERM"
 kill_timeout = "60s"
+# Headroom for clone and indexing spikes on the 512 MB Machine, instead of an OOM kill.
+swap_size_mb = 512
 
 [build]
   # The released image, built from docker/Dockerfile.app.prod by the release
@@ -71,5 +73,7 @@ kill_timeout = "60s"
   retries = 10
 
 [[vm]]
+  # Free Plan friendly. For large repositories or heavy indexing:
+  # `fly scale memory 1024` (or the dashboard's Scaling page).
   size = "shared-cpu-1x"
-  memory = "1024mb"
+  memory = "512mb"

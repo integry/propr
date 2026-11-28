@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
 import { test } from 'node:test';
 import { FLY_GENERATED_SECRETS } from '@propr/shared';
-import { buildAppEnv, FLY_REDIS_PERSISTENCE_FLAGS, type FlyDeployPlan } from '../packages/cli/src/commands/deploy/flyMachineConfig.ts';
+import { buildAppEnv, FLY_DEFAULTS, FLY_REDIS_PERSISTENCE_FLAGS, type FlyDeployPlan } from '../packages/cli/src/commands/deploy/flyMachineConfig.ts';
 import {
     FLY_LAUNCH_BOOT_ENV_KEYS, FLY_LAUNCH_DOCKERFILE, FLY_LAUNCH_ENTRYPOINT, FLY_LAUNCH_MISSING_ENTRY_MESSAGE, FLY_LAUNCH_PROCESS_SCRIPT,
     FLY_LAUNCH_SOURCE_CONFIG, flyLaunchConfigs, flyLaunchEnv, flyLaunchPlan, renderFlyLaunchToml,
@@ -52,6 +52,16 @@ test('the source config builds the app Dockerfile, resolved from its own directo
     assert.equal(posix.join(posix.dirname(FLY_LAUNCH_SOURCE_CONFIG), dockerfile), FLY_LAUNCH_DOCKERFILE);
     assert.ok(existsSync(new URL(posix.join(posix.dirname(FLY_LAUNCH_SOURCE_CONFIG), dockerfile), root)));
     assert.doesNotMatch(toml, /^\s*image\s*=/m);
+});
+
+for (const path of configPaths) test(`${path} sizes a Free Plan Machine: 512 MB plus 512 MB swap`, () => {
+    const toml = read(path);
+    assert.match(toml, /^swap_size_mb = 512$/m);
+    assert.match(toml, /^\[\[vm\]\]\n(?:\s*#.*\n)*  size = "shared-cpu-1x"\n  memory = "512mb"$/m);
+});
+
+test('propr deploy fly keeps its own 1 GB sizing', () => {
+    assert.equal(FLY_DEFAULTS.memoryMb, 1024);
 });
 
 test('the two configs differ only in [build]', () => {

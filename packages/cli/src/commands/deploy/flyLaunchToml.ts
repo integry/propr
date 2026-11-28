@@ -1,7 +1,7 @@
 /**
  * The committed `fly.toml` files a Fly dashboard launch ("Launch an App → From
  * GitHub", #3827) reads. Rendered from the same builders as `propr deploy fly`
- * (flyMachineConfig.ts), so the env, health check, volume, VM size and
+ * (flyMachineConfig.ts), so the env, health check, volume, CPU and
  * stop settings cannot drift; a test pins the committed files to this output.
  * Regenerate them with `npx tsx packages/cli/scripts/render-fly-launch-toml.ts`.
  *
@@ -30,6 +30,12 @@
  *   boot and kept on the volume (src/flyLaunch/).
  * - Settings the setup wizard chooses (agent runtime, idle shutdown) are not
  *   in [env]: a value here would read as an operator override and win.
+ * - A smaller Machine than the CLI's: 512 MB plus 512 MB of swap, so a 24/7
+ *   instance stays within the Free Plan's $5 credit (about $3.20 a month, versus
+ *   about $5.70 at 1 GB). Measured on the full stack (ProPR + Valkey, MCP on):
+ *   ~380 MB boot peak, ~280 MB idle, ~300 MB under HTTP load capped at 512 MB.
+ *   The swap absorbs clone and indexing spikes instead of an OOM kill;
+ *   `fly scale memory 1024` raises it. `propr deploy fly` keeps FLY_DEFAULTS.
  * - Restart on failure only. With idle shutdown off (the default) nothing
  *   exits 0 except a stop Fly asked for; with it on, the exit 0 after an idle
  *   stop leaves the Machine stopped for the Fly proxy to start again.
@@ -56,6 +62,10 @@ export const FLY_LAUNCH_SOURCE_CONFIG = "deploy/fly/source/fly.toml";
 export type FlyLaunchBuild =
   | { kind: "prebuilt"; version: string }
   | { kind: "source" };
+
+/** Launch-config Machine memory and swap (MB); `propr deploy fly` keeps FLY_DEFAULTS.memoryMb. */
+export const FLY_LAUNCH_MEMORY_MB = 512;
+export const FLY_LAUNCH_SWAP_SIZE_MB = 512;
 
 /** The committed configs, by repository-relative path. */
 export function flyLaunchConfigs(version: string): { path: string; build: FlyLaunchBuild }[] {
@@ -93,11 +103,14 @@ export const FLY_LAUNCH_BOOT_ENV_KEYS: readonly string[] = [
   "PROPR_AGENT_RUNTIME", "SPRITES_CLIENT_SIGNALS", "PROPR_IDLE_SHUTDOWN", "PROPR_IDLE_SHUTDOWN_AFTER",
 ];
 
-/** The CLI plan a dashboard launch matches: defaults, own GitHub App key off (it lives on the volume). */
+/**
+ * The CLI plan a dashboard launch matches: defaults, own GitHub App key off (it
+ * lives on the volume), and the smaller launch memory (no effect on the env).
+ */
 export function flyLaunchPlan(): FlyDeployPlan {
   return {
     app: "propr", org: FLY_DEFAULTS.org, region: FLY_DEFAULTS.region, images: { app: "", redis: "", cloudflared: "" },
-    cpuKind: FLY_DEFAULTS.cpuKind, cpus: FLY_DEFAULTS.cpus, memoryMb: FLY_DEFAULTS.memoryMb,
+    cpuKind: FLY_DEFAULTS.cpuKind, cpus: FLY_DEFAULTS.cpus, memoryMb: FLY_LAUNCH_MEMORY_MB,
     volumeName: FLY_DEFAULTS.volumeName, volumeSizeGb: FLY_DEFAULTS.volumeSizeGb,
     agentRuntime: "sprites", legacyDocker: false, githubAppKey: false, mcp: true,
   };
@@ -149,6 +162,8 @@ export function renderFlyLaunchToml(configPath: string, build: FlyLaunchBuild): 
     "# allInOne drains on SIGTERM; give it time to finish acks and close SQLite.",
     "kill_signal = \"SIGTERM\"",
     "kill_timeout = \"60s\"",
+    "# Headroom for clone and indexing spikes on the 512 MB Machine, instead of an OOM kill.",
+    `swap_size_mb = ${FLY_LAUNCH_SWAP_SIZE_MB}`,
     "",
     ...buildLines(configPath, build),
     "",
@@ -190,6 +205,8 @@ export function renderFlyLaunchToml(configPath: string, build: FlyLaunchBuild): 
     "  retries = 10",
     "",
     "[[vm]]",
+    "  # Free Plan friendly. For large repositories or heavy indexing:",
+    "  # `fly scale memory 1024` (or the dashboard's Scaling page).",
     `  size = ${toml(vmSizeLabel(plan))}`,
     `  memory = ${toml(`${plan.memoryMb}mb`)}`,
     "",

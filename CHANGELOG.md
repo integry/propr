@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     dashboard's Config path, builds a modified fork from source instead. The
     prebuilt path works from the next release: an older image logs how to
     use the source config and stays stopped.
+  - The launch configs size the Machine at 512 MB with 512 MB of swap, so an
+    always-on instance fits the Free Plan's $5 credit (about $3.20 a month);
+    `fly scale memory 1024` raises it. `propr deploy fly` keeps 1 GB.
   - Secrets the CLI generates are generated on first boot and kept on the
     volume (mode 0600); Fly secrets still win. `propr deploy fly` instances
     are unchanged.
