@@ -1,6 +1,10 @@
 # Source this file. The smoke configures each agent the way an operator does: one file of the
 # agent configuration's credential store, carried in FLY_E2E_APP_ENV as single-line base64 and
 # installed into the agent's managed credential directory on the volume (see setup-fly.md).
+# The optional secret FLY_E2E_APP_ENV_EXTRA, in the same KEY=value line format, is appended to
+# FLY_E2E_APP_ENV wherever the app env is used (app_env_with_extra), so keys such as VIBE_ENV_B64
+# or OPENCODE_CONFIG_B64 can be added without rewriting the main secret. Its keys must not repeat
+# the main secret's. Empty or unset, the app env is FLY_E2E_APP_ENV alone.
 #
 #   claude    CLAUDE_SETTINGS_B64   settings.json  (an `env` object with ANTHROPIC_API_KEY)
 #   codex     CODEX_AUTH_B64        auth.json      (Codex's login, e.g. {"OPENAI_API_KEY": "..."})
@@ -43,4 +47,24 @@ agent_credential_values() {
     sed -nE 's/^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=//p' "$file" |
       sed -E "s/^[\"'](.*)[\"']\$/\\1/" | awk 'length >= 12'
   fi | sort -u
+}
+
+# Prints the app env: $APP_ENV, then $APP_ENV_EXTRA (FLY_E2E_APP_ENV_EXTRA) when it is set.
+# Each value (4+ characters) in the extra secret is masked, and a key it repeats from $APP_ENV is an error.
+app_env_with_extra() {
+  printf '%s\n' "$APP_ENV"
+  [[ -n ${APP_ENV_EXTRA//[[:space:]]/} ]] || return 0
+  local line key value repeated=()
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    [[ $line =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key=${BASH_REMATCH[2]} value=${BASH_REMATCH[3]}
+    (( ${#value} < 4 )) || echo "::add-mask::$value" >&2
+    grep -qE "^[[:space:]]*(export[[:space:]]+)?${key}=" <<< "$APP_ENV" && repeated+=("$key")
+  done <<< "$APP_ENV_EXTRA"
+  if (( ${#repeated[@]} )); then
+    echo "::error::FLY_E2E_APP_ENV_EXTRA repeats keys already in FLY_E2E_APP_ENV: ${repeated[*]}" >&2
+    return 1
+  fi
+  printf '%s\n' "${APP_ENV_EXTRA//$'\r'/}"
 }

@@ -142,6 +142,7 @@ The **Fly end-to-end smoke** GitHub Actions workflow runs on manual dispatch by 
 | `FLY_E2E_SPRITES_TOKEN` | Test Sprites org access to create, run and delete Sprites. Not needed for a `fly-machines` run without the extensions check; with it, that run hosts its OAuth fixture on a Sprite. |
 | `FLY_E2E_GITHUB_TOKEN` | Fine-grained fixture repository PAT with read and write access to Issues and Pull requests. No Contents access is required. The fixture App reads the generated file and deletes test branches. |
 | `FLY_E2E_APP_ENV` | Private environment file containing `PROPR_ADMIN_USERS` (fixture administrator’s GitHub login), `GH_APP_ID`, `GH_INSTALLATION_ID`, `PROPR_GH_PRIVATE_KEY_B64` and `CLAUDE_SETTINGS_B64` containing the test account’s API-key settings described above. For the other agents see [Agent input](#agent-input) |
+| `FLY_E2E_APP_ENV_EXTRA` | Optional. More `KEY=value` lines in the same format, for example `VIBE_ENV_B64=…` and `OPENCODE_CONFIG_B64=…`, appended to `FLY_E2E_APP_ENV` wherever the workflow reads the app env: the credential-key check and the env file passed to the deployed instance. GitHub can't show or append to a secret, so this adds keys without rewriting `FLY_E2E_APP_ENV`. Its values are masked in the log, and a key that is already in `FLY_E2E_APP_ENV` fails the run. Empty or unset, only `FLY_E2E_APP_ENV` is used. |
 | `FLY_E2E_GH_OAUTH_CLIENT_ID` | The fixture GitHub App’s client ID. The workflow writes it to the env file as `GH_OAUTH_CLIENT_ID` so `propr deploy fly` has a browser sign-in method. |
 | `FLY_E2E_GH_OAUTH_CLIENT_SECRET` | A client secret generated in the fixture App’s settings, written as `GH_OAUTH_CLIENT_SECRET`. CI never signs in through the browser, so the App’s callback URL can stay a placeholder. |
 
@@ -153,9 +154,9 @@ Each run points the App webhook at the disposable Machine and sets a fresh signi
 
 ### Agent input
 
-The `agent` input (`claude`, `codex`, `vibe` or `opencode`, default `claude`; nightly runs use Claude Code) selects the agent the fixture issue runs on, through its `llm-<agent>` label. The workflow configures it as Claude is configured: an agent with ID and alias `<agent>` on its managed credential directory, with one credential file from `FLY_E2E_APP_ENV` installed there. Every runtime then copies that file to the run as part of the agent configuration's credential store. The run adds no repository secrets.
+The `agent` input (`claude`, `codex`, `vibe` or `opencode`, default `claude`; nightly runs use Claude Code) selects the agent the fixture issue runs on, through its `llm-<agent>` label. The workflow configures it as Claude is configured: an agent with ID and alias `<agent>` on its managed credential directory, with one credential file from `FLY_E2E_APP_ENV` (or `FLY_E2E_APP_ENV_EXTRA`) installed there. Every runtime then copies that file to the run as part of the agent configuration's credential store. The run adds no repository secrets.
 
-| Agent | `FLY_E2E_APP_ENV` key (single-line base64) | Installed as |
+| Agent | `FLY_E2E_APP_ENV` or `FLY_E2E_APP_ENV_EXTRA` key (single-line base64) | Installed as |
 | --- | --- | --- |
 | Claude Code | `CLAUDE_SETTINGS_B64` | `settings.json` with an `env` object holding `ANTHROPIC_API_KEY` |
 | Codex | `CODEX_AUTH_B64` | `auth.json` (Codex's login, for example `{"OPENAI_API_KEY": "…"}`) |

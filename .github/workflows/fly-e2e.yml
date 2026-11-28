@@ -11,7 +11,8 @@ on:
       agent:
         description: >-
           Agent the fixture issue runs on (its pinned CLI version is in the step summary). Its credentials come from
-          FLY_E2E_APP_ENV like Claude's (CLAUDE_SETTINGS_B64, CODEX_AUTH_B64, VIBE_ENV_B64 or OPENCODE_CONFIG_B64); without them the run says so and skips
+          FLY_E2E_APP_ENV like Claude's (CLAUDE_SETTINGS_B64, CODEX_AUTH_B64, VIBE_ENV_B64 or OPENCODE_CONFIG_B64), or from the optional
+          FLY_E2E_APP_ENV_EXTRA appended to it (same KEY=value lines); without them the run says so and skips
         type: choice
         options: [claude, codex, vibe, opencode]
         default: claude
@@ -66,14 +67,16 @@ jobs:
           FLY_E2E_GH_OAUTH_CLIENT_SECRET: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_SECRET != '' }}
           AGENT: ${{ inputs.agent || 'claude' }}
           APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
+          APP_ENV_EXTRA: ${{ secrets.FLY_E2E_APP_ENV_EXTRA }}
         run: |
           source .github/fly-e2e/agent-credentials.sh
-          # The agent is configured from the ProPR config in FLY_E2E_APP_ENV, as Claude always was. No
-          # credentials for it there: say so and skip, rather than fail later for a reason hard to see.
+          # The agent is configured from the ProPR config in FLY_E2E_APP_ENV (plus FLY_E2E_APP_ENV_EXTRA), as
+          # Claude always was. No credentials for it there: say so and skip, rather than fail later for a reason hard to see.
           key=$(agent_credential_key "$AGENT") || { echo "::error::Unknown agent $AGENT"; exit 1; }
-          if [[ -n $APP_ENV ]] && ! grep -q "^${key}=." <<< "$APP_ENV"; then
+          app_env=$(app_env_with_extra) || exit 1
+          if [[ -n $APP_ENV ]] && ! grep -q "^${key}=." <<< "$app_env"; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping live smoke for agent \`$AGENT\`: the ProPR config in FLY_E2E_APP_ENV has no \`$key\` with its credentials." >> "$GITHUB_STEP_SUMMARY"
+            echo "Skipping live smoke for agent \`$AGENT\`: the ProPR config in FLY_E2E_APP_ENV and FLY_E2E_APP_ENV_EXTRA has no \`$key\` with its credentials." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           missing=()
@@ -232,6 +235,7 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_E2E_TOKEN }}
           APP_ENV: ${{ secrets.FLY_E2E_APP_ENV }}
+          APP_ENV_EXTRA: ${{ secrets.FLY_E2E_APP_ENV_EXTRA }}
           SPRITES_TOKEN: ${{ (inputs.agent_runtime || 'sprites') == 'sprites' && secrets.FLY_E2E_SPRITES_TOKEN || '' }}
           GH_TOKEN: ${{ secrets.FLY_E2E_GITHUB_TOKEN }}
           OAUTH_CLIENT_ID: ${{ secrets.FLY_E2E_GH_OAUTH_CLIENT_ID }}
@@ -241,12 +245,13 @@ jobs:
           set -o pipefail
           umask 077
           echo "::add-mask::$OAUTH_CLIENT_SECRET"
-          printf '%s\n' "$APP_ENV" > "$ENV_FILE"
+          source .github/fly-e2e/agent-credentials.sh
+          # FLY_E2E_APP_ENV_EXTRA, when set, is appended (its values masked); unset, this is FLY_E2E_APP_ENV alone.
+          app_env_with_extra > "$ENV_FILE"
           for key in PROPR_ADMIN_USERS GH_APP_ID GH_INSTALLATION_ID PROPR_GH_PRIVATE_KEY_B64 "$AGENT_CREDENTIAL_KEY"; do
             grep -q "^${key}=." "$ENV_FILE" || { echo "Missing $key"; exit 1; }
           done
           # The agent's credential values, masked here and searched for in the worker log and the agent image later.
-          source .github/fly-e2e/agent-credentials.sh
           sed -n "s/^${AGENT_CREDENTIAL_KEY}=//p" "$ENV_FILE" | head -n 1 | base64 -d > "$OUT/agent-credential"
           agent_credential_values "$OUT/agent-credential" > "$OUT/credential-values"
           rm -f "$OUT/agent-credential"
@@ -1317,7 +1322,7 @@ jobs:
           redact_fly_tokens < "$OUT/app-logs.jsonl" |
             sed -E '/^::error::/d; s/(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/[redacted GitHub token]/g' > "$dir/app-logs.jsonl" ||
             status=$?
-          # The agent's own credentials (from FLY_E2E_APP_ENV) must not reach the worker log either.
+          # The agent's own credentials (from FLY_E2E_APP_ENV or FLY_E2E_APP_ENV_EXTRA) must not reach the worker log either.
           leaked=0
           if [[ -s ${OUT}/credential-values ]]; then
             leaked=$(grep -cF -f "$OUT/credential-values" "$OUT/app-logs.jsonl" || true)
