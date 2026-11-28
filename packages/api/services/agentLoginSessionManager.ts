@@ -11,12 +11,10 @@ import type { AgentConfig, RemoteLoginProcess } from '@propr/core';
 import {
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
-  defaultRunDocker,
-  defaultSpawnDocker,
-  type DockerCommandResult,
   resolveAgentLoginConfigPath,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
+import { defaultRunDocker, defaultSpawnDocker, type DockerCommandResult } from './agentLoginDockerProcess.js';
 
 import {
   collectRemoteLoginForAgent,
@@ -73,7 +71,7 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot {
   outputEndedWithCarriageReturn?: boolean;
 }
 
-export type { DockerCommandResult } from './agentLoginDocker.js';
+export type { DockerCommandResult } from './agentLoginDockerProcess.js';
 
 export interface AgentLoginSessionManagerDeps {
   runDocker?: (args: string[]) => Promise<DockerCommandResult>;
