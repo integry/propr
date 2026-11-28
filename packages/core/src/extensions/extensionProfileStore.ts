@@ -44,10 +44,7 @@ const tokenPattern = /^[\x21-\x7e]{1,4096}$/;
 
 export type ExtensionLibraryItemRef = { kind: 'server'; name: string } | { kind: 'skill'; bundleId: string };
 /** What the run's launch was prepared with; the fence compares it with the current library. */
-export interface PreparedExtensionLaunch {
-  snapshot: ExtensionLibraryRevision;
-  set: ResolvedExtensionSet;
-}
+export interface PreparedExtensionLaunch { snapshot: ExtensionLibraryRevision; set: ResolvedExtensionSet }
 export interface ExtensionLaunchContext {
   /** `writeServers`: with `allowWrite`, the only write servers the grant covers. */
   agentAlias: string; runtime: string; repositories: string[]; allowWrite: boolean; writeServers?: string[];
