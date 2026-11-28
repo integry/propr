@@ -100,14 +100,15 @@ test('a dispatch receipt, an associated task or a concurrent retry claim fences 
   }
 });
 
-function evidence(job: IntakeJobState, failures: Array<{ timestamp: number }> = []): SubmissionIntakeEvidence & { reads: number } {
+function evidence(job: IntakeJobState, failures: Array<{ timestamp: number; final?: boolean }> = []): SubmissionIntakeEvidence & { reads: number } {
   const store = {
     reads: 0,
     job: async (jobId: string) => { assert.equal(jobId, JOB_ID); store.reads++; return job; },
     failures: async () => {
       const latest = Math.max(...failures.map(entry => entry.timestamp));
-      const count = failures.filter(entry => entry.timestamp === latest).length;
-      return count ? { timestamp: latest, failures: count, reason: ADMISSION } : null;
+      const instance = failures.filter(entry => entry.timestamp === latest);
+      if (!instance.length) return null;
+      return { timestamp: latest, failures: instance.length, reason: ADMISSION, ...(instance.some(entry => entry.final) ? { final: true } : {}) };
     },
   };
   return store;
@@ -115,13 +116,17 @@ function evidence(job: IntakeJobState, failures: Array<{ timestamp: number }> = 
 
 test('a legacy queued submission is settled only by an established intake outcome', async () => {
   const exhausted = [{ timestamp: 1_000 }, { timestamp: 1_000 }, { timestamp: 1_000 }];
-  const cases: Array<[string, IntakeJobState, Array<{ timestamp: number }>, TaskSubmission['state']]> = [
+  const cases: Array<[string, IntakeJobState, Array<{ timestamp: number; final?: boolean }>, TaskSubmission['state']]> = [
     ['an intake job still live, or delayed for its backoff', { state: 'live', timestamp: 1_000 }, exhausted, 'queued'],
     ['an intake job that completed', { state: 'completed', timestamp: 1_000 }, exhausted, 'queued'],
     ['an absent job without recorded failures, whatever its age', { state: 'absent' }, [], 'queued'],
     ['an absent job whose last attempt is not recorded yet', { state: 'absent' }, exhausted.slice(1), 'queued'],
     ['an absent job whose newer instance failed only once', { state: 'absent' }, [...exhausted, { timestamp: 9_000 }], 'queued'],
     ['an absent job whose latest instance failed every attempt', { state: 'absent' }, exhausted, 'failed'],
+    // An unrecoverable failure (a disk-pressure wait that ran out) ends the job on its first attempt.
+    ['an absent job whose single recorded failure was its last', { state: 'absent' }, [{ timestamp: 1_000, final: true }], 'failed'],
+    ['an absent job whose earlier instance ended for good, but whose newer one failed a retryable attempt', { state: 'absent' }, [{ timestamp: 1_000, final: true }, { timestamp: 9_000 }], 'queued'],
+    ['a live replacement of an intake that ended for good', { state: 'live', timestamp: 9_000 }, [{ timestamp: 1_000, final: true }], 'queued'],
     ['a failed job the queue kept', { state: 'failed', timestamp: 1_000, reason: ADMISSION }, [], 'failed'],
   ];
   for (const [name, job, failures, expected] of cases) {
@@ -185,7 +190,8 @@ test('the queue evidence reads the job by ID and counts only the latest instance
     const row = await read(database, id);
     const created = Date.parse(`${String((row as TaskSubmission & { created_at: string }).created_at).replace(' ', 'T')}Z`);
     // A sorted set holds each member once; attempts differ by their execution time.
-    const entry = (correlationId: string, timestamp: number, attempt: number, status = 'failed') => JSON.stringify({ correlationId, timestamp, status, error: ADMISSION, executionTimeMs: attempt });
+    const entry = (correlationId: string, timestamp: number, attempt: number, status = 'failed', final?: boolean) =>
+      JSON.stringify({ correlationId, timestamp, status, error: ADMISSION, executionTimeMs: attempt, ...(final ? { final } : {}) });
     const log = [entry(id, created + 1, 1), entry(id, created + 1, 2), entry('other', created + 2, 1), entry(id, created + 1, 4, 'success'), 'not json', entry(id, created + 1, 3)];
     let jobs: Record<string, { timestamp: number; failedReason?: string; state: string }> = {};
     const calls: unknown[][] = [];
@@ -196,6 +202,12 @@ test('the queue evidence reads the job by ID and counts only the latest instance
     const store = queueSubmissionIntakeEvidence(() => queue);
     assert.deepEqual(await store.job(JOB_ID), { state: 'absent' });
     assert.deepEqual(await store.failures(row), { timestamp: created + 1, failures: 3, reason: ADMISSION });
+    // A failure recorded as the instance's last marks it, however few attempts failed; an older instance's mark does not carry over.
+    log.push(entry(id, created + 1, 5, 'failed', true));
+    assert.deepEqual(await store.failures(row), { timestamp: created + 1, failures: 4, reason: ADMISSION, final: true });
+    log.push(entry(id, created + 3, 1));
+    assert.deepEqual(await store.failures(row), { timestamp: created + 3, failures: 1, reason: ADMISSION });
+    log.splice(log.length - 2, 2);
     assert.equal(calls[0][0], 'metrics:ai:log:v1');
     assert.equal(calls[0][1], created - 60_000);
     for (const [state, expected] of [['delayed', 'live'], ['waiting', 'live'], ['active', 'live'], ['completed', 'completed'], ['unknown', 'absent']]) {

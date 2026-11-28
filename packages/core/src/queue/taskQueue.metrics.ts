@@ -108,6 +108,9 @@ export async function updateFailedMetrics(
             // Long enough to keep a disk-pressure refusal's measurement, which a
             // queued submission's failure may later be settled from.
             error: err.message.substring(0, 400),
+            // A job can end after fewer attempts than it was given (an unrecoverable
+            // error): a queued submission whose intake ended so is settled from this mark.
+            ...(typeof job.finishedOn === 'number' ? { final: true } : {}),
         };
         await metricsRedis.zadd('metrics:ai:log:v1', job.timestamp, JSON.stringify(aiMetrics));
     }

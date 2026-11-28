@@ -42,7 +42,7 @@ Object.assign(process.env, {
 const { db, closeConnection } = await import('../src/db/connection.js');
 const { up } = await import('../src/db/migrations/20260922000000_add_task_submissions.js');
 const { up: identityMigration } = await import('../src/db/migrations/20260922010000_preserve_task_submission_identity.js');
-const { insertTaskSubmission } = await import('../src/services/taskSubmissionService.js');
+const { acquireDispatchLock, insertTaskSubmission } = await import('../src/services/taskSubmissionService.js');
 const { queueSubmissionIntakeEvidence, reconcileSubmissionIntake, submissionIntakeJobId } = await import('../src/services/taskSubmissionIntake.js');
 const { createWorker, getIssueQueue, shutdownQueue, GITHUB_ISSUE_QUEUE_NAME } = await import('../src/queue/taskQueue.js');
 type TaskSubmission = import('../src/services/taskSubmissionService.js').TaskSubmission;
@@ -107,9 +107,9 @@ async function queuedSubmission(repo: string, number: number) {
 }
 
 // The route's intake job, as enqueueIssueImplementationJob adds it, with a shorter backoff.
-async function addIntake(id: string, repo: string, number: number, opts: { delay?: number } = {}) {
+async function addIntake(id: string, repo: string, number: number, opts: { delay?: number } = {}, data: Record<string, unknown> = {}) {
   const queue = await getIssueQueue();
-  await queue.add('processGitHubIssue', { repoOwner: OWNER, repoName: repo, number, userId: '297689653', triggeringLabel: 'AI', correlationId: id }, {
+  await queue.add('processGitHubIssue', { repoOwner: OWNER, repoName: repo, number, userId: '297689653', triggeringLabel: 'AI', correlationId: id, ...data }, {
     jobId: submissionIntakeJobId(OWNER, repo, number), attempts: 3, backoff: { type: 'exponential', delay: 200 }, removeOnComplete: true, removeOnFail: true, ...opts,
   });
 }
@@ -156,5 +156,49 @@ test('a legacy submission left queued by an exhausted intake is settled from the
   assert.equal(settled.state, 'failed');
   // The failure log keeps the whole measurement, not a prefix cut inside it.
   assert.match(settled.error!, new RegExp(`^Implementation did not start after 3 attempts: ${ADMISSION}${MEASUREMENT}\\. Once the cause`));
+  assert.deepEqual(processed, []);
+});
+
+test('an intake that ended for good on its first attempt, its finalizer interrupted, is settled from its recorded final failure', async t => {
+  if (!requireRedis(t)) return;
+  const id = await queuedSubmission('cli', 36);
+  const jobId = submissionIntakeJobId(OWNER, 'cli', 36);
+  const evidence = queueSubmissionIntakeEvidence(() => getIssueQueue());
+  // The worker's finalizer cannot settle the submission while its dispatch lock is held, as when it is interrupted.
+  const release = await acquireDispatchLock(db, id);
+  assert.ok(release);
+  const before = failures.length;
+  // A wait for disk space that has run out: the refusal fails the job unrecoverably, on its first attempt.
+  process.env.WORKTREE_DISK_PRESSURE_MAX_WAIT_MS = String(60 * 60_000);
+  try {
+    await addIntake(id, 'cli', 36, {}, { diskPressureDeferrals: 6, diskPressureSince: Date.now() - 2 * 60 * 60_000 });
+    const failure = await until(async () => failures[before], Boolean, 'the terminal refusal');
+    assert.equal(failure.attemptsMade, 1);
+    assert.equal(typeof failure.finishedOn, 'number');
+  } finally {
+    process.env.WORKTREE_DISK_PRESSURE_MAX_WAIT_MS = '0';
+  }
+  try {
+    const recorded = await until(async () => evidence.failures(await read(id)), value => value?.failures === 1, 'the recorded failure');
+    assert.equal(recorded?.final, true);
+    assert.deepEqual(await evidence.job(jobId), { state: 'absent' }, 'removed on failure');
+    // Give the finalizer time to run into the held lock.
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.equal((await read(id)).state, 'queued', 'the finalizer did not settle it');
+    // Under the lock, reconciliation is left to a later read.
+    assert.equal((await reconcileSubmissionIntake(db, await read(id), evidence)).state, 'queued');
+  } finally {
+    await release!();
+  }
+  assert.equal(failures.length, before + 1, 'the job was not retried');
+  // One recorded failure, marked as the job's last, settles it; three are not required.
+  const settled = await reconcileSubmissionIntake(db, await read(id), evidence);
+  assert.equal(settled.state, 'failed');
+  assert.match(settled.error!, /^Implementation did not start: Worktree disk pressure: admission reserve unavailable after waiting 120 minutes \(7 refusals\); data retained/);
+  // A replacement delivery re-added under the job ID is the intake again: a reset submission is not settled from the old failure.
+  await db('task_submissions').where({ id }).update({ state: 'queued', error: null });
+  await addIntake(id, 'cli', 36, { delay: 60_000 });
+  assert.equal((await reconcileSubmissionIntake(db, await read(id), evidence)).state, 'queued');
+  await (await getIssueQueue()).remove(jobId);
   assert.deepEqual(processed, []);
 });
