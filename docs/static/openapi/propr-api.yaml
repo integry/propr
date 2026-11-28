@@ -799,6 +799,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LegacyError"
+        "503":
+          description: The agent pool activity could not be read, so `busy` is unknown; code `SPRITES_ACTIVITY_UNAVAILABLE`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
         default:
           $ref: "#/components/responses/LegacyUnexpectedError"
       x-propr-auth: member
@@ -809,7 +815,7 @@ paths:
       operationId: removeInstanceSprites
       summary: Remove all Sprites of this instance
       description: |-
-        Run before deleting the deployment. Deletes nothing when the current count differs from the confirmed one, or while a Sprite runs an agent.
+        Run before deleting the deployment. Deletes nothing when the current count differs from the confirmed one, while a Sprite runs an agent, or when that activity cannot be read.
 
         Requires the `instance.manage_runtime` instance permission.
       tags:
@@ -848,6 +854,12 @@ paths:
                 $ref: "#/components/schemas/LegacyError"
         "502":
           description: Some Sprites could not be deleted (`PARTIAL_FAILURE`, with `failed`), or the Sprites API failed (`SPRITES_UNAVAILABLE`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "503":
+          description: The agent pool activity could not be read; nothing is deleted. Code `SPRITES_ACTIVITY_UNAVAILABLE`.
           content:
             application/json:
               schema:

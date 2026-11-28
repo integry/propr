@@ -31,7 +31,7 @@ function fakeProvider(names: string[], failing: string[] = []) {
   return { provider, calls, live };
 }
 
-function harness(options: { names?: string[]; failing?: string[]; busy?: number; token?: string | null; marker?: string | null; env?: NodeJS.ProcessEnv } = {}) {
+function harness(options: { names?: string[]; failing?: string[]; busy?: number | (() => Promise<number>); token?: string | null; marker?: string | null; env?: NodeJS.ProcessEnv } = {}) {
   const fake = fakeProvider(options.names ?? [`${PREFIX}aaa`, `${PREFIX}bbb`], options.failing);
   const env: NodeJS.ProcessEnv = { DATA_DIR: mkdtempSync(path.join(tmpdir(), 'sprites-')), ...options.env };
   if (options.token !== null) env.SPRITES_TOKEN = options.token ?? 'tok';
@@ -40,7 +40,7 @@ function harness(options: { names?: string[]; failing?: string[]; busy?: number;
     env,
     redis: { get: async key => (key === spritePoolKey(env.PROPR_INSTANCE_ID) + ':deployment' ? marker : null) },
     createProvider: () => fake.provider,
-    readBusy: async () => options.busy ?? 0,
+    readBusy: typeof options.busy === 'function' ? options.busy : async () => (options.busy as number | undefined) ?? 0,
   };
   return { routes: createInstanceSpritesRoutes(deps), ...fake, env };
 }
@@ -108,6 +108,46 @@ describe('instance Sprites admin routes', () => {
     assert.equal(status, 409);
     assert.equal(json.code, 'SPRITES_BUSY');
     assert.deepEqual(h.calls.deleted, []);
+  });
+
+  test('deletes nothing when the agent activity cannot be read', async () => {
+    const h = harness({ busy: async () => { throw new Error('redis down'); } });
+    const { status, json } = await call(h.routes.removeSprites, { count: 2 });
+    assert.equal(status, 503);
+    assert.equal(json.code, 'SPRITES_ACTIVITY_UNAVAILABLE');
+    assert.deepEqual(h.calls.listed, [PREFIX]);
+    assert.deepEqual(h.calls.deleted, []);
+    assert.equal(h.live.size, 2);
+  });
+
+  test('deletes nothing when the activity read returns no usable count', async () => {
+    for (const busy of [Number.NaN, -1, 0.5]) {
+      const h = harness({ busy: async () => busy });
+      const { status } = await call(h.routes.removeSprites, { count: 2 });
+      assert.equal(status, 503, String(busy));
+      assert.deepEqual(h.calls.deleted, []);
+    }
+  });
+
+  test('the listing does not report zero busy when the activity cannot be read', async () => {
+    const h = harness({ busy: async () => { throw new Error('redis down'); } });
+    const { status, json } = await call(h.routes.getSprites);
+    assert.equal(status, 503);
+    assert.equal(json.code, 'SPRITES_ACTIVITY_UNAVAILABLE');
+    assert.equal(json.busy, undefined);
+  });
+
+  test('the default activity read fails closed when Redis rejects', async () => {
+    const fake = fakeProvider([`${PREFIX}aaa`]);
+    const env: NodeJS.ProcessEnv = { DATA_DIR: mkdtempSync(path.join(tmpdir(), 'sprites-')), SPRITES_TOKEN: 'tok' };
+    const redis = {
+      get: async (key: string) => (key === spritePoolKey(env.PROPR_INSTANCE_ID) + ':deployment' ? MARKER : null),
+      eval: async () => { throw new Error('redis down'); },
+    };
+    const routes = createInstanceSpritesRoutes({ env, redis, createProvider: () => fake.provider } as InstanceSpritesRouteDeps);
+    const { status } = await call(routes.removeSprites, { count: 1 });
+    assert.equal(status, 503);
+    assert.deepEqual(fake.calls.deleted, []);
   });
 
   test('reports Sprites that could not be deleted', async () => {

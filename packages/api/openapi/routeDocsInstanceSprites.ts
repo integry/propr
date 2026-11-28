@@ -35,12 +35,13 @@ export const INSTANCE_SPRITES_ROUTE_DOCS: Record<string, RouteDoc> = {
     responses: {
       200: { description: 'The instance\'s Sprites; `configured: false` without a Sprites token.', schema: InstanceSprites },
       502: { description: 'The Sprites API refused or could not be reached; code `SPRITES_UNAVAILABLE`.' },
+      503: { description: 'The agent pool activity could not be read, so `busy` is unknown; code `SPRITES_ACTIVITY_UNAVAILABLE`.' },
     },
   },
   'POST /api/admin/sprites/remove': {
     operationId: 'removeInstanceSprites',
     summary: 'Remove all Sprites of this instance',
-    description: 'Run before deleting the deployment. Deletes nothing when the current count differs from the confirmed one, or while a Sprite runs an agent.',
+    description: 'Run before deleting the deployment. Deletes nothing when the current count differs from the confirmed one, while a Sprite runs an agent, or when that activity cannot be read.',
     tags: ['Administration'],
     requestBody: { schema: InstanceSpritesRemoveRequest },
     responses: {
@@ -48,6 +49,7 @@ export const INSTANCE_SPRITES_ROUTE_DOCS: Record<string, RouteDoc> = {
       400: { description: 'The body is not `{ count }` with a positive integer.' },
       409: { description: 'Code `COUNT_CHANGED` (with the current `count`), `SPRITES_BUSY` or `SPRITES_NOT_CONFIGURED`.' },
       502: { description: 'Some Sprites could not be deleted (`PARTIAL_FAILURE`, with `failed`), or the Sprites API failed (`SPRITES_UNAVAILABLE`).' },
+      503: { description: 'The agent pool activity could not be read; nothing is deleted. Code `SPRITES_ACTIVITY_UNAVAILABLE`.' },
     },
   },
 };

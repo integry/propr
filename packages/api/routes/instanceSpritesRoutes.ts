@@ -10,8 +10,21 @@ import { readSpritePoolStatus } from '../services/spritePoolStatus.js';
  *
  * The removal names the count the admin confirmed; if the list changed since,
  * nothing is deleted and the new count is returned. A Sprite that is running
- * an agent or being provisioned blocks removal.
+ * an agent or being provisioned blocks removal, and so does failing to read
+ * that activity: an unknown busy count never authorizes deletion.
  */
+
+class ActivityUnavailableError extends Error {}
+
+function sendFailure(res: Response, error: unknown, listMessage: string): void {
+  if (error instanceof ActivityUnavailableError) {
+    res.status(503).json({ error: 'Could not check whether an agent run is using a Sprite; try again', code: 'SPRITES_ACTIVITY_UNAVAILABLE' });
+    return;
+  }
+  res.status(502).json({ error: listMessage, code: 'SPRITES_UNAVAILABLE' });
+}
+
+const LIST_FAILED = 'Could not list Sprites with the configured Sprites token';
 
 export interface InstanceSpritesRouteDeps extends InstanceSpritesDeps {
   /** Busy pool Sprites (in use or provisioning); defaults to the worker's Redis inventory. */
@@ -36,15 +49,20 @@ export function createInstanceSpritesRoutes(deps: InstanceSpritesRouteDeps) {
   async function describe(): Promise<InstanceSpritesResponse> {
     const listed = await sprites.list();
     if (!listed) return { configured: false, prefix: null, count: 0, busy: 0, sprites: [] };
-    const busy = listed.sprites.length ? await readBusy().catch(() => 0) : 0;
+    let busy = 0;
+    if (listed.sprites.length) {
+      try { busy = await readBusy(); }
+      catch { throw new ActivityUnavailableError(); }
+      if (!Number.isSafeInteger(busy) || busy < 0) throw new ActivityUnavailableError();
+    }
     return { configured: true, prefix: listed.prefix ?? null, count: listed.sprites.length, busy, sprites: listed.sprites };
   }
 
   async function getSprites(_req: Request, res: Response): Promise<void> {
     try {
       res.json(await describe());
-    } catch {
-      res.status(502).json({ error: 'Could not list Sprites with the configured Sprites token', code: 'SPRITES_UNAVAILABLE' });
+    } catch (error) {
+      sendFailure(res, error, LIST_FAILED);
     }
   }
 
@@ -56,8 +74,8 @@ export function createInstanceSpritesRoutes(deps: InstanceSpritesRouteDeps) {
     }
     let current: InstanceSpritesResponse;
     try { current = await describe(); }
-    catch {
-      res.status(502).json({ error: 'Could not list Sprites with the configured Sprites token', code: 'SPRITES_UNAVAILABLE' });
+    catch (error) {
+      sendFailure(res, error, LIST_FAILED);
       return;
     }
     if (!current.configured) {
