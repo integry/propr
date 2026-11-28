@@ -7,7 +7,7 @@ class FakeRedis {
   status = 'ready'; on() { return this; } async eval() { return 0; }
   async get() { return null; } async quit() { return 'OK'; } disconnect() {}
 }
-await mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
+await mock.module('ioredis', { namedExports: { Redis: FakeRedis } });
 await mock.module('../packages/core/src/agents/agentGitAccess.js', { namedExports: {
   prepareAgentGitAccess: async () => ({ githubToken: '', gitMountArgs: [] }),
   prepareAnalysisGitAccess: async () => ({ githubToken: '', gitMountArgs: [] }),
