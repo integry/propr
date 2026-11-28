@@ -109,7 +109,8 @@ describe('Antigravity entrypoint with run MCP servers and skills', { skip: proce
         await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
         root = mkdtempSync(join(tmpdir(), 'propr-antigravity-extensions-'));
         // The gh wrapper links into the real /home/node/bin; this suite is not about it.
-        writeFileSync(join(root, 'entrypoint.sh'), readFileSync(ENTRYPOINT, 'utf8').replaceAll('/usr/local/bin/gh-wrapper', join(root, 'no-gh-wrapper')));
+        writeFileSync(join(root, 'entrypoint.sh'), readFileSync(ENTRYPOINT, 'utf8').replaceAll('/usr/local/bin/gh-wrapper', join(root, 'no-gh-wrapper'))
+            .replaceAll('/opt/propr/privileged-post-task.sh', resolve('scripts/privileged-post-task.sh')));
     });
     after(() => { server?.close(); if (root) rmSync(root, { recursive: true, force: true }); });
 

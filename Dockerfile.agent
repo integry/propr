@@ -270,7 +270,12 @@ ENV UV_TOOL_DIR=/opt/uv/tools \
     PATH="/home/node/.local/bin:${PATH}" \
     AGY_CLI_DISABLE_AUTO_UPDATE=true
 
-COPY --chown=node:node \
+# Root-owned: entrypoints start as root and keep running as root after the
+# task (as node) returns. bash reads a script while it runs it, so a
+# node-writable entrypoint would let the task rewrite those later root steps.
+# The post-task helper they source (scripts/privileged-post-task.sh) lives in
+# root-owned /opt/propr for the same reason.
+COPY \
     scripts/agent-entrypoint.sh \
     scripts/agent-tank-runtime.mjs \
     scripts/claude-entrypoint.sh \
@@ -283,6 +288,8 @@ COPY --chmod=0755 scripts/pi-entrypoint.sh /opt/propr/pi-entrypoint.sh
 COPY scripts/extension-stdio-bridge.mjs /opt/propr/extension-stdio-bridge.mjs
 COPY scripts/opencode-credentials.py /opt/propr/opencode-credentials.py
 COPY scripts/pi-credentials.py /opt/propr/pi-credentials.py
+COPY scripts/privileged-post-task.sh /opt/propr/privileged-post-task.sh
+COPY scripts/task-file-transfer.py /opt/propr/task-file-transfer.py
 COPY --chown=node:node scripts/opencode-run.sh /usr/local/bin/opencode-run
 COPY --chown=node:node scripts/vibe-prompt-file-runner.py /usr/local/bin/propr-vibe-prompt-file
 RUN set -eu; \
