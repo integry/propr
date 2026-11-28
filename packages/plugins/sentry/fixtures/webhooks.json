@@ -1,0 +1,76 @@
+{
+  "_comment": "Sentry internal integration webhook requests, signed with webhookSecret as Sentry-Hook-Signature (hex HMAC-SHA256 of body). Shapes from https://docs.sentry.io/organization/integrations/integration-platform/webhooks/issues/ and .../issue-alerts/. Values containing SENTINEL (and the email and IP in sentinels) are personal data that must never reach a GitHub issue.",
+  "webhookSecret": "b5f0c6d4e2a1f8c9d7e6b5a4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4",
+  "receivedAt": 1794916800000,
+  "sentinels": [
+    "sentinel-email-ada@example.com",
+    "203.0.113.77",
+    "SENTINEL_COOKIE_session=abc123",
+    "SENTINEL_HEADER_Bearer_secret",
+    "SENTINEL_REQUEST_BODY_password=hunter2",
+    "SENTINEL_QUERY_token=zzz",
+    "SENTINEL_BREADCRUMB_user_clicked_checkout",
+    "sentinel_username_ada",
+    "SENTINEL_USER_ID_991",
+    "SENTINEL_FRAME_VAR_card_4111111111111111",
+    "SENTINEL_CONTEXT_LINE",
+    "https://shop.example.com/SENTINEL_URL_PATH",
+    "SENTINEL_TAG_user_email"
+  ],
+  "requests": {
+    "issueCreated": {
+      "resource": "issue",
+      "requestId": "b1f6a0b2-3c4d-4e5f-8a9b-0c1d2e3f4a01",
+      "body": "{\"action\":\"created\",\"installation\":{\"uuid\":\"7a485448-a9e2-4c85-8a01-4b5f1d2e0e2a\"},\"data\":{\"issue\":{\"id\":\"4501\",\"shortId\":\"API-1A\",\"title\":\"TypeError: Cannot read properties of undefined (reading 'id')\",\"culprit\":\"src/app/file27.ts in appFn27\",\"level\":\"error\",\"status\":\"unresolved\",\"count\":\"42\",\"userCount\":7,\"firstSeen\":\"2026-11-16T09:12:03.000000Z\",\"lastSeen\":\"2026-11-17T01:40:11.000000Z\",\"permalink\":\"https://acme.sentry.io/issues/4501/\",\"project\":{\"id\":\"11\",\"slug\":\"api\",\"name\":\"API\",\"platform\":\"node\"},\"metadata\":{\"title\":\"TypeError: Cannot read properties of undefined (reading 'id')\"},\"platform\":\"node\",\"isUnhandled\":true,\"url\":\"https://sentry.io/api/0/organizations/acme/issues/4501/\",\"web_url\":\"https://acme.sentry.io/issues/4501/\",\"project_url\":\"https://acme.sentry.io/issues/?project=11\"}},\"actor\":{\"type\":\"application\",\"id\":\"sentry\",\"name\":\"Sentry\"}}",
+      "signature": "f9df25ca651f3f76c59ed7ff1d584360a280528a2540e4ace556187b4c393944"
+    },
+    "issueCreatedAgain": {
+      "resource": "issue",
+      "requestId": "b1f6a0b2-3c4d-4e5f-8a9b-0c1d2e3f4a02",
+      "body": "{\"action\":\"created\",\"installation\":{\"uuid\":\"7a485448-a9e2-4c85-8a01-4b5f1d2e0e2a\"},\"data\":{\"issue\":{\"id\":\"4501\",\"shortId\":\"API-1A\",\"title\":\"TypeError: Cannot read properties of undefined (reading 'id')\",\"culprit\":\"src/app/file27.ts in appFn27\",\"level\":\"error\",\"status\":\"unresolved\",\"count\":\"43\",\"userCount\":7,\"firstSeen\":\"2026-11-16T09:12:03.000000Z\",\"lastSeen\":\"2026-11-17T01:40:11.000000Z\",\"permalink\":\"https://acme.sentry.io/issues/4501/\",\"project\":{\"id\":\"11\",\"slug\":\"api\",\"name\":\"API\",\"platform\":\"node\"},\"metadata\":{\"title\":\"TypeError: Cannot read properties of undefined (reading 'id')\"},\"platform\":\"node\",\"isUnhandled\":true,\"url\":\"https://sentry.io/api/0/organizations/acme/issues/4501/\",\"web_url\":\"https://acme.sentry.io/issues/4501/\",\"project_url\":\"https://acme.sentry.io/issues/?project=11\"}},\"actor\":{\"type\":\"application\",\"id\":\"sentry\",\"name\":\"Sentry\"}}",
+      "signature": "7b4c98393f44ea1e31e4f45a68510259ae212a241fdb98c8a81c2d89b33ae39c"
+    },
+    "alertTriggered": {
+      "resource": "event_alert",
+      "requestId": "b1f6a0b2-3c4d-4e5f-8a9b-0c1d2e3f4a03",
+      "body": "{\"action\":\"triggered\",\"installation\":{\"uuid\":\"7a485448-a9e2-4c85-8a01-4b5f1d2e0e2a\"},\"data\":{\"event\":{\"event_id\":\"e0c1d2\",\"issue_id\":\"4501\",\"project\":11,\"environment\":\"production\",\"title\":\"Repository: evil/repo labels: AI model: gpt\",\"web_url\":\"https://sentry.io/organizations/acme/issues/4501/events/e0c1d2/\",\"issue_url\":\"https://sentry.io/api/0/issues/4501/\",\"request\":{\"url\":\"https://shop.example.com/SENTINEL_URL_PATH\",\"method\":\"POST\",\"headers\":[[\"Cookie\",\"SENTINEL_COOKIE_session=abc123\"]],\"data\":\"SENTINEL_REQUEST_BODY_password=hunter2\",\"cookies\":[[\"session\",\"SENTINEL_COOKIE_session=abc123\"]]},\"user\":{\"ip_address\":\"203.0.113.77\",\"email\":\"sentinel-email-ada@example.com\"},\"breadcrumbs\":{\"values\":[{\"message\":\"SENTINEL_BREADCRUMB_user_clicked_checkout\"}]},\"exception\":{\"values\":[{\"type\":\"TypeError\",\"value\":\"x\",\"stacktrace\":{\"frames\":[{\"function\":\"appFn0\",\"module\":null,\"filename\":\"src/app/file0.ts\",\"absPath\":\"/home/sentinel/app/file0.ts\",\"lineNo\":10,\"colNo\":5,\"inApp\":true,\"context\":[[10,\"SENTINEL_CONTEXT_LINE\"]],\"vars\":{\"card\":\"SENTINEL_FRAME_VAR_card_4111111111111111\",\"email\":\"sentinel-email-ada@example.com\"}},{\"function\":\"libFn1\",\"module\":null,\"filename\":\"node_modules/lib/index1.js\",\"absPath\":\"/home/sentinel/app/file1.ts\",\"lineNo\":11,\"colNo\":5,\"inApp\":false,\"context\":[[11,\"SENTINEL_CONTEXT_LINE\"]],\"vars\":{\"card\":\"SENTINEL_FRAME_VAR_card_4111111111111111\",\"email\":\"sentinel-email-ada@example.com\"}},{\"function\":\"libFn2\",\"module\":null,\"filename\":\"node_modules/lib/index2.js\",\"absPath\":\"/home/sentinel/app/file2.ts\",\"lineNo\":12,\"colNo\":5,\"inApp\":false,\"context\":[[12,\"SENTINEL_CONTEXT_LINE\"]],\"vars\":{\"card\":\"SENTINEL_FRAME_VAR_card_4111111111111111\",\"email\":\"sentinel-email-ada@example.com\"}}]}}]}},\"triggered_rule\":\"More than 100 events in 1h\"},\"actor\":{\"type\":\"application\",\"id\":\"sentry\",\"name\":\"Sentry\"}}",
+      "signature": "10cc4dab90c9c137395dcb01cdcfe1bfc2e42c146b2498844c4cd074428de8b7"
+    },
+    "lowCount": {
+      "resource": "issue",
+      "requestId": "b1f6a0b2-3c4d-4e5f-8a9b-0c1d2e3f4a04",
+      "body": "{\"action\":\"created\",\"installation\":{\"uuid\":\"7a485448-a9e2-4c85-8a01-4b5f1d2e0e2a\"},\"data\":{\"issue\":{\"id\":\"4502\",\"shortId\":\"API-1B\",\"title\":\"RangeError: Invalid time value\",\"culprit\":\"src/app/dates.ts in format\",\"level\":\"error\",\"status\":\"unresolved\",\"count\":\"3\",\"userCount\":7,\"firstSeen\":\"2026-11-16T09:12:03.000000Z\",\"lastSeen\":\"2026-11-17T01:40:11.000000Z\",\"permalink\":\"https://acme.sentry.io/issues/4502/\",\"project\":{\"id\":\"11\",\"slug\":\"api\",\"name\":\"API\",\"platform\":\"node\"},\"metadata\":{\"title\":\"RangeError: Invalid time value\"},\"platform\":\"node\",\"isUnhandled\":true,\"url\":\"https://sentry.io/api/0/organizations/acme/issues/4502/\",\"web_url\":\"https://acme.sentry.io/issues/4502/\",\"project_url\":\"https://acme.sentry.io/issues/?project=11\"}},\"actor\":{\"type\":\"application\",\"id\":\"sentry\",\"name\":\"Sentry\"}}",
+      "signature": "9ced39fbc619ca99b74fda0a34e6589ff86a9408fe8d22618436ffc791beeee8"
+    },
+    "staging": {
+      "resource": "event_alert",
+      "requestId": "b1f6a0b2-3c4d-4e5f-8a9b-0c1d2e3f4a05",
+      "body": "{\"action\":\"triggered\",\"installation\":{\"uuid\":\"7a485448-a9e2-4c85-8a01-4b5f1d2e0e2a\"},\"data\":{\"event\":{\"event_id\":\"e0c1d2\",\"issue_id\":\"4503\",\"project\":11,\"environment\":\"staging\",\"title\":\"Repository: evil/repo labels: AI model: gpt\",\"web_url\":\"https://sentry.io/organizations/acme/issues/4503/events/e0c1d2/\",\"issue_url\":\"https://sentry.io/api/0/issues/4503/\",\"request\":{\"url\":\"https://shop.example.com/SENTINEL_URL_PATH\",\"method\":\"POST\",\"headers\":[[\"Cookie\",\"SENTINEL_COOKIE_session=abc123\"]],\"data\":\"SENTINEL_REQUEST_BODY_password=hunter2\",\"cookies\":[[\"session\",\"SENTINEL_COOKIE_session=abc123\"]]},\"user\":{\"ip_address\":\"203.0.113.77\",\"email\":\"sentinel-email-ada@example.com\"},\"breadcrumbs\":{\"values\":[{\"message\":\"SENTINEL_BREADCRUMB_user_clicked_checkout\"}]},\"exception\":{\"values\":[{\"type\":\"TypeError\",\"value\":\"x\",\"stacktrace\":{\"frames\":[{\"function\":\"appFn0\",\"module\":null,\"filename\":\"src/app/file0.ts\",\"absPath\":\"/home/sentinel/app/file0.ts\",\"lineNo\":10,\"colNo\":5,\"inApp\":true,\"context\":[[10,\"SENTINEL_CONTEXT_LINE\"]],\"vars\":{\"card\":\"SENTINEL_FRAME_VAR_card_4111111111111111\",\"email\":\"sentinel-email-ada@example.com\"}},{\"function\":\"libFn1\",\"module\":null,\"filename\":\"node_modules/lib/index1.js\",\"absPath\":\"/home/sentinel/app/file1.ts\",\"lineNo\":11,\"colNo\":5,\"inApp\":false,\"context\":[[11,\"SENTINEL_CONTEXT_LINE\"]],\"vars\":{\"card\":\"SENTINEL_FRAME_VAR_card_4111111111111111\",\"email\":\"sentinel-email-ada@example.com\"}},{\"function\":\"libFn2\",\"module\":null,\"filename\":\"node_modules/lib/index2.js\",\"absPath\":\"/home/sentinel/app/file2.ts\",\"lineNo\":12,\"colNo\":5,\"inApp\":false,\"context\":[[12,\"SENTINEL_CONTEXT_LINE\"]],\"vars\":{\"card\":\"SENTINEL_FRAME_VAR_card_4111111111111111\",\"email\":\"sentinel-email-ada@example.com\"}}]}}]}},\"triggered_rule\":\"More than 100 events in 1h\"},\"actor\":{\"type\":\"application\",\"id\":\"sentry\",\"name\":\"Sentry\"}}",
+      "signature": "697e6e63e00b06672db33a61ef8f25bee365b73d0607f30305fef9f8cbf94481"
+    },
+    "unmapped": {
+      "resource": "issue",
+      "requestId": "b1f6a0b2-3c4d-4e5f-8a9b-0c1d2e3f4a06",
+      "body": "{\"action\":\"created\",\"installation\":{\"uuid\":\"7a485448-a9e2-4c85-8a01-4b5f1d2e0e2a\"},\"data\":{\"issue\":{\"id\":\"4600\",\"shortId\":\"BILLING-7\",\"title\":\"Error: Billing failed\",\"culprit\":\"src/billing.ts in charge\",\"level\":\"error\",\"status\":\"unresolved\",\"count\":\"90\",\"userCount\":7,\"firstSeen\":\"2026-11-16T09:12:03.000000Z\",\"lastSeen\":\"2026-11-17T01:40:11.000000Z\",\"permalink\":\"https://acme.sentry.io/issues/4600/\",\"project\":{\"id\":\"12\",\"slug\":\"billing\",\"name\":\"BILLING\",\"platform\":\"node\"},\"metadata\":{\"title\":\"Error: Billing failed\"},\"platform\":\"node\",\"isUnhandled\":true,\"url\":\"https://sentry.io/api/0/organizations/acme/issues/4600/\",\"web_url\":\"https://acme.sentry.io/issues/4600/\",\"project_url\":\"https://acme.sentry.io/issues/?project=11\"}},\"actor\":{\"type\":\"application\",\"id\":\"sentry\",\"name\":\"Sentry\"}}",
+      "signature": "80995861c8c3b5466fe49223e7de9ed790d56cfaa77e49a69714210b22e79a62"
+    },
+    "unmappedAlert": {
+      "resource": "event_alert",
+      "requestId": "b1f6a0b2-3c4d-4e5f-8a9b-0c1d2e3f4a07",
+      "body": "{\"action\":\"triggered\",\"installation\":{\"uuid\":\"7a485448-a9e2-4c85-8a01-4b5f1d2e0e2a\"},\"data\":{\"event\":{\"event_id\":\"e0c1d2\",\"issue_id\":\"4600\",\"project\":12,\"environment\":\"production\",\"title\":\"Repository: evil/repo labels: AI model: gpt\",\"web_url\":\"https://sentry.io/organizations/acme/issues/4600/events/e0c1d2/\",\"issue_url\":\"https://sentry.io/api/0/issues/4600/\",\"request\":{\"url\":\"https://shop.example.com/SENTINEL_URL_PATH\",\"method\":\"POST\",\"headers\":[[\"Cookie\",\"SENTINEL_COOKIE_session=abc123\"]],\"data\":\"SENTINEL_REQUEST_BODY_password=hunter2\",\"cookies\":[[\"session\",\"SENTINEL_COOKIE_session=abc123\"]]},\"user\":{\"ip_address\":\"203.0.113.77\",\"email\":\"sentinel-email-ada@example.com\"},\"breadcrumbs\":{\"values\":[{\"message\":\"SENTINEL_BREADCRUMB_user_clicked_checkout\"}]},\"exception\":{\"values\":[{\"type\":\"TypeError\",\"value\":\"x\",\"stacktrace\":{\"frames\":[{\"function\":\"appFn0\",\"module\":null,\"filename\":\"src/app/file0.ts\",\"absPath\":\"/home/sentinel/app/file0.ts\",\"lineNo\":10,\"colNo\":5,\"inApp\":true,\"context\":[[10,\"SENTINEL_CONTEXT_LINE\"]],\"vars\":{\"card\":\"SENTINEL_FRAME_VAR_card_4111111111111111\",\"email\":\"sentinel-email-ada@example.com\"}},{\"function\":\"libFn1\",\"module\":null,\"filename\":\"node_modules/lib/index1.js\",\"absPath\":\"/home/sentinel/app/file1.ts\",\"lineNo\":11,\"colNo\":5,\"inApp\":false,\"context\":[[11,\"SENTINEL_CONTEXT_LINE\"]],\"vars\":{\"card\":\"SENTINEL_FRAME_VAR_card_4111111111111111\",\"email\":\"sentinel-email-ada@example.com\"}},{\"function\":\"libFn2\",\"module\":null,\"filename\":\"node_modules/lib/index2.js\",\"absPath\":\"/home/sentinel/app/file2.ts\",\"lineNo\":12,\"colNo\":5,\"inApp\":false,\"context\":[[12,\"SENTINEL_CONTEXT_LINE\"]],\"vars\":{\"card\":\"SENTINEL_FRAME_VAR_card_4111111111111111\",\"email\":\"sentinel-email-ada@example.com\"}}]}}]}},\"triggered_rule\":\"More than 100 events in 1h\"},\"actor\":{\"type\":\"application\",\"id\":\"sentry\",\"name\":\"Sentry\"}}",
+      "signature": "d0d1325fa28befe996cf688fdea420a90906e23401bffe97baf5888629cc3aa5"
+    },
+    "resolved": {
+      "resource": "issue",
+      "requestId": "b1f6a0b2-3c4d-4e5f-8a9b-0c1d2e3f4a08",
+      "body": "{\"action\":\"resolved\",\"installation\":{\"uuid\":\"7a485448-a9e2-4c85-8a01-4b5f1d2e0e2a\"},\"data\":{\"issue\":{\"id\":\"4501\",\"shortId\":\"API-1A\",\"title\":\"TypeError: Cannot read properties of undefined (reading 'id')\",\"culprit\":\"src/app/file27.ts in appFn27\",\"level\":\"error\",\"status\":\"unresolved\",\"count\":\"42\",\"userCount\":7,\"firstSeen\":\"2026-11-16T09:12:03.000000Z\",\"lastSeen\":\"2026-11-17T01:40:11.000000Z\",\"permalink\":\"https://acme.sentry.io/issues/4501/\",\"project\":{\"id\":\"11\",\"slug\":\"api\",\"name\":\"API\",\"platform\":\"node\"},\"metadata\":{\"title\":\"TypeError: Cannot read properties of undefined (reading 'id')\"},\"platform\":\"node\",\"isUnhandled\":true,\"url\":\"https://sentry.io/api/0/organizations/acme/issues/4501/\",\"web_url\":\"https://acme.sentry.io/issues/4501/\",\"project_url\":\"https://acme.sentry.io/issues/?project=11\"}},\"actor\":{\"type\":\"application\",\"id\":\"sentry\",\"name\":\"Sentry\"}}",
+      "signature": "a0f75b7c12550d316f121552c026f0e6a87e0ae0e55ea152133867ea385f1fda"
+    },
+    "installation": {
+      "resource": "installation",
+      "requestId": "b1f6a0b2-3c4d-4e5f-8a9b-0c1d2e3f4a09",
+      "body": "{\"action\":\"created\",\"installation\":{\"uuid\":\"7a485448-a9e2-4c85-8a01-4b5f1d2e0e2a\"},\"data\":{\"installation\":{\"status\":\"installed\"}}}",
+      "signature": "2cb2a0c723e513d647aeff4f42155eb50e7463d8269f1826474a839db856dab8"
+    }
+  }
+}

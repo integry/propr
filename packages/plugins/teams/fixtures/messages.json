@@ -1,0 +1,414 @@
+{
+  "pull_request.opened": {
+    "type": "message",
+    "attachments": [
+      {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "contentUrl": null,
+        "content": {
+          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+          "type": "AdaptiveCard",
+          "version": "1.2",
+          "body": [
+            {
+              "type": "TextBlock",
+              "text": "Pull request #12 opened in acme/api",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true,
+              "color": "default"
+            },
+            {
+              "type": "FactSet",
+              "facts": [
+                {
+                  "title": "Base branch",
+                  "value": "main"
+                }
+              ]
+            }
+          ],
+          "actions": [
+            {
+              "type": "Action.OpenUrl",
+              "title": "Pull request #12",
+              "url": "https://github.com/acme/api/pull/12"
+            },
+            {
+              "type": "Action.OpenUrl",
+              "title": "Issue #9",
+              "url": "https://github.com/acme/api/issues/9"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "review.below_threshold": {
+    "type": "message",
+    "attachments": [
+      {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "contentUrl": null,
+        "content": {
+          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+          "type": "AdaptiveCard",
+          "version": "1.2",
+          "body": [
+            {
+              "type": "TextBlock",
+              "text": "Pull request #12 in acme/api scored 72.5, below 90",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true,
+              "color": "warning"
+            },
+            {
+              "type": "FactSet",
+              "facts": [
+                {
+                  "title": "Score",
+                  "value": "72.5"
+                },
+                {
+                  "title": "Threshold",
+                  "value": "90"
+                },
+                {
+                  "title": "Review cycle",
+                  "value": "1"
+                },
+                {
+                  "title": "Reviewer model",
+                  "value": "claude-opus-5-5"
+                }
+              ]
+            }
+          ],
+          "actions": [
+            {
+              "type": "Action.OpenUrl",
+              "title": "Pull request #12",
+              "url": "https://github.com/acme/api/pull/12"
+            },
+            {
+              "type": "Action.OpenUrl",
+              "title": "Issue #9",
+              "url": "https://github.com/acme/api/issues/9"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "review.at_or_above_threshold": {
+    "type": "message",
+    "attachments": [
+      {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "contentUrl": null,
+        "content": {
+          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+          "type": "AdaptiveCard",
+          "version": "1.2",
+          "body": [
+            {
+              "type": "TextBlock",
+              "text": "Pull request #12 in acme/api scored 94, at or above 90",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true,
+              "color": "good"
+            },
+            {
+              "type": "FactSet",
+              "facts": [
+                {
+                  "title": "Score",
+                  "value": "94"
+                },
+                {
+                  "title": "Threshold",
+                  "value": "90"
+                },
+                {
+                  "title": "Review cycle",
+                  "value": "3"
+                },
+                {
+                  "title": "Reviewer model",
+                  "value": "claude-opus-5-5"
+                }
+              ]
+            }
+          ],
+          "actions": [
+            {
+              "type": "Action.OpenUrl",
+              "title": "Pull request #12",
+              "url": "https://github.com/acme/api/pull/12"
+            },
+            {
+              "type": "Action.OpenUrl",
+              "title": "Issue #9",
+              "url": "https://github.com/acme/api/issues/9"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "pull_request.ultrafix_ended": {
+    "type": "message",
+    "attachments": [
+      {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "contentUrl": null,
+        "content": {
+          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+          "type": "AdaptiveCard",
+          "version": "1.2",
+          "body": [
+            {
+              "type": "TextBlock",
+              "text": "Ultrafix on pull request #12 in acme/api reached its goal",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true,
+              "color": "good"
+            },
+            {
+              "type": "FactSet",
+              "facts": [
+                {
+                  "title": "Outcome",
+                  "value": "goal_reached"
+                },
+                {
+                  "title": "Final score",
+                  "value": "92"
+                }
+              ]
+            }
+          ],
+          "actions": [
+            {
+              "type": "Action.OpenUrl",
+              "title": "Pull request #12",
+              "url": "https://github.com/acme/api/pull/12"
+            },
+            {
+              "type": "Action.OpenUrl",
+              "title": "Issue #9",
+              "url": "https://github.com/acme/api/issues/9"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "pull_request.merged": {
+    "type": "message",
+    "attachments": [
+      {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "contentUrl": null,
+        "content": {
+          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+          "type": "AdaptiveCard",
+          "version": "1.2",
+          "body": [
+            {
+              "type": "TextBlock",
+              "text": "Pull request #12 merged in acme/api",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true,
+              "color": "good"
+            }
+          ],
+          "actions": [
+            {
+              "type": "Action.OpenUrl",
+              "title": "Pull request #12",
+              "url": "https://github.com/acme/api/pull/12"
+            },
+            {
+              "type": "Action.OpenUrl",
+              "title": "Issue #9",
+              "url": "https://github.com/acme/api/issues/9"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "pull_request.closed": {
+    "type": "message",
+    "attachments": [
+      {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "contentUrl": null,
+        "content": {
+          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+          "type": "AdaptiveCard",
+          "version": "1.2",
+          "body": [
+            {
+              "type": "TextBlock",
+              "text": "Pull request #12 closed without merging in acme/api",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true,
+              "color": "default"
+            }
+          ],
+          "actions": [
+            {
+              "type": "Action.OpenUrl",
+              "title": "Pull request #12",
+              "url": "https://github.com/acme/api/pull/12"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "task.failed": {
+    "type": "message",
+    "attachments": [
+      {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "contentUrl": null,
+        "content": {
+          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+          "type": "AdaptiveCard",
+          "version": "1.2",
+          "body": [
+            {
+              "type": "TextBlock",
+              "text": "Implementation task failed in acme/api",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true,
+              "color": "attention"
+            },
+            {
+              "type": "FactSet",
+              "facts": [
+                {
+                  "title": "Failure",
+                  "value": "timed_out"
+                },
+                {
+                  "title": "Agent",
+                  "value": "claude"
+                },
+                {
+                  "title": "Model",
+                  "value": "claude-opus-5-5"
+                },
+                {
+                  "title": "Attempts",
+                  "value": "2"
+                },
+                {
+                  "title": "Duration",
+                  "value": "31 min"
+                }
+              ]
+            }
+          ],
+          "actions": [
+            {
+              "type": "Action.OpenUrl",
+              "title": "Issue #9",
+              "url": "https://github.com/acme/api/issues/9"
+            },
+            {
+              "type": "Action.OpenUrl",
+              "title": "Task in ProPR",
+              "url": "https://propr.example.com/tasks/task-42"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "epic_queue.blocked": {
+    "type": "message",
+    "attachments": [
+      {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "contentUrl": null,
+        "content": {
+          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+          "type": "AdaptiveCard",
+          "version": "1.2",
+          "body": [
+            {
+              "type": "TextBlock",
+              "text": "An epic queue is blocked in acme/api",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true,
+              "color": "warning"
+            },
+            {
+              "type": "FactSet",
+              "facts": [
+                {
+                  "title": "Blocked at issue",
+                  "value": "31"
+                }
+              ]
+            }
+          ],
+          "actions": [
+            {
+              "type": "Action.OpenUrl",
+              "title": "Issue #31",
+              "url": "https://github.com/acme/api/issues/31"
+            },
+            {
+              "type": "Action.OpenUrl",
+              "title": "Epic #30",
+              "url": "https://github.com/acme/api/issues/30"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "epic_queue.completed": {
+    "type": "message",
+    "attachments": [
+      {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "contentUrl": null,
+        "content": {
+          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+          "type": "AdaptiveCard",
+          "version": "1.2",
+          "body": [
+            {
+              "type": "TextBlock",
+              "text": "An epic queue completed in acme/api",
+              "weight": "Bolder",
+              "size": "Medium",
+              "wrap": true,
+              "color": "good"
+            }
+          ],
+          "actions": [
+            {
+              "type": "Action.OpenUrl",
+              "title": "Epic #30",
+              "url": "https://github.com/acme/api/issues/30"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

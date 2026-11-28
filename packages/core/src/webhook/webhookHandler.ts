@@ -244,6 +244,11 @@ async function handleIssueCommentEvent(
     } else if (isIssueCommentEditedEvent(payload) && hasPullRequest) {
         await handleCommentEdited(payload, 'issue_comment', correlationId);
         return ACCEPTED_NO_SEAT_DISPOSITION;
+    } else if (isIssueCommentCreatedEvent(payload) && !hasPullRequest) {
+        // Issue comments start work only as a plugin command; anything else stays ignored.
+        // Loaded lazily: its assignment-gate/config graph is only needed for plain-issue comments.
+        const { processIssueCommentCommand } = await import('./issueCommentCommands.js');
+        return processIssueCommentCommand(payload, correlationId, { redis: webhookRedisClient ?? getUltrafixStateRedis() });
     }
 
     return { status: 'ignored', reason: hasPullRequest ? 'unsupported_comment_action' : 'not_pull_request_comment' };

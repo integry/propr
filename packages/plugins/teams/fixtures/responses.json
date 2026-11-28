@@ -1,0 +1,13 @@
+{
+  "accepted": { "status": 202, "headers": {}, "body": "" },
+  "rateLimited": {
+    "status": 429,
+    "headers": { "retry-after": "10", "content-type": "application/json" },
+    "body": "{\"error\": {\"code\": \"WorkflowTriggerIsThrottled\", \"message\": \"The workflow trigger is throttled.\"}}"
+  },
+  "permanent": [
+    { "status": 404, "body": "{\"error\": {\"code\": \"WorkflowNotFound\", \"message\": \"The workflow could not be found.\"}}", "detail": "WorkflowNotFound" },
+    { "status": 401, "body": "{\"error\": {\"code\": \"DirectApiAuthorizationRequired\", \"message\": \"The request must be authenticated.\"}}", "detail": "DirectApiAuthorizationRequired" },
+    { "status": 400, "body": "{\"error\": {\"code\": \"TriggerInputSchemaMismatch\", \"message\": \"The input body does not match the schema.\"}}", "detail": "TriggerInputSchemaMismatch" }
+  ]
+}

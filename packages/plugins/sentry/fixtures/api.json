@@ -1,0 +1,1612 @@
+{
+  "_comment": "Sentry API answers: GET organizations/acme/issues/<id>/ (issues), .../events/latest/ (latestEvents; https://docs.sentry.io/api/events/retrieve-an-issue-event/), GET organizations/acme/projects/ (projects), POST .../notes/ (noteCreated).",
+  "issues": {
+    "4501": {
+      "id": "4501",
+      "shortId": "API-1A",
+      "title": "TypeError: Cannot read properties of undefined (reading 'id')",
+      "culprit": "src/app/file27.ts in appFn27",
+      "level": "error",
+      "status": "unresolved",
+      "count": "42",
+      "userCount": 7,
+      "firstSeen": "2026-11-16T09:12:03.000000Z",
+      "lastSeen": "2026-11-17T01:40:11.000000Z",
+      "permalink": "https://acme.sentry.io/issues/4501/",
+      "project": {
+        "id": "11",
+        "slug": "api",
+        "name": "API",
+        "platform": "node"
+      },
+      "metadata": {
+        "title": "TypeError: Cannot read properties of undefined (reading 'id')"
+      },
+      "platform": "node",
+      "isUnhandled": true
+    },
+    "4502": {
+      "id": "4502",
+      "shortId": "API-1B",
+      "title": "RangeError: Invalid time value",
+      "culprit": "src/app/dates.ts in format",
+      "level": "error",
+      "status": "unresolved",
+      "count": "3",
+      "userCount": 7,
+      "firstSeen": "2026-11-16T09:12:03.000000Z",
+      "lastSeen": "2026-11-17T01:40:11.000000Z",
+      "permalink": "https://acme.sentry.io/issues/4502/",
+      "project": {
+        "id": "11",
+        "slug": "api",
+        "name": "API",
+        "platform": "node"
+      },
+      "metadata": {
+        "title": "RangeError: Invalid time value"
+      },
+      "platform": "node",
+      "isUnhandled": true
+    },
+    "4503": {
+      "id": "4503",
+      "shortId": "API-1C",
+      "title": "Error: Staging only",
+      "culprit": "src/app/flags.ts in load",
+      "level": "error",
+      "status": "unresolved",
+      "count": "500",
+      "userCount": 7,
+      "firstSeen": "2026-11-16T09:12:03.000000Z",
+      "lastSeen": "2026-11-17T01:40:11.000000Z",
+      "permalink": "https://acme.sentry.io/issues/4503/",
+      "project": {
+        "id": "11",
+        "slug": "api",
+        "name": "API",
+        "platform": "node"
+      },
+      "metadata": {
+        "title": "Error: Staging only"
+      },
+      "platform": "node",
+      "isUnhandled": true
+    },
+    "4600": {
+      "id": "4600",
+      "shortId": "BILLING-7",
+      "title": "Error: Billing failed",
+      "culprit": "src/billing.ts in charge",
+      "level": "error",
+      "status": "unresolved",
+      "count": "90",
+      "userCount": 7,
+      "firstSeen": "2026-11-16T09:12:03.000000Z",
+      "lastSeen": "2026-11-17T01:40:11.000000Z",
+      "permalink": "https://acme.sentry.io/issues/4600/",
+      "project": {
+        "id": "12",
+        "slug": "billing",
+        "name": "BILLING",
+        "platform": "node"
+      },
+      "metadata": {
+        "title": "Error: Billing failed"
+      },
+      "platform": "node",
+      "isUnhandled": true
+    }
+  },
+  "latestEvents": {
+    "4501": {
+      "eventID": "e0c1d2",
+      "dateCreated": "2026-11-17T01:40:11.000000Z",
+      "environment": "production",
+      "tags": [
+        {
+          "key": "environment",
+          "value": "production"
+        },
+        {
+          "key": "user",
+          "value": "email:sentinel-email-ada@example.com"
+        },
+        {
+          "key": "url",
+          "value": "https://shop.example.com/SENTINEL_URL_PATH"
+        },
+        {
+          "key": "custom",
+          "value": "SENTINEL_TAG_user_email"
+        }
+      ],
+      "user": {
+        "id": "SENTINEL_USER_ID_991",
+        "email": "sentinel-email-ada@example.com",
+        "ip_address": "203.0.113.77",
+        "username": "sentinel_username_ada",
+        "name": "Ada Sentinel",
+        "data": {
+          "plan": "SENTINEL_TAG_user_email"
+        }
+      },
+      "contexts": {
+        "browser": {
+          "name": "Chrome"
+        }
+      },
+      "entries": [
+        {
+          "type": "breadcrumbs",
+          "data": {
+            "values": [
+              {
+                "category": "ui.click",
+                "message": "SENTINEL_BREADCRUMB_user_clicked_checkout",
+                "data": {
+                  "email": "sentinel-email-ada@example.com"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "request",
+          "data": {
+            "url": "https://shop.example.com/SENTINEL_URL_PATH",
+            "method": "POST",
+            "headers": [
+              [
+                "Authorization",
+                "SENTINEL_HEADER_Bearer_secret"
+              ],
+              [
+                "Cookie",
+                "SENTINEL_COOKIE_session=abc123"
+              ]
+            ],
+            "data": "SENTINEL_REQUEST_BODY_password=hunter2",
+            "query": [
+              [
+                "q",
+                "SENTINEL_QUERY_token=zzz"
+              ]
+            ],
+            "cookies": [
+              [
+                "session",
+                "SENTINEL_COOKIE_session=abc123"
+              ]
+            ],
+            "env": {
+              "REMOTE_ADDR": "203.0.113.77"
+            }
+          }
+        },
+        {
+          "type": "exception",
+          "data": {
+            "values": [
+              {
+                "type": "ValidationError",
+                "value": "id must be a string",
+                "stacktrace": {
+                  "frames": [
+                    {
+                      "function": "appFn0",
+                      "module": null,
+                      "filename": "src/app/file0.ts",
+                      "absPath": "/home/sentinel/app/file0.ts",
+                      "lineNo": 10,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          10,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn1",
+                      "module": null,
+                      "filename": "node_modules/lib/index1.js",
+                      "absPath": "/home/sentinel/app/file1.ts",
+                      "lineNo": 11,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          11,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn2",
+                      "module": null,
+                      "filename": "node_modules/lib/index2.js",
+                      "absPath": "/home/sentinel/app/file2.ts",
+                      "lineNo": 12,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          12,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn3",
+                      "module": null,
+                      "filename": "src/app/file3.ts",
+                      "absPath": "/home/sentinel/app/file3.ts",
+                      "lineNo": 13,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          13,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "TypeError",
+                "value": "Cannot read properties of undefined (reading 'id')",
+                "stacktrace": {
+                  "frames": [
+                    {
+                      "function": "appFn0",
+                      "module": null,
+                      "filename": "src/app/file0.ts",
+                      "absPath": "/home/sentinel/app/file0.ts",
+                      "lineNo": 10,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          10,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn1",
+                      "module": null,
+                      "filename": "node_modules/lib/index1.js",
+                      "absPath": "/home/sentinel/app/file1.ts",
+                      "lineNo": 11,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          11,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn2",
+                      "module": null,
+                      "filename": "node_modules/lib/index2.js",
+                      "absPath": "/home/sentinel/app/file2.ts",
+                      "lineNo": 12,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          12,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn3",
+                      "module": null,
+                      "filename": "src/app/file3.ts",
+                      "absPath": "/home/sentinel/app/file3.ts",
+                      "lineNo": 13,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          13,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn4",
+                      "module": null,
+                      "filename": "node_modules/lib/index4.js",
+                      "absPath": "/home/sentinel/app/file4.ts",
+                      "lineNo": 14,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          14,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn5",
+                      "module": null,
+                      "filename": "node_modules/lib/index5.js",
+                      "absPath": "/home/sentinel/app/file5.ts",
+                      "lineNo": 15,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          15,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn6",
+                      "module": null,
+                      "filename": "src/app/file6.ts",
+                      "absPath": "/home/sentinel/app/file6.ts",
+                      "lineNo": 16,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          16,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn7",
+                      "module": null,
+                      "filename": "node_modules/lib/index7.js",
+                      "absPath": "/home/sentinel/app/file7.ts",
+                      "lineNo": 17,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          17,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn8",
+                      "module": null,
+                      "filename": "node_modules/lib/index8.js",
+                      "absPath": "/home/sentinel/app/file8.ts",
+                      "lineNo": 18,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          18,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn9",
+                      "module": null,
+                      "filename": "src/app/file9.ts",
+                      "absPath": "/home/sentinel/app/file9.ts",
+                      "lineNo": 19,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          19,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn10",
+                      "module": null,
+                      "filename": "node_modules/lib/index10.js",
+                      "absPath": "/home/sentinel/app/file10.ts",
+                      "lineNo": 20,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          20,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn11",
+                      "module": null,
+                      "filename": "node_modules/lib/index11.js",
+                      "absPath": "/home/sentinel/app/file11.ts",
+                      "lineNo": 21,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          21,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn12",
+                      "module": null,
+                      "filename": "src/app/file12.ts",
+                      "absPath": "/home/sentinel/app/file12.ts",
+                      "lineNo": 22,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          22,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn13",
+                      "module": null,
+                      "filename": "node_modules/lib/index13.js",
+                      "absPath": "/home/sentinel/app/file13.ts",
+                      "lineNo": 23,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          23,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn14",
+                      "module": null,
+                      "filename": "node_modules/lib/index14.js",
+                      "absPath": "/home/sentinel/app/file14.ts",
+                      "lineNo": 24,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          24,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn15",
+                      "module": null,
+                      "filename": "src/app/file15.ts",
+                      "absPath": "/home/sentinel/app/file15.ts",
+                      "lineNo": 25,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          25,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn16",
+                      "module": null,
+                      "filename": "node_modules/lib/index16.js",
+                      "absPath": "/home/sentinel/app/file16.ts",
+                      "lineNo": 26,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          26,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn17",
+                      "module": null,
+                      "filename": "node_modules/lib/index17.js",
+                      "absPath": "/home/sentinel/app/file17.ts",
+                      "lineNo": 27,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          27,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn18",
+                      "module": null,
+                      "filename": "src/app/file18.ts",
+                      "absPath": "/home/sentinel/app/file18.ts",
+                      "lineNo": 28,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          28,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn19",
+                      "module": null,
+                      "filename": "node_modules/lib/index19.js",
+                      "absPath": "/home/sentinel/app/file19.ts",
+                      "lineNo": 29,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          29,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn20",
+                      "module": null,
+                      "filename": "node_modules/lib/index20.js",
+                      "absPath": "/home/sentinel/app/file20.ts",
+                      "lineNo": 30,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          30,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn21",
+                      "module": null,
+                      "filename": "src/app/file21.ts",
+                      "absPath": "/home/sentinel/app/file21.ts",
+                      "lineNo": 31,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          31,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn22",
+                      "module": null,
+                      "filename": "node_modules/lib/index22.js",
+                      "absPath": "/home/sentinel/app/file22.ts",
+                      "lineNo": 32,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          32,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn23",
+                      "module": null,
+                      "filename": "node_modules/lib/index23.js",
+                      "absPath": "/home/sentinel/app/file23.ts",
+                      "lineNo": 33,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          33,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn24",
+                      "module": null,
+                      "filename": "src/app/file24.ts",
+                      "absPath": "/home/sentinel/app/file24.ts",
+                      "lineNo": 34,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          34,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn25",
+                      "module": null,
+                      "filename": "node_modules/lib/index25.js",
+                      "absPath": "/home/sentinel/app/file25.ts",
+                      "lineNo": 35,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          35,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn26",
+                      "module": null,
+                      "filename": "node_modules/lib/index26.js",
+                      "absPath": "/home/sentinel/app/file26.ts",
+                      "lineNo": 36,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          36,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn27",
+                      "module": null,
+                      "filename": "src/app/file27.ts",
+                      "absPath": "/home/sentinel/app/file27.ts",
+                      "lineNo": 37,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          37,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn28",
+                      "module": null,
+                      "filename": "node_modules/lib/index28.js",
+                      "absPath": "/home/sentinel/app/file28.ts",
+                      "lineNo": 38,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          38,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn29",
+                      "module": null,
+                      "filename": "node_modules/lib/index29.js",
+                      "absPath": "/home/sentinel/app/file29.ts",
+                      "lineNo": 39,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          39,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "4502": {
+      "eventID": "e0c1d2",
+      "dateCreated": "2026-11-17T01:40:11.000000Z",
+      "environment": "production",
+      "tags": [
+        {
+          "key": "environment",
+          "value": "production"
+        },
+        {
+          "key": "user",
+          "value": "email:sentinel-email-ada@example.com"
+        },
+        {
+          "key": "url",
+          "value": "https://shop.example.com/SENTINEL_URL_PATH"
+        },
+        {
+          "key": "custom",
+          "value": "SENTINEL_TAG_user_email"
+        }
+      ],
+      "user": {
+        "id": "SENTINEL_USER_ID_991",
+        "email": "sentinel-email-ada@example.com",
+        "ip_address": "203.0.113.77",
+        "username": "sentinel_username_ada",
+        "name": "Ada Sentinel",
+        "data": {
+          "plan": "SENTINEL_TAG_user_email"
+        }
+      },
+      "contexts": {
+        "browser": {
+          "name": "Chrome"
+        }
+      },
+      "entries": [
+        {
+          "type": "breadcrumbs",
+          "data": {
+            "values": [
+              {
+                "category": "ui.click",
+                "message": "SENTINEL_BREADCRUMB_user_clicked_checkout",
+                "data": {
+                  "email": "sentinel-email-ada@example.com"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "request",
+          "data": {
+            "url": "https://shop.example.com/SENTINEL_URL_PATH",
+            "method": "POST",
+            "headers": [
+              [
+                "Authorization",
+                "SENTINEL_HEADER_Bearer_secret"
+              ],
+              [
+                "Cookie",
+                "SENTINEL_COOKIE_session=abc123"
+              ]
+            ],
+            "data": "SENTINEL_REQUEST_BODY_password=hunter2",
+            "query": [
+              [
+                "q",
+                "SENTINEL_QUERY_token=zzz"
+              ]
+            ],
+            "cookies": [
+              [
+                "session",
+                "SENTINEL_COOKIE_session=abc123"
+              ]
+            ],
+            "env": {
+              "REMOTE_ADDR": "203.0.113.77"
+            }
+          }
+        },
+        {
+          "type": "exception",
+          "data": {
+            "values": [
+              {
+                "type": "ValidationError",
+                "value": "id must be a string",
+                "stacktrace": {
+                  "frames": [
+                    {
+                      "function": "appFn0",
+                      "module": null,
+                      "filename": "src/app/file0.ts",
+                      "absPath": "/home/sentinel/app/file0.ts",
+                      "lineNo": 10,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          10,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn1",
+                      "module": null,
+                      "filename": "node_modules/lib/index1.js",
+                      "absPath": "/home/sentinel/app/file1.ts",
+                      "lineNo": 11,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          11,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn2",
+                      "module": null,
+                      "filename": "node_modules/lib/index2.js",
+                      "absPath": "/home/sentinel/app/file2.ts",
+                      "lineNo": 12,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          12,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn3",
+                      "module": null,
+                      "filename": "src/app/file3.ts",
+                      "absPath": "/home/sentinel/app/file3.ts",
+                      "lineNo": 13,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          13,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "TypeError",
+                "value": "Cannot read properties of undefined (reading 'id')",
+                "stacktrace": {
+                  "frames": [
+                    {
+                      "function": "appFn0",
+                      "module": null,
+                      "filename": "src/app/file0.ts",
+                      "absPath": "/home/sentinel/app/file0.ts",
+                      "lineNo": 10,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          10,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn1",
+                      "module": null,
+                      "filename": "node_modules/lib/index1.js",
+                      "absPath": "/home/sentinel/app/file1.ts",
+                      "lineNo": 11,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          11,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn2",
+                      "module": null,
+                      "filename": "node_modules/lib/index2.js",
+                      "absPath": "/home/sentinel/app/file2.ts",
+                      "lineNo": 12,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          12,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "4503": {
+      "eventID": "e0c1d2",
+      "dateCreated": "2026-11-17T01:40:11.000000Z",
+      "environment": "staging",
+      "tags": [
+        {
+          "key": "environment",
+          "value": "staging"
+        },
+        {
+          "key": "user",
+          "value": "email:sentinel-email-ada@example.com"
+        },
+        {
+          "key": "url",
+          "value": "https://shop.example.com/SENTINEL_URL_PATH"
+        },
+        {
+          "key": "custom",
+          "value": "SENTINEL_TAG_user_email"
+        }
+      ],
+      "user": {
+        "id": "SENTINEL_USER_ID_991",
+        "email": "sentinel-email-ada@example.com",
+        "ip_address": "203.0.113.77",
+        "username": "sentinel_username_ada",
+        "name": "Ada Sentinel",
+        "data": {
+          "plan": "SENTINEL_TAG_user_email"
+        }
+      },
+      "contexts": {
+        "browser": {
+          "name": "Chrome"
+        }
+      },
+      "entries": [
+        {
+          "type": "breadcrumbs",
+          "data": {
+            "values": [
+              {
+                "category": "ui.click",
+                "message": "SENTINEL_BREADCRUMB_user_clicked_checkout",
+                "data": {
+                  "email": "sentinel-email-ada@example.com"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "request",
+          "data": {
+            "url": "https://shop.example.com/SENTINEL_URL_PATH",
+            "method": "POST",
+            "headers": [
+              [
+                "Authorization",
+                "SENTINEL_HEADER_Bearer_secret"
+              ],
+              [
+                "Cookie",
+                "SENTINEL_COOKIE_session=abc123"
+              ]
+            ],
+            "data": "SENTINEL_REQUEST_BODY_password=hunter2",
+            "query": [
+              [
+                "q",
+                "SENTINEL_QUERY_token=zzz"
+              ]
+            ],
+            "cookies": [
+              [
+                "session",
+                "SENTINEL_COOKIE_session=abc123"
+              ]
+            ],
+            "env": {
+              "REMOTE_ADDR": "203.0.113.77"
+            }
+          }
+        },
+        {
+          "type": "exception",
+          "data": {
+            "values": [
+              {
+                "type": "ValidationError",
+                "value": "id must be a string",
+                "stacktrace": {
+                  "frames": [
+                    {
+                      "function": "appFn0",
+                      "module": null,
+                      "filename": "src/app/file0.ts",
+                      "absPath": "/home/sentinel/app/file0.ts",
+                      "lineNo": 10,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          10,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn1",
+                      "module": null,
+                      "filename": "node_modules/lib/index1.js",
+                      "absPath": "/home/sentinel/app/file1.ts",
+                      "lineNo": 11,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          11,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn2",
+                      "module": null,
+                      "filename": "node_modules/lib/index2.js",
+                      "absPath": "/home/sentinel/app/file2.ts",
+                      "lineNo": 12,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          12,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn3",
+                      "module": null,
+                      "filename": "src/app/file3.ts",
+                      "absPath": "/home/sentinel/app/file3.ts",
+                      "lineNo": 13,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          13,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "TypeError",
+                "value": "Cannot read properties of undefined (reading 'id')",
+                "stacktrace": {
+                  "frames": [
+                    {
+                      "function": "appFn0",
+                      "module": null,
+                      "filename": "src/app/file0.ts",
+                      "absPath": "/home/sentinel/app/file0.ts",
+                      "lineNo": 10,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          10,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn1",
+                      "module": null,
+                      "filename": "node_modules/lib/index1.js",
+                      "absPath": "/home/sentinel/app/file1.ts",
+                      "lineNo": 11,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          11,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn2",
+                      "module": null,
+                      "filename": "node_modules/lib/index2.js",
+                      "absPath": "/home/sentinel/app/file2.ts",
+                      "lineNo": 12,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          12,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "4600": {
+      "eventID": "e0c1d2",
+      "dateCreated": "2026-11-17T01:40:11.000000Z",
+      "environment": "production",
+      "tags": [
+        {
+          "key": "environment",
+          "value": "production"
+        },
+        {
+          "key": "user",
+          "value": "email:sentinel-email-ada@example.com"
+        },
+        {
+          "key": "url",
+          "value": "https://shop.example.com/SENTINEL_URL_PATH"
+        },
+        {
+          "key": "custom",
+          "value": "SENTINEL_TAG_user_email"
+        }
+      ],
+      "user": {
+        "id": "SENTINEL_USER_ID_991",
+        "email": "sentinel-email-ada@example.com",
+        "ip_address": "203.0.113.77",
+        "username": "sentinel_username_ada",
+        "name": "Ada Sentinel",
+        "data": {
+          "plan": "SENTINEL_TAG_user_email"
+        }
+      },
+      "contexts": {
+        "browser": {
+          "name": "Chrome"
+        }
+      },
+      "entries": [
+        {
+          "type": "breadcrumbs",
+          "data": {
+            "values": [
+              {
+                "category": "ui.click",
+                "message": "SENTINEL_BREADCRUMB_user_clicked_checkout",
+                "data": {
+                  "email": "sentinel-email-ada@example.com"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "request",
+          "data": {
+            "url": "https://shop.example.com/SENTINEL_URL_PATH",
+            "method": "POST",
+            "headers": [
+              [
+                "Authorization",
+                "SENTINEL_HEADER_Bearer_secret"
+              ],
+              [
+                "Cookie",
+                "SENTINEL_COOKIE_session=abc123"
+              ]
+            ],
+            "data": "SENTINEL_REQUEST_BODY_password=hunter2",
+            "query": [
+              [
+                "q",
+                "SENTINEL_QUERY_token=zzz"
+              ]
+            ],
+            "cookies": [
+              [
+                "session",
+                "SENTINEL_COOKIE_session=abc123"
+              ]
+            ],
+            "env": {
+              "REMOTE_ADDR": "203.0.113.77"
+            }
+          }
+        },
+        {
+          "type": "exception",
+          "data": {
+            "values": [
+              {
+                "type": "ValidationError",
+                "value": "id must be a string",
+                "stacktrace": {
+                  "frames": [
+                    {
+                      "function": "appFn0",
+                      "module": null,
+                      "filename": "src/app/file0.ts",
+                      "absPath": "/home/sentinel/app/file0.ts",
+                      "lineNo": 10,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          10,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn1",
+                      "module": null,
+                      "filename": "node_modules/lib/index1.js",
+                      "absPath": "/home/sentinel/app/file1.ts",
+                      "lineNo": 11,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          11,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn2",
+                      "module": null,
+                      "filename": "node_modules/lib/index2.js",
+                      "absPath": "/home/sentinel/app/file2.ts",
+                      "lineNo": 12,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          12,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "appFn3",
+                      "module": null,
+                      "filename": "src/app/file3.ts",
+                      "absPath": "/home/sentinel/app/file3.ts",
+                      "lineNo": 13,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          13,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "TypeError",
+                "value": "Cannot read properties of undefined (reading 'id')",
+                "stacktrace": {
+                  "frames": [
+                    {
+                      "function": "appFn0",
+                      "module": null,
+                      "filename": "src/app/file0.ts",
+                      "absPath": "/home/sentinel/app/file0.ts",
+                      "lineNo": 10,
+                      "colNo": 5,
+                      "inApp": true,
+                      "context": [
+                        [
+                          10,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn1",
+                      "module": null,
+                      "filename": "node_modules/lib/index1.js",
+                      "absPath": "/home/sentinel/app/file1.ts",
+                      "lineNo": 11,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          11,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    },
+                    {
+                      "function": "libFn2",
+                      "module": null,
+                      "filename": "node_modules/lib/index2.js",
+                      "absPath": "/home/sentinel/app/file2.ts",
+                      "lineNo": 12,
+                      "colNo": 5,
+                      "inApp": false,
+                      "context": [
+                        [
+                          12,
+                          "SENTINEL_CONTEXT_LINE"
+                        ]
+                      ],
+                      "vars": {
+                        "card": "SENTINEL_FRAME_VAR_card_4111111111111111",
+                        "email": "sentinel-email-ada@example.com"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "projects": [
+    {
+      "id": "11",
+      "slug": "api",
+      "name": "API"
+    },
+    {
+      "id": "12",
+      "slug": "billing",
+      "name": "Billing"
+    },
+    {
+      "id": "13",
+      "slug": "web",
+      "name": "Web app"
+    }
+  ],
+  "noteCreated": {
+    "id": "881",
+    "type": "note",
+    "data": {
+      "text": "x"
+    }
+  }
+}

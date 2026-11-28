@@ -8,7 +8,9 @@ import { importCommitLabel, isFullCommit, isRepositoryName, type CommitLookup } 
 export function SkillBundleDetails({ bundle }: { bundle: ExtensionSkillBundle }) {
   const source = bundle.source.kind === 'github'
     ? `${bundle.source.repository} @ ${bundle.source.commit} / ${bundle.source.directory}`
-    : `Uploaded archive: ${bundle.source.filename}`;
+    : bundle.source.kind === 'plugin'
+      ? `Plugin ${bundle.source.plugin} ${bundle.source.version} / ${bundle.source.path}`
+      : `Uploaded archive: ${bundle.source.filename}`;
   const segments = source.split('/');
   return (
     <div className="space-y-1 text-[12px] leading-5 text-slate-600">

@@ -84,6 +84,8 @@ export interface AgentExtensionRequest {
     repositories?: string[];
     /** Explicit per-run write authorization; the library cannot grant write capabilities. */
     allowWrite?: boolean;
+    /** With `allowWrite`, the only write servers it covers (a plugin command's write grant names its plugin's servers). */
+    writeServers?: string[];
     /**
      * What kind of run this is. Issue tasks and pull request follow-ups honour
      * the opt-out `labels`; automation runs (the default) ignore them.

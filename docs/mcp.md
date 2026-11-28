@@ -123,8 +123,9 @@ schedule, next run, `eventTriggers`, capabilities and autonomy mode;
 `get_automation_definition_contract` returns the shared field contract, including
 `runTriggers` (with `event`) and `eventTriggers` (the events, here `plan.issue_blocked`,
 their reason kinds and `maxRunsPerIssue`, the loop bound of 3 runs per issue of a plan), and
-`list_automation_templates` returns the shipped template catalog (for example daily
-issue triage). A template creates nothing; it is a starting point for a new automation.
+`list_automation_templates` returns the template catalog: the shipped templates (for
+example daily issue triage) and those of enabled plugins, marked with the plugin's id and
+name. A template creates nothing; it is a starting point for a new automation.
 `list_automation_runs` lists a definition's runs newest first without report bodies,
 and `get_automation_run` returns one run with its report. A run started by an event has
 `trigger: "event"` and `triggerEvent`: the repository, plan, execution, issue number,
@@ -367,6 +368,19 @@ most 100) and the returned `nextOffset`;
 branch is freed, files and commits are never deleted; a worktree that still
 holds unpublished work is released only with force set to true). The same
 decisions are in Settings → Maintenance → Held follow-ups.
+
+Instance administrators with `instance.manage_settings` can read plugin state
+with `list_plugins` and `get_plugin`. `list_plugins` returns one compact row
+per plugin of this ProPR's registry (and per installed plugin an upgrade
+removed from it): its state (available, installed or enabled), available and
+installed manifest versions, whether it needs approval, the permissions waiting
+for approval, why enabling is refused right now, and each connection's state.
+`get_plugin` adds the public manifest, settings, repository limit, granted
+permissions, package-server secret acknowledgements and the newest management
+events of the plugin audit trail. Both are read-only: installing, configuring,
+connecting, enabling, approving and uninstalling go through the
+[plugin REST API](docs/features/plugins.md#installing-a-plugin). Connection
+secrets are write-only and never appear in either result.
 
 Start with `get_connection`, `list_repositories`, `list_models` and
 `resolve_reference`. Resolve ambiguity before mutating. `create_plan` creates

@@ -5,6 +5,7 @@ import type { SubscriptionUsageMetrics } from '../utils/github/formatSubscriptio
 import type { CommandMeta, UltrafixCommandMeta } from '../webhook/slashCommandParser.js';
 import type { ReasoningLevel } from '@propr/shared';
 import type { ResolvedRepositoryWorkflow } from '../workflow/repositoryWorkflow.js';
+import type { PluginCommandRun } from '../plugins/pluginCommands.js';
 
 /** Retained only while the same job waits for repository capacity; cleared on admission. */
 export interface RepositoryWorkflowDeferralData {
@@ -41,6 +42,18 @@ export interface IssueJobData extends RepositoryWorkflowDeferralData, AgentCapac
     repositoryWorkflowDeferred?: boolean;
     /** Stable GitHub user ID when a verified triggering recipient is known. */
     userId?: string;
+    /** Who asked for the task when it was not a GitHub user: `plugin:<id>` for a task a plugin handler created. */
+    requestedBy?: string;
+    /** The plugin `prompt` command, run from an issue comment, this implementation task carries out. */
+    pluginCommand?: PluginCommandRun;
+    /**
+     * The token of the issue's command intent this job carries `pluginCommand`
+     * for. The dispatcher settles that intent before it starts the work, so a
+     * settlement the intake could not record does not leave the consumed
+     * command pending for a later label event, and drops the command when
+     * ProPR reported it as not started after this job was queued with it.
+     */
+    pluginCommandIntent?: string;
     /** Authenticated user retrying failed submission-backed work; owns that retry instead of the submitter. */
     retryRequesterId?: string;
     /** Issue comment carrying a requested retry's instructions; posted by the app, so exempt from author filtering. */
@@ -146,6 +159,8 @@ export interface CommentJobData extends RepositoryWorkflowDeferralData, AgentCap
     commandCommentType?: 'review' | 'issue';
     /** Ultrafix-specific settings when commandMode is 'ultrafix' */
     ultrafixMeta?: UltrafixCommandMeta;
+    /** The plugin `prompt` command this one-shot follow-up carries out; its instruction replaces the comment text. */
+    pluginCommand?: PluginCommandRun;
     /** Reasoning level override resolved from PR or linked issue level-* labels. */
     reasoningLevel?: ReasoningLevel;
     /** Internal lease token persisted across BullMQ redelivery of this same job. */

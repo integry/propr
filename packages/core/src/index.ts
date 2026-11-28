@@ -685,6 +685,27 @@ export * from './services/reviewScoreStore.js';
 export * from './services/pullRequestStatus/index.js';
 // Durable repository change-event journal (pull requests, epic queues, plan issues).
 export * from './services/repositoryEventJournal.js';
+// Plugin event subscriptions: the journal dispatcher and its delivery records.
+export { PluginDispatcher, type PluginDispatcherOptions, type PluginDispatchPass } from './plugins/pluginDispatcher.js';
+export { prunePluginDeliveries } from './plugins/pluginDeliveries.js';
+export { PluginWebhookRunner, type PluginWebhookRunnerOptions } from './plugins/pluginWebhookRunner.js';
+export { PluginWebhookReceiver, type PluginWebhookReceiverOptions, type PluginWebhookReply } from './plugins/pluginWebhookReceiver.js';
+export { PLUGIN_WEBHOOK_ROUTE, pluginWebhookEndpoints, regeneratePluginWebhookKey, type PluginWebhookEndpoints } from './plugins/pluginWebhooks.js';
+export {
+    applicablePluginCommands, authorizeCommentPluginCommand, authorizePluginCommandWrite, candidatePluginCommandName, listPluginCommandHelp, matchPluginCommand, pluginCommandConflicts, pluginCommandExtensions, resolveCommentPluginCommand, resolvePluginCommand, setPluginCommandResolver, setPluginCommandWriteAuthorizer,
+    pluginCommandWriteServers, sharedCommandChoiceMessage,
+    type PluginCommandDelivery, type PluginCommandHelp, type PluginCommandRun, type PluginCommandResolution, type PluginCommandRequest, type PluginCommandResolver,
+    type PluginCommandWriteGrant, type RepositoryWritePermission, type MatchedPluginCommand, type PendingPluginCommandWrite, type PluginCommandWriteAuthorizer,
+} from './plugins/pluginCommands.js';
+export {
+    PLUGIN_COMMAND_WRITE_GRANT_TTL_MS, consumePluginCommandWriteGrant, createPluginCommandWriteGrant, readPluginCommandAccess, type PluginCommandAccess,
+} from './plugins/pluginCommandSettings.js';
+export {
+    PluginCommandRunner, enqueueCommentPluginCommand, enqueuePluginCommandDelivery, pluginCommandDeliveryId, setPluginCommandEnqueuer,
+    type PluginCommandContext, type PluginCommandEnqueuer, type PluginCommandRunnerOptions,
+} from './plugins/pluginCommandDeliveries.js';
+export { processIssueCommentCommand } from './webhook/issueCommentCommands.js';
+export { settleDispatchedIssueCommand, type IssueCommandSettlement } from './plugins/issueCommandIntent.js';
 
 // GitHub user profile cache: maps stored GitHub numeric user ids to the login
 // and avatar an assignee is rendered with.

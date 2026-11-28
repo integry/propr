@@ -47,6 +47,7 @@ import {
   LoginPage,
   McpLogsPage,
   PlansPage,
+  PluginsPage,
   PlanStudioPage,
   RepositoriesPage,
   RevertPage,
@@ -282,6 +283,7 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
+                    <Route path="/plugins/:pluginId?" element={<Layout><PermissionRequired permission="instance.manage_settings"><PluginsPage /></PermissionRequired></Layout>} />
                     <Route
                       path="/summaries/:owner/:repo"
                       element={
@@ -298,16 +300,7 @@ const AppContent: React.FC = () => {
                         </Layout>
                       }
                     />
-                    <Route
-                      path="/mcp-logs"
-                      element={
-                        <Layout>
-                          <PermissionRequired permission="instance.manage_settings">
-                            <McpLogsPage />
-                          </PermissionRequired>
-                        </Layout>
-                      }
-                    />
+                    <Route path="/mcp-logs" element={<Layout><PermissionRequired permission="instance.manage_settings"><McpLogsPage /></PermissionRequired></Layout>} />
                     <Route
                       path="*"
                       element={

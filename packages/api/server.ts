@@ -1,6 +1,12 @@
 import { createExtensionLibraryRoutes } from './routes/extensionProfileRoutes.js';
 import { startConfiguredFleetData, refusePublicFleetData } from './fleetDataListener.js';
 import { createStorageRouteEntries } from './instanceStorageRouteRegistry.js';
+import { createPluginRouteEntries } from './pluginRouteRegistry.js';
+import { createPluginRoutes } from './routes/pluginRoutes.js';
+import { createPluginActivityRoutes } from './routes/pluginActivityRoutes.js';
+import { createPluginWebhookAdminRoutes, createPluginWebhookHandlers } from './routes/pluginWebhookRoutes.js';
+import { PluginWebhookRunner } from '../core/src/plugins/pluginWebhookRunner.js';
+import { PluginWebhookReceiver } from '../core/src/plugins/pluginWebhookReceiver.js';
 import { protectStorageQueue } from '../core/src/storage/lifecycle.js';
 import { createDefaultStorageService, createInstanceStorageRoutes } from './routes/instanceStorageRoutes.js';
 import { startDashboardReadService, type DashboardReadService } from './services/dashboardReadService.js';
@@ -276,6 +282,9 @@ app.use(corsRejectionHandler);
 
 app.use('/api', createApiRequestRateLimiter());
 setupWebhookRoute();
+// Plugin webhooks read their raw body: registered before the JSON parser and the session middleware.
+let pluginWebhooks: { runner: PluginWebhookRunner; receiver: PluginWebhookReceiver } | undefined;
+app.post('/api/plugins/:installationKey/hooks/:webhookName', ...createPluginWebhookHandlers(() => (demoMode ? null : pluginWebhooks?.receiver ?? null)));
 
 const defaultJsonParser = express.json({ limit: '1mb' });
 app.use((req, res, next) => {
@@ -522,6 +531,7 @@ export function setupRoutes(): void {
   const routes = [
     ...operationalRoutes,
     ...createStorageRouteEntries(storageRoutes),
+    ...createPluginRouteEntries(createPluginRoutes(), createPluginActivityRoutes(), createPluginWebhookAdminRoutes()),
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
     ...createManagementRouteEntries({
       adminRoutes,
@@ -687,6 +697,10 @@ async function start(): Promise<void> {
     await assertInstanceAdministratorConfigured();
     await initRedis();
     if (!demoMode) {
+      // Inbound plugin webhooks run in this process; their requests are held in memory only.
+      const runner = new PluginWebhookRunner({ database: db });
+      await runner.recover().catch(error => console.warn('Could not close webhook deliveries left by a stopped API process:', (error as Error).message));
+      pluginWebhooks = { runner, receiver: new PluginWebhookReceiver({ database: db, runner }) };
       await initializeNotificationBackground();
       // Every API process drops its MCP cache on a published config event, so an
       // admin toggle applies across processes rather than waiting out the TTL.
@@ -820,6 +834,7 @@ async function start(): Promise<void> {
       connectMcpRegistration?.stop();
       if (!demoMode) {
         shutdownTasks.push(
+          { name: 'plugin webhook deliveries', close: () => pluginWebhooks?.runner.stop() ?? Promise.resolve() },
           { name: 'notification background service', close: () => notificationBackground?.close() ?? Promise.resolve() },
           { name: 'visual-preview OAuth refresh scheduler', close: () => visualPreviewOAuthRefreshScheduler?.close() ?? Promise.resolve() },
           { name: 'config reload subscriber', close: () => configReloadSubscription?.close() ?? Promise.resolve() },

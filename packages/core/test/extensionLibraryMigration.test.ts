@@ -336,13 +336,13 @@ test('merged limits longer than an item holds are refused instead of truncated',
   const repositories = (from: number) => Array.from({ length: 40 }, (_, i) => `team/repo-${from + i}`);
   const bundleId = randomUUID();
   await database('extension_skill_bundles').insert({ id: bundleId, instance_id: instanceId, descriptor: JSON.stringify({ id: bundleId, instanceId, digest: 'a'.repeat(64), name: 'writing', files: 1, bytes: 1, source: { kind: 'archive', filename: 'x.tar' }, requirements: [], createdAt: 1, auditActor: '1' }), files_json: '[]' });
-  await profile(database, instanceId, { name: 'A', servers: [docs({ authentication: 'none' })], repositoryScope: repositories(0), skillBundleIds: [bundleId] });
-  await profile(database, instanceId, { name: 'B', servers: [docs({ authentication: 'none' })], repositoryScope: repositories(40), skillBundleIds: [bundleId] });
+  // Seven profiles of 40 repositories each merge to 280, more than the 256 an item holds.
+  for (let p = 0; p < 7; p++) await profile(database, instanceId, { name: `P${p}`, servers: [docs({ authentication: 'none' })], repositoryScope: repositories(p * 40), skillBundleIds: [bundleId] });
   const report = await migrateExtensionProfilesToLibrary(database, environment, quiet);
   assert.equal(report.migrated, false);
   const diagnostic = report.warnings.join('\n');
-  assert.match(diagnostic, /Extension server docs would need 80 repository limits \(an item holds at most 64\)/);
-  assert.match(diagnostic, new RegExp(`Skill bundle ${bundleId} would need 80 repository limits`));
+  assert.match(diagnostic, /Extension server docs would need 280 repository limits \(an item holds at most 256\)/);
+  assert.match(diagnostic, new RegExp(`Skill bundle ${bundleId} would need 280 repository limits`));
   assert.equal(await database('extension_library_migration').first(), undefined);
   assert.equal((await database('extension_library_revisions')).length, 0);
 });

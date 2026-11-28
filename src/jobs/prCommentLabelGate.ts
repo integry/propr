@@ -6,7 +6,7 @@ const EXPLICIT_COMMANDS = new Set(['review', 'fix', 'ultrafix']);
 /**
  * Whether a pull request comment job may run on this pull request. A
  * processing label opts the whole pull request in. Without one, the job runs
- * only when someone asked for it explicitly: a slash command, an Ultrafix
+ * only when someone asked for it explicitly: a slash command (a plugin's included), an Ultrafix
  * cycle, or a trigger keyword. Intake accepts exactly these on unlabelled
  * pull requests (a running goal's draft PR stays unlabelled until the goal
  * succeeds), so refusing them here would acknowledge a request and then drop
@@ -15,10 +15,11 @@ const EXPLICIT_COMMANDS = new Set(['review', 'fix', 'ultrafix']);
 export async function pullRequestJobAllowed(
     labels: Array<{ name: string }>,
     primaryProcessingLabels: string[],
-    request: { data: Pick<CommentJobData, 'commandMode' | 'ultrafixMeta'>; comments: UnprocessedComment[]; correlationId: string },
+    request: { data: Pick<CommentJobData, 'commandMode' | 'ultrafixMeta' | 'pluginCommand'>; comments: UnprocessedComment[]; correlationId: string },
 ): Promise<boolean> {
     if (labels.some(label => primaryProcessingLabels.includes(label.name))) return true;
-    if (request.data.ultrafixMeta || EXPLICIT_COMMANDS.has(request.data.commandMode ?? 'default')) return true;
+    // A plugin command was resolved at intake against the enabled plugins: an explicit request too.
+    if (request.data.ultrafixMeta || request.data.pluginCommand || EXPLICIT_COMMANDS.has(request.data.commandMode ?? 'default')) return true;
     // Loaded lazily: callers' tests enumerate the core exports they mock.
     const { hasValidTriggerLabel, checkCommentTrigger } = await import('@propr/core');
     if (await hasValidTriggerLabel(labels)) return true;

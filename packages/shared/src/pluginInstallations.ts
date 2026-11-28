@@ -1,0 +1,243 @@
+import { pluginHttpsUrlSettingProblem, type PluginConnectionType, type PluginManifest, type PluginPermission, type PluginSetting, type PluginSettings, type PublicPluginManifest } from './plugins.js';
+
+/**
+ * Installation state of a plugin on one ProPR instance: whether an
+ * administrator installed it, whether it is enabled, its settings, the
+ * repositories it is limited to, the permissions granted and the secret
+ * acknowledgements of its package servers. Connection secrets are write-only
+ * and never part of anything here; only their state is.
+ */
+export const PLUGIN_API_BASE = '/api/instance/plugins/v1' as const;
+export const PLUGIN_REPOSITORY_LIMIT = 256;
+export const PLUGIN_SECRET_PATTERN = /^[\x21-\x7e]{1,4096}$/;
+export const PLUGIN_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+export type PluginSettingValue = string | number | boolean | string[] | Record<string, string>;
+export type PluginSettingValues = Record<string, PluginSettingValue>;
+
+/**
+ * `connected` once a token or signing secret is stored. An `oauth` connection
+ * is `connected` once every managed server that uses it is signed in through
+ * the extension OAuth sign-in, and `needs_sign_in` when a refresh failed.
+ */
+export type PluginConnectionState = 'connected' | 'not_connected' | 'needs_sign_in';
+export interface PluginConnectionStatus {
+  name: string; type: PluginConnectionType; label: string;
+  state: PluginConnectionState;
+  /** Enabling waits for it: a `token` a contributed MCP server uses, or a `token` or `signing_secret` the manifest marks `required`. */
+  required: boolean;
+  /** Who set the value and when; for an `oauth` connection, who configured its pre-registered client. */
+  setBy?: string; setAt?: number;
+}
+
+/** The extension library route that lists and edits managed items. */
+export const PLUGIN_LIBRARY_HREF = '/api/instance/extensions/v1' as const;
+/** The automation template catalog route. */
+export const PLUGIN_TEMPLATE_CATALOG_HREF = '/api/automation-definitions/templates' as const;
+/**
+ * What an installed plugin added: its managed library items (with their
+ * library reference) and its automation templates. `active` is true while
+ * the item can apply to runs as far as the plugin is concerned (the plugin is
+ * enabled and nothing awaits an acknowledgement); the item's own enabled
+ * switch and limits still apply.
+ */
+export interface PluginContributionViews {
+  mcpServers: { name: string; kind: 'https' | 'package'; managed: { kind: 'server'; name: string; enabled: boolean; active: boolean } | null; href: string }[];
+  skills: { name: string; managed: { kind: 'skill'; bundleId: string; enabled: boolean; active: boolean } | null; href: string }[];
+  automationTemplates: { id: string; catalogId: string; available: boolean; href: string }[];
+}
+
+/** The administrator's acknowledgement that a package server's secret variables are readable inside the task container. */
+export interface PluginSecretAcknowledgement { actor: string; at: number; package: string; version: string; secretEnv: string[] }
+/** A package server whose secret variables need (again) an acknowledgement. */
+export interface PluginPendingAcknowledgement { server: string; package: string; version: string; secretEnv: string[] }
+
+export type PluginInstallationState = 'available' | 'installed' | 'enabled';
+export interface PluginInstallationRecord {
+  /** The manifest version the administrator installed or last approved. */
+  installedVersion: string;
+  enabled: boolean;
+  settings: PluginSettingValues;
+  /** Repositories (`owner/repo`) the plugin is limited to; `null` for all repositories. */
+  repositories: string[] | null;
+  grantedPermissions: PluginPermission[];
+  acknowledgements: Record<string, PluginSecretAcknowledgement>;
+  installedBy: string; installedAt: number; updatedBy: string; updatedAt: number;
+}
+export interface PluginView {
+  id: string;
+  /** The plugin is in this ProPR's registry. An installed plugin removed by an upgrade can only be disabled or uninstalled. */
+  available: boolean;
+  manifest: PublicPluginManifest | null;
+  state: PluginInstallationState;
+  installation: PluginInstallationRecord | null;
+  connections: PluginConnectionStatus[];
+  /** The current manifest asks for permissions that were not granted: the plugin keeps its old grant until approved. */
+  needsApproval: boolean;
+  pendingPermissions: PluginPermission[];
+  pendingAcknowledgements: PluginPendingAcknowledgement[];
+  /** Why enabling is refused right now; empty when the plugin can be enabled. */
+  enableBlockers: string[];
+  /** Managed library items and templates; items are null until the plugin is installed. */
+  contributions?: PluginContributionViews;
+  /** Instance settings of the plugin's commands: write access and shared command owners. Absent for a plugin not in the registry. */
+  commands?: PluginCommandSettingView[];
+}
+
+/** A plugin that offers a shared command name, as the owner choice lists it. */
+export interface PluginSharedCommandCandidate {
+  pluginId: string; pluginName: string;
+  /** Its specific commands that stand in for the shared name. */
+  specific: string[];
+  enabled: boolean;
+}
+/**
+ * The instance settings of one command of a plugin. `writeAllowed` is the
+ * administrator switch "Allow this command to use write access" of a
+ * `needsWrite` command: off until switched on. `sharedOwner` is set for a
+ * `shared` command: which plugin the plain name runs when several enabled
+ * plugins offer it.
+ */
+export interface PluginCommandSettingView {
+  name: string;
+  needsWrite: boolean;
+  writeAllowed: boolean;
+  writeChangedBy?: string; writeChangedAt?: number;
+  sharedOwner?: {
+    /** The plugin an administrator chose, or null when none was chosen. */
+    owner: string | null;
+    setBy?: string; setAt?: number;
+    /** Every installed plugin offering the name, this one included. */
+    candidates: PluginSharedCommandCandidate[];
+  };
+}
+/**
+ * One audit trail entry. Management actions name the administrator; `handler_attempt`
+ * (a mutation about to be dispatched), `handler_call` (completed) and `handler_refused`
+ * (refused or failed) record a handler's `ctx.propr` calls with `plugin:<id>` as the actor.
+ */
+export interface PluginAuditEvent { action: PluginAuditAction; actor: string; at: number; detail: Record<string, unknown> }
+export const PLUGIN_AUDIT_ACTIONS = ['install', 'update_settings', 'set_repositories', 'set_connection', 'clear_connection', 'enable', 'disable', 'approve', 'uninstall', 'start_oauth', 'complete_oauth', 'disconnect_oauth', 'set_oauth_client', 'clear_oauth_client', 'handler_attempt', 'handler_call', 'handler_refused', 'retry_delivery', 'resume_deliveries', 'regenerate_webhook_key', 'set_command_write', 'set_shared_command_owner'] as const;
+export type PluginAuditAction = typeof PLUGIN_AUDIT_ACTIONS[number];
+export interface PluginDetail extends PluginView { audit: PluginAuditEvent[] }
+
+/** The package servers of a manifest that hand secret variables to the task container. */
+export function pluginPackageSecretServers(manifest: PluginManifest) {
+  return manifest.contributes.mcpServers.flatMap(server => (server.kind === 'package' && server.secretEnv.length ? [server] : []));
+}
+/**
+ * Connections enabling waits for: a `token` a contributed MCP server needs (a
+ * bearer server's connection or a package server's secret variable), and a
+ * `token` or `signing_secret` the manifest marks `required`. `oauth`
+ * connections never block enabling: their sign-in needs the enabled plugin's
+ * managed servers (see `neededPluginOAuthConnections`).
+ */
+export function requiredPluginConnections(manifest: PluginManifest): string[] {
+  const names = new Set<string>();
+  for (const server of manifest.contributes.mcpServers) {
+    if (server.kind === 'https' && server.authentication === 'bearer' && server.connection) names.add(server.connection);
+    if (server.kind === 'package') for (const secret of server.secretEnv) names.add(secret.connection);
+  }
+  return manifest.connections.filter(c => (c.type === 'token' && names.has(c.name)) || (c.type !== 'oauth' && c.required === true)).map(c => c.name);
+}
+
+/**
+ * `oauth` connections the plugin needs signed in: each one a contributed
+ * remote server signs in with, unless the manifest marks it `required: false`.
+ * Takes the manifest or its public projection.
+ */
+export function neededPluginOAuthConnections(
+  connections: readonly { type: string; name: string; required?: boolean }[],
+  servers: readonly { kind: string; authentication?: string; connection?: string }[],
+): string[] {
+  const signedIn = new Set(servers.flatMap(s => (s.kind === 'https' && s.authentication === 'oauth' && s.connection ? [s.connection] : [])));
+  return connections.filter(c => c.type === 'oauth' && c.required !== false && signedIn.has(c.name)).map(c => c.name);
+}
+/**
+ * Whether an unconnected connection keeps the plugin from working: it is
+ * required to enable, a needed `oauth` connection (`neededOAuth`), or a sign-in
+ * whose refresh failed. Optional connections left unset (extra destinations,
+ * another mode's secrets) do not count.
+ */
+export function pluginConnectionNeeded(status: Pick<PluginConnectionStatus, 'name' | 'state' | 'required'>, neededOAuth: readonly string[]): boolean {
+  return status.required || status.state === 'needs_sign_in' || neededOAuth.includes(status.name);
+}
+
+/** The settings a fresh installation starts with: every default the manifest declares. */
+export function defaultPluginSettings(settings: PluginSettings): PluginSettingValues {
+  const values: PluginSettingValues = {};
+  for (const [key, setting] of Object.entries(settings.properties)) {
+    if (setting.default !== undefined) values[key] = structuredClone(setting.default) as PluginSettingValue;
+  }
+  return values;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+function stringProblem(key: string, setting: Extract<PluginSetting, { type: 'string' }>, value: unknown): string | null {
+  if (typeof value !== 'string') return `${key} must be text`;
+  if (value.length > (setting.maxLength ?? 500)) return `${key} is longer than ${setting.maxLength ?? 500} characters`;
+  if (setting.enum && !setting.enum.includes(value)) return `${key} must be one of ${setting.enum.join(', ')}`;
+  if (setting.format === 'https-url' && value !== '') {
+    const problem = pluginHttpsUrlSettingProblem(setting, value);
+    if (problem) return `${key} ${problem}`;
+  }
+  return null;
+}
+function numberProblem(key: string, setting: Extract<PluginSetting, { type: 'number' }>, value: unknown): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return `${key} must be a number`;
+  if (setting.integer && !Number.isInteger(value)) return `${key} must be a whole number`;
+  if (setting.minimum !== undefined && value < setting.minimum) return `${key} must be at least ${setting.minimum}`;
+  if (setting.maximum !== undefined && value > setting.maximum) return `${key} must be at most ${setting.maximum}`;
+  return null;
+}
+function arrayProblem(key: string, setting: Extract<PluginSetting, { type: 'array' }>, value: unknown): string | null {
+  const max = setting.maxItems ?? 256;
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string' || item.length > 500)) return `${key} must be a list of text values`;
+  if (value.length > max) return `${key} has more than ${max} entries`;
+  const choices = setting.items.enum;
+  const unknown = choices ? value.find(item => !choices.includes(item)) : undefined;
+  if (unknown !== undefined) return `${key} has ${unknown.slice(0, 100)}, which is not one of ${choices!.join(', ')}`;
+  return null;
+}
+function repositoryMapProblem(key: string, value: unknown): string | null {
+  if (!isRecord(value)) return `${key} must map owner/repo to text`;
+  const entries = Object.entries(value);
+  if (entries.length > 256) return `${key} has more than 256 entries`;
+  if (entries.some(([repository, text]) => !PLUGIN_REPOSITORY_PATTERN.test(repository) || typeof text !== 'string' || text.length > 500)) return `${key} must map owner/repo to text`;
+  return null;
+}
+/** Why one value does not fit its setting, or null. */
+export function pluginSettingProblem(key: string, setting: PluginSetting, value: unknown): string | null {
+  switch (setting.type) {
+    case 'string': return stringProblem(key, setting, value);
+    case 'number': return numberProblem(key, setting, value);
+    case 'boolean': return typeof value === 'boolean' ? null : `${key} must be true or false`;
+    case 'array': return arrayProblem(key, setting, value);
+    case 'object': return repositoryMapProblem(key, value);
+  }
+}
+
+/**
+ * Validate a complete settings object against a manifest's settings schema.
+ * Unknown keys are refused; a missing required setting is not an error here
+ * (see `missingRequiredPluginSettings`), it only blocks enabling.
+ */
+export function validatePluginSettings(settings: PluginSettings, value: unknown): { ok: true; settings: PluginSettingValues } | { ok: false; errors: string[] } {
+  if (!isRecord(value)) return { ok: false, errors: ['Settings must be an object'] };
+  const errors: string[] = [];
+  for (const [key, item] of Object.entries(value)) {
+    const setting = Object.hasOwn(settings.properties, key) ? settings.properties[key] : undefined;
+    if (!setting) { errors.push(`${key} is not a setting of this plugin`); continue; }
+    if (item === null || item === undefined) continue;
+    const problem = pluginSettingProblem(key, setting, item);
+    if (problem) errors.push(problem);
+  }
+  if (errors.length) return { ok: false, errors };
+  return { ok: true, settings: Object.fromEntries(Object.entries(value).filter(([, item]) => item !== null && item !== undefined)) as PluginSettingValues };
+}
+
+/** Required settings that have no value (an empty text counts as missing). */
+export function missingRequiredPluginSettings(settings: PluginSettings, values: PluginSettingValues): string[] {
+  return settings.required.filter(key => !Object.hasOwn(values, key) || values[key] === '');
+}

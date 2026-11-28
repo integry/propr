@@ -1,4 +1,6 @@
 import { useState, type ReactNode } from 'react';
+import type { ExtensionManagedBy } from '@propr/shared';
+import { ManagedItemBadge } from './ExtensionManagedItem';
 import { appliesTo, buttonClass, dangerButtonClass, type ItemLimitFields } from './extensionUi';
 
 export interface ExtensionItemNote { tone: 'info' | 'warning'; text: ReactNode }
@@ -8,9 +10,11 @@ const badge = 'inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-s
 /**
  * One library item. The enabled checkbox saves at once through the
  * single-item endpoint; a switched-off row stays, dimmed, with its settings.
- * Removing asks for confirmation first.
+ * Removing asks for confirmation first. An item a plugin contributes is
+ * tagged "From plugin: <name>", linking to the plugin, and cannot be removed
+ * here: uninstalling the plugin removes it. Its form edits only the limits.
  */
-export function ExtensionItemRow({ name, kind, capability, item, enabled, pending, busy, notes, onToggle, onEdit, onRemove, testId, children }: {
+export function ExtensionItemRow({ name, kind, capability, item, enabled, pending, busy, notes, onToggle, onEdit, onRemove, testId, managedBy, pluginName, children }: {
   name: string;
   kind: string;
   capability?: 'read' | 'write';
@@ -24,6 +28,10 @@ export function ExtensionItemRow({ name, kind, capability, item, enabled, pendin
   onEdit: () => void;
   onRemove: () => void;
   testId: string;
+  /** Set for an item an installed plugin contributes. */
+  managedBy?: ExtensionManagedBy;
+  /** The managing plugin's display name, when known. */
+  pluginName?: string;
   /** Item-specific state and actions shown under the notes, such as an OAuth connection. */
   children?: ReactNode;
 }) {
@@ -38,6 +46,8 @@ export function ExtensionItemRow({ name, kind, capability, item, enabled, pendin
           <p className="flex flex-wrap items-center gap-2">
             <span className="break-all font-semibold text-slate-900">{name}</span>
             {!enabled && <span className={`${badge} bg-slate-200 text-slate-700`}>Off</span>}
+            {managedBy && <ManagedItemBadge managedBy={managedBy} pluginName={pluginName} />}
+            {managedBy && !managedBy.active && <span className={`${badge} bg-slate-200 text-slate-700`}>Inactive</span>}
             <span className="text-xs text-slate-500">{kind}</span>
             {capability && <span className={`${badge} ${capability === 'write' ? 'bg-amber-100 text-amber-900' : 'bg-teal-50 text-teal-800'}`}>{capability === 'write' ? 'Write' : 'Read'}</span>}
             {pending && <span className="text-xs text-slate-500">Saving…</span>}
@@ -65,8 +75,8 @@ export function ExtensionItemRow({ name, kind, capability, item, enabled, pendin
           </>
         ) : (
           <>
-            <button type="button" className={buttonClass} disabled={busy} onClick={onEdit}>Edit</button>
-            <button type="button" className={dangerButtonClass} disabled={busy} onClick={() => setConfirming(true)}>Remove</button>
+            <button type="button" className={buttonClass} disabled={busy} onClick={onEdit}>{managedBy ? 'Edit limits' : 'Edit'}</button>
+            {!managedBy && <button type="button" className={dangerButtonClass} disabled={busy} onClick={() => setConfirming(true)}>Remove</button>}
           </>
         )}
       </div>

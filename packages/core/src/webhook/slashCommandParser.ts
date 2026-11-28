@@ -5,7 +5,10 @@
  * Splits the comment into command name, arguments, and trailing multiline instructions.
  */
 
-export type SlashCommandName = 'review' | 'fix' | 'merge' | 'switch' | 'use' | 'ultrafix';
+import { BUILT_IN_COMMAND_NAMES, type BuiltInCommandName } from '@propr/shared';
+
+/** The built-in commands, from the one list in `@propr/shared` that plugin commands may never shadow. */
+export type SlashCommandName = BuiltInCommandName;
 
 export interface ParsedSlashCommand {
     /** The recognized command */
@@ -91,7 +94,7 @@ export interface UltrafixCommandMeta {
 
 export type CommandMeta = ReviewCommandMeta | FixCommandMeta | MergeCommandMeta | SwitchCommandMeta | UseCommandMeta | UltrafixCommandMeta;
 
-const SLASH_COMMANDS = new Set<SlashCommandName>(['review', 'fix', 'merge', 'switch', 'use', 'ultrafix']);
+const SLASH_COMMANDS = new Set<SlashCommandName>(BUILT_IN_COMMAND_NAMES);
 
 /**
  * Parse a PR comment body for a slash command.

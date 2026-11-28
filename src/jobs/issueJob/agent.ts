@@ -15,6 +15,7 @@ import { createSessionIdCallback, createContainerIdCallback } from '../issueJobC
 import { runRepositoryWorkflow } from '../repositoryWorkflow.js';
 import { markAgentExecutionFailure } from '../providerReplacement.js';
 import { redisClient } from './config.js';
+import { pluginCommandIssuePrompt, pluginCommandRunExtensionBase } from '../pluginCommandTask.js';
 
 export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
   return {
@@ -126,6 +127,8 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
   });
 
   const workflowPrompt = repositoryWorkflowPrompt(repositoryWorkflow);
+  // A plugin command's instruction, resolved from its manifest at intake; the comment's argument is delimited inside it.
+  const commandPrompt = pluginCommandIssuePrompt(issueRef.pluginCommand);
 
   // Start periodic file changes updates during agent execution
   const FILE_CHANGES_INTERVAL_MS = 2000;
@@ -145,7 +148,10 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
     const submitted = await submissionExtensionsForRun(extensionSubmission, { taskId, agentAlias, model: modelName, repository, issueNumber: issueRef.number });
     // Library items that apply automatically, resolved at launch; the issue's labels
     // (already loaded for the prompt) can only remove them.
-    const extensions = { extensions: taskRunExtensionRequest({ kind: 'issue', repository, labels: currentIssueData.data.labels, base: submitted.extensions }) };
+    // A plugin command adds its manifest's own skills and servers explicitly.
+    // An allowed `needsWrite` command's single-use write grant is consumed by this run only.
+    const base = await pluginCommandRunExtensionBase(issueRef.pluginCommand, submitted.extensions, taskId);
+    const extensions = { extensions: taskRunExtensionRequest({ kind: 'issue', repository, labels: currentIssueData.data.labels, base }) };
     agentResult = await runRepositoryWorkflow({
       workflow: repositoryWorkflow, repoOwner: issueRef.repoOwner, repoName: issueRef.repoName,
       redisClient, taskId, stateManager, correlatedLogger,
@@ -153,7 +159,7 @@ export async function executeAgentAndRecordMetrics(executionParams: ExecutionPar
       ...extensions,
       worktreePath: worktreeInfo.worktreePath,
       issueRef: agentIssueRef,
-      prompt: [prompt, workflowPrompt].filter(Boolean).join('\n\n'),
+      prompt: [prompt, commandPrompt, workflowPrompt].filter(Boolean).join('\n\n'),
       model: modelName,
       githubToken: githubToken.token,
       branchName: worktreeInfo.branchName,

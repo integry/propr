@@ -28,6 +28,8 @@ To **take over an existing PR** for ongoing work (so that natural follow-up comm
 | `/use <model-id>` | You want one immediate follow-up run with a temporary model | Yes | [`/use`](#use) |
 | `/ultrafix` | You want an automated review-fix loop | Yes | [`/ultrafix`](#ultrafix) |
 
+Enabled [plugins](./plugins.md) can add their own commands, which work on pull requests, issues or both. See [Plugin Commands](#plugin-commands).
+
 ## Syntax Rules
 
 - The slash command must be on the first line of the PR comment. A comment with leading blank lines or text before the command is treated as a normal follow-up comment.
@@ -428,6 +430,51 @@ The loop is controlled by the visible `ultrafix` PR label, which acts as a circu
 - **Style-only findings**: when every merge blocker in the latest review has category `style`, Ultrafix schedules no further fix and stops with the "stopped before reaching its goal" comment, which says only stylistic findings remain. The goal is not counted as reached, because the review still has blockers. Review the remaining findings yourself, or run [`/fix`](#fix) for the ones worth applying. A review that mixes `style` blockers with any other category continues the loop as usual.
 
 Reserve `/ultrafix` for stronger cleanup passes. For small edits and direct changes, a normal PR comment is usually better.
+
+## Plugin Commands
+
+An enabled [plugin](./plugins.md) can add slash commands, such as `/deploy`, that start the plugin's behaviour from a comment the same way `/review` or `/fix` start ProPR's. The plugin's page lists its commands under **What it added**. The commands of the plugins shipped with ProPR are:
+
+| Command | Plugin | Where | What it does |
+|---|---|---|---|
+| `/example-notes` | Example pack (development builds only, with `PROPR_PLUGINS_DEVELOPMENT=1`) | Pull requests and issues | Writes release notes with the plugin's `example-notes` skill and its `example-remote` read server |
+| `/example-status` | Example pack (development builds only) | Pull requests and issues | Calls the plugin's `reportCommand` handler, which logs who ran it and where; starts no task |
+
+A plugin command is one of two kinds. A **prompt** command starts a task, as described below. A **handler** command calls the plugin's own code instead (see [Handler commands](#handler-commands)).
+
+A prompt command:
+
+- **Uses the same syntax** as the built-in commands: the command on the first line of the comment, for example `/deploy staging`. The rest of that line (`staging`) is the command's argument. Lines below the command line are not part of it.
+- **Starts an ordinary one-shot task.** On a pull request it queues one follow-up run; on an issue it starts an implementation task, adding the configured processing label (for example `AI`) to the issue as the label itself would. The task appears in the ProPR UI and posts the usual starting and completion comments. A plugin command is never batched with other comments: its run carries only that command.
+- **Runs the plugin's instruction, not your text.** The task's instruction is the prompt written in the plugin's manifest. Your argument is appended after it, delimited and marked as untrusted input: the agent treats it as data for the plugin's instruction, and it cannot change that instruction.
+- **Gets the plugin's own skills and servers.** The skills and MCP servers the command names in its manifest are added to the run, on top of what applies automatically (see [Agent Extensions](./agent-extensions.md)). Only the manifest decides them; nothing in the argument can add, remove or swap one. Runs get read servers only, unless the command needs write access and is allowed it (see [Commands that need write access](#commands-that-need-write-access)).
+- **Follows the same access rules** as the built-in commands on that repository: the author filters and ignore keywords in [Who Can Trigger Commands](#who-can-trigger-commands), and on pull requests the assignment gate. Like the other commands, it does not need a processing label on the pull request.
+- **Only applies while the plugin is enabled and inside its repository limit.** In any other repository, or while the plugin is disabled or uninstalled, `/deploy` is an unknown command and the comment is treated exactly as it would be without plugins: an ordinary comment on a pull request, and ignored on an issue.
+
+On an issue that already has a ProPR task starting, running or finished (for example the `AI-processing` or `AI-done` label), a plugin command replies with the reason instead of starting a second task.
+
+### Commands that need write access
+
+A prompt command marked `needsWrite` in its manifest may use the plugin's write servers, for example to create a deployment or post to another service. It runs only when both hold:
+
+1. **An administrator allowed it.** On the plugin's page, under **Commands**, the switch **Allow this command to use write access** is on for that command. It is off when the plugin is installed; the Install step says which commands can use write access.
+2. **You have write permission on the repository** (write, maintain or admin), as GitHub reports it for your account when you post the comment.
+
+Otherwise ProPR replies with what is missing (for example "an administrator has not allowed it" or "only people with write permission on owner/repo can run it") and starts nothing. When it runs, the write authorization covers exactly that one run and only the plugin's write servers the command names, no other write server of the library. A retry of the run (for example after a crash) and every later follow-up on the pull request get read servers only; run the command again to authorize another run.
+
+### Handler commands
+
+A handler command starts no task. ProPR calls one of the plugin's handlers with the comment's repository, issue or pull request number, your login and the argument, and the handler does the work, for example commenting back on the pull request through ProPR or calling the plugin's service. Each call is recorded in the plugin's **Activity** on the Plugins page, with its outcome and log lines, and a failed call is attempted again after 1 minute, 5 minutes, 30 minutes and 2 hours. A handler command follows the same access rules and repository limit as a prompt command. Posting the same comment again (an edit, a redelivery) does not call the handler twice.
+
+### Shared command names
+
+Several plugins can offer the same command name when each marks it **shared**, for example `/deploy` offered by two deployment plugins. Each such plugin also offers a specific command (for example `/vercel-deploy` and `/netlify-deploy`), which always runs that plugin. For the plain name:
+
+- When one enabled plugin offers it for the repository, `/deploy` runs that plugin.
+- When several do, `/deploy` runs the plugin an administrator chose on the Plugins page (**Commands** → **Plugin that /deploy runs when several plugins offer it**).
+- When several do and none was chosen, ProPR replies naming the specific commands, for example "/deploy is offered by more than one plugin here: use /vercel-deploy (Vercel) or /netlify-deploy (Netlify) instead", and starts nothing.
+
+Plugin command names are lower-case and can never shadow a built-in command (`/review`, `/fix`, `/merge`, `/switch`, `/use`, `/ultrafix`). Apart from shared names, two enabled plugins never share a command name: enabling a plugin whose command another enabled plugin already has is refused, naming that plugin. Built-in commands always behave as described on this page.
 
 ## Completion Comments
 

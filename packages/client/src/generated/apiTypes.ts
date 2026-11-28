@@ -433,7 +433,7 @@ export interface ExtensionItemEnabledRequest {
   enabled: boolean;
 }
 
-/** Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
+/** Strict shared v1 library contract: up to 32 servers and 32 skill bundle references. Each item has enabled, optional repositories (owner/repo; empty means every repository) and agents (aliases; empty means every agent) limits, and autoApply (default true; false applies the item only where an automation adds it). Items an installed plugin contributes carry managedBy (plugin id, manifest item name, active, and for OAuth servers the client registration methods the plugin permits at sign-in); their definition is read-only and only enabled, the limits and autoApply can change, and they cannot be added or removed through this route. Operator catalog descriptors accept only immutable catalogId/digest and selected tools/capability; customer commands, arguments, environment and mount paths are rejected. */
 export interface ExtensionLibraryInput {
   version: 1;
   servers: Array<{
@@ -449,6 +449,12 @@ export interface ExtensionLibraryInput {
     repositories: string[];
     agents: string[];
     autoApply: boolean;
+    managedBy?: {
+      plugin: string;
+      item: string;
+      active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
+    };
   } | {
     kind: "catalog";
     name: string;
@@ -460,6 +466,12 @@ export interface ExtensionLibraryInput {
     repositories: string[];
     agents: string[];
     autoApply: boolean;
+    managedBy?: {
+      plugin: string;
+      item: string;
+      active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
+    };
   } | {
     name: string;
     enabled: boolean;
@@ -480,14 +492,26 @@ export interface ExtensionLibraryInput {
     repositories: string[];
     agents: string[];
     autoApply: boolean;
+    managedBy?: {
+      plugin: string;
+      item: string;
+      active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
+    };
   }>;
-  skills: {
+  skills: Array<{
     bundleId: string;
     enabled: boolean;
     repositories: string[];
     agents: string[];
     autoApply: boolean;
-  }[];
+    managedBy?: {
+      plugin: string;
+      item: string;
+      active: boolean;
+      registrations?: Array<"metadata_document" | "dynamic" | "preregistered">;
+    };
+  }>;
 }
 
 export interface ExtensionLibraryRead {
@@ -893,6 +917,588 @@ export interface NotificationUnreadCount {
   unreadCount: number;
 }
 
+export interface PluginAcknowledgementRequest {
+  /** Package servers whose secret variables the administrator confirms are readable by the agent CLI, its shell tools and repository setup scripts in the task container. */
+  acknowledgements?: string[];
+}
+
+export interface PluginActivityResponse {
+  health: PluginHealth;
+  /** The newest 100 delivery records, newest first. */
+  deliveries: PluginDelivery[];
+}
+
+export interface PluginCommandWriteRequest {
+  /** Allow this command to use write access. */
+  allowed: boolean;
+}
+
+export interface PluginConnectionRequest {
+  /** The secret to store (write-only), or null to clear it. */
+  value: string | null;
+}
+
+/** One event delivery to a plugin handler, or a recorded gap. Holds the event id and type only: never the event payload or a credential. */
+export interface PluginDelivery {
+  /** The activity record id, used by the retry route. */
+  id: number;
+  /** The stable delivery id the handler receives (`evt-<seq>-<handler>`, `whk-<webhook>:<id>` or `whk-<webhook>/<uuid>` for a webhook, `cmd-issue-<comment id>` or `cmd-review-<comment id>` for a command run from an issue comment or a pull request review comment); the same on every attempt. */
+  deliveryId: string;
+  /** `event`: one journal event to one handler. `gap`: journal retention removed events before they were delivered. `webhook`: one verified inbound webhook request to its handler. `command`: one handler slash command to its handler. */
+  kind: "event" | "gap" | "webhook" | "command";
+  /** The event's or command's repository; empty for a webhook delivery. */
+  repository: string;
+  /** The journal `seq` of the event; for a gap, the first `seq` that may be missing; 0 for a webhook delivery; the issue or pull request number for a command. */
+  eventSeq: number;
+  /** `<domain>.<type>`; `webhook.<name>` for a webhook delivery; `command.<name>` for a command; null for a gap. */
+  eventType: string | null;
+  handler: string | null;
+  status: "pending" | "running" | "retrying" | "succeeded" | "failed" | "skipped";
+  /** Attempts made so far. */
+  attempt: number;
+  /** When the next attempt is due, while pending or retrying. */
+  nextAttemptAt: number | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  durationMs: number | null;
+  timedOut: boolean;
+  /** The latest attempt's redacted error message. */
+  error: string | null;
+  /** The latest attempt's redacted log lines. */
+  logs: Array<{
+    level: "debug" | "info" | "warn" | "error";
+    message: string;
+    fields?: {
+      [key: string]: unknown;
+    };
+    at: number;
+  }>;
+}
+
+export interface PluginDeliveryResponse {
+  delivery: PluginDelivery;
+}
+
+export interface PluginDetailResponse {
+  plugin: {
+    id: string;
+    /** The plugin is in this ProPR version's registry. */
+    available: boolean;
+    manifest: {
+      id: string;
+      name: string;
+      description: string;
+      version: string;
+      category: "messaging" | "issue-tracking" | "observability" | "deployment" | "context" | "other";
+      homepage: string;
+      permissions: Array<{
+        name: "events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send";
+        description: string;
+      }>;
+      connections: Array<{
+        type: "oauth" | "token" | "signing_secret";
+        name: string;
+        label: string;
+        help: string;
+        helpUrl: string;
+        /** A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored. */
+        secretUrl?: {
+          hosts: string[];
+          pathPrefixes?: string[];
+        };
+        /** true on a token or signing_secret connection: enabling waits for it. false on an oauth connection: an optional sign-in. Absent: a token is required when a contributed MCP server uses it, an oauth connection is needed when a contributed server signs in with it. */
+        required?: boolean;
+        /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default), `Authorization: <token>` (raw) or `Authorization: Basic <base64 of token>` (basic, with the token entered as `<user>:<secret>`). */
+        authorization?: "bearer" | "raw" | "basic";
+        [key: string]: unknown;
+      }>;
+      /** The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format (optionally limited to `hosts`) or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`). */
+      settings: {
+        type: "object";
+        properties: {
+          [key: string]: {
+            [key: string]: unknown;
+          };
+        };
+        required: string[];
+      };
+      outboundHosts: string[];
+      /** Settings (https-url strings) whose URL host the plugin's handlers may also call, as saved. */
+      outboundHostsFromSettings: string[];
+      contributes: {
+        /** Contributed MCP servers without launch arguments or environment values. */
+        mcpServers: {
+          [key: string]: unknown;
+        }[];
+        skills: string[];
+        automationTemplates: string[];
+        /** Slash commands the plugin adds; never their prompt text. */
+        commands: Array<{
+          /** Used as /<name> in a comment. */
+          name: string;
+          description: string;
+          /** Where the command can be used: pull request comments, issue comments or both. */
+          where: Array<"pull_request" | "issue">;
+          /** prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). handler: calls a handler of the plugin with the comment context, as a delivery of kind command. */
+          kind: "prompt" | "handler";
+          /** Skills of this plugin the command adds to its run. */
+          skills: string[];
+          /** MCP servers of this plugin the command adds to its run. */
+          servers: string[];
+          /** The command may use the plugin's write servers: it runs only when an administrator allowed it write access and the commenter has write permission on the repository. */
+          needsWrite: boolean;
+          /** Several plugins may offer this name; when several enabled plugins do, the shared command owner setting chooses which one it runs. */
+          shared: boolean;
+          /** This plugin's own commands that stand in for a shared name. */
+          specific: string[];
+        }>;
+        subscriptions: string[];
+        webhooks: Array<{
+          name: string;
+          description: string;
+          /** How ProPR verifies the webhook's requests. */
+          scheme: "hmac-sha256" | "slack-v0" | "token-header";
+        }>;
+      };
+    } | null;
+    state: "available" | "installed" | "enabled";
+    installation: {
+      /** The manifest version installed or last approved. */
+      installedVersion: string;
+      enabled: boolean;
+      /** Setting values; never secrets, which are connections. */
+      settings: {
+        [key: string]: string | number | boolean | string[] | {
+          [key: string]: string;
+        };
+      };
+      /** Repositories (`owner/repo`) the plugin is limited to; null for all repositories. */
+      repositories: string[] | null;
+      grantedPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send">;
+      /** Per package server: who acknowledged that its secret variables are readable inside the task container, and for which package, version and variable names. */
+      acknowledgements: {
+        [key: string]: {
+          actor: string;
+          at: number;
+          package: string;
+          version: string;
+          secretEnv: string[];
+        };
+      };
+      installedBy: string;
+      installedAt: number;
+      updatedBy: string;
+      updatedAt: number;
+    } | null;
+    connections: Array<{
+      name: string;
+      type: "oauth" | "token" | "signing_secret";
+      label: string;
+      /** An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh. */
+      state: "connected" | "not_connected" | "needs_sign_in";
+      /** Enabling waits for it: a `token` connection a contributed MCP server uses, or a `token` or `signing_secret` connection the manifest marks required. */
+      required: boolean;
+      /** Who set the value; for an `oauth` connection, who configured its pre-registered client. */
+      setBy?: string;
+      setAt?: number;
+    }>;
+    /** The current manifest asks for permissions or secret acknowledgements not yet approved; the plugin keeps its old grant. */
+    needsApproval: boolean;
+    pendingPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send">;
+    pendingAcknowledgements: {
+      server: string;
+      package: string;
+      version: string;
+      secretEnv: string[];
+    }[];
+    /** Why enabling is refused right now; empty when it can be enabled. */
+    enableBlockers: string[];
+    /** The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed. */
+    contributions?: {
+      mcpServers: Array<{
+        /** The server name in the manifest. */
+        name: string;
+        kind: "https" | "package";
+        managed: {
+          kind: "server";
+          /** The library item name; prefixed with the plugin id after a name collision. */
+          name: string;
+          /** The library item's own enabled switch. */
+          enabled: boolean;
+          /** False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies. */
+          active: boolean;
+        } | null;
+        /** The extension library route that lists and edits the item. */
+        href: string;
+      }>;
+      skills: Array<{
+        name: string;
+        managed: {
+          kind: "skill";
+          bundleId: string;
+          /** The library item's own enabled switch. */
+          enabled: boolean;
+          /** False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies. */
+          active: boolean;
+        } | null;
+        href: string;
+      }>;
+      automationTemplates: {
+        id: string;
+        /** The template id in the automation template catalog. */
+        catalogId: string;
+        /** Listed in the catalog: the plugin is enabled. */
+        available: boolean;
+        href: string;
+      }[];
+    };
+    /** Instance settings of the plugin's commands. */
+    commands?: Array<{
+      name: string;
+      needsWrite: boolean;
+      /** "Allow this command to use write access" is on. Off until an administrator switches it on. */
+      writeAllowed: boolean;
+      writeChangedBy?: string;
+      writeChangedAt?: number;
+      /** Present for a shared command. */
+      sharedOwner?: {
+        /** The plugin the shared name runs when several enabled plugins offer it; null when none was chosen. */
+        owner: string | null;
+        setBy?: string;
+        setAt?: number;
+        /** Every installed plugin offering the name. */
+        candidates: {
+          pluginId: string;
+          pluginName: string;
+          specific: string[];
+          enabled: boolean;
+        }[];
+      };
+    }>;
+    /** The newest 50 management actions, newest first. */
+    audit: Array<{
+      action: "install" | "update_settings" | "set_repositories" | "set_connection" | "clear_connection" | "enable" | "disable" | "approve" | "uninstall" | "start_oauth" | "complete_oauth" | "disconnect_oauth" | "set_oauth_client" | "clear_oauth_client" | "handler_attempt" | "handler_call" | "handler_refused" | "retry_delivery" | "resume_deliveries" | "regenerate_webhook_key" | "set_command_write" | "set_shared_command_owner";
+      actor: string;
+      at: number;
+      detail: {
+        [key: string]: unknown;
+      };
+    }>;
+  };
+}
+
+export type PluginEmptyRequest = Record<string, never>;
+
+export interface PluginEnabledRequest {
+  enabled: boolean;
+}
+
+/** Delivery health of a plugin installation. */
+export interface PluginHealth {
+  /** `degraded` after repeated consecutive failures; `paused` after the configured number of them, until an administrator resumes deliveries. */
+  state: "healthy" | "degraded" | "paused";
+  consecutiveFailures: number;
+  pauseAfterFailures: number;
+  lastError: string | null;
+  lastErrorAt: number | null;
+  degradedAt: number | null;
+  pausedAt: number | null;
+}
+
+export interface PluginHealthResponse {
+  health: PluginHealth;
+}
+
+export interface PluginList {
+  plugins: PluginView[];
+}
+
+export interface PluginOAuthClientRequest {
+  /** The pre-registered client, or null to clear it. */
+  client: {
+    /** The client id registered with the provider for this instance. */
+    clientId: string;
+    /** The client secret (write-only); leave out for a public client. */
+    clientSecret?: string | null;
+  } | null;
+}
+
+export interface PluginOAuthCompleteRequest {
+  /** The `state` the provider returned to the redirect URI. */
+  state: string;
+  code?: string;
+  error?: string;
+  iss?: string;
+}
+
+export interface PluginOAuthStartResponse {
+  /** Open this URL to sign in; the provider redirects to the extension OAuth callback. */
+  authorizationUrl: string;
+  /** The managed library server being signed in. */
+  server: string;
+}
+
+export interface PluginRepositoriesRequest {
+  /** owner/repo names; null or an empty list for all repositories. */
+  repositories: string[] | null;
+}
+
+export interface PluginResponse {
+  plugin: PluginView;
+}
+
+/** The choices of a plugin setting, loaded from the service by the plugin's optionsFrom handler. */
+export interface PluginSettingOptionsResponse {
+  /** At most 250 choices. */
+  options: {
+    /** The value saved. */
+    value: string;
+    /** The label shown. */
+    label: string;
+  }[];
+}
+
+export interface PluginSettingsRequest {
+  /** The complete settings; validated against the manifest's settings schema. Null values are removed. */
+  settings: {
+    [key: string]: string | number | boolean | string[] | {
+      [key: string]: string;
+    } | null;
+  };
+}
+
+export interface PluginSharedCommandOwnerRequest {
+  /** An installed plugin that offers the shared name, or null to clear the choice. */
+  owner: string | null;
+}
+
+export interface PluginUninstallRequest {
+  /** Must repeat the plugin id. */
+  confirm: string;
+}
+
+/** A plugin with its installation state on this instance. */
+export interface PluginView {
+  id: string;
+  /** The plugin is in this ProPR version's registry. */
+  available: boolean;
+  manifest: {
+    id: string;
+    name: string;
+    description: string;
+    version: string;
+    category: "messaging" | "issue-tracking" | "observability" | "deployment" | "context" | "other";
+    homepage: string;
+    permissions: Array<{
+      name: "events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send";
+      description: string;
+    }>;
+    connections: Array<{
+      type: "oauth" | "token" | "signing_secret";
+      name: string;
+      label: string;
+      help: string;
+      helpUrl: string;
+      /** A token connection whose value is a secret URL (an incoming webhook URL): accepted only on these hosts (`*.` for any subdomain) and paths. Never returned once stored. */
+      secretUrl?: {
+        hosts: string[];
+        pathPrefixes?: string[];
+      };
+      /** true on a token or signing_secret connection: enabling waits for it. false on an oauth connection: an optional sign-in. Absent: a token is required when a contributed MCP server uses it, an oauth connection is needed when a contributed server signs in with it. */
+      required?: boolean;
+      /** How the plugin's handlers send a token connection: `Authorization: Bearer <token>` (bearer, the default), `Authorization: <token>` (raw) or `Authorization: Basic <base64 of token>` (basic, with the token entered as `<user>:<secret>`). */
+      authorization?: "bearer" | "raw" | "basic";
+      [key: string]: unknown;
+    }>;
+    /** The settings schema: a JSON Schema subset (string, optionally an enum, an https-url format (optionally limited to `hosts`) or choices loaded through `optionsFrom`; number; boolean; string list, optionally of enum values; repository map, optionally with values loaded through `optionsFrom`). */
+    settings: {
+      type: "object";
+      properties: {
+        [key: string]: {
+          [key: string]: unknown;
+        };
+      };
+      required: string[];
+    };
+    outboundHosts: string[];
+    /** Settings (https-url strings) whose URL host the plugin's handlers may also call, as saved. */
+    outboundHostsFromSettings: string[];
+    contributes: {
+      /** Contributed MCP servers without launch arguments or environment values. */
+      mcpServers: {
+        [key: string]: unknown;
+      }[];
+      skills: string[];
+      automationTemplates: string[];
+      /** Slash commands the plugin adds; never their prompt text. */
+      commands: Array<{
+        /** Used as /<name> in a comment. */
+        name: string;
+        description: string;
+        /** Where the command can be used: pull request comments, issue comments or both. */
+        where: Array<"pull_request" | "issue">;
+        /** prompt: queues an ordinary one-shot task (a follow-up on a pull request, an implementation task on an issue). handler: calls a handler of the plugin with the comment context, as a delivery of kind command. */
+        kind: "prompt" | "handler";
+        /** Skills of this plugin the command adds to its run. */
+        skills: string[];
+        /** MCP servers of this plugin the command adds to its run. */
+        servers: string[];
+        /** The command may use the plugin's write servers: it runs only when an administrator allowed it write access and the commenter has write permission on the repository. */
+        needsWrite: boolean;
+        /** Several plugins may offer this name; when several enabled plugins do, the shared command owner setting chooses which one it runs. */
+        shared: boolean;
+        /** This plugin's own commands that stand in for a shared name. */
+        specific: string[];
+      }>;
+      subscriptions: string[];
+      webhooks: Array<{
+        name: string;
+        description: string;
+        /** How ProPR verifies the webhook's requests. */
+        scheme: "hmac-sha256" | "slack-v0" | "token-header";
+      }>;
+    };
+  } | null;
+  state: "available" | "installed" | "enabled";
+  installation: {
+    /** The manifest version installed or last approved. */
+    installedVersion: string;
+    enabled: boolean;
+    /** Setting values; never secrets, which are connections. */
+    settings: {
+      [key: string]: string | number | boolean | string[] | {
+        [key: string]: string;
+      };
+    };
+    /** Repositories (`owner/repo`) the plugin is limited to; null for all repositories. */
+    repositories: string[] | null;
+    grantedPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send">;
+    /** Per package server: who acknowledged that its secret variables are readable inside the task container, and for which package, version and variable names. */
+    acknowledgements: {
+      [key: string]: {
+        actor: string;
+        at: number;
+        package: string;
+        version: string;
+        secretEnv: string[];
+      };
+    };
+    installedBy: string;
+    installedAt: number;
+    updatedBy: string;
+    updatedAt: number;
+  } | null;
+  connections: Array<{
+    name: string;
+    type: "oauth" | "token" | "signing_secret";
+    label: string;
+    /** An `oauth` connection is connected once every managed server using it is signed in through the extension OAuth sign-in, and needs_sign_in after a failed refresh. */
+    state: "connected" | "not_connected" | "needs_sign_in";
+    /** Enabling waits for it: a `token` connection a contributed MCP server uses, or a `token` or `signing_secret` connection the manifest marks required. */
+    required: boolean;
+    /** Who set the value; for an `oauth` connection, who configured its pre-registered client. */
+    setBy?: string;
+    setAt?: number;
+  }>;
+  /** The current manifest asks for permissions or secret acknowledgements not yet approved; the plugin keeps its old grant. */
+  needsApproval: boolean;
+  pendingPermissions: Array<"events.read" | "tasks.read" | "tasks.create" | "issues.read" | "issues.create" | "issues.comment" | "pull_requests.read" | "pull_requests.comment" | "labels.write" | "repositories.read" | "notifications.send">;
+  pendingAcknowledgements: {
+    server: string;
+    package: string;
+    version: string;
+    secretEnv: string[];
+  }[];
+  /** Why enabling is refused right now; empty when it can be enabled. */
+  enableBlockers: string[];
+  /** The managed extension library items and automation templates the plugin contributes; items are null until the plugin is installed. */
+  contributions?: {
+    mcpServers: Array<{
+      /** The server name in the manifest. */
+      name: string;
+      kind: "https" | "package";
+      managed: {
+        kind: "server";
+        /** The library item name; prefixed with the plugin id after a name collision. */
+        name: string;
+        /** The library item's own enabled switch. */
+        enabled: boolean;
+        /** False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies. */
+        active: boolean;
+      } | null;
+      /** The extension library route that lists and edits the item. */
+      href: string;
+    }>;
+    skills: Array<{
+      name: string;
+      managed: {
+        kind: "skill";
+        bundleId: string;
+        /** The library item's own enabled switch. */
+        enabled: boolean;
+        /** False while the plugin is disabled or a secret acknowledgement is pending: the item then never applies. */
+        active: boolean;
+      } | null;
+      href: string;
+    }>;
+    automationTemplates: {
+      id: string;
+      /** The template id in the automation template catalog. */
+      catalogId: string;
+      /** Listed in the catalog: the plugin is enabled. */
+      available: boolean;
+      href: string;
+    }[];
+  };
+  /** Instance settings of the plugin's commands. */
+  commands?: Array<{
+    name: string;
+    needsWrite: boolean;
+    /** "Allow this command to use write access" is on. Off until an administrator switches it on. */
+    writeAllowed: boolean;
+    writeChangedBy?: string;
+    writeChangedAt?: number;
+    /** Present for a shared command. */
+    sharedOwner?: {
+      /** The plugin the shared name runs when several enabled plugins offer it; null when none was chosen. */
+      owner: string | null;
+      setBy?: string;
+      setAt?: number;
+      /** Every installed plugin offering the name. */
+      candidates: {
+        pluginId: string;
+        pluginName: string;
+        specific: string[];
+        enabled: boolean;
+      }[];
+    };
+  }>;
+}
+
+/** The inbound webhook URLs of an installed plugin. */
+export interface PluginWebhooksResponse {
+  /** One URL per webhook the plugin declares. */
+  webhooks: Array<{
+    name: string;
+    description: string;
+    scheme: "hmac-sha256" | "slack-v0" | "token-header";
+    /** `/api/plugins/<installation key>/hooks/<name>`. The key is unguessable: treat the URL as a secret. */
+    path: string;
+    /** The full URL; null when the instance has no public base URL. */
+    url: string | null;
+  }>;
+  /** Requests refused because they failed verification. Their bodies and headers are never stored. */
+  rejected: {
+    count: number;
+    lastAt: number | null;
+    lastReason: string | null;
+  };
+  keyCreatedAt: number | null;
+  /** The administrator who last regenerated the key, or `system`. */
+  keyCreatedBy: string | null;
+}
+
 /** Read-only readiness verdict of one pull request. Evaluating it never writes to GitHub or Redis, never updates the branch or merges, and never changes auto-merge state. */
 export interface PullRequestReadiness {
   repository: string;
@@ -950,18 +1556,18 @@ export interface PullRequestReadiness {
 export interface RepositoryEvent {
   /** Resumes immediately after this event. */
   cursor: string;
-  domain: "pull_request" | "epic_queue" | "plan_issue";
-  /** Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced` or `status_changed`. */
+  domain: "pull_request" | "epic_queue" | "plan_issue" | "task";
+  /** Event type within the domain, for example `head_changed`, `review_scored`, `merged`, `advanced`, `status_changed` or `queued`. */
   type: string;
   repository: string;
   pullRequest?: number;
   issueNumber?: number;
   planId?: string;
-  /** PR number, epic execution id or plan issue id, as text. */
+  /** PR number, epic execution id, plan issue id or task id, as text. */
   entityId: string;
   /** Head SHA the event was recorded for, when it concerns one. */
   head?: string;
-  /** Identifiers and small scalars only; never PR bodies, comments, diffs or logs. */
+  /** Identifiers and small scalars only; never PR bodies, comments, diffs, prompts, tool output or logs. */
   payload: {
     [key: string]: unknown;
   };
@@ -1363,9 +1969,9 @@ export interface RepositoryEventsQuery {
   afterCursor?: string;
   /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
   fromStart?: "true" | "false";
-  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`, `task`. */
   domains?: string;
-  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`, `queued`, `failed`, `cancelled`. */
   types?: string;
   /** Only events of this pull request number. */
   pullRequest?: number;
@@ -1406,9 +2012,9 @@ export interface RepositoryEventsWaitQuery {
   afterCursor?: string;
   /** Without `afterCursor`: `true` starts at the oldest retained event. By default a call without a cursor starts at the current end of the journal and returns no history. */
   fromStart?: "true" | "false";
-  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`. */
+  /** Comma-separated domains: `pull_request`, `epic_queue`, `plan_issue`, `task`. */
   domains?: string;
-  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`. */
+  /** Comma-separated event types: `opened`, `head_changed`, `review_scored`, `ultrafix_started`, `ultrafix_ended`, `auto_merge_decision`, `merged`, `closed`, `started`, `advanced`, `blocked`, `completed`, `status_changed`, `queued`, `failed`, `cancelled`. */
   types?: string;
   /** Only events of this pull request number. */
   pullRequest?: number;

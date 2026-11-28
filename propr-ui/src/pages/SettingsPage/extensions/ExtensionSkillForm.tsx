@@ -1,6 +1,7 @@
 import { useId, useRef, useState, type FormEvent } from 'react';
 import type { ExtensionLibrarySkill, ExtensionSkillBundle } from '@propr/shared';
 import { ExtensionItemLimits } from './ExtensionItemLimits';
+import { ManagedDefinitionNote } from './ExtensionManagedItem';
 import { ExtensionSkillSource, SkillBundleDetails } from './ExtensionSkillImport';
 import { NEW_ITEM_LIMITS, buttonClass, primaryButtonClass, type ExtensionChoices, type ItemLimitFields } from './extensionUi';
 import { useDiscardGuard } from './useDiscardGuard';
@@ -11,9 +12,11 @@ import { ExtensionFormActions } from './ExtensionFormActions';
  * Add or edit one skill: a new skill first picks or imports its bundle, then
  * both set the item limits. Saving writes the library at once.
  */
-export function ExtensionSkillForm({ initial, bundle: initialBundle, available, choices, onImported, onSave, onCancel }: {
+export function ExtensionSkillForm({ initial, pluginName, bundle: initialBundle, available, choices, onImported, onSave, onCancel }: {
   /** The saved skill being edited; absent for a new one. */
   initial?: ExtensionLibrarySkill;
+  /** The managing plugin's display name, for a skill a plugin contributes. */
+  pluginName?: string;
   bundle?: ExtensionSkillBundle;
   /** Imported bundles not yet in the library. */
   available: ExtensionSkillBundle[];
@@ -39,7 +42,7 @@ export function ExtensionSkillForm({ initial, bundle: initialBundle, available, 
     event.preventDefault();
     if (!bundle) { setError('Choose or import a skill bundle first.'); return; }
     setBusy(true); setError('');
-    try { await onSave({ bundleId: bundle.id, enabled: initial?.enabled ?? true, ...limits }); }
+    try { await onSave({ bundleId: bundle.id, enabled: initial?.enabled ?? true, ...limits, ...(initial?.managedBy ? { managedBy: initial.managedBy } : {}) }); }
     catch (e) { setError((e as Error).message); setBusy(false); }
   };
   const label = initial ? `Edit skill ${initialBundle?.name ?? initial.bundleId}` : 'Add skill';
@@ -47,6 +50,7 @@ export function ExtensionSkillForm({ initial, bundle: initialBundle, available, 
     <form ref={formRef} aria-labelledby={titleId} onSubmit={event => void submit(event)} onKeyDown={guard.onKeyDown} data-testid="extension-skill-form"
       className="space-y-4 rounded-md border border-teal-200 bg-white p-3 sm:p-4">
       <h5 id={titleId} className="text-sm font-semibold">{label}</h5>
+      {initial?.managedBy && <ManagedDefinitionNote managedBy={initial.managedBy} pluginName={pluginName} />}
       <PendingEntryProvider value={entries.report}>
         <fieldset disabled={busy} className="min-w-0 space-y-4">
           {bundle ? (

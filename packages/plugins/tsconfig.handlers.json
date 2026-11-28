@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "./dist/plugins",
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["*/handlers.ts", "testing/**/*.ts"],
+  "exclude": ["node_modules", "dist", "src", "test"]
+}

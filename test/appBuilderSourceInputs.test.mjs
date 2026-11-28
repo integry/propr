@@ -60,6 +60,7 @@ const within = (file, roots) => roots.some((root) => file === root || file.start
 test('app builder compiles the root project after its workspaces', () => {
   assert.deepEqual(builderTscProjects().map((project) => path.relative(repoRoot, project) || '.'), [
     'packages/shared',
+    'packages/plugins',
     'packages/local-setup',
     'packages/core',
     '.',

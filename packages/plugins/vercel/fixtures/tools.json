@@ -1,0 +1,232 @@
+{
+  "description": "Tools of Vercel's MCP server (https://mcp.vercel.com) from the categories of Vercel's tools reference that a deploy needs (deployments, projects, teams and users, documentation) and the observability tools its frequently used list names, each with its access: read (reads or fetches) or write (creates, changes, deletes, cancels, uploads, sends or grants access). The read server's allow-list may name read tools only. Vercel documents more categories (domains, environment variables, firewall, storage and others); the plugin offers none of them.",
+  "capturedAt": "2026-11-17",
+  "index": "https://vercel.com/docs/agent-resources/vercel-mcp/tools",
+  "tools": [
+    {
+      "name": "cancel_deployment",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "create_deployment",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "deploy_to_vercel",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "get_access_to_vercel_url",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "get_deployment",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "get_deployment_build_logs",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "get_deployment_feature_flags",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "get_deployment_file_contents",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "get_git_deployment_context",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "import-claude-design-from-url",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "list_deployment_events",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "list_deployment_files",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "list_deployments",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "open_deployments",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "ui_get_build_log_excerpt",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "upload_file",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "web_fetch_vercel_url",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/deployments"
+    },
+    {
+      "name": "accept_project_transfer_request",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "add_project_domain",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "create_git_project",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "create_project",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "get_project",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "get_project_deletion_link",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "get_project_deployment_protection",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "get_project_domain",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "git_namespaces",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "list_project_domains",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "list_projects",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "pause_project",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "unpause_project",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "update_project",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "update_project_deployment_protection",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "update_project_protection_bypass",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "verify_project_domain",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/projects"
+    },
+    {
+      "name": "get_auth_user",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/teams"
+    },
+    {
+      "name": "get_team",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/teams"
+    },
+    {
+      "name": "list_event_types",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/teams"
+    },
+    {
+      "name": "list_team_members",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/teams"
+    },
+    {
+      "name": "list_teams",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/teams"
+    },
+    {
+      "name": "list_user_events",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/teams"
+    },
+    {
+      "name": "search_vercel_documentation",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/documentation"
+    },
+    {
+      "name": "use_vercel_cli",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/documentation"
+    },
+    {
+      "name": "submit_feedback",
+      "access": "write",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools/documentation"
+    },
+    {
+      "name": "get_runtime_logs",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools"
+    },
+    {
+      "name": "get_runtime_errors",
+      "access": "read",
+      "source": "https://vercel.com/docs/agent-resources/vercel-mcp/tools"
+    }
+  ]
+}

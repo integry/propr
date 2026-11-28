@@ -156,9 +156,11 @@ demote_preferred_mirrors() {
   done <<<"$lists"
 }
 
-# Retry only a timed-out dependency install. Verify Chromium can launch before
-# proceeding to the browser tests.
-for attempt in 1 2; do
+# Retry only a timed-out dependency install. apt keeps archives from earlier
+# attempts, so a third attempt can finish a slow download. Verify Chromium
+# can launch after the dependencies are installed.
+attempts=3
+for ((attempt = 1; attempt <= attempts; attempt++)); do
   if timeout --kill-after=15s 3m npx playwright install-deps chromium; then
     check_chromium
     exit 0
@@ -169,7 +171,7 @@ for attempt in 1 2; do
     exit "$status"
   fi
   echo "::warning::Chromium install attempt $attempt timed out (exit $status)."
-  if [[ "$attempt" -eq 1 ]]; then
+  if [[ "$attempt" -lt "$attempts" ]]; then
     stop_apt
     demote_preferred_mirrors
   fi

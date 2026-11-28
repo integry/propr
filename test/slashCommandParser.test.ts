@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { parseSlashCommand, buildCommandMeta } from '../packages/core/src/webhook/slashCommandParser.js';
+import { BUILT_IN_COMMAND_NAMES, parseCommandLine } from '../packages/shared/src/commands.js';
 
 describe('parseSlashCommand', () => {
     test('returns null for empty/undefined body', () => {
@@ -600,5 +601,33 @@ describe('buildCommandMeta', () => {
         assert.strictEqual(meta.mode, 'ultrafix');
         // Named goal=5 was set first, positional 8 does not override
         assert.strictEqual((meta as { goal?: number }).goal, 5);
+    });
+});
+
+describe('built-in command list shared with plugin commands', () => {
+    test('the parser recognizes exactly the shared built-in commands, unchanged', () => {
+        assert.deepStrictEqual([...BUILT_IN_COMMAND_NAMES], ['review', 'fix', 'merge', 'switch', 'use', 'ultrafix']);
+        for (const name of BUILT_IN_COMMAND_NAMES) {
+            assert.deepStrictEqual(parseSlashCommand(`/${name} a b\nmore`), { command: name, args: ['a', 'b'], instructions: 'more' });
+        }
+    });
+
+    test('plugin and unknown command names are not built-in commands and keep parsing to null', () => {
+        for (const body of ['/example-notes focus on the API', '/deploy staging', '/Review', '/reviewx', '/fix-it']) {
+            assert.strictEqual(parseSlashCommand(body), null, body);
+        }
+    });
+
+    test('the plugin command line parser agrees with the built-in parser on the command line', () => {
+        for (const body of ['/review claude-opus-5-5', '  /fix S1 S2  \nbody', '/ultrafix goal=8', '\n/review', '/review a\rb']) {
+            const builtIn = parseSlashCommand(body);
+            const line = parseCommandLine(body);
+            assert.strictEqual(builtIn === null, line === null, body);
+            if (builtIn && line) {
+                assert.strictEqual(line.name, builtIn.command);
+                assert.deepStrictEqual(line.argument ? line.argument.split(/\s+/) : [], builtIn.args);
+                assert.strictEqual(line.rest, builtIn.instructions);
+            }
+        }
     });
 });

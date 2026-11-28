@@ -155,3 +155,8 @@ export function isBookkeepingCancellation(task: Pick<TaskStateData, 'state' | 't
     return ['requeued', 'rescheduled'].includes(String(entry?.metadata?.jobResultStatus))
         || /^Task job (requeued|rescheduled)(:|$)/.test(entry?.reason ?? '');
 }
+
+/** The first history entry's metadata: a task a plugin handler created names the plugin (`requestedBy`). */
+export function taskCreationMetadata(issueRef: IssueRef): { metadata?: { requestedBy: string } } {
+    return typeof issueRef.requestedBy === 'string' ? { metadata: { requestedBy: issueRef.requestedBy } } : {};
+}

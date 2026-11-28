@@ -1,0 +1,24 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture-handlers",
+  "name": "Fixture handlers",
+  "description": "Test fixture for the plugin handler runtime: handlers that succeed, throw, hang, call ctx.propr, ctx.http and ctx.state.",
+  "version": "1.0.0",
+  "category": "other",
+  "homepage": "https://example.com/fixture-handlers",
+  "icon": "icon.svg",
+  "permissions": ["events.read", "tasks.read", "tasks.create", "issues.read", "issues.create", "issues.comment", "labels.write"],
+  "connections": [
+    { "type": "token", "name": "api-token", "label": "API token", "help": "A token for the fixture API.", "helpUrl": "https://example.com/docs/tokens" },
+    { "type": "token", "name": "unset-token", "label": "Unset token", "help": "Never set by the tests.", "helpUrl": "https://example.com/docs/tokens" },
+    { "type": "signing_secret", "name": "hook-secret", "label": "Webhook secret", "help": "Verifies inbound webhooks.", "helpUrl": "https://example.com/docs/webhooks" }
+  ],
+  "settings": {
+    "type": "object",
+    "properties": {
+      "greeting": { "type": "string", "label": "Greeting", "default": "hi" }
+    },
+    "required": []
+  },
+  "outboundHosts": ["api.fixture.example", "private.fixture.example"]
+}

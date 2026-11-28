@@ -52,6 +52,8 @@ export interface AutomationTemplate {
   previousReportCount: number;
   /** What the user must review before saving. */
   reviewBeforeSaving: AutomationTemplateReviewItem[];
+  /** Set on templates an enabled plugin contributes: the plugin that ships it. Never part of the shipped catalog file. */
+  plugin?: { id: string; name: string };
 }
 
 export interface AutomationTemplateCatalog {
