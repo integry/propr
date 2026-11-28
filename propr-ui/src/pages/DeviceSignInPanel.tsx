@@ -6,6 +6,7 @@ import {
   startDeviceSignIn,
   type DeviceSignInStart,
 } from '../api/deviceSignInApi';
+import { formatTimeOfDay } from '../utils/dateFormat';
 
 const MIN_POLL_DELAY_MS = 1_000;
 const COPIED_RESET_MS = 2_000;
@@ -158,7 +159,7 @@ const DeviceSignInPanel: React.FC<DeviceSignInPanelProps> = ({ onSignedIn }) => 
           Waiting for you to approve the sign-in on GitHub…
         </div>
         <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-          Expires at {new Date(start.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.
+          Expires at {formatTimeOfDay(start.expiresAt)}.
           Enter it only if you started this sign-in here.
         </p>
         <button
