@@ -339,6 +339,11 @@ if [ $# -gt 0 ]; then
             fi
             exec env HOME="$RUNTIME_VIBE_HOME" VIBE_HOME="$RUNTIME_VIBE_HOME" "$@"
         fi
+        # Root wrote the runtime home's .gitconfig (HOME points there) after
+        # ensure_runtime_dirs; hand the whole runtime home, including the copied
+        # .vibe store and Vibe's export dir, to the agent user before dropping.
+        chown -R node:node "$RUNTIME_VIBE_HOME" 2>/dev/null || true
+        chmod -R u+rwX "$RUNTIME_VIBE_HOME" 2>/dev/null || true
         echo "Switching to node user..." >&2
         if command -v su-exec >/dev/null 2>&1; then
             if [ -n "$VIBE_PROMPT_FILE_TO_INJECT" ]; then
