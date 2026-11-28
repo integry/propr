@@ -221,12 +221,14 @@ export function deviceSignInUser(profile: GitHubUserProfile, token: GitHubDevice
         refreshTokenExpiresAt: token.refreshTokenExpiresInSeconds
             ? now + token.refreshTokenExpiresInSeconds * 1000
             : undefined,
-        // Same App as Connect: renewal goes through the relay, which holds the
-        // App's secret, exactly as for a renewable Connect sign-in. Grant
-        // capture persists relay renewal only with this marker. A token
-        // without a refresh token does not expire and has nothing to renew.
+        // Same App as Connect, so the relay (which holds the App's secret)
+        // renews it. GitHub issued the refresh token to this instance and the
+        // relay has never seen it, so the grant is not relay-held renewal
+        // (`connectRenewal`, which sends only the user id to
+        // `/instance-auth/renew`): grant capture stores `renewal: null`, and
+        // renewal sends the stored refresh token to the relay's
+        // `/auth/instance-grants/refresh`.
         oauthSource: 'connect',
-        ...(token.refreshToken ? { connectRenewal: 'relay' as const } : {}),
     };
 }
 

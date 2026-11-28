@@ -387,12 +387,27 @@ Cancelling, or starting again, revokes the attempt at once. A poll that was
 already waiting on GitHub then neither signs the browser in nor brings the
 attempt back.
 
-**Tokens.** The user token is handled like a Connect sign-in: the same
-session, the same durable grant (encrypted at rest) for desktop, MCP and
-agent runs, and the same renewal. GitHub App user tokens expire after eight
-hours; their refresh token is renewed through the relay, which holds the App's
-secret (`POST <PROPR_GH_RELAY_URL>/auth/instance-grants/refresh`). Tokens and
-device codes are never logged or returned in a response.
+**Tokens.** The user token is stored like a Connect sign-in: the same
+session and the same durable grant (encrypted at rest, `source: connect`) for
+desktop, MCP and agent runs. GitHub App user tokens expire after eight hours.
+GitHub returns the refresh token to the instance, not to the relay, so the
+relay has never seen it. The grant is therefore not marked for relay-held
+renewal (`renewal` stays empty, and `/instance-auth/renew` is never called for
+it). Instead the instance sends its stored refresh token to the relay, which
+holds the App's secret:
+
+- `POST <PROPR_GH_RELAY_URL>/auth/instance-grants/refresh` with the relay
+  token as `Authorization: Bearer` and body `{ "refresh_token": "<token>" }`.
+- The relay answers with GitHub's refresh response: `access_token` and,
+  usually, a rotated `refresh_token`, `expires_in` and
+  `refresh_token_expires_in`. ProPR stores the new credential in one
+  conditional write, and the next renewal sends the rotated refresh token.
+- ProPR renews when the access token is within five minutes of expiry, or when
+  GitHub rejects it. `bad_refresh_token` or `invalid_grant` sets the grant to
+  `reauth_required`, so the user has to sign in again. Any other failure is
+  retryable and leaves the grant active.
+
+Tokens and device codes are never logged or returned in a response.
 
 **Limits.** Starts are limited per client IP
 (`PROPR_DEVICE_SIGN_IN_START_RATE_LIMIT_MAX`, default 10 per 15 minutes) and
@@ -423,9 +438,9 @@ mints tokens for its own App needs that App's client ID:
 
 3. Restart the API. The login page now shows the device sign-in.
 
-The relay's `auth/instance-grants/refresh` endpoint must renew that App's
-refresh tokens, as it does for Connect sign-ins. Until Device Flow is enabled,
-GitHub answers `device_flow_disabled`.
+The relay's `auth/instance-grants/refresh` endpoint must refresh that App's
+refresh tokens when the instance presents them (see **Tokens** above). Until
+Device Flow is enabled, GitHub answers `device_flow_disabled`.
 
 ## Connect browser sign-in renewal
 
