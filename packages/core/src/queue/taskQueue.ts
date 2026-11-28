@@ -1,5 +1,5 @@
 import { repositoryStorageLifecycle, protectStorageQueue, worktreeDiskPressureLogFields } from '../storage/lifecycle.js';
-import { beginIssueJobAttempt, deferIssueJobOnDiskPressure, recordIssueJobAdmitted, ISSUE_JOB_NAME } from './issueDiskPressureDeferral.js';
+import { beginIssueJobAttempt, deferIssueJobOnDiskPressure, recordIssueJobAdmitted, ISSUE_JOB_NAME, SUPERSEDED_ISSUE_DISPATCH_RESULT } from './issueDiskPressureDeferral.js';
 import { settleIssueJobCompletion, settleIssueJobFailure } from './issueJobSettlement.js';
 // Task queue module for processing GitHub issues and PR comments
 import { Queue, Worker, Job, QueueOptions, WorkerOptions } from 'bullmq';
@@ -257,7 +257,8 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
         return deferIssueJobOnDiskPressure(job, async () => {
             if (issueJob) await beginIssueJobAttempt(job);
             return repositoryStorageLifecycle.use(async () => {
-                if (issueJob) await recordIssueJobAdmitted(job);
+                // A job whose dispatch a newer request took over does not run beside that dispatch.
+                if (issueJob && !await recordIssueJobAdmitted(job)) return { ...SUPERSEDED_ISSUE_DISPATCH_RESULT } as unknown as R;
                 return processorFunction(job);
             }, {
                 filesystem: process.env.GIT_WORKTREES_BASE_PATH || '/tmp/git-processor/worktrees',

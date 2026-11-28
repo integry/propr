@@ -14,6 +14,10 @@
  *   processing ──failed attempt, retry follows──▶ queued
  *   any active ──job completed──▶ completed;  ──failed for good──▶ failed
  *
+ * An attempt of a dispatch a newer one replaced on the row (a request took the
+ * issue over, as when this job's producer added it late) is skipped at
+ * admission and does not run its processor (`recordIssueJobAdmitted`).
+ *
  * `started_at` is set when any attempt of the dispatch entered its processor
  * and is never cleared, so a report may say that nothing ran only when it is
  * null.
@@ -201,6 +205,17 @@ export async function markIssueDispatchStarted(dispatchId: string, deps: Deps = 
     const changed = await rows(database).where({ dispatch_id: dispatchId }).whereIn('state', ['queued', 'deferred', 'processing'])
         .update({ state: 'processing', started_at: database.raw('coalesce(started_at, ?)', [timestamp]) as unknown as number, retry_at: null, updated_at: timestamp });
     return Number(changed) > 0;
+}
+
+/**
+ * An attempt passed admission: `started` when the row held the dispatch as
+ * active (it is now processing), `ended` when the row still holds it but it
+ * already ended, `superseded` when a newer dispatch replaced it on the row.
+ */
+export async function admitIssueDispatchAttempt(dispatchId: string, deps: Deps = {}): Promise<'started' | 'ended' | 'superseded'> {
+    if (await markIssueDispatchStarted(dispatchId, deps)) return 'started';
+    // Rows are only ever replaced, never deleted: no row under the dispatch means a newer one took the issue over.
+    return (await findIssueDispatchById(dispatchId, deps)) ? 'ended' : 'superseded';
 }
 
 /** Admission refused an attempt for disk pressure; the same job waits until `retryAt`. */

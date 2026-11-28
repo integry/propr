@@ -70,12 +70,18 @@ const DETAILS = 'filesystem /tmp/git-processor/worktrees: free 6.2 GiB < require
 /** A queue that can only add jobs and read them: no job can be removed or replaced. */
 class AddOnlyQueue {
   jobs = new Map<string, FakeJob>();
+  /** Set to hold the next add until it is released, as a producer suspended between its claim and its add. */
+  held: { reached: () => void; gate: Promise<void> } | null = null;
   async add(name: string, data: Record<string, unknown>, opts: { jobId: string; attempts?: number }) {
+    const held = this.held;
+    this.held = null;
+    if (held) { held.reached(); await held.gate; }
     // As BullMQ: an add under an ID that already exists is a no-op.
     if (!this.jobs.has(opts.jobId)) this.jobs.set(opts.jobId, new FakeJob(opts.jobId, name, data, opts.attempts ?? 1));
     return this.jobs.get(opts.jobId);
   }
   async getJob(jobId: string) { return this.jobs.get(jobId); }
+  async getJobs(states: string[]) { return [...this.jobs.values()].filter(entry => states.includes(entry.state)); }
 }
 
 class FakeJob {
@@ -100,6 +106,15 @@ const request = () => enqueueIssueDispatch(queue, {
 const refusal = () => new WorktreeDiskPressureError(MEASURED);
 
 type Step = (outcomes: string[]) => Promise<void>;
+
+/** The final refusal of `target`, settled by the issue worker's failure handler. */
+async function refuseFinally(target: FakeJob, issueQueue: { getJobs(states: string[]): Promise<FakeJob[]> } = queue): Promise<void> {
+  target.data = { ...target.data, diskPressureDeferrals: 6, diskPressureSince: Date.now() - 61 * 60_000 };
+  const final = await deferIssueJobOnDiskPressure(target, async () => { throw refusal(); }, { maxWaitMs: 60 * 60_000 }).catch(error => error as Error);
+  assert.equal((final as Error).name, 'UnrecoverableError');
+  target.attemptsMade++; target.state = 'failed'; target.finishedOn = Date.now();
+  await settleIssueJobFailure(target, final as Error, { issueQueue });
+}
 const step = {
   /** The daemon or the plan route requests a run of the issue. */
   enqueue: (async outcomes => { outcomes.push((await request()).status); jobs = [...queue.jobs.values()]; }) as Step,
@@ -121,13 +136,7 @@ const step = {
     await settleIssueJobFailure(job(), new Error('processor failed'));
   }) as Step,
   /** Admission refuses again after the total wait ran out: the job fails for good on that refusal. */
-  refuseFinally: (async () => {
-    job().data = { ...job().data, diskPressureDeferrals: 6, diskPressureSince: Date.now() - 61 * 60_000 };
-    const final = await deferIssueJobOnDiskPressure(job(), async () => { throw refusal(); }, { maxWaitMs: 60 * 60_000 }).catch(error => error as Error);
-    assert.equal((final as Error).name, 'UnrecoverableError');
-    job().attemptsMade++; job().state = 'failed'; job().finishedOn = Date.now();
-    await settleIssueJobFailure(job(), final as Error);
-  }) as Step,
+  refuseFinally: (async () => { await refuseFinally(job()); }) as Step,
   complete: (async () => { job().state = 'completed'; await settleIssueJobCompletion(job()); }) as Step,
   /** The issue joins a newer plan after the dispatch was enqueued: that plan issue does not point at it. */
   newerDraft: (async () => {
@@ -333,4 +342,168 @@ test('transitions are fenced on the dispatch: an ended dispatch does not move ag
   assert.equal(await settleIssueDispatch(id, 'completed', { database }), true);
   for (const outcome of ['retrying', 'failed', 'completed'] as const) assert.equal(await settleIssueDispatch(id, outcome, { database }), false);
   assert.equal((await database('issue_dispatches').first())!.state, 'completed');
+});
+
+test('F5: a producer resuming after its dispatch was taken over does not run beside the newer dispatch', async () => {
+  await setUpPlan('processing');
+  let reached!: () => void;
+  let release!: () => void;
+  const atAdd = new Promise<void>(resolve => { reached = resolve; });
+  queue.held = { reached, gate: new Promise<void>(resolve => { release = resolve; }) };
+  // Producer A has committed its dispatch and is suspended before its job reaches the queue.
+  const producerA = request();
+  await atAdd;
+  const claimedA = (await database('issue_dispatches').first())!;
+  await database('issue_dispatches').update({ updated_at: Date.now() - ISSUE_DISPATCH_ABANDON_AFTER_MS - 1 });
+  // Producer B finds A's job absent long after A's claim and takes the issue over.
+  const producerB = await request();
+  assert.equal(producerB.status, 'added');
+  assert.notEqual(producerB.dispatchId, claimedA.dispatch_id);
+  // A resumes and adds its job under its own ID.
+  release();
+  await producerA;
+  const jobA = queue.jobs.get(claimedA.job_id)!;
+  const jobB = queue.jobs.get(producerB.jobId)!;
+  assert.ok(jobA && jobB, 'both jobs are in the queue');
+
+  // A's job reaches admission: it is skipped before its processor, and B's dispatch does not move.
+  jobA.state = 'active';
+  await beginIssueJobAttempt(jobA);
+  assert.equal(await recordIssueJobAdmitted(jobA), false, 'the superseded job does not enter its processor');
+  jobA.state = 'completed';
+  await settleIssueJobCompletion(jobA);
+  let row = (await database('issue_dispatches').first())!;
+  assert.deepEqual([row.dispatch_id, row.state, row.started_at], [producerB.dispatchId, 'queued', null]);
+  const planIssue = await database('plan_issues').where({ draft_id: 'draft' }).first();
+  assert.equal(planIssue.issue_dispatch_id, producerB.dispatchId, 'the plan issue follows the dispatch that took the issue over');
+
+  // B's job is admitted as usual.
+  jobB.state = 'active';
+  await beginIssueJobAttempt(jobB);
+  assert.equal(await recordIssueJobAdmitted(jobB), true);
+  row = (await database('issue_dispatches').first())!;
+  assert.deepEqual([row.dispatch_id, row.state, typeof row.started_at], [producerB.dispatchId, 'processing', 'number']);
+  // A redelivery of a job whose dispatch ended but still holds the issue is not a takeover: it runs, and its dispatcher deduplicates it.
+  jobB.state = 'completed';
+  await settleIssueJobCompletion(jobB);
+  assert.equal(await recordIssueJobAdmitted(jobB), true);
+  assert.equal((await database('issue_dispatches').first())!.state, 'completed', 'the ended dispatch does not move');
+});
+
+test('F5: a superseded job refused for disk pressure until its wait ran out reports nothing and moves nothing', async () => {
+  await setUpPlan('processing');
+  await step.enqueue([]);
+  const jobA = job();
+  // A's job vanished long ago; B takes the issue over. A's job then turns up (its producer added it late).
+  await step.abandon([]);
+  const producerB = await request();
+  queue.jobs.set(jobA.id, jobA);
+  await database('plan_issues').where({ draft_id: 'draft' }).update({ status: 'processing' });
+  jobA.state = 'active';
+  await beginIssueJobAttempt(jobA);
+  await refuseFinally(jobA);
+  assert.equal(comments.length, 0, 'the issue is not told that its run stopped: B holds it');
+  const row = (await database('issue_dispatches').first())!;
+  assert.deepEqual([row.dispatch_id, row.state], [producerB.dispatchId, 'queued']);
+  assert.equal((await database('plan_issues').where({ draft_id: 'draft' }).first()).status, 'processing');
+});
+
+/**
+ * A plan issue whose dispatcher passed admission, queued `count` execution
+ * children and completed: its dispatch is completed, the plan issue still
+ * processing while execution is expected.
+ */
+async function completedDispatcherWithChildren(count: number): Promise<FakeJob[]> {
+  await step.enqueue([]);
+  await database('plan_issues').where({ draft_id: 'draft' }).whereIn('status', ['pending']).update({ status: 'processing' });
+  await step.pickUp([]);
+  await step.admit([]);
+  const parent = job();
+  const children = Array.from({ length: count }, (_, index) => {
+    const child = new FakeJob(`${parent.id}-child-${index}`, 'processGitHubIssue', { ...parent.data, isChildJob: true }, 1);
+    queue.jobs.set(child.id, child);
+    return child;
+  });
+  parent.state = 'completed';
+  await settleIssueJobCompletion(parent);
+  assert.equal((await database('issue_dispatches').first())!.state, 'completed');
+  return children;
+}
+
+/** A child picked up and refused at admission until its wait ran out, without entering its processor. */
+async function refuseChild(child: FakeJob, issueQueue?: { getJobs(states: string[]): Promise<FakeJob[]> }): Promise<void> {
+  child.state = 'active';
+  await beginIssueJobAttempt(child);
+  await refuseFinally(child, issueQueue);
+}
+
+const planStatus = async (draftId = 'draft') => (await database('plan_issues').where({ draft_id: draftId }).first()).status;
+
+test('F6: the final refusal of the last unstarted child of a completed dispatcher blocks its plan issue for retry', async () => {
+  await setUpPlan('epic-queue');
+  const [child] = await completedDispatcherWithChildren(1);
+  await refuseChild(child);
+  assert.equal(await planStatus(), 'pending', 'the plan issue is no longer processing');
+  const head = (await getEpicExecutionQueue('draft'))!.items[0];
+  assert.deepEqual([head.state, head.blockedKind, head.blockedReason], ['blocked', 'dispatch_failed', diskPressureRefusedReason(ISSUE)]);
+  await startEpicQueueHead('draft', { startIssue, now: () => Date.now() + 60_000 });
+  assert.deepEqual(starts, [], 'the refused issue is not dispatched again at once');
+  assert.equal(comments.length, 1);
+  assert.match(comments[0], /or retry the issue from its plan\./);
+  assert.equal((await database('issue_dispatches').first())!.state, 'completed', 'the child does not move the dispatch');
+});
+
+test('F6: a refused child leaves its plan issue processing while a sibling is still in flight, and the last refusal releases it', async () => {
+  await setUpPlan('processing');
+  const [first, second] = await completedDispatcherWithChildren(2);
+  await refuseChild(first);
+  assert.equal(await planStatus(), 'processing', 'the sibling still waiting may yet run');
+  second.state = 'delayed';
+  await refuseChild(second);
+  assert.equal(await planStatus(), 'pending');
+  assert.equal(comments.length, 2, 'each refused child is reported on the issue');
+});
+
+test('F6: a refused child leaves a plan issue a newer dispatch took over', async () => {
+  await setUpPlan('processing');
+  const [child] = await completedDispatcherWithChildren(1);
+  // A newer request starts a new dispatch of the issue; the plan issue now points at it.
+  const newer = await request();
+  assert.equal(newer.status, 'added');
+  await refuseChild(child);
+  const planIssue = await database('plan_issues').where({ draft_id: 'draft' }).first();
+  assert.deepEqual([planIssue.status, planIssue.issue_dispatch_id], ['processing', newer.dispatchId]);
+  const row = (await database('issue_dispatches').first())!;
+  assert.deepEqual([row.dispatch_id, row.state], [newer.dispatchId, 'queued']);
+});
+
+test('F6: a refused child leaves a finished plan issue as it is', async () => {
+  await setUpPlan('merged');
+  const [child] = await completedDispatcherWithChildren(1);
+  await refuseChild(child);
+  assert.equal(await planStatus(), 'merged');
+  assert.equal(comments.length, 1);
+});
+
+test('F6: a refused child leaves its plan issue to a dispatcher that will run again', async () => {
+  await setUpPlan('processing');
+  await step.enqueue([]);
+  await database('plan_issues').where({ draft_id: 'draft' }).update({ status: 'processing' });
+  await step.pickUp([]);
+  await step.admit([]);
+  const parent = job();
+  const child = new FakeJob(`${parent.id}-child`, 'processGitHubIssue', { ...parent.data, isChildJob: true }, 1);
+  queue.jobs.set(child.id, child);
+  // The dispatcher failed after queueing its child; BullMQ retries it.
+  await step.failAndRetry([]);
+  await refuseChild(child);
+  assert.equal(await planStatus(), 'processing');
+});
+
+test('F6: a refused child leaves its plan issue as it is when the queue cannot be read', async () => {
+  await setUpPlan('processing');
+  const [child] = await completedDispatcherWithChildren(1);
+  await refuseChild(child, { getJobs: async () => { throw new Error('Connection is closed.'); } });
+  assert.equal(await planStatus(), 'processing', 'executions in flight are unknown, so nothing is released');
+  assert.equal(comments.length, 1);
 });

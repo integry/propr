@@ -39,7 +39,7 @@ const { redisRetryOutcomeEvidence, reserveIssueRetryRequest } = await import('..
 const { enqueueIssueRetryRun, queueRetryRunEvidence } = await import('../../core/src/services/issueRetryRun.js');
 const { processDetectedIssue } = await import('../../core/src/daemon/issueDetection.js');
 // As the production issue worker, the suite's worker records each parent attempt on the issue's dispatch row.
-const { beginIssueJobAttempt, recordIssueJobAdmitted } = await import('../../core/src/queue/issueDiskPressureDeferral.js');
+const { beginIssueJobAttempt, recordIssueJobAdmitted, SUPERSEDED_ISSUE_DISPATCH_RESULT } = await import('../../core/src/queue/issueDiskPressureDeferral.js');
 const { settleIssueJobCompletion, settleIssueJobFailure } = await import('../../core/src/queue/issueJobSettlement.js');
 const { findIssueDispatch, ISSUE_DISPATCH_ABANDON_AFTER_MS } = await import('../../core/src/queue/issueDispatch.js');
 const { db: coreDb } = await import('../../core/src/db/connection.js');
@@ -332,7 +332,8 @@ export async function withLiveQueue(body: (live: LiveQueue) => Promise<void>) {
   };
   const dispatch = async (job: Job<IssueJobData>) => {
     await beginIssueJobAttempt(job);
-    await recordIssueJobAdmitted(job);
+    // As the issue worker: a job whose dispatch a newer request took over does not run.
+    if (!await recordIssueJobAdmitted(job)) return { ...SUPERSEDED_ISSUE_DISPATCH_RESULT };
     try {
       const result = await handleDispatchWithDeps(job, deps);
       dispatches.push(result);

@@ -7,6 +7,12 @@
  * `processing` (back to `pending`, with its queued execution blocked on the
  * reason), so `get_plan` and the Studio show it.
  *
+ * A refused top-level job ends its dispatch. A refused execution child (the
+ * dispatcher that queued it completed, so the dispatch has ended) releases the
+ * plan issue once nothing else of the dispatch is in flight: no sibling child
+ * is still waiting, delayed or running. A top-level job whose dispatch a newer
+ * request took over is not the issue's run: it is not reported.
+ *
  * What the report says comes from the dispatch row alone: "nothing was
  * changed" only when no attempt of the dispatch ever entered its processor
  * (`started_at` is null). Best effort: never throws.
@@ -96,11 +102,45 @@ export function diskPressureRefusalCommentBody(
 
 type Log = { info(obj: object, msg: string): void; warn(obj: object, msg: string): void };
 
+/** The issue queue, as far as finding a dispatch's jobs still in flight needs it. */
+export interface RefusalIssueQueue {
+    getJobs(states: Array<'waiting' | 'delayed' | 'active' | 'prioritized' | 'waiting-children'>): Promise<Array<{ id?: string; data?: unknown } | undefined>>;
+}
+
+const IN_FLIGHT_STATES: Array<'waiting' | 'delayed' | 'active' | 'prioritized' | 'waiting-children'> = ['waiting', 'delayed', 'active', 'prioritized', 'waiting-children'];
+
+/**
+ * Whether a refused child was the dispatch's last execution in flight: the
+ * dispatch has ended (its dispatcher neither runs nor will run again) and
+ * the queue holds no other job of it that may still start. Unknown (the queue
+ * could not be read) counts as in flight, so the plan issue is left as it is.
+ */
+async function childWasLastInFlight(
+    job: RefusedIssueJob, dispatch: IssueDispatch, { issueQueue, log }: { issueQueue?: RefusalIssueQueue; log: Log },
+): Promise<boolean> {
+    if (dispatch.state !== 'completed' && dispatch.state !== 'failed') return false;
+    try {
+        const queue = issueQueue ?? await (await import('../queue/taskQueue.js')).getIssueQueue();
+        const live = (await queue.getJobs(IN_FLIGHT_STATES)).filter(other => other && other.id !== job.id
+            && (other.data as { issueDispatchId?: unknown } | undefined)?.issueDispatchId === dispatch.dispatch_id);
+        if (live.length > 0) {
+            log.info({ jobId: job.id, dispatchId: dispatch.dispatch_id, inFlight: live.map(other => other!.id) },
+                'A refused child of an issue dispatch leaves its plan issue to the executions still in flight');
+        }
+        return live.length === 0;
+    } catch (error) {
+        log.warn({ jobId: job.id, dispatchId: dispatch.dispatch_id, error: (error as Error).message },
+            'Could not read the issue queue for executions still in flight; the plan issue is left as it is');
+        return false;
+    }
+}
+
 /**
  * The plan issue that points at this dispatch, back to pending, while it is
  * still pending or processing. Called only once this refusal ended the
- * dispatch, so a plan issue a newer dispatch took over (it points at that one)
- * and historical or finished plan issues keep their status.
+ * issue's run (the dispatch, or its last execution in flight), so a plan issue
+ * a newer dispatch took over (it points at that one) and historical or
+ * finished plan issues keep their status.
  */
 async function releasePlanIssue(
     database: Knex, dispatchId: string, issueNumber: number, { now, log }: { now: () => number; log: Log },
@@ -128,9 +168,43 @@ async function releasePlanIssue(
     return { released, queueBlocked };
 }
 
+interface SettleContext { database: Knex; now: () => number; error?: unknown; issueQueue?: RefusalIssueQueue; log: Log; outcome: DiskPressureRefusalOutcome }
+
+/**
+ * The refusal on the issue's dispatch and its plan issue, recorded on
+ * `outcome`. `superseded` when a newer request took the issue over from this
+ * top-level job's dispatch: rows are only ever replaced, so no row under the
+ * dispatch says so.
+ */
+async function settleRefusedDispatch(
+    job: RefusedIssueJob, dispatchId: string, issueNumber: number,
+    { database, now, error, issueQueue, log, outcome }: SettleContext,
+): Promise<{ dispatch: IssueDispatch | null; inPlan: boolean; superseded: boolean }> {
+    const child = Boolean(job.data.isChildJob);
+    // Only the top-level job moves its dispatch; a refused child reports on the dispatch as it stands.
+    if (!child) {
+        outcome.dispatchEnded = await settleIssueDispatch(dispatchId, 'failed', {
+            database, now, error: error instanceof Error ? error.message : undefined, details: refusalDetails(job, error),
+        });
+    }
+    const dispatch = await findIssueDispatchById(dispatchId, { database });
+    if (!dispatch && !child) return { dispatch, inPlan: false, superseded: true };
+    // The plan issue still pointing at this dispatch is released only when the refusal ended the issue's run.
+    const runEnded = outcome.dispatchEnded || (child && dispatch !== null && await childWasLastInFlight(job, dispatch, { issueQueue, log }));
+    if (runEnded) {
+        const plan = await releasePlanIssue(database, dispatchId, issueNumber, { now, log });
+        outcome.planIssueReleased = plan.released;
+        outcome.queueBlocked = plan.queueBlocked;
+    }
+    const inPlan = Boolean(await database('plan_issues').where({ issue_dispatch_id: dispatchId }).first('id'));
+    return { dispatch, inPlan, superseded: false };
+}
+
 export async function reportIssueDiskPressureRefusal(
     job: RefusedIssueJob,
-    { octokit, database = db, now = Date.now, error }: { octokit?: DiskPressureRefusalOctokit; database?: Knex; now?: () => number; error?: unknown } = {},
+    { octokit, database = db, now = Date.now, error, issueQueue }: {
+        octokit?: DiskPressureRefusalOctokit; database?: Knex; now?: () => number; error?: unknown; issueQueue?: RefusalIssueQueue;
+    } = {},
 ): Promise<DiskPressureRefusalOutcome> {
     const { repoOwner, repoName, number, issueDispatchId } = job.data;
     const log = job.data.correlationId ? logger.withCorrelation(job.data.correlationId) : logger;
@@ -142,19 +216,12 @@ export async function reportIssueDiskPressureRefusal(
     let inPlan = false;
     try {
         if (issueDispatchId) {
-            // Only the top-level job moves its dispatch; a refused child reports on the dispatch as it stands.
-            if (!job.data.isChildJob) {
-                outcome.dispatchEnded = await settleIssueDispatch(issueDispatchId, 'failed', {
-                    database, now, error: error instanceof Error ? error.message : undefined, details: refusalDetails(job, error),
-                });
+            const settled = await settleRefusedDispatch(job, issueDispatchId, number, { database, now, error, issueQueue, log, outcome });
+            if (settled.superseded) {
+                log.warn(target, 'An issue job refused for disk pressure belongs to a dispatch a newer request took over; not reporting it');
+                return outcome;
             }
-            dispatch = await findIssueDispatchById(issueDispatchId, { database });
-            if (outcome.dispatchEnded) {
-                const plan = await releasePlanIssue(database, issueDispatchId, number, { now, log });
-                outcome.planIssueReleased = plan.released;
-                outcome.queueBlocked = plan.queueBlocked;
-            }
-            inPlan = Boolean(await database('plan_issues').where({ issue_dispatch_id: issueDispatchId }).first('id'));
+            ({ dispatch, inPlan } = settled);
         }
     } catch (failure) {
         log.warn({ ...target, error: (failure as Error).message }, 'Could not settle the dispatch of an issue job refused for disk pressure');

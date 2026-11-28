@@ -38,7 +38,7 @@ Object.assign(process.env, {
 
 const { closeConnection, db, runMigrations } = await import('../src/db/connection.js');
 const { createWorker, getIssueQueue, shutdownQueue, GITHUB_ISSUE_QUEUE_NAME } = await import('../src/queue/taskQueue.js');
-const { enqueueIssueDispatch, findIssueDispatch } = await import('../src/queue/issueDispatch.js');
+const { claimIssueDispatch, enqueueIssueDispatch, findIssueDispatch, settleIssueDispatch } = await import('../src/queue/issueDispatch.js');
 
 let redis: Redis | null = null;
 let worker: Worker | null = null;
@@ -199,4 +199,52 @@ test('two concurrent requests for one issue add exactly one job', async t => {
   const jobs = (await (await getIssueQueue()).getJobs(['delayed'])).filter(entry => entry.data.repoOwner === OWNER && entry.data.number === 46);
   assert.deepEqual(jobs.map(entry => entry.id), [added.jobId]);
   assert.equal((await db('issue_dispatches').where({ dispatch_id: added.dispatchId }).first())?.state, 'queued');
+});
+
+test('a job whose dispatch a newer request took over completes at admission without entering its processor', async t => {
+  if (!requireRedis(t)) return;
+  process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
+  const ref = { owner: OWNER, repo: 'repo', number: 48 };
+  const superseded = await enqueue(48, {}, { delay: 300, removeOnComplete: false });
+  // A newer request took the issue over while this job was not yet picked up (as when its producer added it late).
+  const takeover = await claimIssueDispatch(ref, { abandoned: superseded.dispatchId });
+  assert.equal(takeover.status, 'claimed');
+  const { job } = await until(() => jobState(superseded.jobId), value => value.state === 'completed', 'the superseded job to end');
+  assert.deepEqual(job?.returnvalue, { status: 'skipped', reason: 'issue_dispatch_superseded' });
+  assert.deepEqual(processed.filter(id => id === superseded.jobId), [], 'the processor is not entered');
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const row = await dispatchOf(48);
+  assert.deepEqual([row?.dispatch_id, row?.state, row?.started_at], [takeover.dispatch.dispatch_id, 'queued', null], 'the newer dispatch does not move');
+});
+
+test('a refused child releases its plan issue only once its dispatch has no sibling in flight', async t => {
+  if (!requireRedis(t)) return;
+  const ref = { owner: OWNER, repo: 'repo', number: 49 };
+  const repository = `${OWNER}/repo`;
+  const draftId = `00000000-0000-4000-8000-${String(process.pid).padStart(12, '0').slice(-12)}`;
+  await db('task_drafts').insert({ draft_id: draftId, user_id: 'user', repository, status: 'in_progress' });
+  await db('plan_issues').insert({ draft_id: draftId, repository, issue_number: 49, status: 'pending' });
+  const claim = await claimIssueDispatch(ref);
+  assert.equal(claim.status, 'claimed');
+  const planIssue = () => db('plan_issues').where({ draft_id: draftId, issue_number: 49 }).first();
+  assert.equal((await planIssue())?.issue_dispatch_id, claim.dispatch.dispatch_id);
+  await db('plan_issues').where({ draft_id: draftId }).update({ status: 'processing' });
+  // The dispatcher passed admission, queued two execution children and completed; neither child has started.
+  await settleIssueDispatch(claim.dispatch.dispatch_id, 'completed');
+  const queue = await getIssueQueue();
+  const childData = issueJob(49, { isChildJob: true, issueDispatchId: claim.dispatch.dispatch_id, diskPressureDeferrals: 6, diskPressureSince: Date.now() - 2 * 60 * 60_000 });
+  const laterId = `${claim.dispatch.job_id}-later`;
+  const firstId = `${claim.dispatch.job_id}-first`;
+  await queue.add('processGitHubIssue', childData, { ...jobOptions, jobId: laterId, delay: 60_000 });
+  await queue.add('processGitHubIssue', childData, { ...jobOptions, jobId: firstId });
+
+  await until(async () => failures.find(entry => entry.id === firstId), Boolean, 'the first child\'s final refusal');
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal((await planIssue())?.status, 'processing', 'the delayed sibling may still run');
+
+  await (await queue.getJob(laterId))!.promote();
+  await until(async () => failures.find(entry => entry.id === laterId), Boolean, 'the last child\'s final refusal');
+  await until(async () => (await planIssue())?.status, status => status === 'pending', 'the plan issue release');
+  assert.deepEqual(processed.filter(id => id === firstId || id === laterId), [], 'no child entered its processor');
+  assert.equal((await dispatchOf(49))?.state, 'completed', 'a child does not move the dispatch');
 });

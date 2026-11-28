@@ -172,20 +172,34 @@ export async function beginIssueJobAttempt(job: Pick<DeferrableIssueJob, 'id' | 
         .catch(error => logger.warn({ jobId: job.id, dispatchId, error: (error as Error).message }, 'Could not record the attempt on the issue dispatch'));
 }
 
+/** What a top-level issue job returns, without running, when its dispatch was taken over by a newer one. */
+export const SUPERSEDED_ISSUE_DISPATCH_RESULT = Object.freeze({ status: 'skipped', reason: 'issue_dispatch_superseded' });
+
 /**
  * Admission passed: the processor is about to run. Records it on the
  * dispatch (`started_at`, the evidence a later refusal report relies on), so
  * a failed write fails the attempt before the processor runs (an ordinary,
  * retryable failure). Also drops a disk-pressure wait the job went through,
  * so a later refusal starts a new wait.
+ *
+ * False when a newer dispatch replaced the job's dispatch on the issue's row:
+ * a request took the issue over (its producer found this job missing, as when
+ * it had not been added yet). The job must then not run its processor; the
+ * dispatch that holds the issue serves it. A job whose dispatch ended but
+ * still holds the row (a redelivery) runs, as its processor deduplicates it.
  */
-export async function recordIssueJobAdmitted(job: Pick<DeferrableIssueJob, 'id' | 'data' | 'updateData'>): Promise<void> {
+export async function recordIssueJobAdmitted(job: Pick<DeferrableIssueJob, 'id' | 'data' | 'updateData'>): Promise<boolean> {
     const dispatchId = topLevelDispatchId(job.data);
-    if (dispatchId) await (await dispatchRows()).markIssueDispatchStarted(dispatchId);
     const data = (job.data ?? {}) as IssueJobDataWithWait;
+    if (dispatchId && await (await dispatchRows()).admitIssueDispatchAttempt(dispatchId) === 'superseded') {
+        logger.warn({ jobId: job.id, dispatchId, repository: `${data.repoOwner}/${data.repoName}`, issueNumber: data.number },
+            'Issue job skipped at admission: a newer dispatch of the issue took it over');
+        return false;
+    }
     const waitFields = new Set(['diskPressureDeferrals', 'diskPressureSince', 'diskPressureRetryAt', 'diskPressureDetails']);
-    if (!Object.keys(data).some(key => waitFields.has(key))) return;
+    if (!Object.keys(data).some(key => waitFields.has(key))) return true;
     await job.updateData(Object.fromEntries(Object.entries(data).filter(([key]) => !waitFields.has(key))));
+    return true;
 }
 
 type IssueJobDataWithWait = IssueDiskPressureWaitData & { correlationId?: unknown; repoOwner?: unknown; repoName?: unknown; number?: unknown; [key: string]: unknown };
