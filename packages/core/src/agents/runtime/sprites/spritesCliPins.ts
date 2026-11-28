@@ -4,7 +4,9 @@ import path from 'node:path';
 /** The checkout whose `Dockerfile.agent` pins the Sprite agent CLIs and whose `scripts/` provisioning uploads. */
 export const projectRoot = () => process.env.PROPR_ROOT
     || (existsSync(path.join(process.cwd(), 'Dockerfile.agent')) ? process.cwd() : '/usr/src/app');
-const pinNames = ['CLAUDE_CLI_VERSION', 'CODEX_CLI_VERSION', 'ANTIGRAVITY_CLI_VERSION', 'ANTIGRAVITY_CLI_RELEASE_ID', 'ANTIGRAVITY_CLI_SHA512'] as const;
+const pinNames = ['CLAUDE_CLI_VERSION', 'CODEX_CLI_VERSION', 'ANTIGRAVITY_CLI_VERSION', 'ANTIGRAVITY_CLI_RELEASE_ID', 'ANTIGRAVITY_CLI_SHA512',
+    // OpenCode, and Mistral Vibe on its uv-managed Python (the image's uv and interpreter pins).
+    'OPENCODE_CLI_VERSION', 'VIBE_CLI_VERSION', 'VIBE_PYTHON_VERSION', 'UV_VERSION'] as const;
 export type SpritesCliPins = Record<typeof pinNames[number], string>;
 
 const pinsByRoot = new Map<string, SpritesCliPins>();

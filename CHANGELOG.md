@@ -162,6 +162,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     users are unaffected, and the CLI compatibility matrix still covers 22
     and 24. The agent images keep their Node version.
 
+- **Extensions and ProPR MCP for OpenCode 2.x** (#3844)
+  - OpenCode 2.x runs now receive extension library MCP servers and skill
+    bundles, and agent definitions and automations can give OpenCode agents the
+    `propr` MCP server. Servers and the skill path go into the inline config
+    (`OPENCODE_CONFIG_CONTENT`) under `mcp.servers` and `skills.paths`: stdio
+    servers run through the stdio bridge with their secrets passed by name in
+    the container environment, and remote servers read their bearer token
+    through `{env:VAR}`. OpenCode 1.x stays unsupported.
+  - Extension runs use only the run's MCP servers and skills: project and
+    `~/.claude` sources are switched off, and the entrypoint gives OpenCode a
+    disposable config dir without the host's `mcp` and `skills` (providers and
+    other settings are kept).
+  - MCP tool calls made through OpenCode's Code Mode `execute` tool show under
+    the called tool's name (`<server>.<tool>`) in the live view and the task log.
+  - Brings in the OpenCode 2.4.2 runtime from #3820, which this builds on.
+
+- **Extensions and ProPR MCP for Vibe 3** (#3842)
+  - Vibe runs now receive extension library MCP servers and skill bundles, and
+    agent definitions and automations can give Vibe agents the `propr` MCP
+    server. MCP servers reach Vibe through `VIBE_MCP_SERVERS`: stdio servers run
+    through the stdio bridge with their secrets only in that entry's `env`, and
+    HTTP servers read their bearer token from `api_key_env`. Skills are
+    registered with Vibe's own `skill` tool through `VIBE_SKILL_PATHS`.
+  - Extension runs use only the run's MCP servers: the entrypoint removes
+    `mcp_servers` from the runtime copy of `config.toml`, turns Mistral cloud
+    connectors off and, when the run has skills, limits active skills to them.
+  - MCP tool calls (`mcp_<server>.<tool>`) show as tool calls and results in the
+    live view and the task log.
+
+- **One runtime capability map for extensions and ProPR MCP** (#3841)
+  - `AGENT_RUNTIME_CAPABILITIES` in `@propr/shared` now decides, per agent
+    type, whether a runtime receives extension library items and the ProPR MCP
+    server, and how skills reach it, with an optional CLI-version predicate
+    (OpenCode 1.x is never supported). Every extension and `propr_mcp` gate
+    reads it. Claude and Codex are unchanged; no other runtime is enabled yet.
+  - On a runtime without extension support, New Task shows *Extensions aren't
+    available for <agent>* instead of hiding the extensions panel, and each
+    auto-applied item that would otherwise apply is listed in the task's
+    `extensions.resolved` event as skipped with reason `runtime`.
+  - Per-runtime MCP rendering moved into one launch builder per agent type with
+    a shared `mcpServers` / `localMcpServers` / `exclusiveMcp` contract. The
+    extension library docs gained a runtime support table.
+
 - Upgraded bundled Mistral Vibe from 2.25.8 to 3.1.5. Tasks use native prompt files and stream Vibe’s structured responses. Vibe runs no longer exit before starting when `~/.vibe/config.toml` sets an absolute host `session_logging.save_dir`: session logs now always go to the container runtime home. The live task view shows Vibe 3 tool calls and their results again. [PyPI release](https://pypi.org/project/mistral-vibe/3.1.5/)
 
 - **Bundled Claude Code 2.1.330 and Antigravity CLI 1.5.15** (#3752)

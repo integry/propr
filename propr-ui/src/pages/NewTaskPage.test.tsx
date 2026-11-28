@@ -332,6 +332,20 @@ it('"Run without extensions" sends the disable switch and withdraws the write op
   expect(payload).not.toHaveProperty('extensionAllowWrite');
 });
 
+it('names the agent in a short note when its runtime cannot receive extensions, without extension controls', async () => {
+  vi.mocked(submissions.submitTask).mockResolvedValue(pending);
+  vi.mocked(submissions.getTaskExtensionsPreview).mockResolvedValue({ qualified: false, revision: 3, servers: [], skills: [], unsupported: { agentAlias: 'opencode-main', runtime: 'opencode' } });
+  renderPage();
+  expect(await screen.findByTestId('task-extensions-unavailable')).toHaveTextContent('Extensions aren’t available for opencode-main.');
+  expect(screen.queryByTestId('task-extensions-applied')).toBeNull();
+  expect(screen.queryByRole('switch', { name: /Run without extensions/ })).toBeNull();
+  const run = await screen.findByRole('button', { name: 'Run task' }); await waitFor(() => expect(run).toBeEnabled()); fireEvent.click(run);
+  await waitFor(() => expect(submissions.submitTask).toHaveBeenCalledTimes(1));
+  const payload = vi.mocked(submissions.submitTask).mock.calls[0][1];
+  expect(payload).not.toHaveProperty('disableExtensions');
+  expect(payload).not.toHaveProperty('extensionAllowWrite');
+});
+
 it('with no applicable library items shows no extension controls and submits no extension fields', async () => {
   vi.mocked(submissions.submitTask).mockResolvedValue(pending);
   renderPage();

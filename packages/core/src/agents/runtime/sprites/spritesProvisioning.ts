@@ -34,7 +34,8 @@ async function complete(stream: AsyncIterable<StreamMessage>) {
 }
 
 const setupFiles = ['sprites-agent-setup.sh', 'sprites-launcher.py', 'sprites-mcp-forward.sh', 'gh-wrapper.sh', 'extension-stdio-bridge.mjs',
-    'claude-entrypoint.sh', 'codex-entrypoint.sh', 'antigravity-entrypoint.sh'];
+    'claude-entrypoint.sh', 'codex-entrypoint.sh', 'antigravity-entrypoint.sh', 'opencode-entrypoint.sh', 'vibe-entrypoint.sh',
+    'opencode-run.sh', 'vibe-prompt-file-runner.py'];
 
 export class SpritePool {
     private idle: Slot[] = [];

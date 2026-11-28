@@ -8,7 +8,7 @@ The worker selects the agent’s configured runtime, then the instance default (
 
 | Capability | Docker (`docker`) | Sprites (`sprites`) | Fly Machines (`fly-machines`) |
 | --- | --- | --- | --- |
-| Coding agents | Claude Code, Codex, Antigravity, OpenCode, Mistral Vibe | Claude Code, Codex, Antigravity | Claude Code, Codex |
+| Coding agents | Claude Code, Codex, Antigravity, OpenCode, Mistral Vibe | Claude Code, Codex, Antigravity, OpenCode, Mistral Vibe | Claude Code, Codex, OpenCode, Mistral Vibe |
 | Workspace | Host worktree or clone | Clone with scoped token | Clone with scoped token |
 | Isolation and lifetime | Container per run on the operator’s daemon | One run per leased Sprite, restored to a clean checkpoint before reuse | Fresh Machine per run, destroyed after result retrieval |
 | Restricted network | Worker allowlist proxy | Sprite DNS allowlist | Restricted runs refused |
@@ -86,9 +86,9 @@ A runtime declares support with the `supportsRuntimePackages` capability. A cust
 
 ## Fly Machines
 
-Set `PROPR_AGENT_RUNTIME=fly-machines` on the worker or `runtime: fly-machines` on a Claude Code or Codex agent. Each task gets a new Machine in `PROPR_FLY_APP`. Set `PROPR_FLY_API_TOKEN` to a deploy token scoped to that app, or supply it in `FLY_API_TOKEN`. Use a dedicated agent app in the control plane’s Fly organization.
+Set `PROPR_AGENT_RUNTIME=fly-machines` on the worker or `runtime: fly-machines` on a Claude Code, Codex, OpenCode or Mistral Vibe agent. Each task gets a new Machine in `PROPR_FLY_APP`. Set `PROPR_FLY_API_TOKEN` to a deploy token scoped to that app, or supply it in `FLY_API_TOKEN`. Use a dedicated agent app in the control plane’s Fly organization.
 
-Build the unified agent image from the repository root with `fly deploy --remote-only --build-only --push --dockerfile Dockerfile.agent -a <agent-app>`. On an app with no releases, a remote build can push only by digest. Copy the manifest digest from the build output’s `pushing manifest … @sha256:` line and set `PROPR_FLY_IMAGE=registry.fly.io/<agent-app>@sha256:<digest>` on the worker. The selected image supplies both provider CLI versions.
+Build the unified agent image from the repository root with `fly deploy --remote-only --build-only --push --dockerfile Dockerfile.agent -a <agent-app>`. On an app with no releases, a remote build can push only by digest. Copy the manifest digest from the build output’s `pushing manifest … @sha256:` line and set `PROPR_FLY_IMAGE=registry.fly.io/<agent-app>@sha256:<digest>` on the worker. The selected image supplies every provider CLI version (the `Dockerfile.agent` pins).
 
 `PROPR_FLY_REGION` selects a region. Fly chooses the placement when it is unset. `PROPR_FLY_MACHINE_SIZE` accepts `shared-cpu-<n>x` or `performance-<n>x` and defaults to `shared-cpu-2x`. `PROPR_FLY_MACHINE_MEMORY_MB` defaults to 2048. `PROPR_FLY_BOOT_TIMEOUT` sets the time allowed for creation, image pull and guest readiness in seconds (default 300).
 
@@ -108,7 +108,20 @@ To verify a deployment, set `PROPR_FLY_LIVE_TOKEN`, `PROPR_FLY_LIVE_APP` and `PR
 
 The worker runs on Node 24, the range `@fly/sprites` 0.2.5 declares (`>=24.0.0`), and pins the SDK to that version. CI smoke-tests the pinned SDK on the `.nvmrc` Node version, and the live runtime suite checks service compatibility before merge. For Extension Library items see [Extensions by runtime](#extensions-by-runtime).
 
-Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an individual Claude Code, Codex, or Antigravity agent. Supply an organization token in the worker’s `PROPR_SPRITES_TOKEN` environment variable (`SPRITES_TOKEN` is also accepted). The worker defaults `SPRITES_CLIENT_SIGNALS` to `0` unless the operator sets it. Runs use the clone workspace transport. Restricted runs use the Sprite's DNS allowlist, which the worker applies before the run and clears after restoring the checkpoint. Runs reach ProPR MCP as described in [ProPR MCP from Sprites](#propr-mcp-from-sprites). See [Restricted mode on Fly Sprites](../features/execution-safety.md#restricted-mode-on-fly-sprites).
+Set `PROPR_AGENT_RUNTIME=sprites` on the worker, or set `runtime: sprites` on an individual Claude Code, Codex, Antigravity, OpenCode or Mistral Vibe agent. Supply an organization token in the worker’s `PROPR_SPRITES_TOKEN` environment variable (`SPRITES_TOKEN` is also accepted). The worker defaults `SPRITES_CLIENT_SIGNALS` to `0` unless the operator sets it. Runs use the clone workspace transport. Restricted runs use the Sprite's DNS allowlist, which the worker applies before the run and clears after restoring the checkpoint. Runs reach ProPR MCP as described in [ProPR MCP from Sprites](#propr-mcp-from-sprites). See [Restricted mode on Fly Sprites](../features/execution-safety.md#restricted-mode-on-fly-sprites).
+
+### OpenCode and Mistral Vibe on remote runtimes
+
+Both agents run on Sprites and Fly Machines through the same run spec as on Docker, and end in a PR the same way. Fly Machines run the CLIs in `PROPR_FLY_IMAGE` (`Dockerfile.agent` installs both). A Sprite installs them while it is provisioned, before its clean checkpoint, so warm Sprites reuse them: OpenCode at `OPENCODE_CLI_VERSION` (the same package `Dockerfile.agent` picks: `opencode-ai` for a 1.x pin, otherwise `@opencode/cli`), `uv` at `UV_VERSION` from its release archive (checked against the published SHA-256) and `mistral-vibe` at `VIBE_CLI_VERSION` on uv-managed Python `VIBE_PYTHON_VERSION`, each read from `Dockerfile.agent` and checked with `--version`. An agent that selects another CLI version is refused on both runtimes.
+
+Credentials come from the agent configuration, as for the other agents: the per-run copy of each credential store the provider manifest lists, sent with the run and never part of an image or checkpoint.
+
+| Agent | Stores and their paths in the run | Returned after the run |
+| --- | --- | --- |
+| Mistral Vibe | `config` at `/home/node/.vibe` (`config.toml`, `settings.json`, `credentials.json`, `agents/`, `prompts/`); `MISTRAL_API_KEY` from its `.env` as a secret variable | Nothing: Vibe never refreshes through ProPR |
+| OpenCode | `config` at `/home/node/.config/opencode` and, when configured, `data` at `/home/node/.local/share/opencode-source` (`auth.json`, `account.json`) | Refreshed `auth.json` and `account.json` of either store, written back through the credential broker |
+
+Vibe's prompt file is uploaded root-owned and read-only to the path Docker binds it at (`/home/node/propr-prompt.txt`). Its runtime home (`/tmp/propr-vibe-home`, a host bind on Docker) is a directory created in the Machine or Sprite for the run. After the run the worker copies `propr-export/export.json` from it, read by the `node` user without following links, into the worker's runtime home, where Vibe's cost parsing reads it. OpenCode's output and costs come from its JSON stdout, which both runtimes capture like every agent's. Stored provider keys in the credential files (`apiKey`, `key`, `access`, `refresh` and token fields) and provider key variables (`*_API_KEY`, `*_TOKEN`) are redacted from Fly Machines output.
 
 ### ProPR MCP from Sprites
 
@@ -187,7 +200,7 @@ The worker launches the unified agent image with a prepared worktree, a generate
 
 Docker starts an init process as PID 1 with `--init`. It reaps orphaned children, forwards signals to the entrypoint, and returns its exit status. When the entrypoint execs the agent CLI, the CLI receives those signals directly.
 
-Most entrypoints start as root so they can prepare runtime directories or fix container-local ownership, then drop to the `node` user before running the CLI. Entrypoints also mark Git directories as safe, install the `gh` wrapper when present, and emit diagnostics that are captured with the task logs.
+Task runs of every agent start as root (`user: '0:0'`) so the entrypoint can prepare runtime directories or fix container-local ownership, then drop to the `node` user before running the CLI. The clone workspace transport on Fly Machines and Sprites refuses any other start, and building a task spec with the repository setup wrapper refuses it too, so local Docker runs catch a missing `user`. Vibe's read-only analysis runs are the exception: they keep the image's `node` user in their capability-free sandbox and always use the bind transport. Entrypoints also mark Git directories as safe, install the `gh` wrapper when present, and emit diagnostics that are captured with the task logs.
 
 Existing-account credential and launcher paths must be absolute host paths. Shell shortcuts such as `~` and `$HOME` are not expanded by launcher configuration. Direct-login accounts instead save a portable `~/.propr/agent-credentials/<agent-id>/…` path that ProPR maps to its managed host root automatically.
 
@@ -331,7 +344,7 @@ ANTIGRAVITY_CONFIG_PATH=/home/your-user/.gemini
 ANTIGRAVITY_TIMEOUT_MS=86400000
 ```
 
-The entrypoint prepares Antigravity runtime directories under the mounted config path and looks for auth, OAuth, credential, or token files. Disposable runs copy only `antigravity-cli/antigravity-oauth-token` and `antigravity-cli/settings.json` from it. The agent CLI is `agy`; ProPR passes the selected model with `--model <id>` after translating ProPR model IDs into Antigravity CLI model IDs.
+The entrypoint prepares Antigravity runtime directories under the mounted config path and looks for auth, OAuth, credential, or token files. Disposable runs copy only `antigravity-cli/antigravity-oauth-token` and `antigravity-cli/settings.json` from it. When the run ends, those files are copied back to the mounted directory, so a refreshed Google token is kept. This also happens when ProPR stops the container (cancel, cost cap, watchdog or deadline): the entrypoint forwards the stop signal to `agy`, waits for it to exit, copies the files back, and exits with `143`. Goal runs mount the host directory as the runtime home, so `agy` updates the token in place. The agent CLI is `agy`; ProPR passes the selected model with `--model <id>` after translating ProPR model IDs into Antigravity CLI model IDs.
 
 ProPR also passes `--print-timeout` set to the run's timeout (`ANTIGRAVITY_TIMEOUT_MS` for tasks). From Antigravity CLI 1.5.0, a run that hits that deadline exits with code `3`, prints an `AGY_ERROR` line and writes `[agy] print timeout after ...` to stderr. ProPR records such a task as timed out, with the CLI's explanation as the error, and does not accept the partial answer of an analysis run.
 
@@ -388,7 +401,7 @@ OpenCode's config location is `~/.config/opencode`; configure OpenCode agents wi
 
 OpenCode 2 stores credentials in `~/.local/share/opencode/opencode.db`. Set `HOST_OPENCODE_DATA_DIR` to the host data directory when it differs from the sibling of the configured `~/.config/opencode` directory. Managed accounts use their own data directory.
 
-Task and analysis containers import credential rows into a disposable database. Changes to refreshed credentials are written back only when the stored value still matches the original. ProPR tells the store formats apart by the database schema, not by how many credentials it holds. A host database with a `credential` table and series 2 tables (such as `session_v2`) is the host store, even when it is empty: OpenCode 2 `auth logout` never edits `auth.json`, so ProPR drops anything the disposable database imported from a leftover `auth.json` and never writes to that file. Otherwise the host is on series 1: it has only `auth.json`, an `opencode.db` without a `credential` table, or a series 1 database whose `credential` table series 1 never reads. In that case the run uses the credentials OpenCode imports from `auth.json`, and ProPR leaves the host database unchanged and never creates one. OAuth refreshes are written back to `auth.json` instead, in the series 1 format and keeping the file mode. An entry is only updated if the host still holds the value the run started with. Provider API keys can be supplied through agent environment variables.
+Task and analysis containers import credential rows into a disposable database. Changes to refreshed credentials are written back only when the stored value still matches the original. ProPR tells the store formats apart by the database schema, not by how many credentials it holds. A host database with a `credential` table and series 2 tables (such as `session_v2`) is the host store, even when it is empty: OpenCode 2 `auth logout` never edits `auth.json`, so ProPR drops anything the disposable database imported from a leftover `auth.json` and never writes to that file. Otherwise the host is on series 1: it has only `auth.json`, an `opencode.db` without a `credential` table, or a series 1 database whose `credential` table series 1 never reads. In that case the run uses the credentials OpenCode imports from `auth.json`, and ProPR leaves the host database unchanged and never creates one. OAuth refreshes are written back to `auth.json` instead, in the series 1 format and keeping the file mode. An entry is only updated if the host still holds the value the run started with. The write-back also runs when ProPR stops the container: the entrypoint forwards the stop signal through `opencode-run`, which passes it on to OpenCode and waits for it to exit; only then does the entrypoint write back once, and exits with `143`. The sync is capped at a few seconds so the container exits before Docker's stop timeout, and a skipped or failed sync is logged as a warning. Provider API keys can be supplied through agent environment variables.
 
 #### Model-ID Translation
 

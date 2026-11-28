@@ -4,6 +4,7 @@ import { buildAgentContainerResourceArgs, resolveAgentContainerResources } from 
 import type { AgentRunRepoSetup, AgentRunSpec } from '../../agents/runtime/types.js';
 import { renderDockerEnvArgs, renderDockerRunArgs } from '../../agents/runtime/dockerRunArgs.js';
 import { claudeConfigSeedScript } from './claudeConfigSeed.js';
+import { cloneRunStartsAsRoot } from '../../git/workspaceTransportScript.js';
 
 export { buildAgentContainerResourceArgs };
 
@@ -102,6 +103,12 @@ export function buildAgentRunRepoSetup(agentType: AgentType): AgentRunRepoSetup 
  * resource boundary plus the repository setup wrapper around the entrypoint.
  */
 export function applyAgentRunLaunchWrapper(spec: AgentRunSpec, agentType: AgentType): AgentRunSpec {
+    // The wrapper runs the setup hook as node only when it starts as root, and the clone
+    // workspace transport on Fly Machines and Sprites refuses any other start. Refuse here
+    // too, so a provider spec missing `user` fails when it is built, also for local Docker.
+    if (!cloneRunStartsAsRoot(spec.user)) {
+        throw new Error(`Agent run ${spec.name} (${agentType}) wraps its provider entrypoint in the repository setup wrapper but starts as ${spec.user ? `"${spec.user}"` : 'the image user'}; set user "0:0" and drop to node in the entrypoint`);
+    }
     spec.resources = resolveAgentContainerResources();
     spec.repoSetup = buildAgentRunRepoSetup(agentType);
     if (repositoryWorkflowExecution.getStore()) markWorkflowWrapperBuilt(renderDockerRunArgs(spec));

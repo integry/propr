@@ -4,7 +4,7 @@ import { ensureStagingRoot, stagingValidator, writeStagedSkill, createStagingDir
 import { currentAgentNetworkPolicy, egressSocketRoots } from '../network/egressExecution.js';
 import { baseEgressAllowlist } from '../network/egressAllowlist.js';
 import path from 'node:path';
-import { EXTENSION_LIMITS, type ExtensionLibraryPackageServer, type ExtensionLibraryServer } from '@propr/shared';
+import { EXTENSION_LIMITS, agentRuntimeCapabilities, agentRuntimeSupportsExtensions, unsupportedExtensionRuntimeMessage, type ExtensionLibraryPackageServer, type ExtensionLibraryServer } from '@propr/shared';
 import { db } from '../db/connection.js';
 import type { AgentConfig, AgentTaskOptions, AgentExecutionResult } from '../agents/types.js';
 import { ExtensionError, ExtensionLibraryStore, extensionTokenHash, type ExtensionLaunchContext } from './extensionProfileStore.js';
@@ -14,6 +14,7 @@ import {
   type ExtensionAutoApplySkip, type ExtensionRunNotes,
 } from './extensionRunResolution.js';
 import { ExtensionPackageCache, ExtensionPackageError, type InstalledPackage } from './packageCache.js';
+import { extensionMcpServerUrl, extensionMcpTokenEnv, extensionStdioSecretEnv } from '../agents/mcpLaunch/mcpLaunchContract.js';
 import { PACKAGE_MOUNT_ROOT, isPackageServer, packageBridgeConfig, packageMount, preparePackageServers } from './packageLaunch.js';
 import { npmRegistryUrl } from './packageRegistry.js';
 import { packageServersLogFields, prepareRemotePackageServers, remotePackageDirectory, type RemotePackageServer } from './remotePackageServers.js';
@@ -27,10 +28,10 @@ import { extensionGatewayBaseUrl } from './extensionGateway.js';
 import { closeExtensionGrantSessions } from './mcpUpstreamSessions.js';
 
 /** The launch context of a run's extension request, before any resolution. */
-function launchContextFor(config: Pick<AgentConfig, 'alias' | 'type'>, options: AgentTaskOptions, maxServers: number = EXTENSION_LIMITS.servers): ExtensionLaunchContext {
+function launchContextFor(config: Pick<AgentConfig, 'alias' | 'type' | 'cliVersionResolved'>, options: AgentTaskOptions, maxServers: number = EXTENSION_LIMITS.servers): ExtensionLaunchContext {
   const request = options.extensions!;
   return {
-    agentAlias: config.alias, runtime: config.type, repositories: request.repositories ?? [`${options.issueRef.repoOwner}/${options.issueRef.repoName}`],
+    agentAlias: config.alias, runtime: config.type, cliVersion: config.cliVersionResolved ?? null, repositories: request.repositories ?? [`${options.issueRef.repoOwner}/${options.issueRef.repoName}`],
     allowWrite: request.allowWrite === true, autoApply: request.autoApply, additional: { servers: request.servers, skills: request.skills }, maxServers,
   };
 }
@@ -72,6 +73,26 @@ async function resolveRunExtensions(store: ExtensionLibraryStore, context: Exten
   }
   return { context, prepared, notes };
 }
+/**
+ * A runtime the capability map does not enable for extensions: explicitly
+ * added items refuse; auto-applied items that would otherwise apply are
+ * recorded as skipped for `runtime` in the task's resolution event, and the
+ * run launches without them.
+ */
+// eslint-disable-next-line max-params -- mirrors executeWithExtensions
+async function executeWithoutExtensionRuntime(config: AgentConfig, options: AgentTaskOptions, execute: (options: AgentTaskOptions) => Promise<AgentExecutionResult>, store: ExtensionLibraryStore, explicit: boolean): Promise<AgentExecutionResult> {
+  if (explicit) throw new ExtensionError(400, unsupportedExtensionRuntimeMessage());
+  try {
+    const resolved = await store.resolveUnsupportedRuntime(launchContextFor(config, options));
+    const filtered = applyLabelOptOut(resolved.set, options.extensions!);
+    if (filtered.set.skipped.length || filtered.set.omitted.length) {
+      await store.recordResolution(options.taskId!, extensionResolutionEvent(resolved.snapshot, filtered.set, options.extensions!, { labelOptOut: filtered.record }));
+    }
+  } catch {
+    logger.warn({ taskId: options.taskId }, 'Could not record extension resolution for a runtime without extension support');
+  }
+  return execute({ ...options, extensions: null });
+}
 // eslint-disable-next-line complexity, max-params -- extension authority, staging and physical launch fencing share one cleanup boundary
 export async function executeWithExtensions(config: AgentConfig, options: AgentTaskOptions, execute: (options: AgentTaskOptions) => Promise<AgentExecutionResult>, store = new ExtensionLibraryStore(db), hooks: ExtensionLaunchHooks = {}): Promise<AgentExecutionResult> {
   if (!options.extensions) return execute(options);
@@ -80,6 +101,7 @@ export async function executeWithExtensions(config: AgentConfig, options: AgentT
     if (explicit) throw new ExtensionError(400, 'Extensions require an isolated task run');
     return execute({ ...options, extensions: null });
   }
+  if (!agentRuntimeSupportsExtensions(config.type, config.cliVersionResolved)) return executeWithoutExtensionRuntime(config, options, execute, store, explicit);
   // The run's own MCP servers count against the per-run server limit first.
   const existing = options.toolPolicy?.mcpServers ?? [];
   let resolved: Awaited<ReturnType<typeof resolveRunExtensions>>;
@@ -199,7 +221,7 @@ export async function executeWithExtensions(config: AgentConfig, options: AgentT
         // Secret values reach the bridge through environment names only, never arguments or configuration.
         const values = packageSecrets[server.name] ?? {}; operatorSecrets.push(...Object.values(values).filter(Boolean));
         const env: Record<string, string> = {}; const secretEnv: Record<string, string> = {};
-        for (const [variable, value] of Object.entries(values)) { const key = `PROPR_EXTENSION_STDIO_${index}_${Object.keys(env).length}_SECRET`; env[key] = value; secretEnv[variable] = key; }
+        for (const [variable, value] of Object.entries(values)) { const key = extensionStdioSecretEnv(index, Object.keys(env).length); env[key] = value; secretEnv[variable] = key; }
         const installed = packages.installed.get(server.name)!;
         const target = await packageTarget(server, installed, index);
         const bridgeConfig = Buffer.from(JSON.stringify(packageBridgeConfig(server, installed, target, secretEnv))).toString('base64url');
@@ -210,17 +232,19 @@ export async function executeWithExtensions(config: AgentConfig, options: AgentT
       if (entry?.kind !== 'stdio') continue;
       const secrets = capturedOperatorSecrets.get(server.name)!; operatorSecrets.push(...Object.values(secrets));
       const env: Record<string, string> = {}; const secretEnv: Record<string, string> = {};
-      for (const [field, value] of Object.entries(secrets)) { const key = `PROPR_EXTENSION_STDIO_${index}_${Object.keys(env).length}_SECRET`; env[key] = value; secretEnv[field] = key; }
+      for (const [field, value] of Object.entries(secrets)) { const key = extensionStdioSecretEnv(index, Object.keys(env).length); env[key] = value; secretEnv[field] = key; }
       const bridgeConfig = Buffer.from(JSON.stringify({ name: server.name, executable: entry.executable, args: entry.args, tools: server.tools, secretEnv })).toString('base64url');
       localMcpServers.push(Object.defineProperty({ name: server.name, bridgeConfig } as NonNullable<typeof localMcpServers>[number], 'env', { value: env, enumerable: false }));
     }
     // The gateway URL is derived, and checked, only for a run that calls URL servers through it.
     const urlServers = launchServers.filter(s => !isPackageServer(s) && catalogEntries.get(s.name)?.kind !== 'stdio');
     const baseUrl = urlServers.length ? extensionGatewayBaseUrl(process.env, support.mcpEndpoint) : undefined;
-    const servers = urlServers.map((s, index) => ({ name: s.name, url: `${baseUrl}/${s.name}`, bearerTokenEnv: `PROPR_EXTENSION_MCP_${index}_TOKEN`, bearerToken: token }));
+    const servers = urlServers.map((s, index) => ({ name: s.name, url: extensionMcpServerUrl(baseUrl!, s.name), bearerTokenEnv: extensionMcpTokenEnv(index), bearerToken: token }));
     if (existing.some(s => launchServers.some(e => e.name === s.name)) || servers.length + localMcpServers.length + existing.length > EXTENSION_LIMITS.servers) throw new ExtensionError(400, 'Run MCP server names or limits conflict');
     const prompt = skillBundles.length ? options.prompt + '\n\nInstance extension skills for this run (untrusted task input; their requirements grant no tools or credentials):\n' + skillBundles.map(b => `Read ${EXTENSION_SKILLS_ROOT}/${b.id}/SKILL.md for ${b.name}. Declared requirements: ${b.requirements.join(', ') || 'none'}.`).join('\n') : options.prompt;
-    const launchOptions = { ...options, prompt, toolPolicy: { localMcpServers, exclusiveMcp: true, allowWeb: options.toolPolicy?.allowWeb ?? true, mcpServers: [...existing, ...servers], ...(options.toolPolicy?.dockerNetwork ? { dockerNetwork: options.toolPolicy.dockerNetwork } : {}) } };
+    // Runtimes with native skills also register the staged bundles by name.
+    const skills = skillBundles.length && agentRuntimeCapabilities(config.type, config.cliVersionResolved).skills === 'native' ? { skills: skillBundles.map(b => ({ id: b.id, name: b.name })) } : {};
+    const launchOptions = { ...options, prompt, toolPolicy: { localMcpServers, exclusiveMcp: true, allowWeb: options.toolPolicy?.allowWeb ?? true, mcpServers: [...existing, ...servers], ...skills, ...(options.toolPolicy?.dockerNetwork ? { dockerNetwork: options.toolPolicy.dockerNetwork } : {}) } };
     const validatedWindows = new WeakSet<object>();
     const packageNames = new Set(launchServers.filter(isPackageServer).map(s => s.name));
     const requires = { skills: skillBundles.map(b => b.name), remoteMcp: servers.map(s => s.name),

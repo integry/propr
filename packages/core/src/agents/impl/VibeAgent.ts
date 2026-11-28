@@ -1,9 +1,10 @@
+import { executeWithExtensions } from '../../extensions/extensionLaunch.js';
 import { retireProviderRuntime } from '../../diagnostics/managedLogRuntime.js';
-import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
+import { assertToolPolicySupported, vibeToolPolicyArgs, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import fs from 'fs';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
-import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
+import { Agent, AgentConfig, AgentTaskOptions, AgentExecutionResult, AgentToolPolicy, AnalysisResult, AnalyzeOptions } from '../types.js';
 import { agentDockerImageExists } from '../../claude/docker/dockerImagePresence.js';
 import { runAgent } from '../runtime/registry.js';
 import { renderDockerRunArgs } from '../runtime/dockerRunArgs.js';
@@ -24,7 +25,7 @@ import { resolveAgentTerminationReason } from '../termination.js';
 import {
     REPOSITORY_SCOUT_PREFIXED_MCP_TOOLS,
 } from './utils/repositoryScoutMcpServer.js';
-import { buildVibeDockerEnvVars } from './utils/vibeDockerEnvironment.js';
+import { buildVibeDockerEnvVars, vibeStdioSecretEnv } from './utils/vibeDockerEnvironment.js';
 
 export { UsageLimitError };
 export { parseVibeConversationLog, parseVibeOutput } from './utils/vibeOutputParser.js';
@@ -52,6 +53,7 @@ interface VibeDockerArgsParams {
     envFilePath?: string;
     runtimeHomePath?: string;
     repositoryInspection?: boolean;
+    toolPolicy?: AgentToolPolicy;
 }
 
 export class VibeAgent implements Agent {
@@ -67,28 +69,26 @@ export class VibeAgent implements Agent {
     }
 
      
+    /** The capability map decides whether library items reach this runtime; skipped ones are recorded. */
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
+        return executeWithExtensions(this.config, options, prepared => this.executeTaskWithoutExtensions(prepared));
+    }
+
+    private async executeTaskWithoutExtensions(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        assertToolPolicySupported(options);
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata, toolPolicy } = options;
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
 
-        logger.info({
-            issueNumber: issueRef.number,
-            repository,
-            worktreePath,
-            dockerImage: this.config.dockerImage,
-            agentAlias: this.config.alias,
-            isRetry,
-            retryReason
-        }, isRetry ? 'Starting Vibe agent execution (RETRY)...' : 'Starting Vibe agent execution...');
+        logger.info({ issueNumber: issueRef.number, repository, worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason }, isRetry ? 'Starting Vibe agent execution (RETRY)...' : 'Starting Vibe agent execution...');
 
         let promptFilePath: string | undefined;
         let envFilePath: string | undefined;
         let runtimeHomePath: string | undefined;
         try {
             // No native web switch: the restriction is best effort through the prompt.
-            const prompt = buildPromptWithRetryContext(withPromptOnlyToolPolicy(customPrompt, options.toolPolicy), isRetry, retryReason);
+            const prompt = buildPromptWithRetryContext(withPromptOnlyToolPolicy(customPrompt, toolPolicy), isRetry, retryReason);
             promptFilePath = writeVibePromptFile(prompt);
             const mistralApiKey = await this.getMistralApiKey();
             runtimeHomePath = prepareRuntimeHome(taskId);
@@ -106,11 +106,13 @@ export class VibeAgent implements Agent {
                 taskId,
                 promptFilePath,
                 envFilePath,
-                runtimeHomePath
+                runtimeHomePath, toolPolicy
             });
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'vibe',
-                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, githubToken),
+                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: this.diagnosticContext(runtimeHomePath, mistralApiKey, githubToken, toolPolicy),
+                    // MCP tokens and the VIBE_MCP_SERVERS catalog reach the runtime through its process environment.
+                    ...(toolPolicy && { extraEnvVars: vibeToolPolicyArgs(toolPolicy).env }),
                     timeout: this.timeoutMs,
                     cwd: worktreePath,
                     onSessionId,
@@ -381,12 +383,12 @@ export class VibeAgent implements Agent {
         }
     }
 
-    private diagnosticContext(nativeRoot: string | undefined, mistralApiKey?: string, githubToken?: string) {
+    private diagnosticContext(nativeRoot: string | undefined, mistralApiKey?: string, githubToken?: string, toolPolicy?: AgentToolPolicy) {
         const { configPath } = this.resolveOptionalConfigPath();
         const hasUsableConfig = !!configPath && hasUsableVibeConfigDir(configPath, mistralApiKey);
         return { provider: this.config.type, agent: this.config.id, configPath, nativeRoot,
             authenticationRoot: hasUsableConfig ? configPath : nativeRoot, nativeCredentialContextComplete: !hasUsableConfig,
-            credentials: { ...this.config.envVars, MISTRAL_API_KEY: mistralApiKey || '', GITHUB_TOKEN: githubToken || '' } };
+            credentials: { ...this.config.envVars, ...vibeStdioSecretEnv(toolPolicy), MISTRAL_API_KEY: mistralApiKey || '', GITHUB_TOKEN: githubToken || '' } };
     }
 
     private resolveCredentialsAndConfig(mistralApiKey?: string): { configPath: string | undefined; resolvedApiKey: string | undefined; hasUsableConfig: boolean; configMountArgs: string[] } {
@@ -422,7 +424,7 @@ export class VibeAgent implements Agent {
         if (repositoryInspection && mode !== 'analysis') throw new Error('Repository inspection requires analysis mode');
         const { configPath, hasUsableConfig, configMountArgs } = this.resolveCredentialsAndConfig(mistralApiKey);
         const cleanModelName = modelName?.includes(':') ? modelName.split(':').pop()! : modelName;
-        const envVars = buildVibeDockerEnvVars(this.config, { cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection });
+        const envVars = buildVibeDockerEnvVars(this.config, { cleanModelName, mode, maxTurns, runtimeHomePath, repositoryInspection, toolPolicy: params.toolPolicy });
 
         const containerName = buildVibeContainerName(this.config.alias, executionType || (issueNumber === 0 ? 'analysis' : `issue-${issueNumber}`), taskId, modelName);
         const workspaceMountMode = mode === 'analysis' ? 'ro' : 'rw';
@@ -432,7 +434,7 @@ export class VibeAgent implements Agent {
         logger.info({ issueNumber, agentAlias: this.config.alias, mode, dockerImage: this.config.dockerImage, configPath, configPathMounted: hasUsableConfig, workspaceMountMode, cliArgsSource, cliArgCount: cliArgs.length }, 'Docker args built for Vibe agent');
         return assembleVibeRunSpec({
             config: this.config, name: containerName, mode, worktreePath, repositoryInspection, gitMountArgs: params.gitMountArgs,
-            configMountArgs, promptMountArgs, runtimeHomeMountArgs, envFilePath, envVars, cliArgs,
+            configMountArgs, promptMountArgs, runtimeHomeMountArgs, envFilePath, envVars, cliArgs, toolPolicy: params.toolPolicy,
         });
     }
 

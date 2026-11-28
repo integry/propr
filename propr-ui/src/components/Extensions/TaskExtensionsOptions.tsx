@@ -9,8 +9,13 @@ interface Props {
   onDisableExtensionsChange: (value: boolean) => void;
 }
 
-/** Read-only list of the items that apply, the write opt-in and the "Run without extensions" switch. */
+/**
+ * Read-only list of the items that apply, the write opt-in and the "Run without
+ * extensions" switch. For an agent whose runtime cannot receive extensions, a
+ * short note names the agent instead.
+ */
 export function TaskExtensionsOptions({ preview, allowWrite, onAllowWriteChange, disableExtensions, onDisableExtensionsChange }: Props) {
+  if (preview && !preview.qualified && preview.unsupported) return <TaskExtensionsUnavailable agent={preview.unsupported.agentAlias} />;
   if (!preview?.qualified || (!preview.servers.length && !preview.skills.length)) return null;
   const readServers = preview.servers.filter(server => server.capability === 'read');
   const writeServers = preview.servers.filter(server => server.capability === 'write');
@@ -33,4 +38,10 @@ export function TaskExtensionsOptions({ preview, allowWrite, onAllowWriteChange,
       </label>}
     </div>
   </section>;
+}
+
+function TaskExtensionsUnavailable({ agent }: { agent: string }) {
+  return <p role="note" aria-label="Extensions" data-testid="task-extensions-unavailable" className="flex min-w-0 items-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 [overflow-wrap:anywhere] sm:col-span-2">
+    <Puzzle aria-hidden="true" size={15} className="shrink-0" />Extensions aren’t available for {agent}.
+  </p>;
 }

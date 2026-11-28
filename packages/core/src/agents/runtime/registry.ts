@@ -5,7 +5,7 @@ import { resolveWorkspaceTransportMode, runtimeWorkspaceTransports, WORKSPACE_TR
 import { NetworkPolicyError, resolveAgentRunNetworkPolicy, sameNetworkPolicy } from '../../network/egressExecution.js';
 import { stageAgentRunCredentials } from '../credentials/hostCredentialStaging.js';
 import type { AgentConfig } from '../types.js';
-import { agentRunNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
+import { agentRunSpecNetworkPolicy, assertAgentRunNetworkRepresentationsAgree, isValidRestrictedAgentRunNetworkPolicy, sameAgentRunNetworkPolicy, withAgentRunNetworkPolicy } from './agentRunNetworkPolicy.js';
 import { withComputeCost } from './computeUsage.js';
 import { DOCKER_RUNTIME_CAPABILITIES, DockerRuntime, type AgentRunOptions } from './dockerRuntime.js';
 import { FlyMachinesRuntime } from './flyMachinesRuntime.js';
@@ -206,7 +206,7 @@ export async function withAgentRunNetworkRequirement(spec: AgentRunSpec, options
         }
         const applicable = await resolveAgentRunNetworkPolicy();
         if (!applicable) return spec;
-        if (!sameAgentRunNetworkPolicy(agentRunNetworkPolicy(spec.profile.agentType, applicable as AgentRunNetworkRestriction), supplied)) {
+        if (!sameAgentRunNetworkPolicy(agentRunSpecNetworkPolicy(spec, applicable as AgentRunNetworkRestriction), supplied)) {
             throw new NetworkPolicyError(`Agent run ${spec.name} carries a restricted network policy${supplied.source ? ` (${supplied.source})` : ''} that differs from the policy applying at launch (${applicable.source})`);
         }
         return { ...spec, network: { ...spec.network, restriction: applicable as AgentRunNetworkRestriction } };

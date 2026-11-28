@@ -1,8 +1,11 @@
 import { agentOwnsGit, buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
-import { AgentRunSpecBuilder, agentRunNetwork } from '../../runtime/agentRunSpec.js';
+import { AgentRunSpecBuilder, agentRunMcpGrant, agentRunNetwork } from '../../runtime/agentRunSpec.js';
 import { renderDockerRunArgs } from '../../runtime/dockerRunArgs.js';
 import type { AgentRunSpec } from '../../runtime/types.js';
 import { createContainerExecutionId } from './containerExecutionId.js';
+import { agentContainerNetwork } from '../../agentContainerNetwork.js';
+import { antigravityToolPolicyArgs, antigravityToolPolicyEnvironment } from '../../mcpLaunch/antigravityMcpLaunch.js';
+import type { AgentToolPolicy } from '../../types.js';
 import { buildAntigravityContainerName } from './antigravityContainerName.js';
 import {
     buildAntigravityRepositoryScoutMcpConfig,
@@ -33,6 +36,8 @@ export interface AntigravityDockerArgsParams {
     dockerImage: string;
     agentAlias?: string;
     shellCommand: string;
+    /** Task runs only: run MCP servers, the exclusive switch and native skills. */
+    toolPolicy?: AgentToolPolicy;
 }
 
 function addAgentEnvironment(
@@ -49,6 +54,27 @@ function addAgentEnvironment(
     }
 }
 
+function assertAntigravityLaunchMode(repositoryInspection: boolean, readOnlyWorkspace: boolean, executionMode: 'task' | 'goal', toolPolicy: AgentToolPolicy | undefined): void {
+    if (repositoryInspection && !readOnlyWorkspace) {
+        throw new Error('Repository inspection requires a read-only workspace');
+    }
+    // The entrypoint writes the MCP config into the disposable runtime home only.
+    if (toolPolicy && (executionMode !== 'task' || repositoryInspection)) throw new Error('Antigravity MCP launch requires a disposable task runtime');
+}
+
+function addRepositoryInspectionEnvironment(builder: AgentRunSpecBuilder): void {
+    builder
+        .env('PROPR_REPOSITORY_INSPECTION', '1')
+        .env('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG', buildAntigravityRepositoryScoutMcpConfig())
+        .env('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_PERMISSIONS', buildAntigravityRepositoryScoutPermissions());
+}
+
+/** The MCP config, exclusive switch and skills; tokens and stdio secrets by name only (the runtime copies the values). */
+function addToolPolicyEnvironment(builder: AgentRunSpecBuilder, toolPolicy: AgentToolPolicy): void {
+    builder.dockerOptions(antigravityToolPolicyEnvironment(toolPolicy), 'scratch');
+    for (const name of Object.keys(antigravityToolPolicyArgs(toolPolicy).env)) builder.env(name);
+}
+
 /**
  * The Antigravity run before provider switches and the setup wrapper are
  * added: the agent appends CLI flags to `args`, then wraps the entrypoint.
@@ -58,11 +84,9 @@ export function buildAntigravityRunSpec(params: AntigravityDockerArgsParams): Ag
         worktreePath, githubToken, modelName, issueNumber, environment, configEnvironment,
         taskId, executionType, transcriptPath, readOnlyWorkspace = false,
         repositoryInspection = false, executionMode = 'task', configPath, dockerImage,
-        agentAlias, shellCommand,
+        agentAlias, shellCommand, toolPolicy,
     } = params;
-    if (repositoryInspection && !readOnlyWorkspace) {
-        throw new Error('Repository inspection requires a read-only workspace');
-    }
+    assertAntigravityLaunchMode(repositoryInspection, readOnlyWorkspace, executionMode, toolPolicy);
     const configMountTarget = executionMode === 'goal'
         ? '/home/node/.gemini'
         : ANTIGRAVITY_CONTAINER_SOURCE_CONFIG_PATH;
@@ -79,7 +103,8 @@ export function buildAntigravityRunSpec(params: AntigravityDockerArgsParams): Ag
 
     const builder = new AgentRunSpecBuilder({
         agentType: 'antigravity', image: dockerImage, ...(agentAlias ? { alias: agentAlias } : {}), name: containerName,
-        stdin: true, user: '0:0', network: agentRunNetwork('bridge'), security: { capAdd: ['CHOWN'] },
+        stdin: true, user: '0:0', network: agentRunNetwork(agentContainerNetwork(toolPolicy)), security: { capAdd: ['CHOWN'] },
+        mcpGrant: agentRunMcpGrant(toolPolicy),
         workspace: {
             hostPath: worktreePath,
             containerPath: repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace',
@@ -95,14 +120,11 @@ export function buildAntigravityRunSpec(params: AntigravityDockerArgsParams): Ag
     if (readOnlyWorkspace) builder.env('PROPR_REPO_SETUP', '0');
     if (executionMode === 'task') builder.env('PROPR_EPHEMERAL_STATE', '1');
     builder.env('PROPR_ANTIGRAVITY_SOURCE_CONFIG', configMountTarget);
-    if (repositoryInspection) {
-        builder
-            .env('PROPR_REPOSITORY_INSPECTION', '1')
-            .env('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_MCP_CONFIG', buildAntigravityRepositoryScoutMcpConfig())
-            .env('PROPR_REPOSITORY_SCOUT_ANTIGRAVITY_PERMISSIONS', buildAntigravityRepositoryScoutPermissions());
-    }
+    if (repositoryInspection) addRepositoryInspectionEnvironment(builder);
     builder.dockerOptions(buildAntigravityTranscriptArgs(transcriptPath), 'logs');
     addAgentEnvironment(builder, true, configEnvironment, environment);
+    // After operator variables, so their envVars cannot change them.
+    if (toolPolicy) addToolPolicyEnvironment(builder, toolPolicy);
     builder.dockerOptions(buildAgentGitCredentialArgs(), 'credential');
     return builder.command('/bin/bash', '-lc', shellCommand, 'propr-antigravity').build();
 }

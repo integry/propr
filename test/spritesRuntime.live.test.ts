@@ -46,6 +46,7 @@ test('real Sprite provisions all pinned CLIs, runs as node and restores between 
     for (const [provider, cli, version] of [
         ['claude', 'claude', pins.CLAUDE_CLI_VERSION], ['codex', 'codex', pins.CODEX_CLI_VERSION],
         ['antigravity', 'agy', pins.ANTIGRAVITY_CLI_VERSION],
+        ['opencode', 'opencode', pins.OPENCODE_CLI_VERSION], ['vibe', 'vibe', pins.VIBE_CLI_VERSION],
     ] as const) {
         const builder = new AgentRunSpecBuilder({
             name: 'live-' + provider, agentType: provider, image: 'live', stdin: true, user: '0:0', network: agentRunNetwork('bridge'),
@@ -65,7 +66,7 @@ test('real Sprite provisions all pinned CLIs, runs as node and restores between 
             test ! -e previous-run
             touch /tmp/previous-run previous-run
             ${provider === 'antigravity' ? `test -z "$PROPR_ANTIGRAVITY_SOURCE_CONFIG"
-            test ! -w "/opt/propr/run/source/${oauth}"
+            test ! -w "/opt/propr/run/source/0/${oauth}"
             test "$(cat "$HOME/.gemini/${oauth}")" = synthetic-before
             printf synthetic-after > "$HOME/.gemini/${oauth}"` : ''}
             ${cli} --version

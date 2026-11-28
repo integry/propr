@@ -1,8 +1,9 @@
 import { buildAgentGitCredentialArgs, buildAgentGitMountArgs } from '../../agentGitAccess.js';
 import { resolveAgentContainerResources } from '../../agentContainerResources.js';
-import { AgentRunSpecBuilder, agentRunNetwork } from '../../runtime/agentRunSpec.js';
+import { AgentRunSpecBuilder, agentRunMcpGrant, agentRunNetwork } from '../../runtime/agentRunSpec.js';
 import type { AgentRunSpec } from '../../runtime/types.js';
-import type { AgentConfig } from '../../types.js';
+import type { AgentConfig, AgentToolPolicy } from '../../types.js';
+import { agentContainerNetwork } from '../../agentContainerNetwork.js';
 import { applyAgentRunLaunchWrapper } from '../../../claude/docker/repoSetupWrapper.js';
 import { vibeAnalysisSandbox } from './vibeAgentHelpers.js';
 import { REPOSITORY_SCOUT_CONTAINER_ROOT } from './repositoryScoutMcpServer.js';
@@ -20,6 +21,8 @@ export interface VibeRunSpecInput {
     envFilePath?: string;
     envVars: string[];
     cliArgs: string[];
+    /** Task runs only: the MCP catalog, skills and the exclusive switch. */
+    toolPolicy?: AgentToolPolicy;
 }
 
 /** The Vibe run: stdin closed (the prompt is a mounted file), a read-only sandbox for analysis. */
@@ -28,7 +31,14 @@ export function assembleVibeRunSpec(input: VibeRunSpecInput): AgentRunSpec {
     const sandbox = vibeAnalysisSandbox(mode);
     const builder = new AgentRunSpecBuilder({
         agentType: 'vibe', image: config.dockerImage, alias: config.alias, name: input.name, stdin: false,
-        network: agentRunNetwork('bridge'), security: { readOnlyRootFilesystem: sandbox.readOnlyRootFilesystem, capDrop: sandbox.capDrop },
+        // Execute runs start as root like every other agent: the setup wrapper and the clone
+        // workspace transport need root to keep the agent (dropped to node by the entrypoint)
+        // under a different user ID from their credentials. Analysis keeps the image user in
+        // its read-only, capability-free sandbox; it always uses the read-only bind transport.
+        ...(mode === 'execute' ? { user: '0:0' } : {}),
+        network: agentRunNetwork(agentContainerNetwork(input.toolPolicy)),
+        mcpGrant: agentRunMcpGrant(input.toolPolicy),
+        security: { readOnlyRootFilesystem: sandbox.readOnlyRootFilesystem, capDrop: sandbox.capDrop, capAdd: mode === 'execute' ? ['CHOWN'] : [] },
         workspace: {
             hostPath: worktreePath,
             containerPath: repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace',
