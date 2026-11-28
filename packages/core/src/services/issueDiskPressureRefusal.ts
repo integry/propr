@@ -1,0 +1,281 @@
+/**
+ * An issue job the worker refused for disk pressure until its wait for free
+ * space ran out (`issueDiskPressureDeferral.ts`): the refused attempt never
+ * reached its processor, so nothing told the issue. When no earlier attempt
+ * was admitted either (`issueJobAdmitted`), the job never started at all: no
+ * task, no comment, no label change. Without this the issue looks ignored
+ * and its plan keeps reporting it as in progress. This posts one comment that
+ * says what stopped the run and how to retry, and takes the plan issue out of
+ * `processing` (back to `pending`, with its queued execution blocked on the
+ * reason), so `get_plan` and the Studio show it. The retry instructions follow
+ * the job's actual retention: a job removed on failure is retried by a relabel;
+ * while a failed job is kept a relabel does not retry, and the comment gives an
+ * operator a command that clears only that failed instance. The plan issue is
+ * changed only while it is not finished and is linked to this run: no task owns
+ * it yet, or its task is one this job created (same correlation ID). Finished
+ * plan issues, historical ones and those another run took over keep their
+ * status and their queued execution, also when the takeover happens while
+ * the refusal is being reported. Best effort: never throws.
+ */
+import type { Knex } from 'knex';
+import { db } from '../db/connection.js';
+import logger from '../utils/logger.js';
+import { worktreeDiskPressureDetails } from '../storage/lifecycle.js';
+import { PlanIssueStatus, publishPlanIssueActivity } from '../config/planIssueManager.js';
+import { notifyEpicQueue, updatePlanIssuesWithStatusJournal } from '../config/planIssueStatusJournal.js';
+import { diskPressureRefusedReason, markEpicQueueIssueDispatchRefused } from './taskPlanning/epicQueueBlockedHead.js';
+
+export interface DiskPressureRefusalOctokit {
+    request(route: string, params: Record<string, unknown>): Promise<unknown>;
+}
+
+export interface RefusedIssueJob {
+    id?: string;
+    /** Creation time of this job instance (BullMQ's `timestamp`); identifies it among jobs reusing its ID. */
+    timestamp?: number;
+    data: {
+        repoOwner?: string; repoName?: string; number?: number; triggeringLabel?: string; correlationId?: string;
+        diskPressureDeferrals?: number; diskPressureSince?: number; diskPressureDetails?: string;
+        /** An earlier attempt passed admission and entered the processor. */
+        issueJobAdmitted?: boolean;
+    };
+}
+
+export interface DiskPressureRefusalOutcome {
+    commented: boolean;
+    /** The plan issue was taken out of `processing`. */
+    planIssueReleased: boolean;
+    /** The plan's active execution now shows the issue as blocked. */
+    queueBlocked: boolean;
+}
+
+function waitedText(job: RefusedIssueJob, now: number): string {
+    const since = job.data.diskPressureSince;
+    if (typeof since !== 'number') return '';
+    const minutes = Math.max(1, Math.round((now - since) / 60_000));
+    return ` It waited about ${minutes} minute${minutes === 1 ? '' : 's'} for space to be freed, then gave up.`;
+}
+
+/** What admission measured at the final refusal (from the error), or at the latest recorded one. */
+export function refusalDetails(job: RefusedIssueJob, error?: unknown): string | null {
+    return worktreeDiskPressureDetails(error) ?? (typeof job.data.diskPressureDetails === 'string' ? job.data.diskPressureDetails : null);
+}
+
+/** The issue queue's name, as `taskQueue.ts` resolves it (not imported: that module loads this one). */
+function issueQueueName(): string {
+    return process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
+}
+
+/**
+ * Whether the refused job is still in the queue after its final failure, as the worker read it
+ * (`taskQueue.ts`): `removed` when BullMQ deleted it on failure (`removeOnFail: true`, as the daemon and the
+ * plan route add issue jobs) or another job now holds its ID; `retained` when this very job is in the failed
+ * set; `unknown` when that could not be read.
+ */
+export type RefusedJobRetention = 'removed' | 'retained' | 'unknown';
+
+/**
+ * Removes the job only while it is still this failed job: in the queue's failed set and with the creation
+ * timestamp of this instance. A job added later under the same ID (a replacement) is left alone; prints 0 then.
+ */
+const CLEAR_FAILED_JOB_SCRIPT = "if redis.call('ZSCORE', KEYS[1], ARGV[1]) and redis.call('HGET', KEYS[2], 'timestamp') == ARGV[2]"
+    + " then redis.call('ZREM', KEYS[1], ARGV[1]) return redis.call('DEL', KEYS[2], KEYS[3]) end return 0";
+
+/** The guarded command that clears this failed job instance, or null when the job's ID or instance is unknown. */
+export function clearFailedJobCommand(job: RefusedIssueJob, queueName: string): string | null {
+    if (!job.id || typeof job.timestamp !== 'number') return null;
+    const key = `bull:${queueName}:${job.id}`;
+    return `redis-cli EVAL "${CLEAR_FAILED_JOB_SCRIPT}" 3 bull:${queueName}:failed ${key} ${key}:logs ${job.id} ${job.timestamp}`;
+}
+
+/**
+ * How to retry. A job BullMQ removed on failure is gone, so a new trigger (a relabel, a plan retry) starts a
+ * fresh run. A retained failed job deduplicates a new trigger against its job ID, so nothing runs until an
+ * operator clears it; the command given clears only this failed instance, never a replacement under the same
+ * ID. Fresh job IDs per dispatch (integry/propr#3873) remove this step.
+ */
+function retryText(
+    job: RefusedIssueJob, label: string,
+    { inPlan, queueName, retention }: { inPlan: boolean; queueName: string; retention: RefusedJobRetention },
+): string[] {
+    const retrigger = `remove the \`${label}\` label from this issue and add it again` + (inPlan ? ', or retry the issue from its plan' : '');
+    if (retention === 'removed') {
+        return [`The refused job was removed from the worker's queue. To retry once space has been freed on the worker host, ${retrigger}.`];
+    }
+    const command = clearFailedJobCommand(job, queueName);
+    const lead = retention === 'retained'
+        ? (job.id
+            ? `**Relabeling will not retry this issue until the stale job \`${job.id}\` is cleared** (or until integry/propr#3873 lands).`
+            : `**Relabeling will not retry this issue until the stale failed job for it is cleared** from the worker's queue \`${queueName}\``
+                + ' (or until integry/propr#3873 lands).')
+            + ' The refused job stays in the worker\'s queue as a failed job, and while it is there ProPR ignores a new trigger for this issue.'
+        : '**If relabeling does not start a new run, the refused job is still kept** in the worker\'s queue'
+            + `${job.id ? ` as the failed job \`${job.id}\`` : ''}, and ProPR ignores a new trigger for this issue until it is cleared`
+            + ' (or until integry/propr#3873 lands).';
+    if (!command) {
+        return [
+            lead,
+            '',
+            `A ProPR operator can find it in Redis under \`bull:${queueName}:failed\`; remove it only after checking that it is this issue's failed job.`,
+            '',
+            `Once space has been freed on the worker host and the job is cleared, ${retrigger}.`,
+        ];
+    }
+    return [
+        lead,
+        '',
+        'To retry once space has been freed on the worker host, a ProPR operator clears the job from Redis. The command removes it only while'
+            + ' it is still this failed job, and otherwise prints `0` and changes nothing:',
+        '',
+        '```',
+        command,
+        '```',
+        '',
+        `Then ${retrigger}.`,
+    ];
+}
+
+export function diskPressureRefusalCommentBody(
+    job: RefusedIssueJob,
+    { inPlan, now = Date.now(), details = null, queueName = issueQueueName(), retention = 'unknown' }:
+        { inPlan: boolean; now?: number; details?: string | null; queueName?: string; retention?: RefusedJobRetention },
+): string {
+    const label = job.data.triggeringLabel || 'AI';
+    // Only the absence of an admitted attempt supports saying that the job changed nothing.
+    const startedBefore = job.data.issueJobAdmitted === true;
+    return [
+        ...(startedBefore
+            ? [
+                '❌ **ProPR stopped retrying this issue: the worker had no free disk space.**',
+                '',
+                'The latest attempt was refused because the disk that holds the worker\'s working copies is nearly full,'
+                    + ` after an earlier attempt of this run had already started.${waitedText(job, now)}`
+                    + ' Work from the earlier attempt (a task, a branch, commits or a pull request) may remain.',
+            ]
+            : [
+                '❌ **ProPR could not start on this issue: the worker had no free disk space.**',
+                '',
+                'The ProPR worker refused to start this issue because the disk that holds its working copies is nearly full.'
+                    + `${waitedText(job, now)} No attempt of this run started, so nothing was changed: no branch, commit or pull request was created.`,
+            ]),
+        '',
+        ...(details ? ['Measured at the last refusal:', '', '```', details, '```', ''] : []),
+        ...retryText(job, label, { inPlan, queueName, retention }),
+    ].join('\n');
+}
+
+type Log = { info(obj: object, msg: string): void; warn(obj: object, msg: string): void };
+
+/** Plan issue states a refusal may still change; every other state is finished or owned by later work. */
+const NON_TERMINAL = [PlanIssueStatus.PENDING, PlanIssueStatus.PROCESSING];
+
+/**
+ * Whether the plan issue is linked to the refused run: no task owns it yet (the run never created one), or its
+ * task is one this job created, recognised by the job's correlation ID. A task of another run means that run owns it.
+ */
+async function isLinkedToRun(database: Knex, planIssue: { task_id?: string | null }, correlationId: string | undefined): Promise<boolean> {
+    if (!planIssue.task_id) return true;
+    if (!correlationId) return false;
+    const task = await database('tasks').where({ task_id: planIssue.task_id }).first('correlation_id');
+    return task?.correlation_id === correlationId;
+}
+
+/** The plan issue's status or task changed after the refusal read it: that run owns it, so nothing of the refusal is written. */
+class PlanIssueTakenOver extends Error {}
+
+const sameTask = (a: string | null | undefined, b: string | null | undefined) => (a || null) === (b || null);
+
+/**
+ * The plan issue of a refused run: its queued execution blocked on the reason and, while it is `processing`,
+ * back to `pending`. Only the newest plan issue of the issue, and only while it is not finished and is linked
+ * to this run (`isLinkedToRun`). Both writes run in one transaction that first reads the row again and goes on
+ * only while its status and task are still as read: a run that took the issue over after the first read (a
+ * replacement job recording its task) keeps its status and its execution, which is not blocked for this
+ * refusal. SQLite transactions are serializable, so the takeover lands either before that read or after the commit.
+ */
+async function releasePlanIssue(
+    { database, now, log }: { database: Knex; now: () => number; log: Log }, job: RefusedIssueJob, repository: string, issueNumber: number,
+): Promise<{ draftId: string | null; linked: boolean; released: boolean; queueBlocked: boolean }> {
+    // Issue numbers can appear in several historical drafts; only the newest plan issue is the issue's current one.
+    const planIssue = await database('plan_issues').where({ repository, issue_number: issueNumber })
+        .orderBy('created_at', 'desc').orderBy('id', 'desc').first('id', 'draft_id', 'status', 'task_id') as
+        { id: number; draft_id: string | null; status: string; task_id: string | null } | undefined;
+    if (!planIssue?.draft_id) return { draftId: null, linked: false, released: false, queueBlocked: false };
+    const draftId = planIssue.draft_id;
+    const target = { draftId, issueNumber, status: planIssue.status, taskId: planIssue.task_id ?? null };
+    if (!NON_TERMINAL.includes(planIssue.status as PlanIssueStatus) || !await isLinkedToRun(database, planIssue, job.data.correlationId)) {
+        log.info(target, 'The plan issue is finished or not linked to the refused run; its status is left as is');
+        return { draftId, linked: false, released: false, queueBlocked: false };
+    }
+    let settled: { released: boolean; queueBlocked: boolean };
+    try {
+        settled = await database.transaction(async trx => {
+            const current = await trx('plan_issues').where({ id: planIssue.id }).first('status', 'task_id') as
+                { status: string; task_id: string | null } | undefined;
+            if (!current || current.status !== planIssue.status || !sameTask(current.task_id, planIssue.task_id)) throw new PlanIssueTakenOver();
+            // Blocked with a renewed claim: once the issue is pending again, the recovery sweep must not dispatch it again at once.
+            const queueBlocked = await markEpicQueueIssueDispatchRefused(
+                { draftId, issueNumber, reason: diskPressureRefusedReason(issueNumber) }, { database: trx, now },
+            ).catch(error => { log.warn({ ...target, error: (error as Error).message }, 'Could not block the epic execution queue issue'); return false; });
+            if (planIssue.status !== PlanIssueStatus.PROCESSING) return { released: false, queueBlocked };
+            // Conditioned on the row as read too; a change here undoes the queue block with it.
+            const released = await updatePlanIssuesWithStatusJournal(
+                rows => rows.where({ id: planIssue.id, status: PlanIssueStatus.PROCESSING })
+                    .where(row => planIssue.task_id ? row.where('task_id', planIssue.task_id) : row.whereNull('task_id').orWhere('task_id', '')),
+                { status: PlanIssueStatus.PENDING, updated_at: trx.fn.now() }, PlanIssueStatus.PENDING, { database: trx },
+            ) > 0;
+            if (!released) throw new PlanIssueTakenOver();
+            return { released, queueBlocked };
+        });
+    } catch (error) {
+        if (!(error instanceof PlanIssueTakenOver)) throw error;
+        log.info(target, 'The refused plan issue moved on meanwhile; its status and execution are left as is');
+        return { draftId, linked: true, released: false, queueBlocked: false };
+    }
+    const { released, queueBlocked } = settled;
+    if (!released) return { draftId, linked: true, released, queueBlocked };
+    // Follow-on effects of the status change, for this row's draft only; best effort, the release stands.
+    try {
+        await notifyEpicQueue(draftId, issueNumber, PlanIssueStatus.PENDING);
+        await (await import('./taskPlanningService.js')).checkAndUpdateDraftStatus(draftId);
+        await publishPlanIssueActivity(repository, draftId, PlanIssueStatus.PENDING);
+    } catch (error) {
+        log.warn({ ...target, error: (error as Error).message }, 'Could not propagate the release of a refused plan issue');
+    }
+    return { draftId, linked: true, released, queueBlocked };
+}
+
+export async function reportIssueDiskPressureRefusal(
+    job: RefusedIssueJob,
+    { octokit, database = db, now = Date.now, error, retention = 'unknown' }: {
+        octokit?: DiskPressureRefusalOctokit; database?: Knex; now?: () => number; error?: unknown; retention?: RefusedJobRetention;
+    } = {},
+): Promise<DiskPressureRefusalOutcome> {
+    const details = refusalDetails(job, error);
+    const { repoOwner, repoName, number } = job.data;
+    const log = job.data.correlationId ? logger.withCorrelation(job.data.correlationId) : logger;
+    const outcome: DiskPressureRefusalOutcome = { commented: false, planIssueReleased: false, queueBlocked: false };
+    if (!repoOwner || !repoName || typeof number !== 'number') return outcome;
+    const repository = `${repoOwner}/${repoName}`;
+    let inPlan = false;
+    try {
+        const plan = await releasePlanIssue({ database, now, log }, job, repository, number);
+        inPlan = plan.draftId !== null;
+        outcome.planIssueReleased = plan.released;
+        outcome.queueBlocked = plan.queueBlocked;
+    } catch (error) {
+        log.warn({ jobId: job.id, repository, issueNumber: number, error: (error as Error).message }, 'Could not update the plan issue of an issue job refused for disk pressure');
+    }
+    try {
+        const client = octokit ?? await (await import('../auth/githubAuth.js')).getAuthenticatedOctokit();
+        await client.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+            owner: repoOwner, repo: repoName, issue_number: number, body: diskPressureRefusalCommentBody(job, { inPlan, now: now(), details, retention }),
+        });
+        outcome.commented = true;
+    } catch (error) {
+        log.error({ jobId: job.id, repository, issueNumber: number, error: (error as Error).message }, 'Failed to report an issue job refused for disk pressure on the issue');
+    }
+    log.warn({ jobId: job.id, repository, issueNumber: number, retention, ...outcome, ...(details ? { diskPressureDetails: details } : {}) },
+        `Reported an issue job refused for disk pressure${details ? ` (${details})` : ''}`);
+    return outcome;
+}

@@ -139,6 +139,12 @@ export {
     createWorker,
     shutdownQueue
 } from './queue/taskQueue.js';
+export {
+    decideIssueDiskPressure,
+    issueDiskPressureMaxWaitMs,
+    ISSUE_DISK_PRESSURE_RETRY_DELAYS_MS,
+    type IssueDiskPressureWaitData,
+} from './queue/issueDiskPressureDeferral.js';
 export type {
     IssueJobData,
     AgentCapacityDeferralData,
@@ -703,7 +709,10 @@ export {
 
 export { GeneratedPayloadStorage, generatedPayloadStorage, GENERATED_PAYLOADS } from './storage/generatedPayloads.js';
 export { generateManagedDependencies } from './storage/managedDependencies.js';
-export { WorktreeDiskPressureError, isWorktreeDiskPressureError } from './storage/lifecycle.js';
+export {
+    WorktreeDiskPressureError, isWorktreeDiskPressureError, worktreeDiskPressureDetails, worktreeDiskPressureLogFields,
+    worktreeDiskPressureMeasurementOf, formatWorktreeDiskPressure, type WorktreeDiskPressureMeasurement,
+} from './storage/lifecycle.js';
 
 export * from './extensions/extensionProfileStore.js';
 export { extensionResolutionEvent, type ExtensionResolutionEvent } from './extensions/extensionRunResolution.js';

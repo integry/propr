@@ -103,12 +103,13 @@ export async function recordUltrafixDiskPressureRefusal(
     redis: Redis,
     data: FailedStepJobData,
     now = Date.now(),
+    details: string | null = null,
 ): Promise<UltrafixDiskPressureWait | null> {
     const action = stepActionOf(data);
     if (!action) return null;
     const recorded = await recordStepFailure(redis, data, {
         reason: DISK_PRESSURE_RETRY_REASON,
-        nextState: state => recordDiskPressureRefusalInState(state, action, now),
+        nextState: state => recordDiskPressureRefusalInState(state, action, now, details),
         notBefore: state => {
             const wait = getDiskPressureWait(state);
             return wait && !wait.exhausted ? wait.retryAt : undefined;

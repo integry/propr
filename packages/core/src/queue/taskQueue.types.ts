@@ -338,6 +338,8 @@ export interface AiMetrics {
     status: 'success' | 'failed';
     correlationId?: string;
     error?: string;
+    /** A failure BullMQ does not retry: the job's last attempt (`finishedOn` is set). */
+    final?: boolean;
 }
 
 export interface WorkerCreateOptions {

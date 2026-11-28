@@ -34,14 +34,18 @@ export type PlanIssueScope = (rows: Knex.QueryBuilder) => Knex.QueryBuilder;
  * quickly the status returns to an earlier value: the event's `seq` is its
  * identity, so no timestamp-based key can merge two transitions.
  *
+ * `database` may be a caller's transaction, so the update commits with the
+ * caller's other writes.
+ *
  * Without a status change the update runs alone. A failed append is logged
  * by the journal and leaves the update in place. Returns the rows updated.
  */
 export async function updatePlanIssuesWithStatusJournal(
     scope: PlanIssueScope, updateData: Record<string, unknown>, status: string | undefined,
+    { database = db }: { database?: Knex } = {},
 ): Promise<number> {
-    if (status === undefined) return Number(await scope(db('plan_issues')).update(updateData));
-    return db.transaction(async trx => {
+    if (status === undefined) return Number(await scope(database('plan_issues')).update(updateData));
+    return database.transaction(async trx => {
         const before = await scope(trx('plan_issues'))
             .select<PlanIssueJournalRow[]>('id', 'draft_id', 'repository', 'issue_number', 'status');
         if (!before.length) return 0;

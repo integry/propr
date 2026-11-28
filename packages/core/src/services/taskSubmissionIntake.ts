@@ -27,6 +27,11 @@ export interface IntakeFailureEvidence {
   timestamp: number;
   failures: number;
   reason: string;
+  /**
+   * One of the instance's recorded failures was its last: BullMQ did not
+   * retry it, as when it failed unrecoverably before its attempts ran out.
+   */
+  final?: boolean;
 }
 
 export interface SubmissionIntakeEvidence {
@@ -139,8 +144,9 @@ export async function finalizeSubmissionIntakeFailure(job: FinalizableJob | unde
  * whose intake ended unrecorded, including before this check existed, can be
  * retried. Only an established outcome settles it: the intake job failed for
  * good, or it is gone and every attempt of its latest instance is recorded
- * failed. A live, delayed or completed job, or an absent one without that
- * record, leaves it queued, whatever its age or the absence of a task.
+ * failed, or one of them is recorded as its last (an unrecoverable failure
+ * ends a job before its attempts run out). A live, delayed or completed job,
+ * or an absent one without that record, leaves it queued, whatever its age or the absence of a task.
  */
 export async function reconcileSubmissionIntake(database: Knex, row: TaskSubmission, evidence: SubmissionIntakeEvidence): Promise<TaskSubmission> {
   if (!awaitingIntake(row)) return row;
@@ -151,7 +157,7 @@ export async function reconcileSubmissionIntake(database: Knex, row: TaskSubmiss
     if (current.state === 'failed') return { reason: current.reason };
     if (current.state !== 'absent') return null;
     const failures = await evidence.failures(row);
-    if (!failures || failures.failures < SUBMISSION_INTAKE_ATTEMPTS) return null;
+    if (!failures || (!failures.final && failures.failures < SUBMISSION_INTAKE_ATTEMPTS)) return null;
     // A delivery added while the log was read is the intake now.
     return (await evidence.job(jobId)).state === 'absent' ? { reason: failures.reason, attempts: failures.failures } : null;
   };
@@ -207,12 +213,15 @@ export function queueSubmissionIntakeEvidence(queueOf: () => IntakeQueue | Promi
       for (let offset = 0; ; offset += FAILURE_LOG_PAGE) {
         const entries = await client.zrangebyscore(FAILURE_LOG, from, '+inf', 'LIMIT', offset, FAILURE_LOG_PAGE);
         for (const entry of entries) {
-          let parsed: { correlationId?: string; status?: string; timestamp?: number; error?: string };
+          let parsed: { correlationId?: string; status?: string; timestamp?: number; error?: string; final?: boolean };
           try { parsed = JSON.parse(entry); } catch { continue; }
           if (parsed.correlationId !== row.id || parsed.status !== 'failed' || typeof parsed.timestamp !== 'number' || counted.has(entry)) continue;
           counted.add(entry);
           if (!latest || parsed.timestamp > latest.timestamp) latest = { timestamp: parsed.timestamp, failures: 0, reason: parsed.error || 'The intake job failed' };
-          if (parsed.timestamp === latest.timestamp) latest.failures++;
+          if (parsed.timestamp === latest.timestamp) {
+            latest.failures++;
+            if (parsed.final === true) latest.final = true;
+          }
         }
         if (entries.length < FAILURE_LOG_PAGE) return latest;
       }

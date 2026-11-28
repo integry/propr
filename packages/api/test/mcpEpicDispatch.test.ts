@@ -1218,3 +1218,36 @@ test('a dispatch failure of a queued issue raises one deduplicated plan notifica
   assert.deepEqual(recipients, ['user'], 'the plan owner');
   assert.equal((await core.listEpicQueueBlockedEvents(planId)).events.length, 1);
 });
+
+for (const epicExecution of ['sequential', 'graph'] as const) {
+  test(`implement_plan for a new issue while the plan's epic queue is active is refused with 409, not a 500 (${epicExecution})`, async () => {
+    const { classifyError } = await import('../mcp/errorEnvelope.js');
+    await run({ issues: [10, 30] });
+    const queue = await core.getEpicExecutionQueue(planId);
+    assert.equal(queue?.status, 'active');
+    let refusal: unknown;
+    await run({ issues: [40], idempotencyKey: 'epic-request-2', epicExecution }).catch(error => { refusal = error; });
+    assert.ok(refusal instanceof McpError, 'an explicit refusal, not an internal error');
+    assert.equal(refusal.code, 'EPIC_EXECUTION_ACTIVE');
+    assert.equal(refusal.status, 409);
+    assert.equal(refusal.message, 'This plan\'s epic execution is still running issues #10, #30; retry when it finishes.');
+    assert.deepEqual(refusal.details, { executionId: queue?.executionId, issues: [10, 30] });
+    // A mutation's error envelope: the caller gets the refusal itself, not OUTCOME_UNKNOWN.
+    const envelope = classifyError(refusal, { sideEffectsPossible: true });
+    assert.deepEqual([envelope.code, envelope.status, envelope.retryable], ['EPIC_EXECUTION_ACTIVE', 409, true]);
+    // Refused before any claim, label or dispatch for the new issue.
+    assert.deepEqual(dispatches, [10]);
+    assert.equal(await database('mcp_records').where({ kind: 'issue_execution', id: `${planId}:40` }).first(), undefined);
+    assert.equal((await core.getEpicExecutionQueue(planId))?.executionId, queue?.executionId);
+    assert.equal((await database('plan_issues').where({ draft_id: planId, issue_number: 40 }).first()).status, 'pending');
+  });
+}
+
+test('implement_plan for a new issue is accepted once the plan\'s epic queue has finished', async () => {
+  await run({ issues: [10] });
+  await completePlanIssue(10);
+  assert.equal((await core.getEpicExecutionQueue(planId))?.status, 'completed');
+  const result = await run({ issues: [40], idempotencyKey: 'epic-request-2' });
+  assert.equal(result.status, 202);
+  assert.deepEqual(dispatches, [10, 40]);
+});

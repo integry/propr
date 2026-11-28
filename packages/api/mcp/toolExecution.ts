@@ -3,6 +3,7 @@ import { accessPrincipal, claimMcpSurface, classifyMcpFailure, recordMcpAccess, 
 import { McpPolicy, type McpPrincipal } from './policy.js';
 import { McpOperations } from './operations.js';
 import { cancellationTarget } from './operationTracking.js';
+import { logInternalToolFailure } from './internalFailureLog.js';
 import { redact, redactText } from './adapter.js';
 import { presentResult, type PresentedResult } from './presentation.js';
 import { normalizeResultTimestamps } from './resultTimestamps.js';
@@ -178,7 +179,11 @@ async function runTool({ tool, raw, principal, deps, access, signal }: ToolInvoc
     // read it: a grant revoked meanwhile (its phase ended, and its mutations were
     // counted) admits nothing more.
     : await new McpOperations(deps.db).run(principal, { tool: tool.name, args, repository: operationRepository, admit: tx => deps.policy.admit(principal, tx) },
-      operationId => tool.run({ principal, args, operationId }).catch(error => { access.failure = classifyMcpFailure(error, { sideEffectsPossible: true }); throw error; })));
+      operationId => tool.run({ principal, args, operationId }).catch(error => {
+        access.failure = classifyMcpFailure(error, { sideEffectsPossible: true });
+        logInternalToolFailure(error, { tool: tool.name, operationId, repository: operationRepository });
+        throw error;
+      })));
   // Timestamps are normalized here, once, so every tool reports ISO 8601 UTC whatever its store wrote.
   const data = normalizeResultTimestamps(redactToolResult(tool, result));
   const content = redactToolContent(readContent);
@@ -226,6 +231,7 @@ export async function executeTool(tool: McpTool, raw: unknown, principal: McpPri
     await recordToolAccess(invocation, startedAt, invocation.access.failure ?? { status: 200, outcome: 'success', errorCode: null });
     return presented;
   } catch (error) {
+    logInternalToolFailure(error, { tool: tool.name, operationId: invocation.access.operationId, repository: invocation.access.repository });
     await recordToolAccess(invocation, startedAt, classifyMcpFailure(error));
     throw error;
   }

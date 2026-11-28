@@ -172,7 +172,9 @@ async function rearmFromSnapshot(
     // whichever trigger (sweep or check event) gets here first.
     const diskPressureDelayMs = diskPressureRetryDelayMs(diskPressureWait);
     if (diskPressureDelayMs > 0) {
-        correlatedLogger.info({ pr, retryDelayMs: diskPressureDelayMs }, 'Ultrafix re-arm: waiting for free disk space on the worker');
+        const details = diskPressureWait?.details;
+        correlatedLogger.info({ pr, retryDelayMs: diskPressureDelayMs, ...(details ? { diskPressureDetails: details } : {}) },
+            `Ultrafix re-arm: waiting for free disk space on the worker${details ? ` (${details})` : ''}`);
         return { continued: false, reason: `rearm_not_ready: ${DISK_PRESSURE_WAIT_REASON}`, retryDelayMs: diskPressureDelayMs };
     }
 

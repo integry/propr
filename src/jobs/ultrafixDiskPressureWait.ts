@@ -47,6 +47,8 @@ export interface UltrafixDiskPressureWait {
     exhausted?: boolean;
     /** The waiting notice was published on the pull request; until then each refusal tries again. */
     noticePosted?: boolean;
+    /** What admission measured at the latest refusal, in words. */
+    details?: string;
 }
 
 const MINUTE_MS = 60_000;
@@ -108,8 +110,10 @@ export function recordDiskPressureRefusalInState(
     state: UltrafixLoopState,
     action: UltrafixAction,
     now = Date.now(),
+    details: string | null = null,
 ): UltrafixLoopState {
     const previous = getDiskPressureWait(state);
+    const latestDetails = details ?? previous?.details;
     const refusals = (previous?.refusals ?? 0) + 1;
     const delayMs = ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS[refusals - 1];
     const wait: UltrafixDiskPressureWait = {
@@ -121,6 +125,7 @@ export function recordDiskPressureRefusalInState(
         retryAt: new Date(now + (delayMs ?? 0)).toISOString(),
         ...(delayMs === undefined ? { exhausted: true } : {}),
         ...(previous?.noticePosted ? { noticePosted: true } : {}),
+        ...(latestDetails ? { details: latestDetails } : {}),
     };
     return { ...state, diskPressureWait: wait };
 }
@@ -176,8 +181,12 @@ function formatMinutes(ms: number): string {
     return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 
+function measuredLines(details: string | undefined, heading: string): string[] {
+    return details ? ['', heading, '', '```', details, '```'] : [];
+}
+
 /** The single notice posted when a step is first refused for disk pressure. */
-export function buildDiskPressureWaitNotice(action: UltrafixAction): string {
+export function buildDiskPressureWaitNotice(action: UltrafixAction, details?: string): string {
     const schedule = ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS.map(ms => ms / MINUTE_MS).join(', ');
     const total = ULTRAFIX_DISK_PRESSURE_RETRY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0);
     return [
@@ -188,6 +197,7 @@ export function buildDiskPressureWaitNotice(action: UltrafixAction): string {
         '',
         `Ultrafix retries the same step automatically (after ${schedule} minutes). `
             + `If space has not been freed within about ${formatMinutes(total)}, the loop stops and says so here.`,
+        ...measuredLines(details, 'Measured at the refusal:'),
     ].join('\n');
 }
 
@@ -200,7 +210,8 @@ export function explainDiskPressureStop(state: UltrafixLoopState, now = Date.now
     return `${ULTRAFIX_DISK_PRESSURE_REASON} for its working copies: the next ${commandName(action)} could not start${waited}${refusals}. `
         // The stop notice header already names the cycle (counted as on the status line), so it is not repeated here.
         + 'Nothing was changed on this pull request by the refused step. '
-        + 'Free space on the worker host, then restart the loop with `/ultrafix`.';
+        + 'Free space on the worker host, then restart the loop with `/ultrafix`.'
+        + ['', ...measuredLines(wait?.details, 'Measured at the last refusal:')].join('\n');
 }
 
 /**
