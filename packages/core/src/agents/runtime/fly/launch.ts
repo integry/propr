@@ -1,9 +1,7 @@
-import { providerCredentialManifest } from '../../credentials/providerManifests.js';
-import { PROPR_MCP_BEARER_TOKEN_ENV } from '../../agentToolPolicy.js';
 import { extensionSkillPath, resolveRunEnvironment } from '../sprites/spritesRun.js';
 import { EXTENSION_SKILLS_ROOT, type ExtensionSkillFile } from '../../../extensions/extensionLaunchContext.js';
 import path from 'node:path';
-import { parseJsonc } from '../../../utils/jsonUtils.js';
+import { credentialEnvNames, redactableSecrets, storeFileSecrets } from '../remoteRunSecrets.js';
 import { randomUUID } from 'node:crypto';
 import { CLAUDE_BACKUPS_CONTAINER_PATH, CLAUDE_JSON_SEED_CONTAINER_PATH as SEED } from '../../../claude/docker/claudeConfigSeed.js';
 import { WORKSPACE_TRANSPORT_SCRIPT, WORKSPACE_DIRECT_AGENT_LAUNCH, WORKSPACE_TRANSPORT_RESULT_DIR,
@@ -25,10 +23,9 @@ export const helper = ['/usr/bin/python3', '-I', WRAPPER];
 const shim = '/opt/propr/fly-provider';
 type Bind = Extract<AgentRunMount, { type: 'bind' }>;
 export function unsupportedFlyMount(m: Bind) {
-    // The agent configuration's credential stores (per-run copies), Vibe's prompt file and runtime home.
-    if (m.credentialStore) return unsupportedRemoteRunMount(m);
     if (m.target === SEED && m.readOnly && m.purpose === 'credential') return;
     if (['scratch', 'logs'].includes(m.purpose) && !m.readOnly && /^\/tmp\/[\w-]+(?:\/[\w-]+)*$/.test(m.target)) return;
+    // The agent configuration's credential stores (per-run copies), Vibe's prompt file and runtime home.
     return unsupportedRemoteRunMount(m);
 }
 
@@ -92,11 +89,6 @@ function prepareMounts(mounts: readonly AgentRunMount[], provider: RemoteAgentTy
     return { requests, storePaths, runtimeHomes, directories, backupTmpfs };
 }
 
-/** Credential-shaped JSON keys (Claude, Codex and OpenCode logins) whose values are redacted from the output. */
-const CREDENTIAL_KEY = /^(?:(?:access|refresh|id|auth)_?)?token$|^(?:openai_)?api_?key$|^(?:access|refresh|key)$/i;
-/** Environment names that carry a provider credential (OpenCode reads its provider keys from these). */
-const CREDENTIAL_ENV = /(?:API_?KEY|TOKEN|SECRET|PASSWORD)$/i;
-
 /** The run's credential store files: what the Machine gets, the node user owns and the output redacts. */
 interface StagedCredentials { add: AddFile; directories: Set<string>; owned: string[]; secrets: string[] }
 
@@ -109,12 +101,8 @@ function stageCredentials(store: CredentialStoreBundle, storePath: string, stage
         add(target, file.content, file.mode & 0o111 ? 0o700 : 0o600);
         owned.push(target);
         directories.add(path.dirname(target));
-        // Protect credential strings even when the CLI prints only one field.
-        // JSONC too: OpenCode's opencode.jsonc may carry comments and trailing commas around a provider apiKey.
-        try { parseJsonc(file.content.toString(), (key, value) => {
-            if (typeof value === 'string' && CREDENTIAL_KEY.test(key)) secrets.push(value);
-            return value;
-        }); } catch { if (file.refresh) secrets.push(file.content.toString().trim()); }
+        // Protect credential strings even when the CLI prints only one field (JSON, JSONC or dotenv).
+        secrets.push(...storeFileSecrets(file.content, file.refresh));
     }
 }
 
@@ -177,12 +165,9 @@ export function prepareLaunch(spec: AgentRunSpec, options: AgentRunOptions, conf
     for (const store of bundle.stores) stageCredentials(store, storePath(store), staged);
     const { owned, secrets: storeSecrets } = staged;
     const returning = bundle.stores.filter(store => store.outputs.length);
-    const credentialNames = [...providerCredentialManifest(provider, 'config')?.apiKeyEnv ?? [], 'OPENAI_API_KEY',
-        'ANTHROPIC_AUTH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'GITHUB_ACCESS_TOKEN', PROPR_MCP_BEARER_TOKEN_ENV,
-        ...[...env.keys()].filter(name => CREDENTIAL_ENV.test(name))];
+    const credentialNames = credentialEnvNames(provider, env);
     const extensionStaged = stageExtension(extension, add);
-    const secrets = [transportToken, ...extensionStaged.secrets, ...Object.values(bundle.secretEnv), ...storeSecrets, ...credentialNames.map(k => env.get(k))]
-        .filter((v): v is string => v !== undefined && v.length >= 12);
+    const secrets = redactableSecrets([transportToken, ...extensionStaged.secrets, ...Object.values(bundle.secretEnv), ...storeSecrets, ...credentialNames.map(k => env.get(k))]);
     const environment = { PATH, ...Object.fromEntries(env), ...bundle.secretEnv, HOME: '/home/node', USER: 'node', LOGNAME: 'node' };
     // Only trusted values enter the root shell. Provider settings such as
     // BASH_ENV, PATH and LD_PRELOAD take effect after dropping privileges.

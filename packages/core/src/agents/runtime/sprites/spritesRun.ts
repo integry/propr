@@ -12,6 +12,7 @@ import { isRemoteAgentType, isRemotePromptMount, readRemotePromptFile, remoteCre
     unsupportedRemoteRunMount, writeReturnedRuntimeFile, type RemoteRuntimeHome } from '../remoteRunMounts.js';
 import type { AgentType } from '../../types.js';
 import type { CredentialStoreKind } from '../../credentials/providerManifests.js';
+import { credentialEnvNames, credentialStoreSecrets, redactableSecrets } from '../remoteRunSecrets.js';
 import logger from '../../../utils/logger.js';
 
 const PATH = '/opt/propr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -174,6 +175,9 @@ export function prepareSpriteRun(launch: SpriteLaunch,
         return [mount.target, content.toString('base64')];
     });
     const environment = { ...Object.fromEntries(env), ...bundle.secretEnv };
+    // Redacted from the run's output: store credentials (JSON, JSONC or dotenv), Vibe's `.env` key and credential variables.
+    const secrets = redactableSecrets([transportToken, ...Object.values(bundle.secretEnv), ...credentialStoreSecrets(bundle.stores),
+        ...credentialEnvNames(provider, env).map(name => env.get(name))]);
     const extensions = (launch.skillFiles ?? []).map(file => {
         if (file.content.includes(token)) throw new Error('Sprites org credential found in an extension skill bundle');
         return [extensionSkillPath(file.path), file.content.toString('base64')];
@@ -187,7 +191,7 @@ export function prepareSpriteRun(launch: SpriteLaunch,
     });
     checkPayload(upload, token);
     return {
-        environment,
+        environment, secrets,
         markerArgs: env.get('PROPR_REPO_SETUP') === '0' ? [] : argv,
         upload: (sprite: Sprite) => sprite.filesystem().writeFile(inputPath, upload, { mode: 0o600 }),
         commit, collect,

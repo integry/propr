@@ -22,6 +22,7 @@ import { agentRunNetworkPolicy, agentRunSpecNetworkPolicy } from '../packages/co
 import { agentCommandModel, agentModelEgressHosts, baseEgressAllowlist } from '../packages/core/src/network/egressAllowlist.ts';
 import { WORKSPACE_TRANSPORT_RESULT_DIR as RESULT, WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
 import type { AgentConfig } from '../packages/core/src/agents/types.ts';
+import { storeFileSecrets } from '../packages/core/src/agents/runtime/remoteRunSecrets.ts';
 import { FakeSprites } from './helpers/fakeSprites.ts';
 
 after(closeConnection);
@@ -52,18 +53,20 @@ function agentConfig(type: 'vibe' | 'opencode', configPath: string): AgentConfig
 }
 
 /** Vibe's task spec as VibeAgent builds it: the agent configuration's ~/.vibe, the prompt file, the runtime home and the key env file. */
-function vibeSpec(t: { after(fn: () => void): void }) {
+function vibeSpec(t: { after(fn: () => void): void }, { keyInStore = false } = {}) {
     const root = scratch(t, 'remote-vibe-');
     const configPath = path.join(root, 'vibe-config');
     fs.mkdirSync(configPath);
     fs.writeFileSync(path.join(configPath, 'config.toml'), 'active_model = "devstral"\n');
     fs.writeFileSync(path.join(configPath, 'unrelated.log'), 'private');
+    // Vibe's own API-key fallback: the key only in the store's .env, not in the run's env file.
+    if (keyInStore) fs.writeFileSync(path.join(configPath, '.env'), `# Vibe\nexport MISTRAL_API_KEY="${mistralKey}"\n`);
     const prompt = path.join(root, 'prompt.txt');
     fs.writeFileSync(prompt, 'Fix the issue');
     const runtimeHome = path.join(root, 'runtime-home');
     fs.mkdirSync(runtimeHome);
     const envFile = path.join(root, 'agent.env');
-    fs.writeFileSync(envFile, `MISTRAL_API_KEY=${mistralKey}\nGH_TOKEN=synthetic-github-token\n`);
+    fs.writeFileSync(envFile, `${keyInStore ? '' : `MISTRAL_API_KEY=${mistralKey}\n`}GH_TOKEN=synthetic-github-token\n`);
     const spec = assembleVibeRunSpec({
         config: agentConfig('vibe', configPath), name: 'vibe-task', mode: 'execute', worktreePath: root, repositoryInspection: false, gitMountArgs: [],
         configMountArgs: ['-v', `${configPath}:/home/node/.vibe:ro`], promptMountArgs: ['-v', `${prompt}:/home/node/propr-prompt.txt:ro`],
@@ -198,7 +201,7 @@ test('Fly: an OpenCode run gets both configured stores, redacts the provider key
 });
 
 /** A full Fly run of `spec` whose agent prints `key`: the captured output must carry only the redaction. */
-async function assertFullFlyRunRedacts(spec: AgentRunSpec, key: string) {
+async function assertFullFlyRunRedacts(spec: AgentRunSpec, key: string, { keyInEnv = false } = {}) {
     let launch: MachineLaunch | undefined;
     let started = false;
     const api: MachinesApi = {
@@ -225,9 +228,43 @@ async function assertFullFlyRunRedacts(spec: AgentRunSpec, key: string) {
     assert.equal(result.exitCode, 0);
     assert.ok(!result.stdout.includes(key));
     assert.match(result.stdout, /\[REDACTED\]/);
-    assert.ok(!JSON.stringify(launch!.config.env ?? {}).includes(key), 'the key travels only as a credential file, not in the Machine env');
+    if (!keyInEnv) assert.ok(!JSON.stringify(launch!.config.env ?? {}).includes(key), 'the key travels only as a credential file, not in the Machine env');
     await run.release!();
 }
+
+test('store files that are not JSON are read as dotenv for the credential values to redact', () => {
+    const dotenv = [
+        '# Vibe', `export MISTRAL_API_KEY="${mistralKey}"`, "OTHER_TOKEN='synthetic-other-token-0123'",
+        'api_key = synthetic-plain-key-0123 # comment', 'ACTIVE_MODEL=devstral-not-a-secret', '',
+    ].join('\n');
+    assert.deepEqual(storeFileSecrets(Buffer.from(dotenv)), [mistralKey, 'synthetic-other-token-0123', 'synthetic-plain-key-0123']);
+    // JSON keeps its key-based reading; a refreshed non-JSON token file is still redacted whole.
+    assert.deepEqual(storeFileSecrets('{"access_token":"synthetic-json-token","model":"m"}'), ['synthetic-json-token']);
+    assert.deepEqual(storeFileSecrets('opaque-refresh-token-0123\n', true), ['opaque-refresh-token-0123']);
+});
+
+test('Fly: a Mistral key only in the store\'s .vibe/.env is redacted from the captured output', async t => {
+    const { spec } = vibeSpec(t, { keyInStore: true });
+    const prepared = prepareLaunch(spec, { stdinData: 'Fix the issue' }, flyConfig(flyEnv));
+    assert.equal(JSON.parse(decoded(prepared.launch, '/opt/propr/fly-agent.json')).env.MISTRAL_API_KEY, mistralKey);
+    assert.ok(prepared.secrets.includes(mistralKey));
+    await assertFullFlyRunRedacts(spec, mistralKey, { keyInEnv: true });
+});
+
+test('Sprites: a Mistral key only in the store\'s .vibe/.env is redacted from the captured output', async t => {
+    const { spec } = vibeSpec(t, { keyInStore: true });
+    const client = new FakeSprites();
+    client.setup = sprite => { sprite.output = `{"role":"assistant","content":"used ${mistralKey}"}\n`; };
+    const runtime = new SpritesRuntime(client, { PROPR_SPRITES_TOKEN: spritesToken }, undefined, noPackages);
+    t.after(() => runtime.close());
+    const run = runtime.start(spec);
+    const result = await run.wait();
+    assert.equal(result.exitCode, 0);
+    assert.equal(JSON.parse(client.created[0].launches[0]).agent.env.MISTRAL_API_KEY, mistralKey);
+    assert.ok(!result.stdout.includes(mistralKey), result.stdout);
+    assert.match(result.stdout, /\[REDACTED\]/);
+    await run.release!();
+});
 
 test('Fly: a full OpenCode run keeps the stored provider key out of the captured output', async t => {
     await assertFullFlyRunRedacts(openCodeSpec(t).spec, openRouterKey);
