@@ -8,7 +8,7 @@ import express from 'express';
 import session from 'express-session';
 import passport from 'passport';
 import { pollGitHubDeviceToken, requestGitHubDeviceCode } from '@propr/shared';
-import { createDeviceFinishLogin } from '../auth.js';
+import { createDeviceFinishLogin, ensureAuthenticated } from '../auth.js';
 import { registerDeviceSignInRoutes, type DeviceSignInDependencies } from '../deviceAuth.js';
 import type { GitHubUser } from '../authTypes.js';
 
@@ -111,6 +111,10 @@ export async function startHarness(
     const user = req.user as GitHubUser | undefined;
     res.json({ authenticated: req.isAuthenticated(), login: user?.login, source: user?.oauthSource });
   });
+  // The real session gate: an expired token is renewed (or refused) here.
+  app.get('/api/auth/user', (req, res, next) => { void ensureAuthenticated(req, res, next); }, (req, res) => {
+    res.json({ login: (req.user as GitHubUser | undefined)?.login });
+  });
   app.get('/session-user', (req, res) => {
     // Test-only peek at the stored credential shape.
     const user = req.user as GitHubUser | undefined;
@@ -147,9 +151,12 @@ export class Browser {
     return { status: response.status, text, body: JSON.parse(text) as Record<string, unknown> };
   }
   async get(path: string) {
+    return (await this.getWithStatus(path)).body;
+  }
+  async getWithStatus(path: string) {
     const response = await fetch(`${this.origin}${path}`, { headers: this.cookie ? { cookie: this.cookie } : {} });
     this.remember(response);
-    return response.json() as Promise<Record<string, unknown>>;
+    return { status: response.status, body: await response.json() as Record<string, unknown> };
   }
   private remember(response: Response) {
     const setCookie = response.headers.get('set-cookie');

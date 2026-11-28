@@ -394,7 +394,7 @@ session and the same durable grant (encrypted at rest, `source: connect`) for
 desktop, MCP and agent runs. GitHub App user tokens expire after eight hours.
 GitHub returns the refresh token to the instance, not to the relay, so the
 relay has never seen it. The grant is therefore not marked for relay-held
-renewal (`renewal` stays empty, and `/instance-auth/renew` is never called for
+renewal (`renewal` is `device`, and `/instance-auth/renew` is never called for
 it). Instead the instance sends its stored refresh token to the relay, which
 holds the App's secret:
 
@@ -405,9 +405,23 @@ holds the App's secret:
   `refresh_token_expires_in`. ProPR stores the new credential in one
   conditional write, and the next renewal sends the rotated refresh token.
 - ProPR renews when the access token is within five minutes of expiry, or when
-  GitHub rejects it. `bad_refresh_token` or `invalid_grant` sets the grant to
-  `reauth_required`, so the user has to sign in again. Any other failure is
-  retryable and leaves the grant active.
+  GitHub rejects it.
+- These answers mean the token can't be renewed: the relay answers `404`, `405`
+  or `501` (it has no refresh route), or it answers a 4xx (or a 200) whose
+  `error` is `bad_refresh_token`, `invalid_grant` or `reauth_required`. ProPR
+  then sets the grant to `reauth_required` and ends the browser session, and
+  the next page load opens the login page with the device sign-in and the
+  message "Your GitHub sign-in expired. Sign in again with a new code."
+- Any other failure is retryable and leaves the grant and the session active:
+  5xx, `429`, other 4xx, timeouts and network errors.
+
+**How long a device sign-in lasts.** The hosted relay doesn't renew device
+sign-in tokens yet. That is tracked as
+[integry/propr-routing#340](https://github.com/integry/propr-routing/issues/340),
+and until it ships the refresh route answers `404`. Until then a device sign-in
+lasts until its GitHub App token expires, eight hours after sign-in, and the
+user then signs in again with a new code. Once relay-side renewal is available,
+device sign-ins renew automatically, with no change to the instance.
 
 Tokens and device codes are never logged or returned in a response.
 
@@ -424,6 +438,7 @@ per browser session (5 per 15 minutes). Polls have their own per-IP quota.
 | The code expired (`expired_token`, or past `expires_in`) | The GitHub sign-in code expired before it was entered. |
 | The user can't access the relay installation | This GitHub account doesn't have access to the GitHub App installation this instance uses. |
 | The user is not on the whitelist | This GitHub account is not authorized to use this instance. |
+| The signed-in token expired and can't be renewed (see **Tokens**) | Your GitHub sign-in expired. Sign in again with a new code. |
 
 ### Use device sign-in with your own App
 

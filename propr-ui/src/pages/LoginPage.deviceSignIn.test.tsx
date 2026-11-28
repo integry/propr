@@ -35,8 +35,8 @@ const START = {
   interval: 5,
 };
 
-const renderLogin = () => render(
-  <MemoryRouter initialEntries={['/login?logged_out=true']}>
+const renderLogin = (entry = '/login?logged_out=true') => render(
+  <MemoryRouter initialEntries={[entry]}>
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/" element={<div>dashboard</div>} />
@@ -88,6 +88,13 @@ describe('LoginPage device sign-in', () => {
 
     expect(await screen.findByText('dashboard')).toBeInTheDocument();
     expect(refreshCurrentUser).toHaveBeenCalled();
+  });
+
+  it('explains an expired device sign-in above the device panel', async () => {
+    renderLogin('/login?error=device_sign_in_expired');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Your GitHub sign-in expired. Sign in again with a new code.');
+    fireEvent.click(await deviceButton());
+    expect(await screen.findByLabelText('GitHub sign-in code')).toHaveTextContent('WDJB-MJHT');
   });
 
   it('shows GitHub failures and lets the user start again', async () => {

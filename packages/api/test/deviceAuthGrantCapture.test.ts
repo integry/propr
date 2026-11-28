@@ -96,7 +96,7 @@ function assertRenewedWithDeviceRefreshToken(): void {
 test('device sign-in: the captured grant keeps its refresh token and is not relay-held', async () => {
   const row = await signIn({ access_token: ACCESS_TOKEN, refresh_token: REFRESH_TOKEN, expires_in: 28_800, refresh_token_expires_in: 15_897_600 });
   assert.equal(row.source, 'connect');
-  assert.equal(row.renewal, null);
+  assert.equal(row.renewal, 'device');
   assert.equal(isRelayRenewable(row), false);
   assert.ok(row.refresh_token_encrypted, 'the refresh token is stored (encrypted) for renewal');
   assert.equal(relayCalls.length, 0);
@@ -111,7 +111,7 @@ test('device sign-in: a device-only user renews by sending its refresh token to 
   assert.equal(resolved.status === 'active' && resolved.refreshToken, RENEWED_REFRESH);
   const row = await database('github_user_grants').where({ github_user_id: USER_ID }).first() as GrantRow;
   assert.equal(row.status, 'active');
-  assert.equal(row.renewal, null);
+  assert.equal(row.renewal, 'device');
   // The rotated refresh token is what the next renewal sends.
   relayCalls = [];
   await database('github_user_grants').where({ github_user_id: USER_ID }).update({ access_token_expires_at_ms: Date.now() + 60_000 });
@@ -127,7 +127,7 @@ test('device sign-in: replacing a relay-held Connect grant switches it to refres
     oauthSource: 'connect', connectRenewal: 'relay',
   });
   const row = await signIn(nearlyExpired);
-  assert.equal(row.renewal, null);
+  assert.equal(row.renewal, 'device');
   assert.equal(isRelayRenewable(row), false);
   const resolved = await service.resolve(USER_ID);
   assertRenewedWithDeviceRefreshToken();
@@ -137,7 +137,7 @@ test('device sign-in: replacing a relay-held Connect grant switches it to refres
 test('device sign-in: a non-expiring token without a refresh token is not renewed', async () => {
   const row = await signIn({ access_token: ACCESS_TOKEN });
   assert.equal(row.source, 'connect');
-  assert.equal(row.renewal, null);
+  assert.equal(row.renewal, 'device');
   assert.equal(row.access_token_expires_at_ms, null);
   const resolved = await service.resolve(USER_ID);
   assert.equal(resolved.status === 'active' && resolved.accessToken, ACCESS_TOKEN);

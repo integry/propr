@@ -13,6 +13,7 @@ import { validateGitHubToken } from './authBearer.js';
 import { desktopAuthService, INSTANCE_TOKEN_PREFIX } from './desktopAuthService.js';
 import { configureDemoMode, getDemoUser, isDemoMode } from './demoMode.js';
 import { clearSessionForReauth, isGitHubTokenExpired, refreshGitHubTokenWithResult } from './authGithubTokens.js';
+import { githubReauthResponseBody } from './deviceGrantRenewal.js';
 import { getValidatedRedirectTo, getDefaultRedirectUrl } from './authRedirect.js';
 import { isUserWhitelisted } from './userWhitelist.js';
 import type { GitHubUser } from './authTypes.js';
@@ -631,8 +632,9 @@ export async function ensureAuthenticated(
     // Session-based auth (Passport)
     if (req.isAuthenticated()) {
         if (req.user?.githubAuthInvalid) {
+            const reauthBody = githubReauthResponseBody(req.user);
             await clearSessionForReauth(req);
-            res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
+            res.status(401).json(reauthBody);
             return;
         }
 
@@ -649,8 +651,9 @@ export async function ensureAuthenticated(
         if (isGitHubTokenExpired(req)) {
             const refreshResult = await timeApiStage('auth.session-grant-sync', () => refreshGitHubTokenWithResult(req, true));
             if (refreshResult.status === 'reauth-required' || req.user?.githubAuthInvalid) {
+                const reauthBody = githubReauthResponseBody(req.user);
                 if (req.user?.githubAuthInvalid) await clearSessionForReauth(req);
-                res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
+                res.status(401).json(reauthBody);
                 return;
             }
             if (refreshResult.status === 'temporarily-unavailable') {
@@ -664,8 +667,9 @@ export async function ensureAuthenticated(
             // whose recorded expiry is still in the future.
             const refreshResult = await timeApiStage('auth.session-grant-sync', () => refreshGitHubTokenWithResult(req));
             if (req.user?.githubAuthInvalid) {
-                if (req.user?.githubAuthInvalid) await clearSessionForReauth(req);
-                res.status(401).json({ error: 'GitHub authentication expired', code: 'GITHUB_REAUTH_REQUIRED', message: 'Your GitHub session has expired. Please log in again.' });
+                const reauthBody = githubReauthResponseBody(req.user);
+                await clearSessionForReauth(req);
+                res.status(401).json(reauthBody);
                 return;
             }
             if (refreshResult.status === 'temporarily-unavailable') {

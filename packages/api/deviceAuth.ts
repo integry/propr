@@ -49,6 +49,7 @@ import {
     type DeviceAuthSession,
     type DeviceLoginAttempt,
 } from './deviceAuthAttempts.js';
+import { DEVICE_SIGN_IN } from './deviceGrantRenewal.js';
 import { resolveDeviceClientId } from './connectAuth.js';
 import { createRequestRateLimiter, resolveRequestRateLimitPolicies } from './requestRateLimits.js';
 
@@ -228,10 +229,12 @@ export function deviceSignInUser(profile: GitHubUserProfile, token: GitHubDevice
         // renews it. GitHub issued the refresh token to this instance and the
         // relay has never seen it, so the grant is not relay-held renewal
         // (`connectRenewal`, which sends only the user id to
-        // `/instance-auth/renew`): grant capture stores `renewal: null`, and
-        // renewal sends the stored refresh token to the relay's
-        // `/auth/instance-grants/refresh`.
+        // `/instance-auth/renew`): grant capture stores `renewal: 'device'`,
+        // and renewal sends the stored refresh token to the relay's
+        // `/auth/instance-grants/refresh`. A renewal the relay cannot serve
+        // sends the user back to sign-in (deviceGrantRenewal.ts).
         oauthSource: 'connect',
+        signInMethod: DEVICE_SIGN_IN,
     };
 }
 

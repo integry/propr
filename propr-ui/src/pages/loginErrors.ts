@@ -9,6 +9,7 @@ const LOGIN_ERROR_MESSAGES = new Map<string, string>(Object.entries({
   connect_not_configured: 'GitHub sign-in is not configured correctly on this instance.',
   web_auth_not_configured: 'Browser sign-in is not configured on this instance.',
   not_authorized: 'This GitHub account is not authorized to use this instance.',
+  device_sign_in_expired: 'Your GitHub sign-in expired. Sign in again with a new code.',
 }));
 
 export const loginErrorMessage = (code: string | null): string | null => {
