@@ -507,3 +507,103 @@ test('F6: a refused child leaves its plan issue as it is when the queue cannot b
   assert.equal(await planStatus(), 'processing', 'executions in flight are unknown, so nothing is released');
   assert.equal(comments.length, 1);
 });
+
+/**
+ * A newer dispatch takes the issue over from a completed dispatcher whose child
+ * is still deferred; the newer dispatcher selects the same execution, and its
+ * add deduplicates against the retained child (child job IDs are deterministic),
+ * which keeps the older dispatch ID. Returns the newer dispatch ID and its parent job.
+ */
+async function newerDispatcherReusing(child: FakeJob): Promise<{ newerId: string; newerParent: FakeJob }> {
+  child.state = 'delayed';
+  const newer = await request();
+  assert.equal(newer.status, 'added');
+  const newerParent = queue.jobs.get(newer.jobId)!;
+  jobs = [newerParent];
+  await step.pickUp([]);
+  await step.admit([]);
+  await queue.add('processGitHubIssue', { ...newerParent.data, isChildJob: true }, { jobId: child.id });
+  assert.notEqual(queue.jobs.get(child.id)!.data.issueDispatchId, newer.dispatchId, 'the retained child keeps the older dispatch ID');
+  await step.complete([]);
+  return { newerId: newer.dispatchId, newerParent };
+}
+
+test('F7: a retained child a newer dispatcher reused releases the plan issue once it is the last execution in flight', async () => {
+  await setUpPlan('epic-queue');
+  const [child] = await completedDispatcherWithChildren(1);
+  const { newerId } = await newerDispatcherReusing(child);
+  await refuseChild(child);
+  const planIssue = await database('plan_issues').where({ draft_id: 'draft' }).first();
+  assert.deepEqual([planIssue.status, planIssue.issue_dispatch_id], ['pending', newerId], 'released, still linked to the newer dispatch');
+  const head = (await getEpicExecutionQueue('draft'))!.items[0];
+  assert.deepEqual([head.state, head.blockedKind], ['blocked', 'dispatch_failed']);
+  assert.equal(comments.length, 1);
+  assert.match(comments[0], /or retry the issue from its plan\./);
+  const row = (await database('issue_dispatches').first())!;
+  assert.deepEqual([row.dispatch_id, row.state], [newerId, 'completed'], 'the child does not move the newer dispatch');
+});
+
+test('F7: a retained child a newer dispatcher reused leaves the plan issue to that dispatcher\'s other executions in flight', async () => {
+  await setUpPlan('processing');
+  const [child] = await completedDispatcherWithChildren(1);
+  const { newerParent } = await newerDispatcherReusing(child);
+  const other = new FakeJob(`${newerParent.id}-child-other`, 'processGitHubIssue', { ...newerParent.data, isChildJob: true }, 1);
+  queue.jobs.set(other.id, other);
+  await refuseChild(child);
+  assert.equal(await planStatus(), 'processing', 'the newer dispatch\'s other child may yet run');
+  await refuseChild(other);
+  assert.equal(await planStatus(), 'pending');
+});
+
+test('F7: a retained child leaves the plan issue to a newer dispatcher still running', async () => {
+  await setUpPlan('processing');
+  const [child] = await completedDispatcherWithChildren(1);
+  child.state = 'delayed';
+  const newer = await request();
+  jobs = [queue.jobs.get(newer.jobId)!];
+  await step.pickUp([]);
+  await step.admit([]);
+  await refuseChild(child);
+  assert.equal(await planStatus(), 'processing');
+});
+
+/** A dispatcher that queued a child, then failed after it (recording its receipt) and was retried by BullMQ. */
+async function dispatcherFailedAfterQueueingChild(): Promise<{ parent: FakeJob; child: FakeJob }> {
+  await step.enqueue([]);
+  await database('plan_issues').where({ draft_id: 'draft' }).update({ status: 'processing' });
+  await step.pickUp([]);
+  await step.admit([]);
+  const parent = job();
+  const child = new FakeJob(`${parent.id}-child`, 'processGitHubIssue', { ...parent.data, isChildJob: true }, 1);
+  queue.jobs.set(child.id, child);
+  await step.failAndRetry([]);
+  return { parent, child };
+}
+
+for (const childState of ['waiting', 'delayed', 'active']) {
+  test(`F8: a parent refused for good after queueing a child leaves its plan issue while that child is ${childState}`, async () => {
+    await setUpPlan('epic-queue');
+    const { child } = await dispatcherFailedAfterQueueingChild();
+    child.state = childState;
+    await step.pickUp([]);
+    await step.refuseFinally([]);
+    assert.equal((await database('issue_dispatches').first())!.state, 'failed', 'the dispatcher\'s dispatch ends');
+    assert.equal(await planStatus(), 'processing', 'the child may still run');
+    const head = (await getEpicExecutionQueue('draft'))!.items[0];
+    assert.notEqual(head.state, 'blocked', 'the execution is not marked as a failed dispatch');
+    // The child is refused in turn: nothing of the issue is in flight any more.
+    await refuseChild(child);
+    assert.equal(await planStatus(), 'pending');
+    const released = (await getEpicExecutionQueue('draft'))!.items[0];
+    assert.deepEqual([released.state, released.blockedKind], ['blocked', 'dispatch_failed']);
+  });
+}
+
+test('F8: a parent refused for good leaves its plan issue as it is when the queue cannot be read', async () => {
+  await setUpPlan('processing');
+  await dispatcherFailedAfterQueueingChild();
+  await step.pickUp([]);
+  await refuseFinally(job(), { getJobs: async () => { throw new Error('Connection is closed.'); } });
+  assert.equal((await database('issue_dispatches').first())!.state, 'failed');
+  assert.equal(await planStatus(), 'processing');
+});

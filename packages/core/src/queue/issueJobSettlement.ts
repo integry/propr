@@ -25,8 +25,8 @@ interface SettledJob {
  * A failed attempt of an issue job, on its dispatch row: a retry puts the
  * dispatch back to queued, a final failure ends it. A final disk-pressure
  * refusal never reached its processor, so nothing told the issue or its plan:
- * the refusal report ends the dispatch (or, for an execution child, releases
- * the plan issue once no sibling is in flight) and says what happened, from
+ * the refusal report ends a top-level job's dispatch, releases the plan issue
+ * once no other job of the issue is in flight, and says what happened, from
  * what the row recorded (`started_at`). Best effort.
  */
 export async function settleIssueJobFailure(

@@ -7,11 +7,17 @@
  * `processing` (back to `pending`, with its queued execution blocked on the
  * reason), so `get_plan` and the Studio show it.
  *
- * A refused top-level job ends its dispatch. A refused execution child (the
- * dispatcher that queued it completed, so the dispatch has ended) releases the
- * plan issue once nothing else of the dispatch is in flight: no sibling child
- * is still waiting, delayed or running. A top-level job whose dispatch a newer
- * request took over is not the issue's run: it is not reported.
+ * A refused top-level job ends its dispatch. Either refusal releases the plan
+ * issue only once the issue's run has ended: the issue's current dispatch has
+ * ended (its dispatcher neither runs nor will run again) and the queue holds
+ * no other job of the issue that may still start, such as an execution child
+ * the dispatcher queued before it failed, or a sibling still waiting, delayed
+ * or running. The current dispatch answers for a refused child whose own
+ * dispatch a newer one replaced on the row: the newer dispatcher's add of the
+ * same execution deduplicated against this child (child job IDs are
+ * deterministic), so the child carries the older dispatch ID but is the newer
+ * dispatch's execution too. A top-level job whose dispatch a newer request
+ * took over is not the issue's run: it is not reported.
  *
  * What the report says comes from the dispatch row alone: "nothing was
  * changed" only when no attempt of the dispatch ever entered its processor
@@ -24,7 +30,8 @@ import { worktreeDiskPressureDetails } from '../storage/lifecycle.js';
 import { PlanIssueStatus, publishPlanIssueActivity } from '../config/planIssueManager.js';
 import { notifyEpicQueue, updatePlanIssuesWithStatusJournal } from '../config/planIssueStatusJournal.js';
 import { diskPressureRefusedReason, markEpicQueueIssueDispatchRefused } from './taskPlanning/epicQueueBlockedHead.js';
-import { findIssueDispatchById, settleIssueDispatch, type IssueDispatch } from '../queue/issueDispatch.js';
+import { findIssueDispatch, findIssueDispatchById, settleIssueDispatch, type IssueDispatch } from '../queue/issueDispatch.js';
+import { ISSUE_JOB_NAME } from '../queue/issueDiskPressureDeferral.js';
 
 export interface DiskPressureRefusalOctokit {
     request(route: string, params: Record<string, unknown>): Promise<unknown>;
@@ -102,34 +109,44 @@ export function diskPressureRefusalCommentBody(
 
 type Log = { info(obj: object, msg: string): void; warn(obj: object, msg: string): void };
 
-/** The issue queue, as far as finding a dispatch's jobs still in flight needs it. */
+/** The issue queue, as far as finding an issue's jobs still in flight needs it. */
 export interface RefusalIssueQueue {
-    getJobs(states: Array<'waiting' | 'delayed' | 'active' | 'prioritized' | 'waiting-children'>): Promise<Array<{ id?: string; data?: unknown } | undefined>>;
+    getJobs(states: Array<'waiting' | 'delayed' | 'active' | 'prioritized' | 'waiting-children'>): Promise<Array<{ id?: string; name?: string; data?: unknown } | undefined>>;
 }
 
 const IN_FLIGHT_STATES: Array<'waiting' | 'delayed' | 'active' | 'prioritized' | 'waiting-children'> = ['waiting', 'delayed', 'active', 'prioritized', 'waiting-children'];
 
+type IssueJobRef = { repoOwner?: unknown; repoName?: unknown; number?: unknown };
+
+/** Whether `other` is an issue job of the same issue as `job` (owner and repository names are case-insensitive). */
+function isJobOfIssue(other: { name?: string; data?: unknown }, job: RefusedIssueJob): boolean {
+    if (typeof other.name === 'string' && other.name !== ISSUE_JOB_NAME) return false;
+    const data = other.data as IssueJobRef | undefined;
+    return typeof data?.repoOwner === 'string' && typeof data.repoName === 'string' && data.number === job.data.number
+        && `${data.repoOwner}/${data.repoName}`.toLowerCase() === `${job.data.repoOwner}/${job.data.repoName}`.toLowerCase();
+}
+
 /**
- * Whether a refused child was the dispatch's last execution in flight: the
- * dispatch has ended (its dispatcher neither runs nor will run again) and
- * the queue holds no other job of it that may still start. Unknown (the queue
- * could not be read) counts as in flight, so the plan issue is left as it is.
+ * Whether the refused job was the issue's last execution in flight: the
+ * issue's current dispatch has ended (its dispatcher neither runs nor will run
+ * again) and the queue holds no other job of the issue that may still start,
+ * whichever dispatch it carries. Unknown (the queue could not be read) counts
+ * as in flight, so the plan issue is left as it is.
  */
-async function childWasLastInFlight(
-    job: RefusedIssueJob, dispatch: IssueDispatch, { issueQueue, log }: { issueQueue?: RefusalIssueQueue; log: Log },
+async function wasLastInFlight(
+    job: RefusedIssueJob, current: IssueDispatch, { issueQueue, log }: { issueQueue?: RefusalIssueQueue; log: Log },
 ): Promise<boolean> {
-    if (dispatch.state !== 'completed' && dispatch.state !== 'failed') return false;
+    if (current.state !== 'completed' && current.state !== 'failed') return false;
     try {
         const queue = issueQueue ?? await (await import('../queue/taskQueue.js')).getIssueQueue();
-        const live = (await queue.getJobs(IN_FLIGHT_STATES)).filter(other => other && other.id !== job.id
-            && (other.data as { issueDispatchId?: unknown } | undefined)?.issueDispatchId === dispatch.dispatch_id);
+        const live = (await queue.getJobs(IN_FLIGHT_STATES)).filter(other => other && other.id !== job.id && isJobOfIssue(other, job));
         if (live.length > 0) {
-            log.info({ jobId: job.id, dispatchId: dispatch.dispatch_id, inFlight: live.map(other => other!.id) },
-                'A refused child of an issue dispatch leaves its plan issue to the executions still in flight');
+            log.info({ jobId: job.id, dispatchId: current.dispatch_id, inFlight: live.map(other => other!.id) },
+                'A refused issue job leaves its plan issue to the executions of the issue still in flight');
         }
         return live.length === 0;
     } catch (error) {
-        log.warn({ jobId: job.id, dispatchId: dispatch.dispatch_id, error: (error as Error).message },
+        log.warn({ jobId: job.id, dispatchId: current.dispatch_id, error: (error as Error).message },
             'Could not read the issue queue for executions still in flight; the plan issue is left as it is');
         return false;
     }
@@ -138,9 +155,9 @@ async function childWasLastInFlight(
 /**
  * The plan issue that points at this dispatch, back to pending, while it is
  * still pending or processing. Called only once this refusal ended the
- * issue's run (the dispatch, or its last execution in flight), so a plan issue
- * a newer dispatch took over (it points at that one) and historical or
- * finished plan issues keep their status.
+ * issue's run (no execution of the issue is left in flight) with the issue's
+ * current dispatch, so a plan issue a newer dispatch took over since (it
+ * points at that one) and historical or finished plan issues keep their status.
  */
 async function releasePlanIssue(
     database: Knex, dispatchId: string, issueNumber: number, { now, log }: { now: () => number; log: Log },
@@ -174,10 +191,11 @@ interface SettleContext { database: Knex; now: () => number; error?: unknown; is
  * The refusal on the issue's dispatch and its plan issue, recorded on
  * `outcome`. `superseded` when a newer request took the issue over from this
  * top-level job's dispatch: rows are only ever replaced, so no row under the
- * dispatch says so.
+ * dispatch says so. A refused child whose dispatch was replaced answers to
+ * the dispatch now on the row instead (see the module comment).
  */
 async function settleRefusedDispatch(
-    job: RefusedIssueJob, dispatchId: string, issueNumber: number,
+    job: RefusedIssueJob, dispatchId: string, issue: { owner: string; repo: string; number: number },
     { database, now, error, issueQueue, log, outcome }: SettleContext,
 ): Promise<{ dispatch: IssueDispatch | null; inPlan: boolean; superseded: boolean }> {
     const child = Boolean(job.data.isChildJob);
@@ -189,14 +207,16 @@ async function settleRefusedDispatch(
     }
     const dispatch = await findIssueDispatchById(dispatchId, { database });
     if (!dispatch && !child) return { dispatch, inPlan: false, superseded: true };
-    // The plan issue still pointing at this dispatch is released only when the refusal ended the issue's run.
-    const runEnded = outcome.dispatchEnded || (child && dispatch !== null && await childWasLastInFlight(job, dispatch, { issueQueue, log }));
+    // Read after the top-level settle above, so a parent's own dispatch is seen ended.
+    const current = dispatch ?? await findIssueDispatch(issue, { database });
+    // The plan issue pointing at the current dispatch is released only when the refusal ended the issue's run.
+    const runEnded = current !== null && (child || outcome.dispatchEnded) && await wasLastInFlight(job, current, { issueQueue, log });
     if (runEnded) {
-        const plan = await releasePlanIssue(database, dispatchId, issueNumber, { now, log });
+        const plan = await releasePlanIssue(database, current.dispatch_id, issue.number, { now, log });
         outcome.planIssueReleased = plan.released;
         outcome.queueBlocked = plan.queueBlocked;
     }
-    const inPlan = Boolean(await database('plan_issues').where({ issue_dispatch_id: dispatchId }).first('id'));
+    const inPlan = Boolean(await database('plan_issues').where({ issue_dispatch_id: current?.dispatch_id ?? dispatchId }).first('id'));
     return { dispatch, inPlan, superseded: false };
 }
 
@@ -216,7 +236,7 @@ export async function reportIssueDiskPressureRefusal(
     let inPlan = false;
     try {
         if (issueDispatchId) {
-            const settled = await settleRefusedDispatch(job, issueDispatchId, number, { database, now, error, issueQueue, log, outcome });
+            const settled = await settleRefusedDispatch(job, issueDispatchId, { owner: repoOwner, repo: repoName, number }, { database, now, error, issueQueue, log, outcome });
             if (settled.superseded) {
                 log.warn(target, 'An issue job refused for disk pressure belongs to a dispatch a newer request took over; not reporting it');
                 return outcome;
