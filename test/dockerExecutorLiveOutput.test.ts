@@ -18,7 +18,7 @@ class FakeRedis {
     async quit() { return 'OK'; }
     disconnect() {}
 }
-mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
+mock.module('ioredis', { namedExports: { Redis: FakeRedis } });
 // The executor prefers a host `docker` at these fixed paths over PATH; hide them
 // so the stand-in `docker` each spend-cap test puts on PATH is the one that runs.
 const hostDockerPaths = new Set(['/usr/bin/docker', '/usr/local/bin/docker', '/bin/docker']);

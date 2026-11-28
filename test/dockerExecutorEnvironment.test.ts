@@ -9,7 +9,7 @@ class FakeRedis {
     async quit() { return 'OK'; }
     disconnect() {}
 }
-mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
+mock.module('ioredis', { namedExports: { Redis: FakeRedis } });
 const { executeDockerCommand } = await import('../packages/core/src/claude/docker/dockerExecutor.js');
 const { PROPR_MCP_BEARER_TOKEN_ENV } = await import('../packages/core/src/agents/agentToolPolicy.js');
 const { closeConnection } = await import('../packages/core/src/db/connection.js');

@@ -10,7 +10,7 @@ class FakeRedis {
     async quit() { return 'OK'; }
     disconnect() {}
 }
-mock.module('ioredis', { namedExports: { Redis: FakeRedis, default: FakeRedis } });
+mock.module('ioredis', { namedExports: { Redis: FakeRedis } });
 // Instance settings for runs that do not pass `watchdog`; loading takes `settingsLoadDelayMs`.
 let settingsLoadDelayMs = 0;
 mock.module('../packages/core/src/config/configManagerAgentWatchdog.js', {
