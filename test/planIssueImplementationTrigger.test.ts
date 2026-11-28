@@ -41,9 +41,9 @@ await mock.module('@propr/core', {
     getIssueQueue: async () => ({
       add: async () => { events.push('enqueue'); },
     }),
-    enqueueIssueJobReplacingFinished: async (queue: { add: (...args: unknown[]) => Promise<unknown> }, job: { name: string; data: unknown; opts: unknown }) => {
+    enqueueIssueDispatch: async (queue: { add: (...args: unknown[]) => Promise<unknown> }, job: { name: string; data: unknown; opts: unknown }) => {
       await queue.add(job.name, job.data, job.opts);
-      return { status: 'added' };
+      return { status: 'added', dispatchId: 'dispatch', jobId: 'issue-job' };
     },
     generateCorrelationId: () => 'correlation-id',
     withRetry: mock.fn(),

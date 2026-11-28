@@ -3,6 +3,8 @@
  * server, through the real BullMQ worker that core's createWorker builds.
  * Admission is refused by an injected reserve larger than any disk (read per
  * job, so a test can lift it), not by filling one.
+ * Jobs are enqueued as the daemon and the plan route do, through the issue's
+ * dispatch row (`issueDispatch.ts`), on a migrated SQLite database.
  * The suite is skipped when Redis is not reachable (set REDIS_HOST /
  * REDIS_PORT), unless PROPR_REQUIRE_REDIS_INTEGRATION=1. Its queue and job IDs
  * are namespaced by run, and every wait is bounded.
@@ -34,20 +36,21 @@ Object.assign(process.env, {
   PROPR_DEMO_MODE: 'true',
 });
 
-const { closeConnection } = await import('../src/db/connection.js');
+const { closeConnection, db, runMigrations } = await import('../src/db/connection.js');
 const { createWorker, getIssueQueue, shutdownQueue, GITHUB_ISSUE_QUEUE_NAME } = await import('../src/queue/taskQueue.js');
-const { enqueueIssueJobReplacingFinished } = await import('../src/queue/issueJobEnqueue.js');
+const { enqueueIssueDispatch, findIssueDispatch } = await import('../src/queue/issueDispatch.js');
 
 let redis: Redis | null = null;
 let worker: Worker | null = null;
 const processed: string[] = [];
 const failures: Array<{ id?: string; attemptsMade: number; finishedOn?: number; message: string; data?: Record<string, unknown> }> = [];
-/** Job IDs whose processor throws once, to leave a failed job retained under that ID. */
+/** Job IDs whose processor throws once. */
 const failOnce = new Set<string>();
 /** Job IDs whose processor throws once and then makes admission refuse the retry. */
 const refuseAfterFailure = new Set<string>();
 
 before(async () => {
+  await runMigrations();
   const client = new Redis({ host: REDIS_HOST, port: REDIS_PORT, connectTimeout: 250, lazyConnect: true, maxRetriesPerRequest: null, retryStrategy: () => null });
   client.on('error', () => {});
   try {
@@ -105,10 +108,12 @@ function requireRedis(t: TestContext): boolean {
   return Boolean(redis);
 }
 
-const jobId = (number: number) => `issue-${OWNER}-repo-${number}`;
 // As the daemon and the plan route add an issue job.
 const issueJob = (number: number, extra: Record<string, unknown> = {}) => ({ repoOwner: OWNER, repoName: 'repo', number, triggeringLabel: 'AI', correlationId: `corr-${number}`, ...extra });
-const jobOptions = (number: number) => ({ jobId: jobId(number), attempts: 3, backoff: { type: 'exponential', delay: 200 }, removeOnComplete: true, removeOnFail: true });
+const jobOptions = { attempts: 3, backoff: { type: 'exponential', delay: 200 }, removeOnComplete: true, removeOnFail: true };
+const enqueue = async (number: number, extra: Record<string, unknown> = {}, opts: Record<string, unknown> = {}) =>
+  enqueueIssueDispatch(await getIssueQueue(), { name: 'processGitHubIssue', data: issueJob(number, extra), opts: { ...jobOptions, ...opts } });
+const dispatchOf = (number: number) => findIssueDispatch({ owner: OWNER, repo: 'repo', number });
 
 async function jobState(id: string): Promise<{ state: string; job: Job | undefined }> {
   const job = await (await getIssueQueue()).getJob(id) as Job | undefined;
@@ -118,143 +123,80 @@ async function jobState(id: string): Promise<{ state: string; job: Job | undefin
 test('an issue job whose admission is refused for disk pressure is deferred, not failed', async t => {
   if (!requireRedis(t)) return;
   const before = Date.now();
-  await (await getIssueQueue()).add('processGitHubIssue', issueJob(41), jobOptions(41));
-  const { job } = await until(() => jobState(jobId(41)), value => value.state === 'delayed' && value.job?.data.diskPressureDeferrals === 1, 'the deferral');
+  const { jobId } = await enqueue(41);
+  const { job } = await until(() => jobState(jobId), value => value.state === 'delayed' && value.job?.data.diskPressureDeferrals === 1, 'the deferral');
   assert.ok(job);
   assert.equal(job.attemptsMade, 0, 'the wait does not consume the attempt budget');
   assert.ok(job.data.diskPressureRetryAt >= before + 2 * 60_000, 'the retry is minutes away');
   assert.equal(job.data.diskPressureSince >= before, true);
   await new Promise(resolve => setTimeout(resolve, 300));
-  assert.equal(failures.filter(failure => failure.id === jobId(41)).length, 0, 'no failed attempt was recorded');
-  assert.equal((await jobState(jobId(41))).state, 'delayed');
-  assert.deepEqual(processed.filter(id => id === jobId(41)), [], 'admission refuses before the processor is entered');
+  assert.equal(failures.filter(failure => failure.id === jobId).length, 0, 'no failed attempt was recorded');
+  assert.equal((await jobState(jobId)).state, 'delayed');
+  assert.deepEqual(processed.filter(id => id === jobId), [], 'admission refuses before the processor is entered');
+  const dispatch = await until(() => dispatchOf(41), row => row?.state === 'deferred', 'the deferred dispatch');
+  assert.equal(dispatch?.started_at, null);
+  assert.match(String(dispatch?.details), /^filesystem \S+: free /);
 
-  // A later request for the same issue is served by the waiting job, and says so.
-  const outcome = await enqueueIssueJobReplacingFinished(await getIssueQueue(), { name: 'processGitHubIssue', data: issueJob(41), opts: jobOptions(41) });
-  assert.deepEqual(outcome, { status: 'already_queued', state: 'delayed' });
+  // A later request for the same issue is served by the waiting dispatch, and says so.
+  assert.deepEqual(await enqueue(41), { status: 'already_queued', dispatchId: dispatch!.dispatch_id, jobId, state: 'deferred' });
+  assert.equal((await (await getIssueQueue()).getJobs(['delayed', 'waiting', 'active'])).filter(entry => entry.data.repoOwner === OWNER && entry.data.number === 41).length, 1);
 });
 
 test('an issue job whose wait for disk space ran out fails for good on that refusal', async t => {
   if (!requireRedis(t)) return;
   const since = Date.now() - 2 * 60 * 60_000;
-  await (await getIssueQueue()).add('processGitHubIssue', issueJob(42, { diskPressureDeferrals: 6, diskPressureSince: since }), jobOptions(42));
-  const failure = await until(async () => failures.find(entry => entry.id === jobId(42)), Boolean, 'the final failure');
+  const { jobId } = await enqueue(42, { diskPressureDeferrals: 6, diskPressureSince: since });
+  const failure = await until(async () => failures.find(entry => entry.id === jobId), Boolean, 'the final failure');
   assert.ok(failure);
   assert.equal(typeof failure.finishedOn, 'number', 'no BullMQ retry follows');
   assert.equal(failure.attemptsMade, 1);
   // The final refusal carries its measurement: path, free space, reserve, other claims and this job's size.
   assert.match(failure.message, /^Worktree disk pressure: admission reserve unavailable after waiting 120 minutes \(7 refusals\); data retained \(filesystem \S+: free [\d.]+ \w?i?B < required [\d.]+ \w?i?B = reserve [\d.]+ \w?i?B \+ 0 other claims \+ this job [\d.]+ \w?i?B\)$/);
   assert.ok(failure.message.includes(`(filesystem ${path.join(root, 'worktrees')}:`), 'the measured filesystem path is reported');
-  await until(() => jobState(jobId(42)), value => value.state === 'absent', 'removal on failure');
-  assert.equal(failures.filter(entry => entry.id === jobId(42)).length, 1);
+  await until(() => jobState(jobId), value => value.state === 'absent', 'removal on failure');
+  assert.equal(failures.filter(entry => entry.id === jobId).length, 1);
+  const dispatch = await until(() => dispatchOf(42), row => row?.state === 'failed', 'the ended dispatch');
+  assert.equal(dispatch?.started_at, null, 'no attempt entered the processor');
 });
 
-test('a retry refused after an admitted attempt failed keeps the evidence that the job already ran', async t => {
+test('a retry refused after an admitted attempt failed finds started_at on its dispatch', async t => {
   if (!requireRedis(t)) return;
   // Waiting disabled: the refused retry spends the last attempt and fails for good.
   process.env.WORKTREE_DISK_PRESSURE_MAX_WAIT_MS = '0';
   process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
-  refuseAfterFailure.add(jobId(47));
-  await (await getIssueQueue()).add('processGitHubIssue', issueJob(47), { ...jobOptions(47), attempts: 2 });
-  const final = await until(async () => failures.find(entry => entry.id === jobId(47) && entry.attemptsMade === 2), Boolean, 'the refused retry');
+  const { jobId, dispatchId } = await enqueue(47, {}, { attempts: 2, delay: 200 });
+  refuseAfterFailure.add(jobId);
+  const final = await until(async () => failures.find(entry => entry.id === jobId && entry.attemptsMade === 2), Boolean, 'the refused retry');
   assert.ok(final);
-  assert.deepEqual(processed.filter(id => id === jobId(47)), [jobId(47)], 'only the first attempt entered the processor');
+  assert.deepEqual(processed.filter(id => id === jobId), [jobId], 'only the first attempt entered the processor');
   assert.match(final.message, /^Worktree disk pressure: admission reserve unavailable/);
-  assert.equal(final.data?.issueJobAdmitted, true, 'the final refusal knows an earlier attempt ran, so it is not reported as never started');
-  const { diskPressureRefusalCommentBody } = await import('../src/services/issueDiskPressureRefusal.js');
-  const body = diskPressureRefusalCommentBody({ data: final.data ?? {} }, { inPlan: false });
-  assert.doesNotMatch(body, /Nothing was changed/);
-  assert.match(body, /could not retry this issue/);
+  const dispatch = await until(() => dispatchOf(47), row => row?.state === 'failed', 'the ended dispatch');
+  assert.equal(dispatch?.dispatch_id, dispatchId);
+  assert.equal(typeof dispatch?.started_at, 'number', 'the final refusal knows an earlier attempt ran, so it is not reported as never started');
 });
 
-test('re-enqueuing an issue after a failed attempt retained under its job ID runs the job', async t => {
+test('a request after a failed dispatch runs a new job under a new ID; the failed job is never removed', async t => {
   if (!requireRedis(t)) return;
   process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
-  const queue = await getIssueQueue();
-  failOnce.add(jobId(43));
-  // Kept on failure, as the queue's default options keep failed jobs for a week.
-  await queue.add('processGitHubIssue', issueJob(43), { ...jobOptions(43), attempts: 1, removeOnFail: false });
-  await until(() => jobState(jobId(43)), value => value.state === 'failed', 'the failed attempt');
-  assert.equal(processed.filter(id => id === jobId(43)).length, 1);
+  const first = await enqueue(43, {}, { attempts: 1, removeOnFail: false, delay: 200 });
+  failOnce.add(first.jobId);
+  await until(() => jobState(first.jobId), value => value.state === 'failed', 'the failed attempt');
+  await until(() => dispatchOf(43), row => row?.state === 'failed', 'the ended dispatch');
 
-  // Without the fix: BullMQ deduplicates the new request against the retained failed job, which never runs again.
-  await queue.add('processGitHubIssue', issueJob(43), jobOptions(43));
-  await new Promise(resolve => setTimeout(resolve, 300));
-  assert.equal((await jobState(jobId(43))).state, 'failed');
-  assert.equal(processed.filter(id => id === jobId(43)).length, 1);
-
-  const outcome = await enqueueIssueJobReplacingFinished(queue, { name: 'processGitHubIssue', data: issueJob(43), opts: jobOptions(43) });
-  assert.deepEqual(outcome, { status: 'added', replaced: 'failed' });
-  await until(async () => processed.filter(id => id === jobId(43)).length, count => count === 2, 'the re-enqueued job to run');
-  await until(() => jobState(jobId(43)), value => value.state === 'absent', 'completion');
+  const second = await enqueue(43);
+  assert.equal(second.status, 'added');
+  assert.notEqual(second.jobId, first.jobId);
+  await until(async () => processed.filter(id => id === second.jobId).length, count => count === 1, 'the new job to run');
+  await until(() => dispatchOf(43), row => row?.state === 'completed', 'the completed dispatch');
+  assert.equal((await jobState(first.jobId)).state, 'failed', 'the earlier job is left as it is');
 });
 
-type IssueQueue = Awaited<ReturnType<typeof getIssueQueue>>;
-/** The real queue, with each job `getJob` returns passed through `wrap` first. */
-function queueWithJobs(queue: IssueQueue, wrap: (job: Job) => Job) {
-  return {
-    add: queue.add.bind(queue), client: queue.client, toKey: queue.toKey.bind(queue),
-    getJob: async (id: string) => { const job = await queue.getJob(id) as Job | undefined; return job ? wrap(job) : job; },
-  };
-}
-
-async function retainFailedJob(number: number): Promise<void> {
-  process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
-  failOnce.add(jobId(number));
-  await (await getIssueQueue()).add('processGitHubIssue', issueJob(number), { ...jobOptions(number), attempts: 1, removeOnFail: false });
-  await until(() => jobState(jobId(number)), value => value.state === 'failed', 'the failed attempt');
-}
-
-test('a job that disappears while its state is read does not swallow the new request', async t => {
+test('two concurrent requests for one issue add exactly one job', async t => {
   if (!requireRedis(t)) return;
-  process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
-  const queue = await getIssueQueue();
-  // Waiting far in the future, then gone (as a worker completes and removes it) once its state is asked for.
-  await queue.add('processGitHubIssue', issueJob(44), { ...jobOptions(44), delay: 60_000 });
-  const vanishing = queueWithJobs(queue, job => Object.assign(job, {
-    getState: async () => { await queue.remove(String(job.id)); return Object.getPrototypeOf(job).getState.call(job); },
-  }));
-
-  const outcome = await enqueueIssueJobReplacingFinished(vanishing, { name: 'processGitHubIssue', data: issueJob(44), opts: jobOptions(44) });
-  assert.deepEqual(outcome, { status: 'added' });
-  await until(async () => processed.filter(id => id === jobId(44)).length, count => count === 1, 'the new job to run');
-});
-
-test('a failed removal of the retained finished job is not reported as an added job', async t => {
-  if (!requireRedis(t)) return;
-  await retainFailedJob(45);
-  const queue = await getIssueQueue();
-  let failRemoval = true;
-  const flaky = queueWithJobs(queue, job => Object.assign(job, {
-    remove: async () => {
-      if (failRemoval) { failRemoval = false; throw new Error('Connection is closed.'); }
-      return Object.getPrototypeOf(job).remove.call(job);
-    },
-  }));
-  const request = { name: 'processGitHubIssue', data: issueJob(45), opts: jobOptions(45) };
-
-  // The failure propagates, so the caller's retry runs again instead of trusting a deduplicated add.
-  await assert.rejects(enqueueIssueJobReplacingFinished(flaky, request), /Connection is closed/);
-  assert.equal((await jobState(jobId(45))).state, 'failed');
-  assert.deepEqual(await enqueueIssueJobReplacingFinished(flaky, request), { status: 'added', replaced: 'failed' });
-  await until(async () => processed.filter(id => id === jobId(45)).length, count => count === 2, 'the re-enqueued job to run');
-});
-
-test('two requests replacing one retained finished job keep the first accepted job and its payload', async t => {
-  if (!requireRedis(t)) return;
-  await retainFailedJob(46);
-  const queue = await getIssueQueue();
-  // Delayed, so no worker activation settles the race: the new jobs stay removable.
-  const request = (who: string) => enqueueIssueJobReplacingFinished(queue, {
-    name: 'processGitHubIssue', data: issueJob(46, { correlationId: `corr-46-${who}`, retryCommentId: who }), opts: { ...jobOptions(46), delay: 60_000 },
-  });
-  const outcomes = await Promise.all([request('a'), request('b')]);
-
-  const added = outcomes.findIndex(outcome => outcome.status === 'added');
-  assert.notEqual(added, -1);
-  assert.deepEqual(outcomes[added], { status: 'added', replaced: 'failed' });
-  assert.deepEqual(outcomes[1 - added], { status: 'already_queued', state: 'delayed' });
-  const { state, job } = await jobState(jobId(46));
-  assert.equal(state, 'delayed');
-  assert.equal(job?.data.retryCommentId, added === 0 ? 'a' : 'b', 'the accepted request\'s payload is the one stored');
+  const outcomes = await Promise.all([enqueue(46, { retryCommentId: 'a' }, { delay: 60_000 }), enqueue(46, { retryCommentId: 'b' }, { delay: 60_000 })]);
+  assert.deepEqual(outcomes.map(outcome => outcome.status).sort(), ['added', 'already_queued']);
+  const added = outcomes.find(outcome => outcome.status === 'added')!;
+  const jobs = (await (await getIssueQueue()).getJobs(['delayed'])).filter(entry => entry.data.repoOwner === OWNER && entry.data.number === 46);
+  assert.deepEqual(jobs.map(entry => entry.id), [added.jobId]);
+  assert.equal((await db('issue_dispatches').where({ dispatch_id: added.dispatchId }).first())?.state, 'queued');
 });

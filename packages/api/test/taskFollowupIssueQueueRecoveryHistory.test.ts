@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { state, postFollowup, applyLabels, database, FIRST_COMMENT_ID, HUMAN_ACTOR_ID } from './taskFollowupFixture.js';
 import { openRequests, onIssue, dedupKey, requestChildId, consumedTrigger } from './taskFollowupIssueDispatch.js';
 import {
-  type LiveQueue, skip, JOB_ID, owned, runRecords, retiredRecords, until, hooks, withLiveQueue, livePoll, routings, assertDispatched, assertChildRun,
+  type LiveQueue, skip, parentJobId, loseParentJob, owned, runRecords, retiredRecords, until, hooks, withLiveQueue, livePoll, routings, assertDispatched, assertChildRun,
   assertFailedAttempt, assertCompleted, alreadyDispatched, runRecordOf,
 } from './taskFollowupIssueLiveQueue.js';
 
@@ -82,7 +82,7 @@ for (const [routing, backed] of routings) {
           // Request R publishes E1, but the job the route queued for it is lost before any worker runs it.
           assert.equal((await postFollowup({ body: 'First instructions' }, 'failed-issue-task')).json.state, 'queued');
           const e1 = state.timeline.at(-1)!.id;
-          await (await live.queue.getJob(JOB_ID))!.remove();
+          await loseParentJob(live.queue);
           // Someone relabels the issue, publishing the independent E2. A poll queues a recovery parent carrying no
           // request; worker A's dispatch reads the history through E2 and the open R, and is suspended before it
           // reads R's run record, missing its lock renewals.
@@ -107,7 +107,7 @@ for (const [routing, backed] of routings) {
           const workerB = live.startWorker({ stalledInterval: 250 });
           assertFailedAttempt(await live.settled(), /database is locked/);
           assert.equal((await live.childSettled()).event, 'failed');
-          assert.deepEqual(live.stalls, [JOB_ID]);
+          assert.deepEqual(live.stalls, [await parentJobId()]);
           assert.deepEqual(await runRecordOf(live, FIRST_COMMENT_ID), { receiptEventId: String(e3) }, 'the queue records B\'s run through E3');
           assert.deepEqual(live.children.map(child => child.jobId), [await requestChildId()]);
           // B's retry is held back until A has returned.
@@ -125,7 +125,7 @@ for (const [routing, backed] of routings) {
           const stale = live.dispatches.at(-1);
           if (resumes === 'unreadable') assert.match(stale instanceof Error ? stale.message : '', /ECONNRESET/);
           else assert.deepEqual(stale, alreadyDispatched(backed));
-          assert.equal(await (await live.queue.getJob(JOB_ID))?.getState(), 'delayed', 'A resumed before B\'s retry');
+          assert.equal(await (await live.queue.getJob(await parentJobId()))?.getState(), 'delayed', 'A resumed before B\'s retry');
           await workerA.close(true);
           assert.deepEqual(live.children.map(child => child.jobId), [await requestChildId()], 'A adds no ordinary child for E2, or for any trigger R\'s run consumed');
           if (resumes === 'settling') {
@@ -165,7 +165,7 @@ for (const [routing, backed] of routings) {
       await withLiveQueue(async live => {
         // Request R publishes E1, but the job the route queued for it is lost before any worker runs it.
         assert.equal((await postFollowup({ body: 'First instructions' }, 'failed-issue-task')).json.state, 'queued');
-        await (await live.queue.getJob(JOB_ID))!.remove();
+        await loseParentJob(live.queue);
         // The independent E2; a poll's recovery parent reaches worker A, whose history read GitHub answers through E2,
         // but the answer arrives only after A missed its lock renewals.
         state.now += 2_000;
@@ -185,11 +185,11 @@ for (const [routing, backed] of routings) {
         live.startWorker({ stalledInterval: 250 });
         await assertDispatched(await live.settled(), live.children.at(-1), { requester: 'user-1', commentId: FIRST_COMMENT_ID, instructions: /First instructions/ });
         assert.equal((await live.childSettled()).event, 'failed');
-        assert.deepEqual(live.stalls, [JOB_ID]);
+        assert.deepEqual(live.stalls, [await parentJobId()]);
         if (backed) assert.equal(await consumedTrigger(), String(e3));
         assert.deepEqual(await openRequests(), []);
         assert.equal((await retiredRecords()).length, 1, 'R\'s retired record names its run through E3');
-        assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the recovered parent is removed');
+        assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'the recovered parent is removed');
 
         // A's answer arrives: a history through E2, and, read after it, no open request.
         const before = live.dispatches.length;

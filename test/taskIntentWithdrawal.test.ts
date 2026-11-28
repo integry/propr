@@ -78,6 +78,16 @@ const { schedulePRCommentUsageLimitRetry } = await import('../src/jobs/prComment
 const clearedLoops: number[] = [];
 await mock.module('../packages/core/src/utils/workerStateManager.js', { namedExports: { getStateManager: () => manager } });
 await mock.module('../packages/core/src/queue/taskQueue.js', { namedExports: { getIssueQueue: async () => queue } });
+// The database is a stub here; a new issue dispatch adds its job under a fresh ID, as the real one does (issueDispatchLifecycle.test.ts).
+let dispatches = 0;
+await mock.module('../packages/core/src/queue/issueDispatch.js', { namedExports: {
+    enqueueIssueDispatch: async (target: typeof queue, { name, data, opts }: { name: string; data: any; opts: Record<string, unknown> }) => {
+        const dispatchId = `dispatch${++dispatches}`;
+        const jobId = `issue-${data.repoOwner}-${data.repoName}-${data.number}-${dispatchId}`;
+        await target.add(name, { ...data, issueDispatchId: dispatchId }, { ...opts, jobId });
+        return { status: 'added', dispatchId, jobId };
+    },
+} });
 await mock.module('../packages/core/src/auth/githubAuth.js', { namedExports: { getAuthenticatedOctokit: async () => ({ graphql: async () => {
     onClosingPR?.();
     return { repository: { issue: { state: tracker.state.toUpperCase(), timelineItems: { nodes: [{ closer: closingPR }] } } } };

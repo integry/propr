@@ -6,7 +6,7 @@ import { generateCorrelationId } from '../utils/logger.js';
 import { handleError } from '../utils/errorHandler.js';
 import { withRetry, retryConfigs } from '../utils/retryHandler.js';
 import { getIssueQueue } from '../queue/taskQueue.js';
-import { enqueueIssueJobReplacingFinished, type IssueJobEnqueueOutcome } from '../queue/issueJobEnqueue.js';
+import type { IssueDispatchEnqueueOutcome } from '../queue/issueDispatch.js';
 import { getPrimaryProcessingLabels, loadPrimaryProcessingLabelsFromConfig } from './configLoader.js';
 import { getGithubUserWhitelist } from '../utils/userWhitelist.js';
 import { isAuthorizedIssueTriggerActor } from './issueTriggerAuthorization.js';
@@ -291,8 +291,6 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
 
     try {
         const timestamp = Date.now();
-        // Use consistent jobId without timestamp for deduplication - BullMQ will reject duplicates
-        const jobId = `issue-${issue.repoOwner}-${issue.repoName}-${issue.number}`;
         const issueJob = {
             repoOwner: issue.repoOwner,
             repoName: issue.repoName,
@@ -302,23 +300,24 @@ export async function processDetectedIssue(issue: DetectedIssue, correlationId: 
             correlationId: generateCorrelationId()
         };
 
-        const addToQueueWithRetry = (): Promise<IssueJobEnqueueOutcome> => withRetry(
-            // A finished job still retained under this ID is replaced, not silently deduplicated against.
-            async () => enqueueIssueJobReplacingFinished(await getIssueQueue(), { name: 'processGitHubIssue', data: issueJob, opts: {
-                jobId,
+        const addToQueueWithRetry = (): Promise<IssueDispatchEnqueueOutcome> => withRetry(
+            // Deduplicated on the issue's dispatch row: a dispatch already queued or running serves this request.
+            // Loaded here: importing the dispatch rows opens the database.
+            async () => (await import('../queue/issueDispatch.js')).enqueueIssueDispatch(await getIssueQueue(), { name: 'processGitHubIssue', data: issueJob, opts: {
                 attempts: 3,
                 backoff: { type: 'exponential', delay: 2000 },
-                removeOnComplete: true, // Allow new job with same ID after completion
-                removeOnFail: true,     // Allow retry by re-adding label after failure
-            } }, correlatedLogger),
+                removeOnComplete: true,
+                removeOnFail: true,
+            } }, { log: correlatedLogger }),
             { ...retryConfigs.redis, correlationId },
             `add_issue_to_queue_${issue.number}`
         );
 
         const enqueued = await addToQueueWithRetry();
+        const { jobId } = enqueued;
         if (enqueued.status === 'already_queued') {
-            correlatedLogger.info({ jobId, issueNumber: issue.number, repository: repoFullName, jobState: enqueued.state },
-                'A job for this issue is already queued (possibly delayed, e.g. waiting for disk space); not adding another');
+            correlatedLogger.info({ jobId, dispatchId: enqueued.dispatchId, issueNumber: issue.number, repository: repoFullName, dispatchState: enqueued.state },
+                'A dispatch of this issue is already queued (possibly deferred, waiting for disk space) or running; not adding another');
             return { status: 'ignored', reason: 'job_already_queued' };
         }
 

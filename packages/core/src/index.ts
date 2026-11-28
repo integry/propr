@@ -139,7 +139,9 @@ export {
     createWorker,
     shutdownQueue
 } from './queue/taskQueue.js';
-export { enqueueIssueJobReplacingFinished, type IssueJobEnqueueOutcome } from './queue/issueJobEnqueue.js';
+export {
+    enqueueIssueDispatch, findIssueDispatch, issueDispatchJobId, type IssueDispatch, type IssueDispatchEnqueueOutcome, type IssueDispatchState,
+} from './queue/issueDispatch.js';
 export {
     decideIssueDiskPressure,
     issueDiskPressureMaxWaitMs,

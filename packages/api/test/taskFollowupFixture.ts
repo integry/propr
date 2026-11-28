@@ -104,6 +104,11 @@ const add = mock.fn(async (...args: [string, CommentJobData, JobsOptions]) => {
 });
 const queue = {
   add, client: Promise.resolve(redis), toKey: (type: string) => `bull:github-issue-processor:${type}`,
+  // A dispatch's parent job the simulated queue accepted counts as run, so a later request starts a new dispatch.
+  getJob: async (jobId: string) => {
+    const data = acceptedJobs.get(jobId) as { issueDispatchId?: string; isChildJob?: boolean } | undefined;
+    return data?.issueDispatchId && !data.isChildJob ? { getState: async () => 'completed' } : undefined;
+  },
   getActive: async () => state.existingJobs, getWaiting: async () => [], getDelayed: async () => [],
 };
 // A real BullMQ queue, on a real Redis server, that replaces the simulated queue and Redis while set.
@@ -223,6 +228,7 @@ setUltrafixDeps({
 });
 beforeEach(async () => {
   await database('issue_retry_request_states').delete();
+  await resetIssueDispatches();
   state.nextCommentId = FIRST_COMMENT_ID;
   state.startLoopFails = false; state.prState = 'open'; state.commentPostError = undefined;
   state.issueState = 'open'; state.issueLabels = ['AI', 'llm-claude-opus-5-5']; state.labelFails = false;
@@ -241,6 +247,7 @@ const { up: submissionsTable } = await import('../../core/src/db/migrations/2026
 const { up: submissionIdentity } = await import('../../core/src/db/migrations/20260922010000_preserve_task_submission_identity.js');
 const { up: retryRequestStates } = await import('../../core/src/db/migrations/20261015080000_create_issue_retry_request_states.js');
 const { up: retryRequestRestarts } = await import('../../core/src/db/migrations/20261015090000_add_issue_retry_request_resumed_at.js');
+const { up: issueDispatches } = await import('../../core/src/db/migrations/20261128000000_create_issue_dispatches.js');
 const { createTaskRoutes, resolveFollowupThread } = await import('../routes/taskRoutes.js');
 
 const database = knex({ client: 'better-sqlite3', connection: { filename: ':memory:' }, useNullAsDefault: true });
@@ -262,6 +269,16 @@ await submissionsTable(database);
 await submissionIdentity(database);
 await retryRequestStates(database);
 await retryRequestRestarts(database);
+// An issue retry is enqueued as a new dispatch of the issue, on core's database, linked to its plan issue when there is one.
+const { db: coreDb } = await import('@propr/core');
+if (!await coreDb.schema.hasTable('plan_issues')) {
+  await coreDb.schema.createTable('plan_issues', table => {
+    table.increments('id'); table.string('draft_id'); table.string('repository'); table.integer('issue_number'); table.string('status'); table.timestamp('created_at');
+  });
+}
+await issueDispatches(coreDb);
+/** The issue's dispatch rows start empty in every test. */
+const resetIssueDispatches = () => coreDb('issue_dispatches').delete();
 await database('tasks').insert([
   { task_id: 'completed-task', repository: 'integry/propr', issue_number: 12, pr_number: 7, task_type: 'issue' },
   { task_id: 'task-without-pr', repository: 'integry/propr', issue_number: null, pr_number: null, task_type: 'issue' },

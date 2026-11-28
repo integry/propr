@@ -22,12 +22,14 @@ test('a failed issue-only implementation is retried through the issue job for th
   assert.equal(result.json.intent, 'issue');
   assert.equal(result.json.issueNumber, 14);
   assert.equal(result.json.sourceTaskId, 'failed-issue-task');
-  assert.equal(result.json.jobId, 'issue-integry-propr-14');
+  // Each dispatch of the issue has its own job ID, carrying its dispatch ID.
+  assert.match(String(result.json.jobId), /^issue-integry-propr-14-[0-9a-f]{16}$/);
 
   assert.equal(add.mock.callCount(), 1);
   const [name, job, options] = add.mock.calls[0].arguments as unknown as [string, Record<string, unknown>, { jobId: string }];
   assert.equal(name, 'processGitHubIssue');
-  assert.equal(options.jobId, 'issue-integry-propr-14');
+  assert.equal(options.jobId, result.json.jobId);
+  assert.equal(options.jobId, `issue-integry-propr-14-${job.issueDispatchId}`);
   assert.deepEqual({ repoOwner: job.repoOwner, repoName: job.repoName, number: job.number, userId: job.userId, triggeringLabel: job.triggeringLabel },
     { repoOwner: 'integry', repoName: 'propr', number: 14, userId: 'user-1', triggeringLabel: 'AI' });
   assert.equal(job.retryRequesterId, 'user-1');
@@ -340,7 +342,7 @@ test('a queue failure after relabelling reports an unconfirmed submission with i
   assert.equal(result.status, 202);
   assert.equal(result.json.success, false);
   assert.equal(result.json.state, 'unknown');
-  assert.equal(result.json.jobId, 'issue-integry-propr-14');
+  assert.match(String(result.json.jobId), /^issue-integry-propr-14-[0-9a-f]{16}$/);
   assert.equal(result.json.posted, true);
 });
 

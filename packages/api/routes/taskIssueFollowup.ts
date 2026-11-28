@@ -332,7 +332,8 @@ async function beginPublication(
  * was recorded.
  */
 type PublishOutcome = 'queued' | 'refused' | 'lapsed' | 'superseded' | 'unconfirmed' | 'unsubmitted' | 'unrecorded';
-interface Published { outcome: PublishOutcome; recorded: boolean }
+/** `jobId` is the issue job's ID when the dispatch was queued (or one already queued serves the request). */
+interface Published { outcome: PublishOutcome; recorded: boolean; jobId?: string }
 const outcomeState = (outcome: PublishOutcome) => outcome === 'queued' ? 'queued' : outcome === 'refused' || outcome === 'lapsed' ? 'failed' : 'unknown';
 
 interface PublishContext {
@@ -379,20 +380,22 @@ async function publishRetry(db: Knex, deps: IssueFollowupDeps, context: PublishC
     await releaseClaim(input.redis, context.dedupeKey, context.correlationId);
     return { outcome: 'refused', recorded };
   }
+  let jobId: string | undefined;
   try {
-    await (deps.enqueueIssue ?? enqueueIssueImplementationJob)({
+    ({ jobId } = (await (deps.enqueueIssue ?? enqueueIssueImplementationJob)({
       owner: input.owner, repo: input.repo, issueNumber: input.issueNumber, userId: request.requesterId,
       retryRequesterId: request.requesterId, retryCommentId: request.commentId!, retryPublishedAt: request.publishedAt!,
       triggeringLabel: trigger, correlationId: context.correlationId,
-    });
+    })) ?? {});
   } catch (error) {
     // The queue may have accepted the job before failing; the trigger label
     // stays for polling, and the held request lets that recovery run it once
     // its outcome is recorded.
+    jobId = (error as { jobId?: string }).jobId;
     console.warn(`[followup] Issue retry dispatch failed: ${(error as Error).message}`);
-    return { outcome: 'unsubmitted', recorded };
+    return { outcome: 'unsubmitted', recorded, ...(jobId ? { jobId } : {}) };
   }
-  return { outcome: recorded ? 'queued' : 'unrecorded', recorded };
+  return { outcome: recorded ? 'queued' : 'unrecorded', recorded, ...(jobId ? { jobId } : {}) };
 }
 
 async function checkRetryable(db: Knex, input: IssueFollowupInput): Promise<FollowupResult | null> {
@@ -497,9 +500,9 @@ export async function postIssueFollowup(db: Knex, deps: IssueFollowupDeps, input
     return notStarted(retryRequest);
   }
 
-  const jobId = `issue-${owner}-${repo}-${issueNumber}`;
   const published = await publishRetry(db, deps, publishing, retryRequest);
   const { outcome } = published;
+  const jobId = published.jobId;
   if (outcome === 'refused') return notStarted(`Make sure issue #${issueNumber} has the '${trigger}' label, then try again.`);
   if (outcome === 'lapsed') {
     return notStarted(`Its publication lapsed before the '${trigger}' label was added, because it took too long or a later retry took the issue over, so no label was added. Inspect issue #${issueNumber} before retrying.`);
@@ -526,9 +529,9 @@ async function restartRetry(db: Knex, deps: IssueFollowupDeps, context: PublishC
   const { input, trigger, dedupeKey } = context;
   const { issueNumber } = input;
   const earlier = `Issue #${issueNumber}'s earlier retry (comment ${request.commentId}) was never confirmed to start`;
-  const receipt = (state: ReturnType<typeof outcomeState>, message: string): FollowupResult => ({ status: 202, body: {
+  const receipt = (state: ReturnType<typeof outcomeState>, message: string, jobId?: string): FollowupResult => ({ status: 202, body: {
     success: false, state: 'refused', posted: false, commentId: request.commentId, sourceTaskId: input.task.task_id, intent: 'issue', issueNumber,
-    ...(state === 'failed' ? {} : { jobId: `issue-${input.owner}-${input.repo}-${issueNumber}` }),
+    ...(state === 'failed' || !jobId ? {} : { jobId }),
     restartedRequest: { state, commentId: request.commentId },
     message: `${message} Your new message was not posted${state === 'failed' ? '.' : '; send it again once that run finishes.'}`,
   } });
@@ -563,5 +566,5 @@ async function restartRetry(db: Knex, deps: IssueFollowupDeps, context: PublishC
     unsubmitted: `${earlier}, so it was restarted with its original instructions, but its submission could not be confirmed.`,
     unrecorded: `${earlier}, so it was restarted with its original instructions and submitted, but its '${trigger}' label could not be recorded yet.`,
   };
-  return receipt(outcomeState(published.outcome), messages[published.outcome] + strandedHint(published));
+  return receipt(outcomeState(published.outcome), messages[published.outcome] + strandedHint(published), published.jobId);
 }

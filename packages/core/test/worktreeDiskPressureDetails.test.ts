@@ -1,7 +1,7 @@
 /**
  * A disk-pressure refusal must be diagnosable after the fact: the error, its
  * message (all that survives a queue round-trip), the deferral log, the final
- * failure (and so the issue comment, see issueDiskPressureRefusal.test.ts) all state the measured filesystem, the free
+ * failure (and so the issue comment, see issueDispatchLifecycle.test.ts) all state the measured filesystem, the free
  * bytes, the reserve, the other claims (sum and count) and the job's own
  * reservation; each refusal also lists the claims it counted.
  */

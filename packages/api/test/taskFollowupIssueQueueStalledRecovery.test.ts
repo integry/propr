@@ -12,7 +12,7 @@ import type { Queue } from 'bullmq';
 import { state, postFollowup, applyLabels, database, FIRST_COMMENT_ID, HUMAN_ACTOR_ID } from './taskFollowupFixture.js';
 import { openRequests, onIssue, dedupKey, requestChildId, consumedTrigger } from './taskFollowupIssueDispatch.js';
 import {
-  skip, JOB_ID, raw, owned, runRecords, retiredRecords, until, hooks, withLiveQueue, livePoll, assertDispatched, assertChildRun, assertFailedAttempt,
+  skip, parentJobId, raw, owned, runRecords, retiredRecords, until, hooks, withLiveQueue, livePoll, assertDispatched, assertChildRun, assertFailedAttempt,
   assertCompleted, alreadyDispatched, assertNextFollowupRunsOnce, runRecordOf,
 } from './taskFollowupIssueLiveQueue.js';
 
@@ -82,9 +82,9 @@ for (const evidence of ['retained', 'retired'] as const) {
       }
       assert.equal((await live.childSettled()).event, 'completed');
       await live.drained();
-      assert.deepEqual(live.stalls, [JOB_ID], 'B recovered A\'s parent from its stalled check');
+      assert.deepEqual(live.stalls, [await parentJobId()], 'B recovered A\'s parent from its stalled check');
       assert.equal(await live.queue.getJob(childId), undefined, 'the child ran and was removed, freeing its ID');
-      assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the recovered parent finished and was removed');
+      assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'the recovered parent finished and was removed');
       assert.equal((await runRecords()).length, evidence === 'retained' ? 1 : 0);
       assert.equal((await retiredRecords()).length, evidence === 'retained' ? 0 : 1);
       const recovered = live.dispatches.length;
@@ -130,10 +130,10 @@ test('a submission-backed retry\'s dispatch that resumes after another worker re
         // Worker B's stalled check recovers the same parent: it records E1, consumes R1, and the parent completes and is removed.
         live.startWorker({ stalledInterval: 250 });
         assertCompleted(await live.settled(), alreadyDispatched(true));
-        assert.deepEqual(live.stalls, [JOB_ID]);
+        assert.deepEqual(live.stalls, [await parentJobId()]);
         assert.equal(await consumedTrigger(), String(e1));
         assert.deepEqual(await openRequests(), []);
-        assert.equal(await live.queue.getJob(JOB_ID), undefined, 'the recovered parent is removed');
+        assert.equal(await live.queue.getJob(await parentJobId()), undefined, 'the recovered parent is removed');
 
         // A genuinely new follow-up R2 publishes E2; its dispatch accepts its run, records E2 and consumes R2. Its
         // child fails at once, within E2's second.
@@ -207,7 +207,7 @@ for (const resumes of ['before-retry', 'unrecordable', 'after-newer-request'] as
           assertFailedAttempt(await live.settled(), /database is locked/);
           assert.equal((await live.childSettled()).event, 'failed');
           await failsWithin(e2);
-          assert.deepEqual(live.stalls, [JOB_ID]);
+          assert.deepEqual(live.stalls, [await parentJobId()]);
           assert.deepEqual(await runRecordOf(live, FIRST_COMMENT_ID), { receiptEventId: String(e2) }, 'the queue records B\'s run through E2');
           assert.equal(await consumedTrigger(), e0);
 
@@ -242,7 +242,7 @@ for (const resumes of ['before-retry', 'unrecordable', 'after-newer-request'] as
           const stale = live.dispatches.at(-1);
           if (resumes === 'unrecordable') assert.match(stale instanceof Error ? stale.message : '', /database is locked/);
           else assert.deepEqual(stale, { status: 'skipped', reason: 'retry_request_already_dispatched', issueNumber: 14 });
-          if (resumes !== 'after-newer-request') assert.equal(await (await live.queue.getJob(JOB_ID))?.getState(), 'delayed', 'A resumed before B\'s retry');
+          if (resumes !== 'after-newer-request') assert.equal(await (await live.queue.getJob(await parentJobId()))?.getState(), 'delayed', 'A resumed before B\'s retry');
           await workerA.close(true);
 
           if (resumes === 'unrecordable') {

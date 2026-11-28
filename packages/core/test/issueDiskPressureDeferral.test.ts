@@ -9,7 +9,9 @@ import { mock, test } from 'node:test';
 
 const log = { info() {}, warn() {}, error() {}, debug() {}, withCorrelation: () => log };
 await mock.module('../src/utils/logger.js', { defaultExport: log });
-const { decideIssueDiskPressure, deferIssueJobOnDiskPressure, endIssueDiskPressureWait, exhaustedIssueDiskPressureMessage, isFinalJobFailure, issueDiskPressureMaxWaitMs,
+// The dispatch row is unwritable here; jobs without an `issueDispatchId` never touch it.
+await mock.module('../src/db/connection.js', { namedExports: { db: () => { throw new Error('SQLITE_IOERR: disk I/O error'); } } });
+const { decideIssueDiskPressure, deferIssueJobOnDiskPressure, recordIssueJobAdmitted, exhaustedIssueDiskPressureMessage, isFinalJobFailure, issueDiskPressureMaxWaitMs,
   ISSUE_DISK_PRESSURE_RETRY_DELAYS_MS } = await import('../src/queue/issueDiskPressureDeferral.js');
 const { WorktreeDiskPressureError, isWorktreeDiskPressureError } = await import('../src/storage/lifecycle.js');
 
@@ -111,21 +113,21 @@ test('a failure is final once BullMQ will not retry it', () => {
 
 test('an admitted job drops the ended wait, so a later refusal starts a new one', async () => {
   const { job, calls } = fakeJob({ correlationId: 'corr', diskPressureDeferrals: 3, diskPressureSince: 5, diskPressureRetryAt: 9 });
-  await endIssueDiskPressureWait(job);
-  assert.deepEqual(calls.data, [{ repoOwner: 'acme', repoName: 'repo', number: 7, correlationId: 'corr', issueJobAdmitted: true }]);
-  await endIssueDiskPressureWait(job);
-  assert.equal(calls.data.length, 1, 'an admitted job without a wait is not rewritten');
+  await recordIssueJobAdmitted(job);
+  assert.deepEqual(calls.data, [{ repoOwner: 'acme', repoName: 'repo', number: 7, correlationId: 'corr' }]);
+  await recordIssueJobAdmitted(job);
+  assert.equal(calls.data.length, 1, 'a job without a wait is not rewritten');
   const now = 50 * HOUR;
   await assert.rejects(deferIssueJobOnDiskPressure(job, refuse, { now: () => now, maxWaitMs: HOUR }), (error: Error) => error.name === 'DelayedError');
   assert.equal((job.data as { diskPressureSince: number }).diskPressureSince, now);
   assert.equal((job.data as { diskPressureDeferrals: number }).diskPressureDeferrals, 1);
 });
 
-test('admission records on the job that an attempt entered its processor, and fails the attempt if it cannot', async () => {
-  const { job, calls } = fakeJob();
-  await endIssueDiskPressureWait(job);
-  assert.deepEqual(calls.data, [{ repoOwner: 'acme', repoName: 'repo', number: 7, issueJobAdmitted: true }], 'a first attempt without a wait is marked too');
-  // A later final refusal relies on the marker to say whether the job ever started, so it is not best effort.
-  const unwritable = { ...fakeJob().job, async updateData() { throw new Error('Connection is closed.'); } };
-  await assert.rejects(endIssueDiskPressureWait(unwritable), /Connection is closed/);
+test('admission fails the attempt when it cannot record started_at on the dispatch', async () => {
+  // A later final refusal relies on started_at to say whether the job ever started, so it is not best effort.
+  const { job, calls } = fakeJob({ issueDispatchId: 'abc' });
+  await assert.rejects(recordIssueJobAdmitted(job), /SQLITE_IOERR/);
+  assert.deepEqual(calls.data, []);
+  // A child shares the dispatch but does not move it.
+  await recordIssueJobAdmitted(fakeJob({ issueDispatchId: 'abc', isChildJob: true }).job);
 });
