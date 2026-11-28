@@ -185,26 +185,29 @@ describe('pi-credentials.py', () => {
         });
     });
 
-    test('write-back to a UID 1001 source (0700 dir, 0600 file) keeps owner, group and mode without recursive chown', () => {
-        // Unprivileged stand-in for the root writer: the host file reports
-        // UID/GID 1001, and every ownership call is recorded instead of made.
-        // The Docker smoke test exercises the same case for real as root.
+    test('write-back to a foreign-owned source (0700 dir, 0600 file) keeps owner, group and mode without recursive chown', () => {
+        // Unprivileged stand-in for the root writer: the host file reports an
+        // owner other than the test process (1001, or 1002 when the runner
+        // itself is 1001, as on GitHub Actions), and every ownership call is
+        // recorded instead of made. The Docker smoke test exercises the same
+        // case for real as root.
+        const foreignId = process.getuid?.() === 1001 || process.getgid?.() === 1001 ? 1002 : 1001;
         const observer = `
 import importlib.util, json, os, stat, sys
-script, log, argv = sys.argv[1], sys.argv[2], sys.argv[3:]
+script, log, foreign, argv = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4:]
 spec = importlib.util.spec_from_file_location("pi_credentials", script)
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
 calls = []
 real_read, real_fstat = helper.read_json_with_metadata, os.fstat
-def read_as_1001(path):
+def read_as_foreign(path):
     auth, metadata = real_read(path)
     if metadata is None or os.path.basename(os.fspath(path)) != "auth.json":
         return auth, metadata
     fake = list(metadata)
-    fake[stat.ST_UID], fake[stat.ST_GID] = 1001, 1001
+    fake[stat.ST_UID], fake[stat.ST_GID] = foreign, foreign
     return auth, os.stat_result(fake)
-helper.read_json_with_metadata = read_as_1001
+helper.read_json_with_metadata = read_as_foreign
 os.fchown = lambda fd, uid, gid: calls.append(["fchown", os.readlink(f"/proc/self/fd/{fd}"), uid, gid])
 os.chown = lambda *a, **k: calls.append(["chown", *map(str, a)])
 os.lchown = lambda *a, **k: calls.append(["lchown", *map(str, a)])
@@ -220,13 +223,13 @@ sys.exit(code)
             run.seed();
             run.writeRuntime({ ...hostAuth(), anthropic: oauth('2') });
             const log = path.join(run.dir, 'calls.json');
-            runPython(['-c', observer, credentialsScript, log, 'sync', run.host, run.runtime, run.snapshot]);
+            runPython(['-c', observer, credentialsScript, log, String(foreignId), 'sync', run.host, run.runtime, run.snapshot]);
             const calls = JSON.parse(fs.readFileSync(log, 'utf8')) as unknown[][];
             const chowns = calls.filter(call => call[0] !== 'replace');
             assert.equal(chowns.length, 1, `exactly one ownership change: ${JSON.stringify(calls)}`);
             assert.equal(chowns[0][0], 'fchown', 'ownership is set on the temp file descriptor, never by path or recursively');
             assert.match(String(chowns[0][1]), /auth\.json\.propr-tmp-/);
-            assert.deepEqual(chowns[0].slice(2), [1001, 1001]);
+            assert.deepEqual(chowns[0].slice(2), [foreignId, foreignId]);
             assert.deepEqual(calls.at(-1), ['replace', true, 0o600], 'replaced from the same dir with the original mode');
             assert.equal(fs.statSync(run.host).mode & 0o7777, 0o600);
             assert.equal(fs.statSync(sourceDir).mode & 0o7777, 0o700, 'the source dir mode is untouched');
