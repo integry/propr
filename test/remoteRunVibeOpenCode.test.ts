@@ -360,7 +360,7 @@ test('restricted networking: Vibe reaches Mistral; OpenCode reaches the provider
     const restriction = { source: 'instance_enforced', allow: [], instanceAllow: [] } as unknown as Parameters<typeof agentRunNetworkPolicy>[1];
     const { spec } = openCodeSpec(t, 'deepseek/deepseek-chat');
     const hosts = agentRunSpecNetworkPolicy(spec, restriction).allow.map(rule => rule.host);
-    assert.ok(hosts.includes('api.deepseek.com'));
-    assert.ok(hosts.includes('opencode.ai'));
+    assert.ok(hosts.some(host => host === 'api.deepseek.com'));
+    assert.ok(hosts.some(host => host === 'opencode.ai'));
     assert.ok(!agentRunNetworkPolicy('opencode', restriction).allow.some(rule => rule.host === 'api.deepseek.com'));
 });
