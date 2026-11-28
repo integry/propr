@@ -153,6 +153,11 @@ describe('privileged-post-task.sh', () => {
         withSandbox(dir => {
             // A planted `env` first on PATH must not run: the step names /usr/bin/env.
             fs.writeFileSync(path.join(dir, 'env'), '#!/bin/sh\necho planted\n', { mode: 0o755 });
+            // The parent shell sources BASH_ENV at startup, so it must stay silent; the step's
+            // environment listing still proves BASH_ENV is not passed on to the step. stdin is
+            // /dev/null because bash skips BASH_ENV (sourcing ~/.bashrc instead) when stdin is a
+            // socket, which Node's default stdin pipe is.
+            fs.writeFileSync(path.join(dir, 'bash-env'), ':\n');
             const script = [
                 // The helper path arrives as $1 so no path text is spliced into the script.
                 '. "$1"',
@@ -162,7 +167,7 @@ describe('privileged-post-task.sh', () => {
                 'run_privileged_post_task WANTED=yes step',
             ].join('\n');
             const result = spawnSync('/bin/bash', ['-c', script, 'privileged-post-task-test', HELPER], {
-                env: { PATH: `${dir}:/usr/bin:/bin`, SECRET_TOKEN: 'leak', BASH_ENV: path.join(dir, 'env'), LD_PRELOAD: 'nope' }, encoding: 'utf8', cwd: dir,
+                env: { PATH: `${dir}:/usr/bin:/bin`, SECRET_TOKEN: 'leak', BASH_ENV: path.join(dir, 'bash-env'), LD_PRELOAD: 'nope' }, encoding: 'utf8', cwd: dir, stdio: ['ignore', 'pipe', 'pipe'],
             });
             assert.equal(result.status, 0, result.stderr);
             const [shellOnly, cwd, environment] = result.stdout.split('|');
