@@ -1603,6 +1603,8 @@ Notes:
   "check all", "check agents", and --validate-agents run a real prompt through
   configured agents' host CLIs and Docker images (mounts credentials, makes
   billable LLM calls). This is also true with --json. Override with --agents.
+  Pi is the exception: it runs \`pi auth check --no-refresh\` (no prompt, no
+  token refresh) on the host and in the image.
   Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline image checks.
 `)
     .action(async (mode: string, options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean; validateAgents?: boolean }) => {

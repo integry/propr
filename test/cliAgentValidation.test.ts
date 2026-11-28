@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
@@ -21,6 +21,14 @@ if [ "$1" = "images" ]; then
   exit 0
 fi
 if [ "$1" = "run" ]; then
+  if [ -n "$PROPR_FAKE_DOCKER_STDIN" ]; then
+    cat >> "$PROPR_FAKE_DOCKER_STDIN"
+  fi
+  case "$*" in
+    *" auth check "*)
+      if [ -n "$PROPR_FAKE_DOCKER_AUTH_CHECK" ]; then printf '%s\n' "$PROPR_FAKE_DOCKER_AUTH_CHECK"; else echo '{"status":"ready","provider":"anthropic"}'; fi
+      exit "\${PROPR_FAKE_DOCKER_AUTH_EXIT:-0}" ;;
+  esac
   echo "claude version 1.2.3"
   exit 0
 fi
@@ -337,19 +345,63 @@ test("planAgentLogin runs a headless Pi login for one provider on the mounted ag
     /does not take --provider/);
 });
 
-test("Pi image validation prompts on stdin with no session or tools and a read-only agent dir", async () => {
-  const logFile = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-docker-log-")), "docker.log");
+test("Pi image validation runs the non-refreshing auth check, sends no prompt and leaves the read-only source untouched", async () => {
+  const logDir = mkdtempSync(join(tmpdir(), "propr-cli-agent-docker-log-"));
+  const logFile = join(logDir, "docker.log");
+  const stdinFile = join(logDir, "stdin.log");
+  writeFileSync(stdinFile, "");
   const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "pi");
   mkdirSync(hostDir);
+  const authFile = join(hostDir, "auth.json");
+  const authJson = JSON.stringify({ anthropic: { type: "oauth", refresh: "r-1", access: "a-1", expires: 0 } });
+  writeFileSync(authFile, authJson, { mode: 0o600 });
+  const before = statSync(authFile).mtimeMs;
   const restore = installFakeDocker(logFile);
+  process.env.PROPR_FAKE_DOCKER_STDIN = stdinFile;
   try {
     const cfg = fakeConfig({ hostPiDir: hostDir });
     const rows = await validateAgents(fakeOrchestrator(), cfg, { skipHost: true });
     assert.deepEqual(rows.map(row => row.type), ["pi"], "a configured HOST_PI_DIR selects pi by default");
-    const logged = readFileSync(logFile, "utf8");
-    assert.ok(logged.includes(`${hostDir}:/home/node/.pi/agent:ro`));
-    assert.match(logged, /PROPR_AGENT_TYPE=pi .*pi -p --no-session --no-tools$/m);
+    assert.equal(rows[0].image.status, "ok");
+    assert.equal(rows[0].image.detail, "anthropic credentials ready");
+    const runs = readFileSync(logFile, "utf8").split("\n").filter(line => line.startsWith("run "));
+    assert.equal(runs.length, 2, "one version run and one auth check run");
+    assert.match(runs[0], / pi --version$/);
+    const check = runs[1];
+    assert.ok(check.includes(`${hostDir}:/home/node/.pi/agent:ro`), "the source stays read-only");
+    assert.match(check, /PROPR_AGENT_TYPE=pi .* pi auth check --provider anthropic --json --no-refresh$/);
+    assert.doesNotMatch(runs.join("\n"), / -p( |$)|--print|--prompt-file|--no-session/, "no prompt is run");
+    assert.equal(readFileSync(stdinFile, "utf8"), "", "no prompt reaches stdin");
+    assert.equal(readFileSync(authFile, "utf8"), authJson, "auth.json is unchanged");
+    assert.equal(statSync(authFile).mtimeMs, before);
+    assert.deepEqual(readdirSync(hostDir), ["auth.json"], "nothing is written to the source dir");
   } finally {
+    delete process.env.PROPR_FAKE_DOCKER_STDIN;
+    restore();
+  }
+});
+
+test("Pi image validation fails on a not_ready or result-less auth check", async () => {
+  const hostDir = join(mkdtempSync(join(tmpdir(), "propr-cli-agent-creds-")), "pi");
+  mkdirSync(hostDir);
+  const restore = installFakeDocker();
+  try {
+    process.env.PROPR_FAKE_DOCKER_AUTH_CHECK = JSON.stringify({ status: "not_ready", provider: "anthropic", reason: "credentials_not_configured" });
+    process.env.PROPR_FAKE_DOCKER_AUTH_EXIT = "1";
+    const [notReady] = await validateAgents(fakeOrchestrator(), fakeConfig({ hostPiDir: hostDir }), { skipHost: true });
+    assert.equal(notReady.image.status, "fail");
+    assert.equal(notReady.image.detail, "anthropic credentials not_ready (credentials_not_configured)");
+    assert.match(notReady.image.fix ?? "", /propr agent login pi/);
+
+    // An exit 0 without the JSON result line (e.g. an entrypoint problem) is not ready.
+    process.env.PROPR_FAKE_DOCKER_AUTH_CHECK = "something else";
+    process.env.PROPR_FAKE_DOCKER_AUTH_EXIT = "0";
+    const [noResult] = await validateAgents(fakeOrchestrator(), fakeConfig({ hostPiDir: hostDir }), { skipHost: true });
+    assert.equal(noResult.image.status, "fail");
+    assert.equal(noResult.image.detail, "pi auth check printed no result");
+  } finally {
+    delete process.env.PROPR_FAKE_DOCKER_AUTH_CHECK;
+    delete process.env.PROPR_FAKE_DOCKER_AUTH_EXIT;
     restore();
   }
 });
