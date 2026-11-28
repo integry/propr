@@ -684,3 +684,34 @@ test('redactSerializableValue redacts preview paths used as nested metadata keys
     assert.deepEqual(Object.keys(redacted.metadata), ['[local preview omitted]']);
     assert.equal(JSON.stringify(redacted).includes(local), false);
 });
+
+test('redactSecrets scrubs pasted agent credential documents', () => {
+    const settings = JSON.stringify({ env: { ANTHROPIC_API_KEY: 'sk-ant-api03-' + 'a'.repeat(40), CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-' + 'b'.repeat(40) } });
+    const codexKey = JSON.stringify({ OPENAI_API_KEY: 'sk-svcacct-' + 'c'.repeat(48), tokens: null });
+    const codexLogin = JSON.stringify({ tokens: { id_token: 'eyJhbGciOi.' + 'd'.repeat(30), access_token: 'eyJhbGciOi.' + 'e'.repeat(30), refresh_token: 'rt_' + 'f'.repeat(30) } });
+    for (const document of [settings, codexKey, codexLogin]) {
+        const result = redactSecrets(document);
+        for (const secret of ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(48), 'd'.repeat(30), 'e'.repeat(30), 'f'.repeat(30)]) {
+            assert.ok(!result.includes(secret), `${secret.slice(0, 4)}… leaked from ${result}`);
+        }
+    }
+});
+
+test('redactSecrets scrubs opaque OpenCode auth.json secrets in either member order', () => {
+    const secrets = ['opaque-refresh-1234567890', 'opaque-access-1234567890', 'opaque-provider-key-12345', 'opaque-wellknown-key-1234', 'opaque-wellknown-token-123'];
+    const auth = {
+        anthropic: { type: 'oauth', refresh: secrets[0], access: secrets[1], expires: 1_900_000_000_000 },
+        deepseek: { type: 'api', key: secrets[2] },
+        // A pasted document may list "type" after the secrets.
+        enterprise: { key: secrets[3], token: secrets[4], type: 'wellknown' },
+    };
+    // Compact, and as stored (two-space indentation).
+    for (const document of [JSON.stringify(auth), JSON.stringify(auth, null, 2)]) {
+        const result = redactSecrets(document);
+        for (const secret of secrets) assert.ok(!result.includes(secret), `${secret} leaked from ${result}`);
+        assert.ok(result.includes('"expires"') && result.includes('"oauth"'), 'non-secret members are kept');
+    }
+    // The generic names alone are not secrets outside such an entry.
+    const unrelated = JSON.stringify({ key: 'packages/core/src/index.ts', cache: { access: 'read-only-shared-cache' } });
+    assert.equal(redactSecrets(unrelated), unrelated);
+});

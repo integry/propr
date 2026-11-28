@@ -11,10 +11,13 @@ const { credentialStoreLockPath, inspectCredentialStoreLock } = await import('..
 const here = path.dirname(fileURLToPath(import.meta.url));
 const contender = path.join(here, 'fixtures', 'credentialStoreLockContender.ts');
 const writeBackContender = path.join(here, 'fixtures', 'credentialWriteBackContender.ts');
+const writerContender = path.join(here, 'fixtures', 'credentialStoreWriterContender.ts');
 const lockModule = process.env.PROPR_TEST_CREDENTIAL_LOCK_MODULE
     ?? path.join(here, '..', 'packages', 'core', 'src', 'agents', 'credentials', 'credentialStoreLock.ts');
 const brokerModule = process.env.PROPR_TEST_CREDENTIAL_BROKER_MODULE
     ?? path.join(here, '..', 'packages', 'core', 'src', 'agents', 'credentials', 'broker.ts');
+const writerModule = process.env.PROPR_TEST_CREDENTIAL_WRITER_MODULE
+    ?? path.join(here, '..', 'packages', 'core', 'src', 'agents', 'credentials', 'credentialStoreWriter.ts');
 
 function runContender(args: string[], env: Record<string, string> = {}, script = contender, module = lockModule): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -131,6 +134,44 @@ test('a writer suspended before publishing cannot overwrite the newer token of t
         assert.deepEqual(result('old'), ['kept-canonical']);
         assert.deepEqual(fs.readdirSync(store), ['.credentials.json'], 'no publication directory or prepared replacement is left in the store');
         assert.deepEqual(inspectCredentialStoreLock(lockRoot, store), { epoch: 3, held: false });
+    } finally {
+        fs.rmSync(scratch, { recursive: true, force: true });
+    }
+});
+
+test('a removal suspended before publishing cannot delete the credential of the writer that took its stale lock over', { timeout: 60_000 }, async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-credential-removal-'));
+    try {
+        const lockRoot = path.join(scratch, 'locks');
+        const store = path.join(scratch, 'store');
+        const workDir = path.join(scratch, 'work');
+        for (const dir of [lockRoot, store, workDir]) fs.mkdirSync(dir);
+        fs.writeFileSync(path.join(store, 'auth.json'), 'pasted-v0', { mode: 0o600 });
+        const shared = [lockRoot, store, workDir];
+        const marker = (name: string) => fs.existsSync(path.join(workDir, name));
+        const waitFor = async (name: string) => {
+            const deadline = Date.now() + 20_000;
+            while (!marker(name) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+            assert.ok(marker(name), `${name} was reached`);
+        };
+        const result = (id: string) => JSON.parse(fs.readFileSync(path.join(workDir, `result-${id}`), 'utf8'));
+        // "removal" holds the lock and has recorded its mutation as pending, then stays
+        // suspended before deleting auth.json until "successor" has taken its lock over
+        // as stale and published a replacement.
+        const removal = runContender([...shared, 'removal', 'auth.json', '-'],
+            { CONTENDER_STALE_MS: '300', CONTENDER_PUBLISH_AFTER: 'successor' }, writerContender, writerModule);
+        await waitFor('publishing-removal');
+        assert.equal(fs.readFileSync(path.join(store, 'auth.json'), 'utf8'), 'pasted-v0', 'nothing removed yet');
+        const successor = runContender([...shared, 'successor', 'auth.json', 'pasted-v1'], { CONTENDER_STALE_MS: '300' }, writerContender, writerModule);
+        await Promise.all([removal, successor]);
+
+        assert.equal(result('successor'), 'written', 'the successor took the stale lock over and published its credential');
+        assert.equal(fs.readFileSync(path.join(store, 'auth.json'), 'utf8'), 'pasted-v1', 'the resumed removal deleted the successor\'s credential');
+        assert.match(result('removal').error, /taken over as stale/);
+        const record = JSON.parse(fs.readFileSync(path.join(store, '.propr-operator-mutations.json'), 'utf8'));
+        assert.deepEqual(record.pending, [], 'the successor cleared the mark; the superseded writer could not touch the record');
+        assert.deepEqual(fs.readdirSync(store).sort(), ['.propr-operator-mutations.json', 'auth.json'], 'no publication or removal directory is left');
+        assert.deepEqual(inspectCredentialStoreLock(lockRoot, store), { epoch: 2, held: false });
     } finally {
         fs.rmSync(scratch, { recursive: true, force: true });
     }

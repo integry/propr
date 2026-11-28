@@ -6,6 +6,8 @@ import { promisify } from 'util';
 import {
   getAgentRegistry,
   agentDockerImageExists,
+  checkRemoteRuntimeReadiness,
+  effectiveAgentRuntimeName,
   enqueueAgentImagePreparation,
   loadAgents,
   resolveConfigPath,
@@ -19,6 +21,7 @@ import {
 import { AGENT_DEFAULTS, isManagedAgentConfigPath } from '@propr/shared';
 import { refuseDemoViewer, requireManageAgents } from '../permissionGuards.js';
 import { createAgentHealthCheck } from '../services/agentHealthCheck.js';
+import { remoteCredentialProblem } from '../services/agentCredentialStore.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -248,6 +251,8 @@ export function createAgentRoutes() {
     prepareImage: enqueueAgentImagePreparation,
     createAgent: config => getAgentRegistry().createAgentFromConfig(config),
     resolveExecutionImage: resolveHealthCheckImage,
+    remoteReadiness: async config => checkRemoteRuntimeReadiness(config, await effectiveAgentRuntimeName(config)),
+    remoteCredentialProblem,
   });
 
   router.post('/:agentId/health', requireManageAgents, async (req: Request, res: Response): Promise<void> => {

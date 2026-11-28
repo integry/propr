@@ -15,6 +15,7 @@ import {
   resolveDefaultConfigPath,
   type AgentConfig,
 } from '@propr/core';
+import type { DockerCommandResult } from './agentLoginDockerProcess.js';
 
 const CONTAINER_WORKSPACE = '/home/node/workspace';
 
@@ -172,4 +173,39 @@ export function buildAgentLoginCreateArgs(
     image,
     ...descriptor.command,
   ];
+}
+
+type RunDocker = (args: string[]) => Promise<DockerCommandResult>;
+
+/** Make the agent image available to the local Docker daemon, pulling it when it is missing. */
+export async function ensureAgentLoginImage(runDocker: RunDocker, image: string, output: (chunk: string) => void): Promise<void> {
+  try {
+    await runDocker(['image', 'inspect', image]);
+  } catch {
+    output(`Agent image ${image} is not available locally; pulling it now…\n`);
+    try {
+      await runDocker(['pull', image]);
+    } catch (pullError) {
+      throw new AgentLoginInputError(
+        `Agent image "${image}" is unavailable and could not be pulled: ${(pullError as Error).message}`,
+      );
+    }
+  }
+}
+
+/** Remove the login containers labelled with this stack's scope; returns how many were removed. */
+export async function removeOrphanedAgentLoginContainers(runDocker: RunDocker, scope: string): Promise<number> {
+  const { stdout } = await runDocker([
+    'ps',
+    '-aq',
+    '--filter', 'label=propr.agent-login=true',
+    '--filter', `label=propr.agent-login.scope=${scope}`,
+  ]);
+  const containerIds = stdout
+    .split(/\s+/)
+    .map(value => value.trim())
+    .filter(value => /^[a-fA-F0-9]{12,64}$/.test(value));
+  if (containerIds.length === 0) return 0;
+  await runDocker(['rm', '-f', ...containerIds]);
+  return containerIds.length;
 }

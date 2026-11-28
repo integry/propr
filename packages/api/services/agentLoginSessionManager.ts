@@ -1,18 +1,33 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import {
   getAgentLoginDescriptor,
   isManagedAgentConfigPath,
+  type AgentLoginDescriptor,
   type AgentType,
 } from '@propr/shared';
-import type { AgentConfig } from '@propr/core';
+import { redactSecrets, type AgentConfig, type RemoteLoginProcess } from '@propr/core';
+import { clearPastedAuthenticationAfterLogin, pastedAuthenticationOverridesLogin } from './agentCredentialStore.js';
 import {
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
+  ensureAgentLoginImage,
+  removeOrphanedAgentLoginContainers,
   resolveAgentLoginConfigPath,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
+import { defaultRunDocker, defaultSpawnDocker, type DockerCommandResult } from './agentLoginDockerProcess.js';
+
+import {
+  collectRemoteLoginForAgent,
+  createDefaultRemoteLoginResolver,
+  localDockerAvailable,
+  runRemoteLoginSession,
+  type RemoteLoginBackend,
+  type RemoteLoginResolver,
+} from './agentLoginRemote.js';
+import { sanitizeTerminalChunk, type TerminalEscapeState } from './agentLoginTerminal.js';
 
 export { AgentLoginInputError } from './agentLoginDocker.js';
 
@@ -20,10 +35,6 @@ const DEFAULT_SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_SESSION_RETENTION_MS = 5 * 60 * 1000;
 const MAX_OUTPUT_LENGTH = 128 * 1024;
 const MAX_INPUT_LENGTH = 4096;
-
-type TerminalEscapeState = 'text' | 'escape' | 'escape_intermediate' | 'csi'
-  | 'control_string' | 'control_string_escape';
-type EscapeSequenceState = Exclude<TerminalEscapeState, 'text'>;
 
 export type AgentLoginSessionStatus = 'starting' | 'running' | 'succeeded'
   | 'failed' | 'cancelled' | 'timed_out';
@@ -34,11 +45,6 @@ const TERMINAL_STATUSES = new Set<AgentLoginSessionStatus>([
   'cancelled',
   'timed_out',
 ]);
-const CONTROL_STRING_STARTS = new Set([']', 'P', 'X', '^', '_']);
-const C1_CONTROL_STRING_STARTS = new Set(['\u0090', '\u0098', '\u009d', '\u009e', '\u009f']);
-const CSI_FINAL_CHARACTER = /[\u0040-\u007e]/u;
-const ESCAPE_INTERMEDIATE_CHARACTER = /[\u0020-\u002f]/u;
-const UNSAFE_CONTROL_RANGES = [[0x00, 0x08], [0x0b, 0x0c], [0x0e, 0x1a], [0x1c, 0x1f], [0x7f, 0x9f]];
 
 export interface AgentLoginSessionSnapshot {
   id: string;
@@ -58,6 +64,11 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot {
   credentialPath: string;
   containerName: string;
   process?: ChildProcessWithoutNullStreams;
+  /** Set when the login runs on Sprites or Fly Machines instead of a local container. */
+  remote?: RemoteLoginProcess;
+  remoteAbort?: AbortController;
+  /** Cancels a local login's settings cleanup while it waits for the store lock. */
+  localAbort?: AbortController;
   timeout?: ReturnType<typeof setTimeout>;
   retentionTimeout?: ReturnType<typeof setTimeout>;
   cleanupStarted?: boolean;
@@ -65,10 +76,7 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot {
   outputEndedWithCarriageReturn?: boolean;
 }
 
-export interface DockerCommandResult {
-  stdout: string;
-  stderr: string;
-}
+export type { DockerCommandResult } from './agentLoginDockerProcess.js';
 
 export interface AgentLoginSessionManagerDeps {
   runDocker?: (args: string[]) => Promise<DockerCommandResult>;
@@ -78,6 +86,12 @@ export interface AgentLoginSessionManagerDeps {
   sessionTimeoutMs?: number;
   sessionRetentionMs?: number;
   scope?: string;
+  /** Selects a remote runtime for agents that run on one when no local Docker is usable. */
+  resolveRemoteLogin?: RemoteLoginResolver;
+  /** Whether a local Docker daemon exists (login containers to sweep). */
+  dockerAvailable?: () => boolean;
+  /** Copies the login files from the remote runtime into the agent's store; returns how many were stored. */
+  collectRemoteLogin?: (agent: AgentConfig, process: RemoteLoginProcess, signal: AbortSignal) => Promise<number>;
 }
 
 export class AgentLoginConflictError extends Error {
@@ -94,28 +108,6 @@ export class AgentLoginSessionNotFoundError extends Error {
   }
 }
 
-function defaultRunDocker(args: string[]): Promise<DockerCommandResult> {
-  return new Promise((resolve, reject) => {
-    const timeout = args[0] === 'pull' ? 5 * 60_000 : 30_000;
-    execFile('docker', args, { timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error((stderr || stdout || error.message).trim()));
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
-  });
-}
-
-function defaultSpawnDocker(args: string[]): ChildProcessWithoutNullStreams {
-  const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
-  const command = ['docker', ...args].map(shellQuote).join(' ');
-  // Docker refuses to attach a container TTY when its own stdin is a pipe.
-  // script(1) supplies the controlling PTY while keeping Node's stdin/stdout
-  // pipeable for the browser session.
-  return spawn('script', ['-qefc', command, '/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] });
-}
-
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   timer.unref?.();
 }
@@ -129,69 +121,6 @@ function normalizeScope(value: string): string {
   return normalized || 'propr';
 }
 
-const ESCAPE_TRANSITIONS: Record<
-  EscapeSequenceState,
-  (value: string) => TerminalEscapeState
-> = {
-  escape: value => {
-    if (value === '[') return 'csi';
-    if (CONTROL_STRING_STARTS.has(value)) return 'control_string';
-    return ESCAPE_INTERMEDIATE_CHARACTER.test(value) ? 'escape_intermediate' : 'text';
-  },
-  escape_intermediate: value => (
-    ESCAPE_INTERMEDIATE_CHARACTER.test(value) ? 'escape_intermediate' : 'text'
-  ),
-  csi: value => CSI_FINAL_CHARACTER.test(value) ? 'text' : 'csi',
-  control_string: value => {
-    if (value === '\u0007' || value === '\u009c') return 'text';
-    return value === '\u001b' ? 'control_string_escape' : 'control_string';
-  },
-  control_string_escape: value => {
-    if (value === '\\' || value === '\u009c') return 'text';
-    return value === '\u001b' ? 'control_string_escape' : 'control_string';
-  },
-};
-
-function startEscapeSequence(value: string): EscapeSequenceState | undefined {
-  if (value === '\u001b') return 'escape';
-  if (value === '\u009b') return 'csi';
-  if (C1_CONTROL_STRING_STARTS.has(value)) return 'control_string';
-  return undefined;
-}
-
-function isUnsafeControlCharacter(value: string): boolean {
-  const code = value.charCodeAt(0);
-  return UNSAFE_CONTROL_RANGES.some(([start, end]) => code >= start && code <= end);
-}
-
-function sanitizeTerminalChunk(session: AgentLoginSession, chunk: string): string {
-  let sanitized = '';
-  for (const value of chunk) {
-    const state = session.escapeState;
-    if (state !== 'text') {
-      session.escapeState = ESCAPE_TRANSITIONS[state](value);
-      continue;
-    }
-    const escapeState = startEscapeSequence(value);
-    if (escapeState) {
-      session.escapeState = escapeState;
-      continue;
-    }
-    if (value === '\r') {
-      sanitized += '\n';
-      session.outputEndedWithCarriageReturn = true;
-      continue;
-    }
-    if (value === '\n' && session.outputEndedWithCarriageReturn) {
-      session.outputEndedWithCarriageReturn = false;
-      continue;
-    }
-    session.outputEndedWithCarriageReturn = false;
-    if (!isUnsafeControlCharacter(value)) sanitized += value;
-  }
-  return sanitized;
-}
-
 export class AgentLoginSessionManager {
   private readonly sessions = new Map<string, AgentLoginSession>();
   private readonly activeCredentialPaths = new Set<string>();
@@ -202,6 +131,10 @@ export class AgentLoginSessionManager {
   private readonly sessionTimeoutMs: number;
   private readonly sessionRetentionMs: number;
   private readonly scope: string;
+  private readonly resolveRemoteLogin: RemoteLoginResolver;
+  private readonly collectRemoteLogin: NonNullable<AgentLoginSessionManagerDeps['collectRemoteLogin']>;
+  private readonly closeRemote: () => Promise<void>;
+  private readonly dockerAvailable: () => boolean;
 
   constructor(deps: AgentLoginSessionManagerDeps = {}) {
     this.runDocker = deps.runDocker ?? defaultRunDocker;
@@ -211,6 +144,14 @@ export class AgentLoginSessionManager {
     this.sessionTimeoutMs = deps.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
     this.sessionRetentionMs = deps.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS;
     this.scope = normalizeScope(deps.scope ?? process.env.PROPR_STACK ?? 'propr');
+    // An injected Docker runner (tests, embedders) keeps every login local unless a resolver is injected too.
+    this.dockerAvailable = deps.dockerAvailable ?? (deps.runDocker ? () => true : () => localDockerAvailable());
+    const remote = deps.resolveRemoteLogin || deps.runDocker
+      ? { resolve: deps.resolveRemoteLogin ?? (async () => undefined), close: async () => {} }
+      : createDefaultRemoteLoginResolver();
+    this.resolveRemoteLogin = remote.resolve;
+    this.closeRemote = remote.close;
+    this.collectRemoteLogin = deps.collectRemoteLogin ?? collectRemoteLoginForAgent;
   }
 
   /**
@@ -219,19 +160,9 @@ export class AgentLoginSessionManager {
    * the same Docker daemon.
    */
   async cleanupOrphanedContainers(): Promise<number> {
-    const { stdout } = await this.runDocker([
-      'ps',
-      '-aq',
-      '--filter', 'label=propr.agent-login=true',
-      '--filter', `label=propr.agent-login.scope=${this.scope}`,
-    ]);
-    const containerIds = stdout
-      .split(/\s+/)
-      .map(value => value.trim())
-      .filter(value => /^[a-fA-F0-9]{12,64}$/.test(value));
-    if (containerIds.length === 0) return 0;
-    await this.runDocker(['rm', '-f', ...containerIds]);
-    return containerIds.length;
+    // Sprites-only and Fly-only instances have no Docker daemon to sweep.
+    if (!this.dockerAvailable()) return 0;
+    return removeOrphanedAgentLoginContainers(this.runDocker, this.scope);
   }
 
   async start(agent: AgentConfig, owner: string): Promise<AgentLoginSessionSnapshot> {
@@ -263,6 +194,19 @@ export class AgentLoginSessionManager {
     this.activeCredentialPaths.add(credentialPath);
     this.scheduleTimeout(session, timestamp);
 
+    let remote;
+    try {
+      remote = await this.resolveRemoteLogin(agent);
+    } catch (error) {
+      this.appendOutput(session, `${(error as Error).message}\n`);
+      this.finish(session, 'failed', undefined, (error as Error).message || 'Could not select the agent login runtime');
+      return this.snapshot(session);
+    }
+    if (remote) {
+      this.startRemote(session, agent, descriptor, remote);
+      return this.snapshot(session);
+    }
+
     try {
       if (isManagedAgentConfigPath(agent.configPath)) {
         // Materialize the isolated bind source explicitly. The provider
@@ -278,20 +222,9 @@ export class AgentLoginSessionManager {
         containerName,
         this.scope,
       );
-      try {
-        await this.runDocker(['image', 'inspect', image]);
-      } catch {
-        this.appendOutput(session, `Agent image ${image} is not available locally; pulling it now…\n`);
-        try {
-          await this.runDocker(['pull', image]);
-        } catch (pullError) {
-          throw new AgentLoginInputError(
-            `Agent image "${image}" is unavailable and could not be pulled: ${(pullError as Error).message}`,
-          );
-        }
-      }
+      await ensureAgentLoginImage(this.runDocker, image, chunk => this.appendOutput(session, chunk));
       await this.runDocker(createArgs);
-      this.attach(session);
+      this.attach(session, agent);
     } catch (error) {
       this.appendOutput(session, `${(error as Error).message}\n`);
       this.finish(session, 'failed', undefined, (error as Error).message || 'Could not start the agent login container');
@@ -307,6 +240,16 @@ export class AgentLoginSessionManager {
 
   write(sessionId: string, owner: string, input: string): AgentLoginSessionSnapshot {
     const session = this.requireSession(sessionId, owner);
+    if (session.status === 'running' && session.remote) {
+      if (!input || input.length > MAX_INPUT_LENGTH) {
+        throw new AgentLoginInputError(`Input must contain between 1 and ${MAX_INPUT_LENGTH} characters`);
+      }
+      session.remote.write(input).catch(error => this.appendOutput(session, `${(error as Error).message}\n`));
+      const timestamp = this.now();
+      this.touch(session, timestamp);
+      this.scheduleTimeout(session, timestamp);
+      return this.snapshot(session);
+    }
     if (session.status !== 'running' || !session.process?.stdin.writable) {
       throw new AgentLoginInputError('Agent login session is not accepting input');
     }
@@ -324,7 +267,7 @@ export class AgentLoginSessionManager {
     const session = this.requireSession(sessionId, owner);
     if (!isTerminal(session.status)) {
       this.finish(session, 'cancelled', undefined, 'Login cancelled');
-      session.process?.kill();
+      this.stopProcess(session);
       await this.cleanupContainer(session);
     }
     return this.snapshot(session);
@@ -337,15 +280,16 @@ export class AgentLoginSessionManager {
       if (session.retentionTimeout) clearTimeout(session.retentionTimeout);
       if (!isTerminal(session.status)) {
         session.status = 'cancelled';
-        session.process?.kill();
+        this.stopProcess(session);
       }
       await this.cleanupContainer(session);
     }));
     this.sessions.clear();
     this.activeCredentialPaths.clear();
+    await this.closeRemote();
   }
 
-  private attach(session: AgentLoginSession): void {
+  private attach(session: AgentLoginSession, agent: AgentConfig): void {
     const child = this.spawnDocker(['start', '-a', '-i', session.containerName]);
     session.process = child;
     session.status = 'running';
@@ -363,6 +307,10 @@ export class AgentLoginSessionManager {
     });
     child.on('close', code => {
       if (isTerminal(session.status)) return;
+      if (code === 0 && pastedAuthenticationOverridesLogin(agent.type)) {
+        void this.completeLocalLogin(session, agent);
+        return;
+      }
       this.finish(
         session,
         code === 0 ? 'succeeded' : 'failed',
@@ -373,10 +321,33 @@ export class AgentLoginSessionManager {
     });
   }
 
+  /**
+   * A local login container wrote its files into the store itself, so a
+   * pasted credential that would override them is removed (as a remote
+   * login's collection does) before the session reports success. A session
+   * cancelled or timed out meanwhile aborts the cleanup before it publishes.
+   */
+  private async completeLocalLogin(session: AgentLoginSession, agent: AgentConfig): Promise<void> {
+    const abort = new AbortController();
+    session.localAbort = abort;
+    try {
+      await clearPastedAuthenticationAfterLogin(agent, abort.signal);
+      if (!isTerminal(session.status)) this.finish(session, 'succeeded', 0);
+    } catch (error) {
+      if (!isTerminal(session.status)) {
+        const message = redactSecrets((error as Error).message);
+        this.appendOutput(session, `${message}\n`);
+        this.finish(session, 'failed', 0, `Could not save the login: ${message}`);
+      }
+    } finally {
+      await this.cleanupContainer(session);
+    }
+  }
+
   private async timeoutSession(session: AgentLoginSession): Promise<void> {
     if (isTerminal(session.status)) return;
     this.finish(session, 'timed_out', undefined, 'Agent login timed out');
-    session.process?.kill();
+    this.stopProcess(session);
     await this.cleanupContainer(session);
   }
 
@@ -430,8 +401,46 @@ export class AgentLoginSessionManager {
     return session;
   }
 
+  private stopProcess(session: AgentLoginSession): void {
+    session.process?.kill();
+    session.localAbort?.abort();
+    session.remoteAbort?.abort();
+    session.remote?.kill();
+  }
+
+  /** A login on Sprites or Fly Machines; see {@link runRemoteLoginSession}. */
+  private startRemote(
+    session: AgentLoginSession,
+    agent: AgentConfig,
+    descriptor: AgentLoginDescriptor,
+    backend: RemoteLoginBackend,
+  ): void {
+    const abort = new AbortController();
+    session.remoteAbort = abort;
+    void runRemoteLoginSession({
+      agent, descriptor, backend, signal: abort.signal,
+      output: chunk => this.appendOutput(session, chunk),
+      terminal: () => isTerminal(session.status),
+      attach: remote => {
+        session.remote = remote;
+        session.status = 'running';
+        this.touch(session);
+      },
+      finish: (status, exitCode, error) => this.finish(session, status, exitCode, error),
+      collect: (remote, signal) => this.collectRemoteLogin(agent, remote, signal),
+      cleanup: () => this.cleanupContainer(session),
+    });
+  }
+
   private async cleanupContainer(session: AgentLoginSession): Promise<void> {
     if (session.cleanupStarted) return;
+    if (session.remote) {
+      session.cleanupStarted = true;
+      await session.remote.close().catch(() => {});
+      return;
+    }
+    // A remote login still being prepared closes its runtime itself once it is ready.
+    if (session.remoteAbort) return;
     session.cleanupStarted = true;
     try {
       await this.runDocker(['rm', '-f', session.containerName]);

@@ -359,6 +359,17 @@ export {
 } from './agentLogin.js';
 
 export {
+  PASTED_AGENT_CREDENTIALS,
+  getPastedAgentCredentialDefinition,
+  pastedAgentCredentialDefinitions,
+  supportsPastedAgentCredentials,
+  type AgentCredentialStatusResponse,
+  type PastedAgentCredentialDefinition,
+  type PastedAgentCredentialKind,
+  type PastedAgentCredentialStatus,
+} from './agentCredentials.js';
+
+export {
   REASONING_LEVELS,
   CODEX_REASONING_LEVELS,
   CLAUDE_REASONING_LEVELS,

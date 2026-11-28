@@ -5,7 +5,11 @@ export interface AgentHealthResult {
   status: 'ready' | 'error' | 'disabled' | 'preparing';
   model?: string;
   error?: string;
-  errorCode?: 'auth_required' | 'rate_limit' | 'unknown' | 'preparation_failed';
+  errorCode?: 'auth_required' | 'rate_limit' | 'unknown' | 'preparation_failed' | 'runtime_unavailable';
+  /** Remote agent runtime (`sprites`, `fly-machines`) the check reported on; absent for Docker. */
+  runtime?: string;
+  /** What a remote run uses, e.g. "Sprites, claude CLI 2.1.330". */
+  detail?: string;
 }
 
 export function checkAgentHealth(agentId: string, configurationKey = agentId, fresh = false): Promise<AgentHealthResult> {

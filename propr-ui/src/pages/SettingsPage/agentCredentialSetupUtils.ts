@@ -11,7 +11,7 @@ import {
 } from '../../config/modelDefinitions';
 
 export type AgentFormData = Omit<AgentConfig, 'id'> & { id?: string };
-export type CredentialSetup = 'login' | 'existing';
+export type CredentialSetup = 'login' | 'paste' | 'existing';
 
 export function updateModelReasoningLevel(
   formData: AgentFormData,

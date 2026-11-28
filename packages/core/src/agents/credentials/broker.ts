@@ -6,6 +6,7 @@ import {
     CredentialStoreLeaseRevokedError, withCredentialStoreLock, type CredentialStoreLease, type CredentialStoreLockOptions,
 } from './credentialStoreLock.js';
 import { parseDotenv } from './dotenv.js';
+import { operatorMutatedSince, readOperatorMutations, type OperatorMutationState } from './operatorMutations.js';
 import {
     isLoginCredentialEntry, providerCredentialManifest, type CredentialStoreKind, type ProviderCredentialManifest,
 } from './providerManifests.js';
@@ -57,6 +58,8 @@ export interface CredentialStoreBundle {
     skipped: Array<{ path: string; reason: CredentialSkipReason }>;
     /** sha256 of each output at materialisation; `null` when it did not exist. */
     baseline: Record<string, string | null>;
+    /** The store's operator mutations, read before its files without the store lock (see `operatorMutations.ts`). */
+    operatorMutations: OperatorMutationState;
 }
 
 export interface CredentialBundle {
@@ -80,7 +83,9 @@ export type CredentialWriteBackOutcome =
     /** Another writer changed the canonical copy, but the run's copy is newer: written back. */
     | 'written-newer'
     /** Another writer changed the canonical copy more recently: kept. */
-    | 'kept-canonical';
+    | 'kept-canonical'
+    /** The operator replaced or removed the credential after the run was staged: kept. */
+    | 'kept-operator-change';
 
 export interface CredentialWriteBackResult {
     storeId: string;
@@ -339,6 +344,11 @@ export class CredentialBroker {
         request: CredentialStoreRequest, manifest: ProviderCredentialManifest, definedEnv: Set<string>, secretEnv: Record<string, string>,
     ): CredentialStoreBundle {
         const root = path.resolve(request.canonicalRoot);
+        // Read before the files: a mutation beginning in between counts as
+        // after staging, and so does one still being published when it is
+        // read (its paths are pending; see operatorMutations.ts). Either only
+        // withholds the recency rule (below).
+        const operatorMutations = readOperatorMutations(root);
         const reader = new StoreReader(root, { maxFiles: this.options.maxFiles ?? DEFAULT_MAX_FILES, maxBytes: this.options.maxBytes ?? DEFAULT_MAX_BYTES });
         for (const source of manifest.secretEnvFiles ?? []) {
             const canonical = readRegularFileInside(root, source.path, MAX_SECRET_ENV_FILE_BYTES);
@@ -366,7 +376,7 @@ export class CredentialBroker {
             const staged = files.find(candidate => candidate.path === output);
             baseline[output] = staged ? sha256(staged.content) : null;
         }
-        return { id: request.id, provider: request.provider, store: request.store, canonicalRoot: root, files, directories, outputs, skipped, baseline };
+        return { id: request.id, provider: request.provider, store: request.store, canonicalRoot: root, files, directories, outputs, skipped, baseline, operatorMutations };
     }
 
     /**
@@ -374,7 +384,9 @@ export class CredentialBroker {
      * declared outputs are considered; a file the run deleted is never
      * propagated. Each store is updated under its lock: when the canonical
      * file still matches what the run received the refreshed copy is written,
-     * otherwise the more recently modified copy wins. A write-back whose lock
+     * otherwise the more recently modified copy wins, unless the operator
+     * replaced or removed the file after the run was staged: that change is
+     * kept, and a removed file is not recreated. A write-back whose lock
      * was taken over as stale before it published re-acquires the lock and
      * decides again against the then-current canonical file.
      */
@@ -416,6 +428,9 @@ export class CredentialBroker {
             writeCanonical(store.canonicalRoot, file, mode, { lease, onBeforePublish: this.options.onBeforePublish });
             return 'written';
         }
+        // An operator change after staging is never overridden on recency: the
+        // run's token belongs to the replaced or removed login.
+        if (operatorMutatedSince(store.operatorMutations, readOperatorMutations(store.canonicalRoot), file.path)) return 'kept-operator-change';
         if (current && current.stat.mtimeMs >= file.mtimeMs) return 'kept-canonical';
         writeCanonical(store.canonicalRoot, file, mode, { lease, onBeforePublish: this.options.onBeforePublish });
         return 'written-newer';

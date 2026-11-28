@@ -23,7 +23,8 @@ export default function AgentHealthFeedback({ agent, health, onLogin, onRecheck,
   );
   if (health.status !== 'error') return null;
   const rateLimited = health.errorCode === 'rate_limit';
-  const title = health.errorCode === 'preparation_failed' ? 'Agent image preparation failed' : rateLimited ? 'Rate limit exceeded'
+  const title = health.errorCode === 'preparation_failed' ? 'Agent image preparation failed'
+    : health.errorCode === 'runtime_unavailable' ? 'Agent runtime unavailable' : rateLimited ? 'Rate limit exceeded'
     : health.errorCode === 'auth_required' ? (/OS keyring/.test(health.error ?? '') ? 'Login not readable by agent containers' : 'Authentication expired')
       : 'Agent unavailable';
   return (

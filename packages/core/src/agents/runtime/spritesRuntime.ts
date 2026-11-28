@@ -9,7 +9,7 @@ import { AGENT_EGRESS_RESTRICTED_ENV } from '../../network/egressAllowlist.js';
 import { currentNetworkEgressDiagnostics } from '../../network/egressExecution.js';
 import { WORKSPACE_TRANSPORT_RESULT_DIR } from '../../git/workspaceTransportScript.js';
 import { AgentRunStoppedError, LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
-import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
+import { SPRITES_AGENT_TYPES, spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
 import { applySpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWORK_ENFORCEMENT } from './sprites/spritesNetwork.js';
 import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
@@ -18,6 +18,7 @@ import { remoteRuntimePackageSource } from './agentRuntimeRemotePackages.js';
 import { detectSpritePackageBase } from './agentRuntimePackageBases.js';
 import { prepareSpriteRun, unsupportedMount, validateSpriteRun } from './sprites/spritesRun.js';
 import type { AgentRunConfigSelection, AgentRunHandle, AgentRunSpec, AgentRuntime } from './types.js';
+import type { RemoteLoginProcess, RemoteLoginRequest } from './remoteLogin.js';
 import logger from '../../utils/logger.js';
 import { LiveOutputLog } from '../impl/utils/liveOutputLog.js';
 import { SpriteInventory, type SpritePoolRedis } from './sprites/spritesInventory.js';
@@ -42,8 +43,6 @@ function mcpForwardTarget(spec: AgentRunSpec, environment: NodeJS.ProcessEnv, ga
     return target;
 }
 
-/** Agent types whose pinned CLIs Sprite setup installs (see scripts/sprites-agent-setup.sh). */
-const SPRITES_AGENT_TYPES: readonly string[] = ['codex', 'claude', 'antigravity', 'vibe', 'opencode'];
 
 // Operator catalog executables are not part of a Sprite: those servers stay refused (explicit) or dropped (auto-applied).
 const SPRITES_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false });
@@ -109,6 +108,22 @@ export class SpritesRuntime implements AgentRuntime<AgentRunOptions, ExecutionRe
             void pool.catch(() => { if (this.pools.get(token) === pool) this.pools.delete(token); });
         }
         return pool;
+    }
+
+    /**
+     * An interactive provider login on a Sprite from this runtime's pool (it counts against PROPR_SPRITES_MAX).
+     * The Sprite is deleted when the returned process is closed.
+     */
+    async startLogin(request: RemoteLoginRequest): Promise<RemoteLoginProcess> {
+        const token = this.environment.PROPR_SPRITES_TOKEN || this.environment.SPRITES_TOKEN;
+        if (!token) throw new Error('Set PROPR_SPRITES_TOKEN to log in to agents on Sprites');
+        if (this.closing) throw new Error('Sprites runtime is closed');
+        if (!SPRITES_AGENT_TYPES.includes(request.agentType)) throw new Error(`Sprites cannot run the ${request.agentType} login`);
+        process.env.SPRITES_CLIENT_SIGNALS ??= '0';
+        const pool = await startupStep(request.signal, () => this.getPool(token));
+        request.onProgress?.('Preparing a Sprite for the login (a new Sprite takes a few minutes to provision)…');
+        const { startSpriteLogin } = await import('./sprites/spritesLogin.js');
+        return startSpriteLogin(pool, request);
     }
 
     start(spec: AgentRunSpec, options: AgentRunOptions = {}): AgentRunHandle<ExecutionResult> {

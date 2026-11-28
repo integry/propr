@@ -8,6 +8,12 @@ import { readSpritesCliPins, type SpritesCliPins } from './spritesProvisioning.j
  * on the pinned version.
  */
 
+/**
+ * Agents a Sprite is provisioned with (the pinned CLIs scripts/sprites-agent-setup.sh installs).
+ * Runs, interactive logins and the Settings readiness check all accept this one list.
+ */
+export const SPRITES_AGENT_TYPES: readonly AgentType[] = Object.freeze(['codex', 'claude', 'antigravity', 'vibe', 'opencode']);
+
 export type SpritesCliVersionSelection = Pick<AgentConfig, 'type'>
     & Partial<Pick<AgentConfig, 'id' | 'alias' | 'enabled' | 'runtime' | 'cliVersionType' | 'cliVersion' | 'cliVersionResolved'>>;
 

@@ -55,7 +55,7 @@ For **Sprites**, set `SPRITES_TOKEN` for your organization. For **Fly Machines**
 
 Instance runtime packages (Settings → Agent runtime packages) are installed on each Sprite when it is provisioned, and changing the list replaces warm Sprites. On Fly Machines, the first run after the list changes builds a derived agent image with the packages installed: a short-lived `propr-build-*` Machine in the agent app runs `apt-get`, and the worker pushes the result to `registry.fly.io/<agent-app>:propr-packages-<hash>`. Every later run with the same list and agent image starts from that image's digest with nothing to install, on any worker; a changed list or a new `PROPR_FLY_IMAGE` builds a new one. `PROPR_FLY_API_TOKEN` therefore needs push access to the agent app's repository. If the image cannot be built, the run installs the packages at Machine start instead. Package names are checked against the agent image's Debian package index when the list is saved, and again before a derived image build, a fallback start-time install and a new Sprite, so a misspelled name is refused without starting a Machine or Sprite. A derived image or warm Sprite already built with the list keeps being used even if the archive later drops a name or pinned version. Old `propr-packages-*` tags are not deleted automatically. [Derived Fly images](../architecture/agent-runtime.md#derived-fly-images) For tools a single repository needs, install them in `.propr/setup.sh` instead, which runs before every run on both runtimes. [Runtime packages per runtime](../architecture/agent-runtime.md#runtime-packages)
 
-For headless Claude, optionally add `CLAUDE_SETTINGS_B64` to the file. Use single-line base64 of a settings JSON containing an `env` object with a dedicated `ANTHROPIC_API_KEY`.
+For headless Claude, optionally add `CLAUDE_SETTINGS_B64` to the file. Use single-line base64 of a settings JSON containing an `env` object with a dedicated `ANTHROPIC_API_KEY`. You can skip this and set up credentials in the Web UI after deployment instead, see [Agent credentials](#agent-credentials).
 
 ```bash
 propr deploy fly --app "$APP" --org "$ORG" --region "$REGION" \
@@ -100,10 +100,19 @@ JS
 flyctl ssh console --app "$APP" --container app -C "sh -c 'cd /usr/src/app && echo $setup | base64 -d | node --input-type=module'"
 ```
 
+### Agent credentials
+
+A Fly instance has no Docker daemon, so agent credentials are set up in one of two ways in **Settings → Agents**. Both write to the agent's managed credential directory on the mounted volume, which both runtimes read.
+
+- **Paste a key or token.** When adding the agent, choose **Paste a key or token**: an Anthropic API key or a `claude setup-token` token for Claude Code, an OpenAI API key or a copied `~/.codex/auth.json` for Codex. To change it later, open **Edit** on the agent card. The value is never shown again, only that it is set and its last four characters. [Paste credentials](../features/agents-and-models.md#paste-credentials-instead-of-logging-in)
+- **Log in interactively.** Choose **Log in to a new account**, or **Log in** on the agent card. The login CLI runs on the agent runtime: on a Sprite with `--agent-runtime sprites`, or on an ephemeral `propr-login-*` Machine from `PROPR_FLY_IMAGE` with `--agent-runtime fly-machines`. A new Sprite takes a few minutes to provision. When the login finishes, ProPR copies the login files into the agent's store and deletes the Sprite or Machine. The login uses one Sprite or Machine slot (`PROPR_SPRITES_MAX`, `PROPR_FLY_MACHINES_MAX`); with every slot busy it fails after 30 seconds and names the cap. [Interactive login without Docker](../features/agents-and-models.md#interactive-login-without-docker)
+
+The agent card then shows **Ready** when the runtime token is valid, the CLI version or agent image resolves and the agent has a credential. It never prepares a local agent image on these instances.
+
 ### Verify an issue run
 
 1. Confirm that `https://<app>.fly.dev/health` returns HTTP 200.
-2. Configure at least one agent. In **Settings → Agents**, add an agent, choose its alias and default model, sign in to the provider and enable the agent. For headless Claude setup with `CLAUDE_SETTINGS_B64`, use the MCP tool `create_agent_configuration` with agent ID `claude` to use the settings installed on the volume. Set an alias, supported models and a default model you can access. New MCP configurations start disabled, so call `update_agent_configuration` with `enabled: true`.
+2. Configure at least one agent. In **Settings → Agents**, add an agent, choose its alias and default model, paste a key or token or sign in to the provider (see [Agent credentials](#agent-credentials)) and enable the agent. For headless Claude setup with `CLAUDE_SETTINGS_B64`, use the MCP tool `create_agent_configuration` with agent ID `claude` to use the settings installed on the volume. Set an alias, supported models and a default model you can access. New MCP configurations start disabled, so call `update_agent_configuration` with `enabled: true`.
 3. Apply `llm-<alias>` to a small issue to select that agent’s default model (for example, `llm-claude` for alias `claude`), then add the `AI` trigger label. Check that its PR contains the requested edit and that the task’s compute usage names the selected runtime.
 
 To check idle wake, close the UI, wait until `fly machine list --app "$APP"` shows `stopped`, then apply the same labels to another issue. Use Fly’s Machine list to observe the transition to `started`. Visiting the instance yourself would also wake it.

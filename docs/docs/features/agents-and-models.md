@@ -36,7 +36,32 @@ For virtual routing across several configured direct agents, see [Synthetic Pool
 | OpenCode | `opencode` | `propr/agent` | `HOST_OPENCODE_XDG_DIR` → `~/.config/opencode` (plus data dir; see below) |
 | Mistral Vibe | `vibe` | `propr/agent` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
 
-When adding Claude, Codex, Antigravity, or OpenCode in the Web UI, choose either **Log in to a new account** or **Use existing config**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config.
+When adding Claude, Codex, Antigravity, or OpenCode in the Web UI, choose **Log in to a new account**, **Paste a key or token** (Claude, Codex and OpenCode) or **Use existing config**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config.
+
+### Paste credentials instead of logging in
+
+**Paste a key or token** stores a credential in the agent's credential store without an interactive login. It works on every runtime (Docker, Sprites and Fly Machines), because each one is written to a file the provider's credential manifest declares:
+
+| Agent | Credential | Where ProPR stores it | Get it from |
+| --- | --- | --- | --- |
+| Claude Code | Anthropic API key | `ANTHROPIC_API_KEY` in the `env` of `settings.json` | [Anthropic Console → API keys](https://console.anthropic.com/settings/keys) |
+| Claude Code | Subscription token | `CLAUDE_CODE_OAUTH_TOKEN` in the `env` of `settings.json` | `claude setup-token` on any machine with Claude Code ([authentication](https://code.claude.com/docs/en/iam)) |
+| Codex | OpenAI API key | `auth.json`, as `codex login --with-api-key` writes it | [OpenAI API keys](https://platform.openai.com/api-keys) |
+| Codex | ChatGPT login | the pasted `auth.json` | `~/.codex/auth.json` after `codex login` on another machine ([authentication](https://developers.openai.com/codex/auth)) |
+| OpenCode | Provider logins | the pasted `auth.json` in the OpenCode data store | `~/.local/share/opencode/auth.json` after `opencode auth login` |
+
+Storing one Claude method removes the other, so a stale key never wins over a new token. A successful Claude interactive login removes both, in a local Docker container as on Sprites or Fly Machines, because a pasted value would otherwise override the new login; a failed or cancelled login leaves them in place. Other `settings.json` keys are kept. The values are write-only: the dialog, the API (`GET /api/agents/<id>/credentials`) and the logs only ever show whether a credential is set and its last four characters. To replace a credential, paste a new value; **Remove** deletes it. Both also hold for runs already in progress: a run that started before the change does not write its refreshed copy of the old credential back over the replacement, or restore a removed one. The same applies to a new interactive login. Vibe keeps its **Mistral API Key** field, which is stored in the agent configuration and redacted from API responses.
+
+### Interactive login without Docker
+
+When the agent runs on Sprites or Fly Machines and the instance has no local Docker daemon (for example an instance launched from the Fly dashboard), **Log in to &lt;agent&gt;** runs the provider's login CLI on that runtime instead of a local container:
+
+- **Sprites:** the login takes a Sprite from the pool and runs the CLI with a TTY over the Sprites API. A new Sprite is provisioned first, which takes a few minutes.
+- **Fly Machines:** the login starts an ephemeral `propr-login-*` Machine from `PROPR_FLY_IMAGE` and drives the CLI through the Machines exec API.
+
+The dialog streams the output and accepts input as it does with Docker. When the CLI exits successfully, ProPR copies the login files the provider manifest declares (for example `.credentials.json` or `auth.json`) into the agent's credential store, then deletes the Sprite or destroys the Machine. A Sprite that held a login is never returned to the warm pool. The login counts against `PROPR_SPRITES_MAX` or `PROPR_FLY_MACHINES_MAX` like a run, and fails with a message naming the cap when no slot frees up within 30 seconds. The Sprites and Fly Free Plans allow three of each.
+
+On these instances the agent card's health check reports the remote runtime instead of preparing a local Docker image: the runtime token is accepted by its API, the CLI version (Sprites) or `PROPR_FLY_IMAGE` (Fly Machines) resolves, and the agent has a credential its runs use: a pasted credential or stored login, an API key in the agent's environment variables (for Vibe also `MISTRAL_API_KEY` in ProPR's environment or settings), Vibe's `.env` with `MISTRAL_API_KEY`, or a provider `options.apiKey` in OpenCode's config file. An OpenCode agent that offers a built-in free model needs none. It does not start a Sprite or Machine for the check.
 
 Direct-login accounts use the portable saved path `~/.propr/agent-credentials/<agent-id>/…`. ProPR maps it automatically to `~/.propr/agent-credentials` for native and Compose installs, or to `PROPR_DATA_DIR/agent-credentials` for the launcher container. You do not enter a host path. The generated provider subdirectory is mounted read-write so its CLI can refresh auth state, and the agent image normalizes ownership before dropping to its unprivileged runtime user.
 

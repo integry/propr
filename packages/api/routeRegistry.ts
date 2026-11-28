@@ -8,6 +8,7 @@ import { SUMMARY_PATH_ROUTE_PATH, SUMMARY_TREE_ROUTE_PATH } from './routes/summa
 import { createTaskDeleteRouteEntries } from './taskDeleteRouteRegistry.js';
 import { createIntegrationSignalRouteEntries, type IntegrationSignalRouteDeps } from './integrationSignalRouteRegistry.js';
 import { createEpicQueueRouteEntries } from './epicQueueRouteRegistry.js';
+import { createAgentLoginRouteEntries } from './agentLoginRouteRegistry.js';
 import {
   requireAgentTankUsageAccess, requireManageAgents, requireManageMembers,
   requireManageRuntime, requireManageSettings,
@@ -156,10 +157,7 @@ export function createManagementRouteEntries({
     ['post', '/api/agent-runtime/packages/apply', requireManageRuntime, agentRuntimeRoutes.applyRuntimePackages],
     ['post', '/api/agent-runtime/packages/verify', requireManageRuntime, agentRuntimeRoutes.verifyRuntimePackages],
 
-    ['post', '/api/agents/:agentId/login-sessions', requireManageAgents, agentLoginRoutes.startLogin],
-    ['get', '/api/agents/:agentId/login-sessions/:sessionId', requireManageAgents, agentLoginRoutes.getLogin],
-    ['post', '/api/agents/:agentId/login-sessions/:sessionId/input', requireManageAgents, agentLoginRoutes.sendInput],
-    ['delete', '/api/agents/:agentId/login-sessions/:sessionId', requireManageAgents, agentLoginRoutes.cancelLogin],
+    ...createAgentLoginRouteEntries(agentLoginRoutes, requireManageAgents),
 
     ['get', '/api/agents/versions/:agentType', requireManageAgents, agentVersionRoutes.getVersions],
     ['post', '/api/agents/:agentId/build-image', requireManageAgents, agentVersionRoutes.buildImage],
