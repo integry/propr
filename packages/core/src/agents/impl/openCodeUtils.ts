@@ -5,7 +5,9 @@ import logger from '../../utils/logger.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { wrapDockerRunArgsWithRepoSetup } from '../../claude/docker/repoSetupWrapper.js';
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
-import type { AgentConfig, AnalysisResult } from '../types.js';
+import type { AgentConfig, AgentToolPolicy, AnalysisResult } from '../types.js';
+import { agentContainerNetwork } from '../agentContainerNetwork.js';
+import { mergeOpenCodeConfigContent, openCodeMcpConfig, openCodeToolPolicyArgs, openCodeToolPolicyEnvironment } from '../mcpLaunch/openCodeMcpLaunch.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
 import {
     buildOpenCodeRepositoryScoutConfig,
@@ -31,6 +33,8 @@ export interface OpenCodeDockerArgsParams {
     gitMountArgs?: string[];
     dataPath?: string;
     ensureConfigPath?: (configPath: string) => void;
+    /** Task runs only: run MCP servers, skills and the exclusive switch (OpenCode 2.x). */
+    toolPolicy?: AgentToolPolicy;
 }
 
 export function evaluateOpenCodeAnalysis(options: {
@@ -93,7 +97,7 @@ export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string
 }
 
 export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): string[] {
-    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, repositoryInspection = false, dataPath, ensureConfigPath = ensureDirectory } = params;
+    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, repositoryInspection = false, dataPath, ensureConfigPath = ensureDirectory, toolPolicy } = params;
     assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     const managedCredentials = isManagedAgentConfigPath(config.configPath);
@@ -112,15 +116,16 @@ export function buildOpenCodeDockerArgs(params: OpenCodeDockerArgsParams): strin
     // mode, which still enforces explicit denies.
     const title = issueNumber === 0 ? 'ProPR analysis' : 'ProPR task';
     const legacyCli = isLegacyOpenCodeCli(config);
+    assertOpenCodeToolPolicySupported(legacyCli, toolPolicy);
     const commandArgs = ['opencode-run', '--format', 'json', '--title', title, ...buildOpenCodePermissionFlags(legacyCli, repositoryInspection)];
     const dockerArgs = [
-        'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', 'bridge', '--user', '0:0',
+        'run', '--rm', '-i', '--name', containerName, '--security-opt', 'no-new-privileges', '--cap-add', 'CHOWN', '--network', agentContainerNetwork(toolPolicy), '--user', '0:0',
         '-v', `${worktreePath}:${repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace'}:${workspaceMode}`,
         ...(repositoryInspection ? [] : params.gitMountArgs ?? buildAgentGitMountArgs(worktreePath, false, workspaceMode === 'ro')),
         '-v', `${configPath}:${CONTAINER_CONFIG_PATH}:${configMode}`,
         ...(repositoryInspection ? [] : ['-e', `GH_TOKEN=${githubToken}`, '-e', `GITHUB_TOKEN=${githubToken}`]),
         ...envVars,
-        ...buildOpenCodeConfigEnvArgs(legacyCli, repositoryInspection),
+        ...buildOpenCodeConfigEnvArgs(legacyCli, repositoryInspection, toolPolicy),
         ...(readOnlyWorkspace ? ['-e', 'PROPR_REPO_SETUP=0'] : []),
         '-e', 'XDG_CONFIG_HOME=/home/node/.config', '-e', `XDG_DATA_HOME=${CONTAINER_RUNTIME_DATA_HOME}`,
         '-e', 'PROPR_EPHEMERAL_STATE=1',
@@ -148,9 +153,36 @@ function buildOpenCodePermissionFlags(legacyCli: boolean, repositoryInspection: 
     return repositoryInspection ? ['--pure', '--auto'] : ['--dangerously-skip-permissions'];
 }
 
-function buildOpenCodeConfigEnvArgs(legacyCli: boolean, repositoryInspection: boolean): string[] {
-    if (!repositoryInspection) return ['-e', `OPENCODE_CONFIG_DIR=${CONTAINER_CONFIG_PATH}`];
-    const scoutConfig = ['-e', `OPENCODE_CONFIG_CONTENT=${buildOpenCodeRepositoryScoutConfig(legacyCli)}`];
+/**
+ * OpenCode 1.x ignores `mcp.servers` and `skills.paths`, so a run that needs
+ * them must not start on it with the servers silently missing. The capability
+ * map already withholds extensions from 1.x; this guards direct policies.
+ */
+function assertOpenCodeToolPolicySupported(legacyCli: boolean, toolPolicy: AgentToolPolicy | undefined): void {
+    if (legacyCli && toolPolicy && openCodeMcpConfig(toolPolicy)) {
+        throw new Error('MCP servers and skills require OpenCode CLI 2.x; this agent runs OpenCode 1.x');
+    }
+}
+
+/**
+ * The run's MCP servers and skill path (merged into any existing inline config),
+ * the exclusive switches, then the token and stdio secret names. Names only, after
+ * operator variables so their envVars cannot change them: docker copies the
+ * values from its own process environment.
+ */
+function buildOpenCodeToolPolicyEnvArgs(existingContent: string | undefined, toolPolicy: AgentToolPolicy | undefined): string[] {
+    const content = mergeOpenCodeConfigContent(existingContent, toolPolicy && openCodeMcpConfig(toolPolicy));
+    if (!toolPolicy) return content ? ['-e', `OPENCODE_CONFIG_CONTENT=${content}`] : [];
+    return [
+        ...(content ? ['-e', `OPENCODE_CONFIG_CONTENT=${content}`] : []),
+        ...openCodeToolPolicyEnvironment(toolPolicy),
+        ...Object.keys(openCodeToolPolicyArgs(toolPolicy).env).flatMap(name => ['-e', name]),
+    ];
+}
+
+function buildOpenCodeConfigEnvArgs(legacyCli: boolean, repositoryInspection: boolean, toolPolicy?: AgentToolPolicy): string[] {
+    if (!repositoryInspection) return ['-e', `OPENCODE_CONFIG_DIR=${CONTAINER_CONFIG_PATH}`, ...buildOpenCodeToolPolicyEnvArgs(undefined, toolPolicy)];
+    const scoutConfig = buildOpenCodeToolPolicyEnvArgs(buildOpenCodeRepositoryScoutConfig(legacyCli), toolPolicy);
     if (legacyCli) return ['-e', `OPENCODE_CONFIG_DIR=${CONTAINER_CONFIG_PATH}`, ...scoutConfig];
     return [
         '-e', 'OPENCODE_CONFIG_DIR=/tmp/propr-opencode-scout-config',

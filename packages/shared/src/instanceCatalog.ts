@@ -12,6 +12,8 @@ export interface InstanceCatalogAgent {
   enabled: boolean;
   supportedModels: string[];
   defaultModel?: string;
+  /** CLI version of a direct agent (resolved, else pinned), when known. Capabilities can depend on it (OpenCode 2.x). */
+  cliVersion?: string;
 }
 
 export interface InstanceCatalogRepository {

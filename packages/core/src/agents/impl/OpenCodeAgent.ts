@@ -1,4 +1,5 @@
-import { withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
+import { executeWithExtensions } from '../../extensions/extensionLaunch.js';
+import { assertToolPolicySupported, openCodeToolPolicyArgs, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import fs from 'fs';
 import path from 'path';
@@ -57,10 +58,16 @@ export class OpenCodeAgent implements Agent {
     }
 
      
+    /** The capability map decides whether library items reach this runtime; skipped ones are recorded. */
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
-        const { worktreePath, issueRef, prompt: rawCustomPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, taskId, prNumber, metadata } = options;
+        return executeWithExtensions(this.config, options, prepared => this.executeTaskWithoutExtensions(prepared));
+    }
+
+    private async executeTaskWithoutExtensions(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        assertToolPolicySupported(options);
+        const { worktreePath, issueRef, prompt: rawCustomPrompt, model, systemPrompt, isRetry = false, retryReason, branchName, issueDetails, onSessionId, onContainerId, taskId, prNumber, metadata, toolPolicy } = options;
         // No native web switch: the restriction is best effort through the prompt.
-        const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, options.toolPolicy);
+        const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, toolPolicy);
         const startTime = Date.now();
         const effectiveModel = model || this.config.defaultModel;
         const repo = `${issueRef.repoOwner}/${issueRef.repoName}`;
@@ -82,11 +89,13 @@ export class OpenCodeAgent implements Agent {
             await setWorktreeOwnership(worktreePath, issueRef.number);
             const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
-            const dockerArgs = await this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, taskId });
+            const dockerArgs = await this.buildDockerArgs({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, issueNumber: issueRef.number, taskId, toolPolicy });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'opencode',
-                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                async () => executeDockerCommand('docker', dockerArgs, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: this.config.envVars },
+                    // MCP tokens and stdio secrets reach docker through its process environment, by name only.
+                    ...(toolPolicy && { extraEnvVars: openCodeToolPolicyArgs(toolPolicy).env }),
                     timeout: this.timeoutMs,
                     cwd: worktreePath,
                     onSessionId,

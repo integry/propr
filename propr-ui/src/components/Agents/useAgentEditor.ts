@@ -78,7 +78,7 @@ export function proprMcpSupportFor(agents: readonly InstanceCatalogAgent[], alia
   if (!alias) return { support: 'unknown', agentType: null };
   const agent = agents.find(candidate => candidate.alias === alias);
   if (!agent?.type) return { support: 'unknown', agentType: null };
-  return { support: agentTypeSupportsProprMcp(agent.type) ? 'supported' : 'unsupported', agentType: agent.type };
+  return { support: agentTypeSupportsProprMcp(agent.type, agent.cliVersion) ? 'supported' : 'unsupported', agentType: agent.type };
 }
 
 /**

@@ -272,7 +272,7 @@ describe('agent version management', () => {
         assert.match(entrypoint, /\/home\/node\/antigravity-entrypoint\.sh/);
         assert.match(entrypoint, /exec "\$1" "\$\{@:2\}"/);
         assert.match(entrypoint, /bash\|sh\|\/bin\/bash\|\/bin\/sh/);
-        assert.match(vibeAgent, /import \{ buildVibeDockerEnvVars \} from '\.\/utils\/vibeDockerEnvironment\.js'/);
+        assert.match(vibeAgent, /import \{ buildVibeDockerEnvVars(, [^}]+)? \} from '\.\/utils\/vibeDockerEnvironment\.js'/);
         assert.match(vibeAgent, /const envVars = buildVibeDockerEnvVars\(this\.config,/);
         assert.match(vibeAgent, /\.\.\.envVars/);
         assert.match(vibeDockerEnvironment, /envVars\.push\('-e', 'PROPR_AGENT_TYPE=vibe'\)/);
