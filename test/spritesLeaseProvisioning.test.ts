@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, test, type TestContext } from 'node:test';
 import Redis from 'ioredis-mock';
+import { pino } from 'pino';
 import { spritePoolKey } from '@propr/shared';
 import { closeConnection, db } from '../packages/core/src/db/connection.ts';
 import { AgentRunSpecBuilder, agentRunNetwork } from '../packages/core/src/agents/runtime/agentRunSpec.ts';
 import { indexCheckedAgentRuntimePackages } from '../packages/core/src/agents/runtime/agentRuntimePackageIndex.ts';
 import { SpritesRuntime } from '../packages/core/src/agents/runtime/spritesRuntime.ts';
 import { WORKSPACE_TRANSPORT_SCRIPT } from '../packages/core/src/git/workspaceTransportScript.ts';
-import logger from '../packages/core/src/utils/logger.ts';
+import logger, { createCorrelatedLogger } from '../packages/core/src/utils/logger.ts';
 import { FakeSpriteOrganization, type FakeSprite } from './helpers/fakeSprites.ts';
 
 after(closeConnection);
@@ -35,6 +37,12 @@ async function fakeClock(t: TestContext) {
     // Open the database pool on real timers: under a mocked setTimeout its first acquire would wait
     // out the pool's real 60 s acquire timeout and hold the process open at exit.
     await db.raw('select 1');
+    // Same for the pino-pretty transport: on its worker's READY it polls with setTimeout for the
+    // lines logged so far to drain before it unrefs the worker. A slow worker start that lands under
+    // the mocked clock loses that poll when the mock is reset, and the ref'd worker never lets the
+    // process exit.
+    const transport = createCorrelatedLogger('sprites-lease-test')[pino.symbols.streamSym] as unknown as { ready?: boolean } & NodeJS.EventEmitter;
+    if (transport.ready === false) await once(transport, 'ready');
     // Collected rather than printed, so a test can assert on them.
     const logs: Array<{ level: string; fields: Record<string, unknown>; message: string }> = [];
     for (const level of ['debug', 'info', 'warn', 'error'] as const) {
