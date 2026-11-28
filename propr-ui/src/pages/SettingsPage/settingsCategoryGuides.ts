@@ -108,11 +108,13 @@ export const SETTINGS_CATEGORY_GUIDES: Record<SettingsCategoryId, SettingsCatego
       'Cache cleanup only removes eligible repository caches, which are refetched on next use. Worktrees are always protected.',
       'Held follow-ups that settle on their own, for example when the pull request closes, move to Show released.',
       'Idle shutdown is off by default. When on, the control plane stops after the idle window and starts again on a request, a Connect wake ping or due scheduled work.',
+      'Sprites belong to the Sprites organization, not the Fly app. Remove this instance\'s Sprites under Agent runtime before you delete the app, or they keep using Sprite slots.',
     ],
     links: [
       { label: 'Instance data', href: `${DOCS}/architecture/instance-storage-v1#native-instance-data-management-3013` },
       { label: 'Stuck follow-ups', href: `${DOCS}/operations/maintenance#stuck-follow-ups-settle-themselves` },
       { label: 'Idle shutdown', href: `${DOCS}/operations/idle-shutdown` },
+      { label: 'Removing ProPR from Fly', href: `${DOCS}/tutorials/setup-fly#removing-propr` },
     ],
   },
   experimental: {

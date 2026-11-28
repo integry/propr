@@ -5,9 +5,10 @@ import VisualPreviewAuthSection from './VisualPreviewAuthSection';
 import ManagedPreviewStorageSection from './ManagedPreviewStorageSection';
 import MaintenanceSection from './MaintenanceSection';
 import IdleShutdownSection from './IdleShutdownSection';
+import InstanceSpritesSection from './InstanceSpritesSection';
 import type { SettingsNavigationSection } from './SettingsNavigation';
 import type { CurrentUser } from '../../api/proprTypes';
-import { canManageHeldFollowups, canManageInstanceStorage } from './settingsPermissions';
+import { canManageAgentRuntime, canManageHeldFollowups, canManageInstanceStorage } from './settingsPermissions';
 
 /** MCP tools, skills and system packages that agents can use inside their containers. */
 export function agentExtensionSections(): SettingsNavigationSection[] {
@@ -73,5 +74,16 @@ export function idleShutdownSections(user: CurrentUser | null): SettingsNavigati
     category: 'maintenance',
     searchText: 'idle shutdown stop sleep wake auto stop start fly machine systemd cost metered host scale to zero PROPR_IDLE_SHUTDOWN',
     content: <IdleShutdownSection />
+  }];
+}
+
+/** The instance's Sprites, removed before the deployment is deleted; runtime administrators. */
+export function agentRuntimeSections(user: CurrentUser | null): SettingsNavigationSection[] {
+  if (!canManageAgentRuntime(user)) return [];
+  return [{
+    id: 'agent-runtime',
+    category: 'maintenance',
+    searchText: 'agent runtime sprites remove delete cleanup uninstall remove propr delete fly app free plan sprite slots limit leftover orphan',
+    content: <InstanceSpritesSection />
   }];
 }

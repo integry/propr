@@ -127,6 +127,8 @@ import {
 } from './routeRegistry.js';
 import { createAgentRunInternalRoutes } from './routes/agentRunInternalRoutes.js';
 import { createIdleShutdownRouteEntries } from './idleShutdownRouteRegistry.js';
+import { createInstanceSpritesRouteEntries } from './instanceSpritesRouteRegistry.js';
+import { createInstanceSpritesRoutes } from './routes/instanceSpritesRoutes.js';
 import { createIdleActivityMiddleware, createWakeHandler, startApiIdleShutdown } from './idleShutdownIntegration.js';
 import { registerDesktopApiBoundary } from './desktopApiBoundary.js';
 import {
@@ -486,6 +488,7 @@ export function setupRoutes(): void {
   const followupHandoffRoutes = createFollowupHandoffRoutes(createDefaultFollowupHandoffDeps());
   const adminMcpRoutes = createAdminMcpRoutes({ database: db, redisClient });
   const idleShutdownRoutes = createIdleShutdownRoutes({ redisClient });
+  const instanceSpritesRoutes = createInstanceSpritesRoutes({ redis: redisClient });
   const visualPreviewAuthRoutes = createVisualPreviewAuthRoutes({
     managedStorage: createManagedPreviewStorageClient(() => redisClient.get(ROUTING_STATUS_REDIS_KEY)),
   });
@@ -553,6 +556,7 @@ export function setupRoutes(): void {
     ...createStorageRouteEntries(storageRoutes),
     ...createMemberCatalogRouteEntries({ instanceCatalogRoutes }),
     ...createIdleShutdownRouteEntries(idleShutdownRoutes),
+    ...createInstanceSpritesRouteEntries(instanceSpritesRoutes),
     ...createManagementRouteEntries({
       adminRoutes,
       adminMcpRoutes,

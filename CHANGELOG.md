@@ -52,6 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     a small "on Fly.io" badge linking the app's dashboard page, and a step
     progress bar. Submit buttons show a spinner and a progress label and
     ignore a second click. External links open in a new tab.
+  - Deleting the Fly app leaves its Sprites behind: they belong to the
+    Sprites organization and keep using its Sprite slots. **Settings →
+    Maintenance → Agent runtime → Remove all Sprites of this instance**
+    (`GET /api/admin/sprites`, `POST /api/admin/sprites/remove`) deletes every
+    `propr-<marker>-*` Sprite after a confirmation that names the count. It
+    refuses while a run uses a Sprite. The wizard's Sprites step and
+    `setup-fly.md` (Removing ProPR) say to run it before deleting the app.
 
 - **Opt-in idle shutdown for the control plane** (#3770)
   - Off by default. `PROPR_IDLE_SHUTDOWN=on` with `PROPR_IDLE_SHUTDOWN_AFTER`

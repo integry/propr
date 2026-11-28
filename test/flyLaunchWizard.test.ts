@@ -850,6 +850,11 @@ test('agent runtime: Sprites token page and scope with the exact prefix; Fly Mac
     assert.match(page, /switch org there/);
     assert.ok(page.includes(`<li>Name prefix: <code>${prefix}</code></li><li>Max Sprites: 1 on the Free Plan.</li><li>Expiry: optional.</li>`));
     assert.match(page, /name="runtime" value="sprites" checked/, 'Sprites is the default');
+    // Removing ProPR: the Sprites outlive the Fly app; the Settings action or the Sprites dashboard removes them.
+    assert.match(page, /<details class="why"><summary>Removing ProPR<\/summary><div>The Sprites belong to the Sprites organization, not to the Fly app/);
+    assert.ok(page.includes('Settings → Maintenance → Agent runtime</strong> and select <strong>Remove all Sprites of this instance</strong>'));
+    assert.ok(page.includes(`delete the Sprites named <code>${prefix}*</code>`));
+    assert.ok(page.includes('href="https://docs.propr.dev/docs/tutorials/setup-fly#removing-propr" target="_blank"'));
     // Fly Machines: everything prefilled, the build-your-own image behind Advanced.
     assert.match(page, /id="flyApp"[^>]*value="propr-test-agents"/);
     assert.equal(DEFAULT_AGENT_IMAGE, `propr/agent:${PROPR_VERSION}`);

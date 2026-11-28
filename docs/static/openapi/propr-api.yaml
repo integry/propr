@@ -29,8 +29,8 @@ info:
     name: Apache-2.0
     identifier: Apache-2.0
   x-route-coverage:
-    total: 333
-    documented: 95
+    total: 335
+    documented: 97
     undocumented: 238
 servers:
   - url: "{origin}"
@@ -768,6 +768,94 @@ paths:
       x-propr-auth: member
       x-propr-permission: instance.manage_members
       x-undocumented: true
+      x-legacy-error: true
+  /api/admin/sprites:
+    get:
+      operationId: listInstanceSprites
+      summary: List the Sprites this instance created
+      description: |-
+        Sprites belong to the Sprites organization, not the Fly app, so they outlive a deleted app. Lists Sprites named `propr-<marker>-*` with the instance's Sprites token.
+
+        Requires the `instance.manage_runtime` instance permission.
+      tags:
+        - Administration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      responses:
+        "200":
+          description: "The instance's Sprites; `configured: false` without a Sprites token."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceSprites"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        "502":
+          description: The Sprites API refused or could not be reached; code `SPRITES_UNAVAILABLE`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_runtime
+      x-legacy-error: true
+  /api/admin/sprites/remove:
+    post:
+      operationId: removeInstanceSprites
+      summary: Remove all Sprites of this instance
+      description: |-
+        Run before deleting the deployment. Deletes nothing when the current count differs from the confirmed one, or while a Sprite runs an agent.
+
+        Requires the `instance.manage_runtime` instance permission.
+      tags:
+        - Administration
+      security:
+        - sessionCookie: []
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstanceSpritesRemoveRequest"
+      responses:
+        "200":
+          description: Every Sprite was deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstanceSpritesRemoved"
+        "400":
+          description: The body is not `{ count }` with a positive integer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "401":
+          $ref: "#/components/responses/LegacyUnauthorized"
+        "403":
+          $ref: "#/components/responses/LegacyForbidden"
+        "409":
+          description: Code `COUNT_CHANGED` (with the current `count`), `SPRITES_BUSY` or `SPRITES_NOT_CONFIGURED`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        "502":
+          description: Some Sprites could not be deleted (`PARTIAL_FAILURE`, with `failed`), or the Sprites API failed (`SPRITES_UNAVAILABLE`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LegacyError"
+        default:
+          $ref: "#/components/responses/LegacyUnexpectedError"
+      x-propr-auth: member
+      x-propr-permission: instance.manage_runtime
       x-legacy-error: true
   /api/agent-definitions:
     get:
@@ -12436,6 +12524,78 @@ components:
         - lastUseAt
         - repositories
       additionalProperties: false
+    InstanceSprites:
+      type: object
+      properties:
+        configured:
+          type: boolean
+          description: A Sprites token (`SPRITES_TOKEN` or `PROPR_SPRITES_TOKEN`) is set on this instance.
+        prefix:
+          description: Name prefix of this instance's Sprites; null until the agent pool has a marker.
+          type:
+            - string
+            - "null"
+        count:
+          type: integer
+        busy:
+          type: integer
+          description: Pool Sprites running an agent or being provisioned; these block removal.
+        sprites:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                description: Starts with the instance prefix `propr-<marker>-`.
+              status:
+                type:
+                  - string
+                  - "null"
+              createdAt:
+                anyOf:
+                  - type: string
+                    format: date-time
+                  - type: "null"
+            required:
+              - name
+              - status
+              - createdAt
+            additionalProperties: false
+      required:
+        - configured
+        - prefix
+        - count
+        - busy
+        - sprites
+      additionalProperties: false
+      description: The Sprites this instance created, from the Sprites organization of its token.
+    InstanceSpritesRemoveRequest:
+      type: object
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          description: The number of Sprites the administrator confirmed.
+      required:
+        - count
+      additionalProperties: false
+      description: Remove every Sprite of this instance.
+    InstanceSpritesRemoved:
+      type: object
+      properties:
+        deleted:
+          type: integer
+        failed:
+          type: array
+          items:
+            type: string
+          description: Names that could not be deleted.
+      required:
+        - deleted
+        - failed
+      additionalProperties: {}
+      description: Result of removing this instance's Sprites.
     InstanceStorageCapabilities:
       type: object
       properties:

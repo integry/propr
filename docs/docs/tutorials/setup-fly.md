@@ -63,6 +63,8 @@ You can launch ProPR from the [Fly dashboard](https://fly.io/dashboard) with **L
      3. **Expiry:** optional.
 
      The check lists Sprites under that prefix, so a token scoped to it passes.
+
+     The Sprites belong to the Sprites organization, not to the Fly app, so they outlive a deleted app. Remove them first: see [Removing ProPR](#removing-propr).
    - **Fly Machines:** everything is prefilled:
      - The **agent app** is `<app>-agents`. The wizard shows one command that creates the app and its deploy token, `fly apps create <agent-app> && fly tokens create deploy --app <agent-app> --expiry 8760h`. In the dashboard, create a new app, then use its **Tokens** page → **Create deploy token**. Never paste an organization or personal token.
      - The **agent image** is the published `propr/agent:<version>` for this instance's version, pulled from Docker Hub, so nothing is built.
@@ -135,6 +137,15 @@ Or open the app's **Scaling** page in the dashboard and pick 1 GB. The change re
 ### Updates
 
 Fly redeploys the app from the fork. Keep the fork current with GitHub's **Sync fork** button. If the app is connected with deploy-on-push (the dashboard's GitHub deployment settings), each sync deploys the new version; otherwise use **Deploy** in the dashboard. With the root `fly.toml`, a release changes only its pinned `propr/app:<version>` tag, so the deploy pulls the new image; with `deploy/fly/source/fly.toml` it rebuilds. The release's metadata pull request bumps the pinned tag on `main` before the release tag publishes that image, so if a deploy right after a release cannot pull the image, deploy again once the release's **Docker Images** run has finished. Database migrations run on boot, as on every other deploy. The wizard does not reappear and the volume keeps every secret and setting.
+
+### Removing ProPR
+
+Deleting the Fly app does not delete its Sprites. **The Sprites belong to your Sprites organization, not to the Fly app**, so a deleted instance's Sprites stay there (cold), keep using the organization's Sprite slots (3 on the Free Plan) and make later creates fail with `The Free plan is limited to 3 sprites`. Before you delete the app:
+
+1. Open **Settings → Maintenance → Agent runtime** and select **Remove all Sprites of this instance**. The confirmation names how many Sprites it deletes (all named `propr-<marker>-*`, the prefix shown there and in the wizard). It refuses while an agent run is using a Sprite, and deletes nothing if the count changed since you confirmed. The same action is `POST /api/admin/sprites/remove` with `{ "count": <n> }` from `GET /api/admin/sprites`.
+2. Or, if the instance is already gone, delete the Sprites named `propr-<marker>-*` in the [Sprites dashboard](https://fly.io/dashboard/personal/sprites) of the token's organization.
+
+Then delete the app; Fly deletes its Machines and volume with it. With the Fly Machines runtime, also delete the agent app (`<app>-agents`). Agent Machines are destroyed after each run, but the app and its deploy token remain.
 
 ### Dashboard launch compared with `propr deploy fly`
 

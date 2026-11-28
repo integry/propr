@@ -29,6 +29,8 @@ export interface RuntimePageContext {
 }
 
 const FLY_DASHBOARD_URL = 'https://fly.io/dashboard/personal';
+const SPRITES_DASHBOARD_URL = 'https://fly.io/dashboard/personal/sprites';
+const REMOVING_DOCS_URL = 'https://docs.propr.dev/docs/tutorials/setup-fly#removing-propr';
 
 function option(id: string, checked: boolean, text: { title: string; description: string; panel: string }): string {
     const { title, description, panel } = text;
@@ -40,7 +42,8 @@ function spritesPanel(prefix: string): string {
 <p class="hint">${externalLink(SPRITES_TOKENS_URL, 'Create Token')} on Fly's Sprites tokens page (personal org; for another org, switch org there).</p>
 <p class="hint">Recommended scope:</p>
 <ol class="scope"><li>Name prefix: <code>${escapeHtml(prefix)}</code></li><li>Max Sprites: 1 on the Free Plan.</li><li>Expiry: optional.</li></ol>
-${why(`ProPR names every Sprite of this instance <code>${escapeHtml(prefix)}&lt;id&gt;</code> and runs one at a time, so a token scoped this way can reach only this instance's Sprites. The check lists Sprites under that prefix.`)}`;
+${why(`ProPR names every Sprite of this instance <code>${escapeHtml(prefix)}&lt;id&gt;</code> and runs one at a time, so a token scoped this way can reach only this instance's Sprites. The check lists Sprites under that prefix.`)}
+${why(`The Sprites belong to the Sprites organization, not to the Fly app, so deleting the app leaves them behind, using the organization's Sprite slots. Before you delete the app, open <strong>Settings → Maintenance → Agent runtime</strong> and select <strong>Remove all Sprites of this instance</strong>, or delete the Sprites named <code>${escapeHtml(prefix)}*</code> in the ${externalLink(SPRITES_DASHBOARD_URL, 'Sprites dashboard')}. ${externalLink(REMOVING_DOCS_URL, 'Removing ProPR')}`, 'Removing ProPR')}`;
 }
 
 function flyMachinesPanel(agentApp: string, values: RuntimeFormValues, machinesDefault: number, controlPlaneMachines: number | undefined): string {
