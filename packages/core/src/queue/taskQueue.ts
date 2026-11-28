@@ -268,7 +268,7 @@ export async function createWorker<T extends JobData = JobData, R extends JobRes
         }
         // An issue job refused at admission for disk pressure waits for free space on the same job.
         return deferIssueJobOnDiskPressure(job, () => repositoryStorageLifecycle.use(async () => {
-            if (job.name === ISSUE_JOB_NAME) await endIssueDiskPressureWait(job);
+            if (job?.name === ISSUE_JOB_NAME) await endIssueDiskPressureWait(job);
             return processorFunction(job);
         }, {
             filesystem: process.env.GIT_WORKTREES_BASE_PATH || '/tmp/git-processor/worktrees',

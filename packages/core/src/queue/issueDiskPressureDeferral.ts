@@ -100,14 +100,14 @@ interface DeferrableIssueJob {
  * returned or thrown unchanged.
  */
 export async function deferIssueJobOnDiskPressure<T>(
-    job: DeferrableIssueJob,
+    job: DeferrableIssueJob | undefined,
     execute: () => Promise<T>,
     options: { now?: () => number; maxWaitMs?: number } = {},
 ): Promise<T> {
     try {
         return await execute();
     } catch (error) {
-        if (job.name !== ISSUE_JOB_NAME || !isWorktreeDiskPressureError(error) || !job.token) throw error;
+        if (job?.name !== ISSUE_JOB_NAME || !isWorktreeDiskPressureError(error) || !job.token) throw error;
         const maxWaitMs = options.maxWaitMs ?? issueDiskPressureMaxWaitMs();
         // Waiting disabled: the refusal fails the attempt, as any other error does.
         if (maxWaitMs === 0) throw error;
