@@ -28,7 +28,8 @@ export function toClaudeResult(response: AgentExecutionResult): ClaudeResult {
     conversationLog: response.conversationLog,
     error: response.error,
     terminationReason: response.terminationReason,
-    tokenUsage: response.tokenUsage
+    tokenUsage: response.tokenUsage,
+    ...(response.providerCostUsd !== undefined && { providerCostUsd: response.providerCostUsd })
   };
 }
 
@@ -65,6 +66,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
     ...(result.commitSubject && { commitSubject: result.commitSubject }),
     conversationLog: result.conversationLog,
     tokenUsage: result.tokenUsage,
+    ...(result.providerCostUsd !== undefined && { providerCostUsd: result.providerCostUsd }),
     usageMetrics: result.usageMetrics
   };
 }

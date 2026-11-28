@@ -1,4 +1,6 @@
 import { Redis } from 'ioredis';
+import type { AnalysisResult } from '../../agents/types.js';
+import { endedAnalysisWithoutSpend, exhaustedRouteProviderCost } from '../syntheticRoutingTypes.js';
 
 // --- Types ---
 
@@ -202,4 +204,46 @@ export async function getSummarizationCallHistory(limit: number = 100): Promise<
   } finally {
     await redis.quit();
   }
+}
+
+/**
+ * Sums provider-reported costs across every analyze call behind one logged
+ * batch (retries and fallback). A call without a reported cost, including a
+ * rejection that carries no known spend, leaves the total unknown, so the log
+ * keeps its catalog estimate instead of a partial sum.
+ */
+export interface ProviderCostTracker { total: number; calls: number; complete: boolean }
+
+export function createProviderCostTracker(): ProviderCostTracker {
+  return { total: 0, calls: 0, complete: true };
+}
+
+export async function analyzeWithProviderCost(
+  tracker: ProviderCostTracker | undefined,
+  analyze: () => Promise<AnalysisResult>
+): Promise<AnalysisResult> {
+  let cost: number | undefined;
+  let spent = true;
+  try {
+    const result = await analyze();
+    cost = result.providerCostUsd;
+    return result;
+  } catch (error) {
+    // An exhausted route or a capacity wait still reports the spend of the fully
+    // priced attempts before it. One that ends a call before any attempt reached
+    // a provider (a wait for capacity, a re-entered exhausted route) spends nothing.
+    cost = exhaustedRouteProviderCost(error);
+    spent = !endedAnalysisWithoutSpend(error);
+    throw error;
+  } finally {
+    if (tracker && spent) {
+      tracker.calls++;
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) tracker.total += cost;
+      else tracker.complete = false;
+    }
+  }
+}
+
+export function trackedProviderCost(tracker: ProviderCostTracker): number | undefined {
+  return tracker.calls > 0 && tracker.complete ? tracker.total : undefined;
 }

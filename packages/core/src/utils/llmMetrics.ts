@@ -92,23 +92,21 @@ function toPersistedTokenUsage(tokens: CumulativeTokenUsage): TokenUsage {
     return usage;
 }
 
+/** A provider-reported cost is a finite non-negative number; anything else counts as not reported. */
+const reportedProviderCost = (claudeResult: ClaudeResult | null): number | undefined =>
+    typeof claudeResult?.providerCostUsd === 'number' && Number.isFinite(claudeResult.providerCostUsd) && claudeResult.providerCostUsd >= 0 ? claudeResult.providerCostUsd : undefined;
+
 async function calculateCost(model: string, tokens: CumulativeTokenUsage, claudeResult: ClaudeResult | null): Promise<number> {
+    const providerCost = reportedProviderCost(claudeResult);
+    if (providerCost !== undefined) { logger.info({ model, providerCostUsd: providerCost }, 'Using provider-reported cost'); return providerCost; }
     const openRouterId = getOpenRouterId(model);
     const pricing = await getModelPricing(openRouterId) as ModelPricing | null;
     const { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens } = tokens;
-    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens },
-        'Cost calculation: looking up pricing');
+    logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens }, 'Cost calculation: looking up pricing');
     const hasTokens = inputTokens > 0 || outputTokens > 0 || cacheCreationTokens > 0 || cacheReadTokens > 0;
     let calculatedCostUsd = 0;
     if (pricing && hasTokens) {
-        calculatedCostUsd = calculateCostWithCachePricing(model, {
-            inputTokens,
-            outputTokens,
-            cacheCreationTokens,
-            cacheReadTokens,
-            totalInputWithCache: tokens.totalInputWithCache,
-            totalTokens: tokens.totalInputWithCache + outputTokens
-        }, pricing);
+        calculatedCostUsd = calculateCostWithCachePricing(model, { ...tokens, totalTokens: tokens.totalInputWithCache + outputTokens }, pricing);
         logger.info({ model, openRouterId, calculatedCostUsd }, 'Calculated dynamic cost with cache pricing');
     } else if (!pricing) { logger.warn({ model, openRouterId }, 'No pricing found for model - cost will be 0 or fallback'); }
     else { logger.warn({ model, inputTokens, outputTokens }, 'No token data available - cost will be 0 or fallback'); }

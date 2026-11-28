@@ -97,6 +97,8 @@ export interface ClaudeCodeResponse {
     error?: string;
     terminationReason?: AgentTerminationReason;
     tokenUsage?: TokenUsage;
+    /** Actual provider-reported cost in USD, when the agent reported one. */
+    providerCostUsd?: number;
     usageMetrics?: UsageTrackingMetrics | null;
 }
 

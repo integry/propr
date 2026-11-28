@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import { Agent, type AnalyzeOptions } from '../../agents/types.js';
-import { logSummarizationCall } from './summaryMinerMetrics.js';
+import { logSummarizationCall, analyzeWithProviderCost, createProviderCostTracker, trackedProviderCost, type ProviderCostTracker } from './summaryMinerMetrics.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { isQuotaExhaustionError, withRetry, type RetryOptions } from '../../utils/retryHandler.js';
 import {
@@ -135,6 +135,7 @@ interface DirectoryBatchState {
   stopProcessing: boolean;
   fallbackPrimaryAgentAlias?: string;
   fallbackAgentAlias?: string;
+  costTracker: ProviderCostTracker;
 }
 
 function createDirectoryBatchState(options: ProcessDirectoryBatchOptions): DirectoryBatchState {
@@ -145,7 +146,8 @@ function createDirectoryBatchState(options: ProcessDirectoryBatchOptions): Direc
     success: false,
     results: [],
     fallbackUsed: false,
-    stopProcessing: false
+    stopProcessing: false,
+    costTracker: createProviderCostTracker()
   };
 }
 
@@ -157,7 +159,7 @@ async function analyzeDirectoryBatchWithFallback(options: ProcessDirectoryBatchO
   try {
     state.results = await analyzeDirectoryBatchWithAgent({
       prompt, directories, agent, model: modelUsed ?? modelOverride, context: `directory_aggregation:${fullName}`, fullName,
-      routingSession: options.routingSession,
+      routingSession: options.routingSession, costTracker: state.costTracker,
     });
     state.routingMetadata = options.routingSession?.routingMetadata;
     const physicalModel = state.routingMetadata?.physicalModel;
@@ -263,6 +265,7 @@ async function analyzeDirectoryBatchWithFallbackAgent(
       fullName,
       retryOptions: SUMMARIZATION_FALLBACK_RETRY,
       routingSession: fallbackRoutingSession,
+      costTracker: state.costTracker,
     });
     state.fallbackUsed = true;
     state.fallbackPrimaryAgentAlias = primaryAgentAlias;
@@ -353,6 +356,7 @@ async function logDirectoryBatchCall(options: ProcessDirectoryBatchOptions & {
   await persistLlmLog(createLlmLogFromAnalysis({
     executionType: 'summarization', modelUsed: state.modelLogged, executionTimeMs: durationMs, success: state.success,
     tokenUsage: { input_tokens: estimatedInputTokens, output_tokens: estimatedOutputTokens },
+    costUsd: trackedProviderCost(state.costTracker),
     error: state.errorMessage, repository: fullName, agentAlias: physicalAgentAlias,
     metadata: {
       directoryCount: directories.length,
@@ -384,8 +388,9 @@ async function analyzeDirectoryBatchWithAgent(options: {
   fullName: string;
   retryOptions?: RetryOptions;
   routingSession?: SyntheticRoutingSession;
+  costTracker?: ProviderCostTracker;
 }): Promise<DirectoryResult[]> {
-  const { prompt, directories, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY, routingSession } = options;
+  const { prompt, directories, agent, model, context, fullName, retryOptions = SUMMARIZATION_RETRY, routingSession, costTracker } = options;
   const summariesByPath = new Map<string, string>();
   let pendingDirectories = directories;
 
@@ -403,9 +408,9 @@ async function analyzeDirectoryBatchWithAgent(options: {
         metadata: { phase: 'directory_aggregation', directoryCount: activeDirectories.length },
         suppressLlmLog: true
       };
-      const analysisResult = routingSession
-        ? await routingSession.analyze(activePrompt, analyzeOptions)
-        : await agent.analyze(activePrompt, analyzeOptions);
+      const analysisResult = await analyzeWithProviderCost(costTracker, () => routingSession
+        ? routingSession.analyze(activePrompt, analyzeOptions)
+        : agent.analyze(activePrompt, analyzeOptions));
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Directory summarization agent analysis failed');
       }

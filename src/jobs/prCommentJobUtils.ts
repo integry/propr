@@ -48,6 +48,7 @@ export function toClaudeResult(response: ClaudeCodeResponse): ClaudeResult {
         error: response.error,
         terminationReason: response.terminationReason,
         tokenUsage: response.tokenUsage,
+        ...(response.providerCostUsd !== undefined && { providerCostUsd: response.providerCostUsd }),
         usageMetrics: response.usageMetrics ?? undefined
     };
 }

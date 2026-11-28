@@ -6,6 +6,7 @@ import { MODEL_INFO_MAP } from '../../config/modelDefinitions.js';
 import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.js';
 import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
 import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
+import { exhaustedRouteProviderCost } from '../syntheticRoutingTypes.js';
 import { nestedLaunchGate } from '../../agents/agentRunNesting.js';
 
 // --- Types ---
@@ -193,6 +194,7 @@ export async function scoreSemanticRelevance(
       const estimatedOutputTokens = 500;
       let routedMetadata: Record<string, unknown> | undefined;
       let actualModelUsed: string | undefined;
+      let providerCostUsd: number | undefined;
       const callRoute = routingSession
         ? (index === 0 ? routingSession : routingSession.fork())
         : undefined;
@@ -213,6 +215,7 @@ export async function scoreSemanticRelevance(
           : await agent.analyze(prompt, analyzeOptions);
         routedMetadata = callRoute?.routingMetadata;
         actualModelUsed = analysisResult.modelUsed;
+        providerCostUsd = analysisResult.providerCostUsd;
         if (!analysisResult.success) {
           throw new Error(analysisResult.error || `Semantic scoring chunk ${index} failed`);
         }
@@ -247,6 +250,7 @@ export async function scoreSemanticRelevance(
             input_tokens: estimatedInputTokens,
             output_tokens: estimatedOutputTokens,
           },
+          ...(providerCostUsd !== undefined && { costUsd: providerCostUsd }),
           correlationId,
           agentAlias: physicalAgentAlias,
           metadata: {
@@ -264,6 +268,7 @@ export async function scoreSemanticRelevance(
         return parsed.files;
       } catch (err) {
         routedMetadata ??= callRoute?.routingMetadata;
+        providerCostUsd ??= exhaustedRouteProviderCost(err);
         const chunkDurationMs = Date.now() - startTime;
         const modelUsed = resolvedSemanticModel(actualModelUsed, routedMetadata, modelId, agent.config.defaultModel);
         const physicalAgentAlias = routedAgentAlias(routedMetadata, agent.config.alias);
@@ -297,6 +302,7 @@ export async function scoreSemanticRelevance(
             input_tokens: estimatedInputTokens,
             output_tokens: estimatedOutputTokens,
           },
+          ...(providerCostUsd !== undefined && { costUsd: providerCostUsd }),
           error: errorMessage,
           correlationId,
           agentAlias: physicalAgentAlias,

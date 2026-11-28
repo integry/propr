@@ -5,6 +5,7 @@ import { persistLlmLog, createLlmLogFromAnalysis } from '../../utils/llmLogger.j
 import { loadSettings } from '../../config/configManager.js';
 import { resolveContextAnalysisTimeoutMs } from './contextAnalysisConfig.js';
 import type { SyntheticRoutingSession } from '../syntheticRoutingService.js';
+import { exhaustedRouteProviderCost } from '../syntheticRoutingTypes.js';
 
 // --- Settings cache (avoids a DB round-trip on every LLM extraction call) ---
 
@@ -248,6 +249,7 @@ export async function extractKeywordsWithLLM(
   let errorMessage: string | undefined;
   let routedMetadata: Record<string, unknown> | undefined;
   let actualModelUsed: string | undefined;
+  let providerCostUsd: number | undefined;
   const cachedSettings = await getCachedSettings();
 
   try {
@@ -270,6 +272,7 @@ export async function extractKeywordsWithLLM(
       : await agent.analyze(llmPrompt, analyzeOptions);
     routedMetadata = routingSession?.routingMetadata;
     actualModelUsed = analysisResult.modelUsed;
+    providerCostUsd = analysisResult.providerCostUsd;
     if (!analysisResult.success) {
       throw new Error(analysisResult.error || 'Context keyword analysis failed');
     }
@@ -305,6 +308,7 @@ export async function extractKeywordsWithLLM(
     return { primary, alternatives, all };
   } catch (error) {
     errorMessage = (error as Error).message;
+    providerCostUsd ??= exhaustedRouteProviderCost(error);
     correlatedLogger.warn(
       { error: errorMessage },
       'LLM keyword extraction failed, falling back to basic extraction'
@@ -326,6 +330,7 @@ export async function extractKeywordsWithLLM(
       modelUsed: logTarget.modelUsed,
       executionTimeMs: durationMs,
       success,
+      ...(providerCostUsd !== undefined && { costUsd: providerCostUsd }),
       error: errorMessage,
       correlationId,
       agentAlias: logTarget.agentAlias,

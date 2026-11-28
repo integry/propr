@@ -7,6 +7,7 @@ import { recordPrimarySummarizationQuotaFailure, recordPrimarySummarizationRespo
 import { SyntheticPoolExhaustedError, type SyntheticRoutingSession } from '../syntheticRoutingService.js';
 import { SyntheticAgent } from '../../agents/SyntheticAgent.js';
 import { buildBatchPrompt, parseBatchResponse, type BatchFile } from './summaryMinerBatchHelpers.js';
+import { analyzeWithProviderCost, createProviderCostTracker, trackedProviderCost, type ProviderCostTracker } from './summaryMinerMetrics.js';
 
 export { DEFAULT_INSTRUCTIONS, parseBatchResponse } from './summaryMinerBatchHelpers.js';
 export type { BatchFile } from './summaryMinerBatchHelpers.js';
@@ -57,6 +58,7 @@ interface BatchAnalysisResult {
 type BatchAnalysisOptions = ProcessSingleBatchOptions & {
   prompt: string;
   onFallbackAttempt: () => void;
+  costTracker: ProviderCostTracker;
 };
 
 class SummarizationCooldownRecordedError extends Error {
@@ -94,6 +96,7 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   let fallbackAgentAlias: string | undefined;
   let routingMetadata: Record<string, unknown> | undefined;
   let fallbackAttempted = false;
+  const costTracker = createProviderCostTracker();
 
   try {
     const summaries = await analyzeBatchWithFallback({
@@ -102,6 +105,7 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
       routingSession: options.routingSession,
       fallbackRoutingSession,
       onFallbackAttempt: () => { fallbackAttempted = true; },
+      costTracker,
     });
     agentUsed = summaries.agentUsed;
     modelLogged = summaries.modelLogged;
@@ -130,7 +134,8 @@ export async function processSingleBatch(options: ProcessSingleBatchOptions): Pr
   const durationMs = Date.now() - startTime;
   await logFileBatchCall({
     log, fullName, batch, modelLogged, agentUsed, estimatedInputTokens,
-    estimatedOutputTokens, durationMs, success, errorMessage, routingMetadata
+    estimatedOutputTokens, durationMs, success, errorMessage, routingMetadata,
+    costUsd: trackedProviderCost(costTracker)
   });
   return {
     success,
@@ -152,7 +157,7 @@ async function analyzeBatchWithFallback(
     const results = await analyzeBatchWithAgent({
       prompt, batch, agent, model: modelUsed, context: `batch_summarization:${fullName}`, fullName,
       customPrompt: options.customPrompt,
-      routingSession: options.routingSession,
+      routingSession: options.routingSession, costTracker: options.costTracker,
     });
     // Clearing quota-failure bookkeeping is best-effort: a transient runtime-state
     // read/write error here must not discard a batch the LLM summarized successfully.
@@ -249,7 +254,7 @@ async function analyzeBatchAfterPrimaryFailure(
       fullName,
       customPrompt: options.customPrompt,
       retryOptions: SUMMARIZATION_FALLBACK_RETRY,
-      routingSession: fallbackRoutingSession,
+      routingSession: fallbackRoutingSession, costTracker: options.costTracker,
     });
     if (!syntheticRouteUnavailable) {
       await clearSummarizationCooldown(fullName, branch, {
@@ -316,7 +321,7 @@ async function analyzeBatchWithInvalidResponseFallback(
     fullName,
     customPrompt: options.customPrompt,
     retryOptions: SUMMARIZATION_FALLBACK_RETRY,
-    routingSession: fallbackRoutingSession,
+    routingSession: fallbackRoutingSession, costTracker: options.costTracker,
   });
   await recordPrimarySummarizationResponseFailure({
     primaryAgentAlias,
@@ -385,10 +390,11 @@ async function analyzeBatchWithAgent(options: {
   customPrompt?: string;
   retryOptions?: RetryOptions;
   routingSession?: SyntheticRoutingSession;
+  costTracker?: ProviderCostTracker;
 }): Promise<SummaryResult[]> {
   const {
     prompt, batch, agent, model, context, fullName, customPrompt,
-    retryOptions = SUMMARIZATION_RETRY, routingSession
+    retryOptions = SUMMARIZATION_RETRY, routingSession, costTracker
   } = options;
   const summariesByPath = new Map<string, SummaryResult>();
   let pendingBatch = batch;
@@ -407,9 +413,9 @@ async function analyzeBatchWithAgent(options: {
         metadata: { phase: 'batch_summarization', fileCount: activeBatch.length },
         suppressLlmLog: true
       };
-      const analysisResult = routingSession
-        ? await routingSession.analyze(activePrompt, analyzeOptions)
-        : await agent.analyze(activePrompt, analyzeOptions);
+      const analysisResult = await analyzeWithProviderCost(costTracker, () => routingSession
+        ? routingSession.analyze(activePrompt, analyzeOptions)
+        : agent.analyze(activePrompt, analyzeOptions));
       if (!analysisResult.success) {
         throw new Error(analysisResult.error || 'Summarization agent analysis failed');
       }

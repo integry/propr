@@ -287,6 +287,8 @@ export interface AnalysisResult {
     success: boolean;
     /** Optional token usage metrics */
     tokenUsage?: TokenUsage;
+    /** Actual cost in USD reported by the agent's provider, when reported. */
+    providerCostUsd?: number;
     /** Optional session ID */
     sessionId?: string;
     /** Effective reasoning level passed to the agent runtime, when configured. */
@@ -351,6 +353,12 @@ export interface AgentExecutionResult {
     summary?: string;       // Extracted summary of work
     modifiedFiles: string[];
     cost?: number;          // Estimated cost in USD
+    /**
+     * Actual cost in USD reported by the agent's provider. Unlike `cost` it is
+     * absent when none was reported, and a reported 0 is kept: metrics prefer it
+     * to a pricing-catalog estimate.
+     */
+    providerCostUsd?: number;
 
     // Metadata
     modelUsed: string;

@@ -112,31 +112,12 @@ export class OpenCodeAgent implements Agent {
             const executionTime = Date.now() - startTime;
             const parsedOutput = this.parseOpenCodeJsonl(result.stdout);
             const modelUsed = parsedOutput.modelUsed || effectiveModel || 'unknown';
-            const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
-            const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
-            const errorText = success ? undefined : (resolveOpenCodeFailureReason(parsedOutput, result.stderr) || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
-            const response: AgentExecutionResult = {
-                success,
-                executionTimeMs: executionTime,
-                logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
-                exitCode: result.exitCode,
-                rawOutput: result.stdout,
-                modelUsed,
-                sessionId: parsedOutput.sessionId,
-                conversationLog: parsedOutput.conversationLog,
-                modifiedFiles: [],
-                commitMessage: null,
-                summary: parsedOutput.summary,
-                prompt,
-                error: errorText,
-                terminationReason,
-                tokenUsage: parsedOutput.tokenUsage,
-                usageMetrics: usageMetrics ?? undefined
-            };
+            const completed = this.buildExecutionResponse({ result, parsedOutput, executionTime, modelUsed, prompt, usageMetrics });
+            // Verification runs before the log is written, so a verification failure
+            // is recorded once, on the response that carries the run's tokens and cost.
+            const response = this.reportExecutionOutcome({ response: completed, issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, error: parsedOutput.error, modelUsed, worktreePath, worktreeGitContent });
 
             await this.persistExecutionLogSafely({ response, executionTime, modelUsed, prompt, issueRef, taskId, prNumber, isRetry, retryReason, usageMetrics, metadata });
-
-            this.reportExecutionOutcome({ success: response.success, issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, error: parsedOutput.error, modelUsed, worktreePath, worktreeGitContent });
 
             return response;
         } catch (error) {
@@ -152,14 +133,22 @@ export class OpenCodeAgent implements Agent {
         }
     }
 
-    private reportExecutionOutcome(params: { success: boolean; issueNumber: number; exitCode: number | null | undefined; stderr: string; error: string | undefined; modelUsed: string; worktreePath: string; worktreeGitContent: ReturnType<typeof verifyWorktreeStructure> }): void {
-        const { success, issueNumber, exitCode, stderr, error, modelUsed, worktreePath, worktreeGitContent } = params;
-        if (!success) {
+    /** Logs the outcome and returns the response, failed when post-execution verification throws. */
+    private reportExecutionOutcome(params: { response: AgentExecutionResult; issueNumber: number; exitCode: number | null | undefined; stderr: string; error: string | undefined; modelUsed: string; worktreePath: string; worktreeGitContent: ReturnType<typeof verifyWorktreeStructure> }): AgentExecutionResult {
+        const { response, issueNumber, exitCode, stderr, error, modelUsed, worktreePath, worktreeGitContent } = params;
+        if (!response.success) {
             logger.error({ issueNumber, exitCode, stderr, agentAlias: this.config.alias, error }, 'OpenCode agent execution failed');
-        } else {
-            logger.info({ issueNumber, model: modelUsed, agentAlias: this.config.alias }, 'OpenCode agent execution succeeded');
-            verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
+            return response;
         }
+        try {
+            verifyWorktreePostExecution(worktreePath, issueNumber, worktreeGitContent);
+        } catch (verificationError) {
+            const message = (verificationError as Error).message;
+            logger.error({ issueNumber, model: modelUsed, agentAlias: this.config.alias, error: message }, 'OpenCode post-execution verification failed');
+            return { ...response, success: false, error: message };
+        }
+        logger.info({ issueNumber, model: modelUsed, agentAlias: this.config.alias }, 'OpenCode agent execution succeeded');
+        return response;
     }
 
     async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
@@ -192,7 +181,7 @@ export class OpenCodeAgent implements Agent {
                 executionTimeMs,
             });
             if (!suppressLlmLog) {
-                await this.persistAnalysisLogSafely({ executionType, modelUsed: analysis.modelUsed, executionTimeMs, success: analysis.success, error: analysis.success ? undefined : analysis.errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, usageMetrics });
+                await this.persistAnalysisLogSafely({ executionType, modelUsed: analysis.modelUsed, executionTimeMs, success: analysis.success, error: analysis.success ? undefined : analysis.errorMsg, sessionId: parsedOutput.sessionId, taskId, correlationId, repository, metadata, taskNumber, prNumber, tokenUsage: parsedOutput.tokenUsage, costUsd: parsedOutput.cost, usageMetrics });
             }
             return analysis.result;
         } catch (error) {
@@ -243,6 +232,7 @@ export class OpenCodeAgent implements Agent {
             executionTimeMs: executionTime,
             success: response.success,
             tokenUsage: response.tokenUsage,
+            costUsd: response.providerCostUsd,
             error: response.success ? undefined : (response.error || 'Execution failed'),
             sessionId: response.sessionId,
             draftId: taskId,
@@ -250,6 +240,39 @@ export class OpenCodeAgent implements Agent {
             agentAlias: this.config.alias,
             ...formatUsageMetrics(usageMetrics),
         }));
+    }
+
+    private buildExecutionResponse(params: {
+        result: Awaited<ReturnType<typeof executeDockerCommand>>;
+        parsedOutput: ReturnType<typeof parseOpenCodeJsonl>;
+        executionTime: number;
+        modelUsed: string;
+        prompt: string;
+        usageMetrics: UsageTrackingMetrics | null;
+    }): AgentExecutionResult {
+        const { result, parsedOutput, executionTime, modelUsed, prompt, usageMetrics } = params;
+        const terminationReason = resolveAgentTerminationReason({ timedOut: result.timedOut, costCapExceeded: result.costCapExceeded, watchdogTrip: result.watchdogTrip, error: parsedOutput.error || result.stderr });
+        const success = result.exitCode === 0 && !parsedOutput.error && !terminationReason;
+        const errorText = success ? undefined : (resolveOpenCodeFailureReason(parsedOutput, result.stderr) || result.stderr || `OpenCode exited with code ${result.exitCode ?? 'unknown'}`);
+        return {
+            success,
+            executionTimeMs: executionTime,
+            logs: result.stdout + (result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ''),
+            exitCode: result.exitCode,
+            rawOutput: result.stdout,
+            modelUsed,
+            sessionId: parsedOutput.sessionId,
+            conversationLog: parsedOutput.conversationLog,
+            modifiedFiles: [],
+            commitMessage: null,
+            summary: parsedOutput.summary,
+            prompt,
+            error: errorText,
+            terminationReason,
+            tokenUsage: parsedOutput.tokenUsage,
+            ...(parsedOutput.cost !== undefined && { cost: parsedOutput.cost, providerCostUsd: parsedOutput.cost }),
+            usageMetrics: usageMetrics ?? undefined
+        };
     }
 
     private async persistExecutionLogSafely(opts: Parameters<OpenCodeAgent['persistExecutionLog']>[0]): Promise<void> {
@@ -274,6 +297,7 @@ export class OpenCodeAgent implements Agent {
         taskNumber?: number;
         prNumber?: number;
         tokenUsage?: AgentExecutionResult['tokenUsage'];
+        costUsd?: number;
         usageMetrics?: UsageTrackingMetrics | null;
     }): Promise<void> {
         try {
@@ -283,6 +307,7 @@ export class OpenCodeAgent implements Agent {
                 executionTimeMs: opts.executionTimeMs,
                 success: opts.success,
                 tokenUsage: opts.tokenUsage,
+                costUsd: opts.costUsd,
                 error: opts.success ? undefined : opts.error,
                 sessionId: opts.sessionId,
                 draftId: opts.taskId,

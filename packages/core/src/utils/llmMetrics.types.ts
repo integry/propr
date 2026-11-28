@@ -64,6 +64,8 @@ export interface ClaudeResult {
     conversationLog?: ConversationStep[];
     error?: string;
     tokenUsage?: TokenUsage;
+    /** Actual provider-reported cost in USD; preferred over a catalog estimate, and 0 is a reported cost. */
+    providerCostUsd?: number;
     usageMetrics?: SubscriptionUsageMetrics | null;
 }
 
