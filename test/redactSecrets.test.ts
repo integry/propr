@@ -696,3 +696,22 @@ test('redactSecrets scrubs pasted agent credential documents', () => {
         }
     }
 });
+
+test('redactSecrets scrubs opaque OpenCode auth.json secrets in either member order', () => {
+    const secrets = ['opaque-refresh-1234567890', 'opaque-access-1234567890', 'opaque-provider-key-12345', 'opaque-wellknown-key-1234', 'opaque-wellknown-token-123'];
+    const auth = {
+        anthropic: { type: 'oauth', refresh: secrets[0], access: secrets[1], expires: 1_900_000_000_000 },
+        deepseek: { type: 'api', key: secrets[2] },
+        // A pasted document may list "type" after the secrets.
+        enterprise: { key: secrets[3], token: secrets[4], type: 'wellknown' },
+    };
+    // Compact, and as stored (two-space indentation).
+    for (const document of [JSON.stringify(auth), JSON.stringify(auth, null, 2)]) {
+        const result = redactSecrets(document);
+        for (const secret of secrets) assert.ok(!result.includes(secret), `${secret} leaked from ${result}`);
+        assert.ok(result.includes('"expires"') && result.includes('"oauth"'), 'non-secret members are kept');
+    }
+    // The generic names alone are not secrets outside such an entry.
+    const unrelated = JSON.stringify({ key: 'packages/core/src/index.ts', cache: { access: 'read-only-shared-cache' } });
+    assert.equal(redactSecrets(unrelated), unrelated);
+});

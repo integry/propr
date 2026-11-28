@@ -77,10 +77,41 @@ function checkWrites(canonical: string, writes: readonly CredentialStoreWrite[])
     }
 }
 
+const isMissingPath = (error: unknown): boolean => ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '');
+
+/**
+ * Remove `canonical/relative` through the lease, like a replacement: the file
+ * is renamed into a directory created inside the lease's publication
+ * directory, then deleted there. Once a stale takeover has revoked the lease,
+ * that directory has moved away with the publication directory, so the
+ * rename fails rather than deleting a file the successor published. (A
+ * publication directory of the same name recreated later lacks it too.)
+ */
+function publishRemoval(canonical: string, relative: string, lease: CredentialStoreLease): void {
+    const current = lstatInside(canonical, relative);
+    if (!current) return;
+    if (current !== 'symlink' && current.isDirectory()) throw new CredentialBrokerError(`Refusing to remove a directory as a credential: ${relative}`);
+    const removal = path.join(lease.publicationDir, `${randomBytes(6).toString('hex')}.removed`);
+    try { fs.mkdirSync(removal, { mode: 0o700 }); } catch (error) {
+        if (isMissingPath(error)) throw new CredentialStoreLeaseRevokedError(canonical, lease.epoch);
+        throw error;
+    }
+    try {
+        fs.renameSync(path.join(canonical, relative), path.join(removal, 'file'));
+    } catch (error) {
+        if (isMissingPath(error) && !fs.existsSync(removal)) throw new CredentialStoreLeaseRevokedError(canonical, lease.epoch);
+        fs.rmSync(removal, { recursive: true, force: true });
+        // Already gone: nothing to remove.
+        if (isMissingPath(error)) return;
+        throw error;
+    }
+    fs.rmSync(removal, { recursive: true, force: true });
+}
+
 function publishWrite(canonical: string, write: CredentialStoreWrite, lease: CredentialStoreLease): void {
     const target = path.join(canonical, write.path);
     if (write.content === null) {
-        if (lstatInside(canonical, write.path)) fs.rmSync(target, { force: true });
+        publishRemoval(canonical, write.path, lease);
         return;
     }
     const owner = ownerOf(canonical, write.path);

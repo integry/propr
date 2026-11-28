@@ -81,6 +81,10 @@ const SECRET_PATTERNS: SecretPattern[] = [
     { pattern: /Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi, replacement: '', dynamicReplacement: 'bearer' },
     // Credential JSON documents (Claude settings env, Codex/OpenCode auth.json): quoted key names whose values are secrets.
     { pattern: /(?<="(?:[A-Za-z0-9_]*(?:API_KEY|_TOKEN)|access_token|refresh_token|id_token)"\s*:\s*")[^"\s]{12,}(?=")/gi, replacement: '[REDACTED_SECRET]' },
+    // OpenCode auth.json entries ({"<provider>": {"type": "api" | "oauth" | "wellknown", ...}}) keep opaque secrets under
+    // generic names, so those names count only inside an object with a "type" member, before or after them.
+    { pattern: /(?<="type"\s*:\s*"[^"]*"[^{}]*"(?:key|refresh|access|token)"\s*:\s*")[^"\s]{12,}(?=")/g, replacement: '[REDACTED_SECRET]' },
+    { pattern: /(?<="(?:key|refresh|access|token)"\s*:\s*")[^"\s]{12,}(?="[^{}]*"type"\s*:\s*")/g, replacement: '[REDACTED_SECRET]' },
     // Secret/token assignment patterns (catches env vars like SECRET_KEY=..., GITHUB_TOKEN=..., NPM_TOKEN=..., etc.)
     { pattern: /(?<=(?:^|[_A-Z])(?:SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY|SECRET_KEY|SECRET_TOKEN|API_TOKEN|AUTH_TOKEN|TOKEN|GITHUB_TOKEN|NPM_TOKEN|SLACK_TOKEN|CI_JOB_TOKEN|CI_TOKEN|DEPLOY_TOKEN|SERVICE_TOKEN|REFRESH_TOKEN|CLIENT_SECRET|APP_SECRET|WEBHOOK_SECRET)\s*[=:]\s*['"]?)[A-Za-z0-9/+=_-]{20,}(?=['"]?)/gim, replacement: '[REDACTED_SECRET]' },
 ];
