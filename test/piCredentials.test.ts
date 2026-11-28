@@ -381,6 +381,47 @@ sys.exit(sync.wait())
         });
     });
 
+    for (const [kind, plant] of [
+        ['a stale nonempty lock directory', (lock: string) => { fs.mkdirSync(lock); fs.writeFileSync(path.join(lock, 'x'), ''); }],
+        ['a stale lock file', (lock: string) => { fs.writeFileSync(lock, ''); }],
+        ['a dangling lock symlink', (lock: string) => { fs.symlinkSync(path.join(path.dirname(lock), 'nowhere'), lock); }],
+    ] as const) {
+        test(`gives up after the wait bound on ${kind} and leaves it intact`, () => {
+            withRun(hostAuth(), run => {
+                run.seed();
+                run.writeRuntime({ ...hostAuth(), anthropic: oauth('2') });
+                const lock = `${fs.realpathSync(run.host)}.lock`;
+                plant(lock);
+                const stale = new Date(Date.now() - 120_000);
+                fs.lutimesSync(lock, stale, stale);
+                const started = Date.now();
+                const result = spawnSync('python3', ['-I', '-B', credentialsScript, 'sync', run.host, run.runtime, run.snapshot], {
+                    encoding: 'utf8', timeout: 20_000, env: { ...process.env, PROPR_PI_LOCK_WAIT_SECONDS: '0.5' },
+                });
+                assert.equal(result.status, 3, result.stderr);
+                assert.ok(Date.now() - started < 10_000, `bounded wait (${Date.now() - started} ms)`);
+                assert.match(result.stderr, /skipping the Pi credential write-back.*could not be removed after 0\.5s/);
+                assert.deepEqual(run.readHost(), hostAuth());
+                assert.ok(fs.lstatSync(lock), 'the lock is left in place');
+            });
+        });
+    }
+
+    test('the lock wait cannot be extended past the built-in bound', () => {
+        const probe = `
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("pi_credentials", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+values = []
+for value in ["0.5", "3600", "-1", "nan", "inf", "x", ""]:
+    os.environ["PROPR_PI_LOCK_WAIT_SECONDS"] = value
+    values.append(module.lock_wait_seconds())
+print(values)
+`;
+        assert.equal(runPython(['-c', probe, credentialsScript]).trim(), '[0.5, 30, 30, 30, 30, 30, 30]');
+    });
+
     test('creates the temp file owner-only before applying the original mode', () => {
         // Runs sync under a permissive umask and records the temp file's mode
         // whenever the helper changes its mode or renames it into place.
@@ -569,7 +610,7 @@ exit "\${PROPR_TEST_EXIT:-0}"
         });
     });
 
-    test('does not write a refresh to either target if the host auth link changed during the run', () => {
+    test('never imports or writes back a symlinked auth.json, whatever it points to', () => {
         withEntrypoint((env, dirs) => {
             const link = path.join(dirs.source, 'auth.json');
             const original = path.join(dirs.source, 'original.json');
@@ -582,12 +623,82 @@ exit "\${PROPR_TEST_EXIT:-0}"
                 env: { ...env, PROPR_TEST_RETARGET_AUTH: replacement }, encoding: 'utf8',
             });
             assert.equal(result.status, 0, result.stderr);
-            // A symlinked auth.json is never written back, and the warning says what that costs.
-            assert.match(result.stderr, /auth\.json is a symlink; refreshed credentials will not be written back, so the host login goes stale/);
+            assert.match(result.stderr, /not importing Pi auth\.json: it is a symlink; replace it with the file itself/);
+            assert.match(result.stderr, /no Pi auth\.json imported/);
+            assert.doesNotMatch(reportOf(dirs.report).files, /auth\.json/, 'nothing reaches the task through the link');
             assert.equal(fs.readlinkSync(link), replacement);
             for (const target of [original, replacement]) {
                 assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), hostAuth());
             }
+        });
+    });
+
+    test('imports every allowlisted file only as a regular file inside the host dir', () => {
+        withEntrypoint((env, dirs) => {
+            // Root-readable files outside the credential source, reached through
+            // symlinks in it: none of them may become readable by the task.
+            const outside = path.join(dirs.runtime, '..', 'outside');
+            fs.mkdirSync(outside);
+            const secret = path.join(outside, 'secret.json');
+            fs.writeFileSync(secret, '{"secret":"root-only"}');
+            fs.rmSync(path.join(dirs.source, 'settings.json'));
+            fs.symlinkSync(secret, path.join(dirs.source, 'settings.json'));
+            fs.rmSync(path.join(dirs.source, 'AGENTS.md'));
+            fs.symlinkSync(path.join('..', '..', '..', 'outside', 'secret.json'), path.join(dirs.source, 'AGENTS.md'));
+            // A FIFO must neither hang the import nor be copied; nor a directory.
+            fs.rmSync(path.join(dirs.source, 'SYSTEM.md'));
+            execFileSync('mkfifo', [path.join(dirs.source, 'SYSTEM.md')]);
+            fs.rmSync(path.join(dirs.source, 'models.json'));
+            fs.mkdirSync(path.join(dirs.source, 'models.json'));
+
+            const result = spawnSync('bash', [entrypoint, 'pi', '-p'], { env, encoding: 'utf8', timeout: 20_000 });
+            assert.equal(result.status, 0, result.stderr);
+            const agentDir = path.join(dirs.runtime, 'agent');
+            assert.equal(reportOf(dirs.report).files.trim(), 'APPEND_SYSTEM.md auth.json sessions', 'only the regular files are imported');
+            assert.match(result.stderr, /not importing Pi settings\.json: it is a symlink/);
+            assert.match(result.stderr, /not importing Pi AGENTS\.md: it is a symlink/);
+            assert.match(result.stderr, /not importing Pi SYSTEM\.md: not a regular file/);
+            assert.match(result.stderr, /not importing Pi models\.json: not a regular file/);
+            for (const name of fs.readdirSync(agentDir)) {
+                if (name === 'sessions') continue;
+                assert.doesNotMatch(fs.readFileSync(path.join(agentDir, name), 'utf8'), /root-only/, name);
+                assert.equal(fs.lstatSync(path.join(agentDir, name)).mode & 0o777, 0o600, `${name} is an owner-only copy`);
+            }
+            // The regular auth.json is still imported and refreshed back.
+            assert.equal((JSON.parse(fs.readFileSync(path.join(dirs.source, 'auth.json'), 'utf8')) as Auth).anthropic.refresh, 'refresh-2');
+        });
+    });
+
+    test('every host import runs through the confined helper from the pinned source dir', () => {
+        const script = fs.readFileSync(entrypoint, 'utf8');
+        const prepare = script.slice(script.indexOf('prepare_runtime_home() {'), script.indexOf('\n}\n', script.indexOf('prepare_runtime_home() {')));
+        assert.match(prepare, /if \{ exec 9<"\$pi_source_dir\/"; \}; then/);
+        assert.match(prepare, /\/usr\/bin\/env -i PATH="\$POST_TASK_PATH" \/usr\/bin\/python3 -I -B "\$pi_credentials_helper" import "\$file" "\$pi_agent_dir\/\$file"/);
+        assert.doesNotMatch(prepare, /\bcp\b|cat |realpath/, 'no root copy follows a host path');
+        // No node process ever inherits the pinned source descriptor.
+        for (const fn of ['run_as_node', 'exec_as_node', 'run_post_task_as_node']) {
+            const body = script.slice(script.indexOf(`${fn}() {`), script.indexOf('\n}\n', script.indexOf(`${fn}() {`)));
+            assert.equal((body.match(/"\$@" 8<&- 9<&-/g) ?? []).length, 2, `${fn} closes fd 9 in both branches`);
+        }
+    });
+
+    test('a credential lock that cannot be taken releases the run after the wait bound and keeps the task status', () => {
+        withEntrypoint((env, dirs) => {
+            // A stale lock directory that cannot be removed (it is not empty).
+            const lock = path.join(dirs.source, 'auth.json.lock');
+            fs.mkdirSync(lock);
+            fs.writeFileSync(path.join(lock, 'left-behind'), '');
+            const stale = new Date(Date.now() - 120_000);
+            fs.utimesSync(lock, stale, stale);
+            const started = Date.now();
+            const result = spawnSync('bash', [entrypoint, 'pi', '-p'], {
+                env: { ...env, PROPR_TEST_EXIT: '7', PROPR_PI_LOCK_WAIT_SECONDS: '1' }, encoding: 'utf8', timeout: 20_000,
+            });
+            assert.equal(result.status, 7, result.stderr);
+            assert.ok(Date.now() - started < 15_000, 'the wait is bounded');
+            assert.match(result.stderr, /Warning: skipping the Pi credential write-back, the host auth\.json keeps its previous login: .*auth\.json\.lock is held by another process or could not be removed after 1s/);
+            assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dirs.source, 'auth.json'), 'utf8')), hostAuth(), 'nothing written without the lock');
+            assert.deepEqual(fs.readdirSync(lock), ['left-behind'], 'the unremovable lock is left intact');
         });
     });
 
@@ -761,14 +872,18 @@ exit "\${PROPR_TEST_EXIT:-0}"
         const lines = postTask.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
         assert.equal(lines[0], 'export PATH="$POST_TASK_PATH"', 'the fixed PATH is set first thing after the task');
         assert.ok(lines.includes('cd /'), 'post-task steps leave the task-writable workspace');
-        assert.match(postTask, /\| \/usr\/bin\/env -i PATH="\$POST_TASK_PATH" \/usr\/bin\/python3 -I -B "\$pi_credentials_helper" sync-from-stdin/);
-        assert.match(script, /restrict_goal_sessions_after_task\(\) \{\n[^}]*run_post_task_as_node \/bin\/chmod -R -- u\+rwX,go-rwx "\$pi_goal_session_dir"/);
-        assert.doesNotMatch(script.slice(script.indexOf('restrict_goal_sessions_after_task()'), script.indexOf('prepare_goal_sessions()')), /chown/, 'no recursive chown over the tree the task just wrote');
-        // Only the store directory returns to the worker's UID, non-recursively
-        // and through the descriptor pinned before the task.
-        assert.match(script, /exec 8<"\$pi_goal_session_dir\/" \|\| return\n\s+pi_goal_session_owner="\$\(\/usr\/bin\/stat -L -c %u:%g -- \/proc\/self\/fd\/8\)"/);
-        assert.match(script, /restore_goal_session_owner\(\) \{\n[^}]*\/usr\/bin\/env -i \/bin\/chown -- "\$pi_goal_session_owner" \/proc\/self\/fd\/8\n\}/);
-        assert.ok(lines.indexOf('exec 8<&-') > lines.findIndex(line => line.startsWith('restore_goal_session_owner')), 'the pinned store is closed after it is handed back');
+        assert.match(postTask, /\| \/usr\/bin\/env -i "\$\{pi_sync_env\[@\]\}" \/usr\/bin\/python3 -I -B "\$pi_credentials_helper" sync-from-stdin/);
+        assert.match(script, /^pi_sync_env=\("PATH=\$POST_TASK_PATH"\)$/m);
+        assert.match(script, /if \[ "\$EUID" != "0" \] && \[ -n "\$\{PROPR_PI_LOCK_WAIT_SECONDS:-\}" \]; then/, 'only unprivileged runs may shorten the lock wait');
+        assert.match(script, /restrict_goal_session_files\(\) \{\n\s+run_post_task_as_node \/usr\/bin\/find "\$pi_goal_session_dir" -mindepth 1 ! -type l -exec \/bin\/chmod -- u\+rwX,go-rwx \{\} \+\n\}/);
+        assert.match(script, /restrict_goal_sessions_after_task\(\) \{\n[^}]*restrict_goal_session_files\n\}/);
+        // The goal store is never chowned, by root or anyone: a run killed
+        // before its epilogue leaves it with the worker, which restores the mode.
+        assert.doesNotMatch(script.slice(script.indexOf('pi_goal_session_opened=""'), script.indexOf('prepare_runtime_home() {')), /chown/);
+        assert.match(script, /exec 8<"\$pi_goal_session_dir\/" \|\| return\n\s+owner="\$\(\/usr\/bin\/stat -L -c %u -- \/proc\/self\/fd\/8\)"/);
+        assert.match(script, /\/bin\/chmod -- 0707 \/proc\/self\/fd\/8/);
+        assert.match(script, /close_goal_session_store\(\) \{\n[^}]*\/usr\/bin\/env -i \/bin\/chmod -- 0700 \/proc\/self\/fd\/8\n\}/);
+        assert.ok(lines.indexOf('exec 8<&-') > lines.findIndex(line => line.startsWith('close_goal_session_store')), 'the pinned store is closed after its mode is restored');
         // No node process ever inherits the pinned store descriptor.
         for (const fn of ['run_as_node', 'exec_as_node', 'run_post_task_as_node']) {
             const body = script.slice(script.indexOf(`${fn}() {`), script.indexOf('\n}\n', script.indexOf(`${fn}() {`)));

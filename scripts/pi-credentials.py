@@ -12,7 +12,13 @@ accepts nothing but a JSON object. The write-back target must be a regular
 file (never a symlink); it is replaced through a temporary file in the same
 directory carrying the original owner, group and mode.
 
+`import` copies one allowlisted file from the pinned host Pi dir (fd 9) into
+the disposable agent dir: the source name is a plain file name opened with
+O_NOFOLLOW under the pinned directory, must be a regular file of bounded size,
+and the copy is created new (O_EXCL, O_NOFOLLOW) and owner-only.
+
 Usage:
+    pi-credentials.py import <file name> <runtime destination>
     pi-credentials.py seed <runtime auth.json> <snapshot>
     pi-credentials.py sync <host auth.json> <runtime auth.json> <snapshot>
     pi-credentials.py sync-from-stdin <host auth.json> <pinned target filename>
@@ -36,6 +42,13 @@ LOCK_WAIT_SECONDS = 30
 LOCK_RETRY_SECONDS = 0.1
 # auth.json holds a handful of provider entries; anything larger is not one.
 MAX_AUTH_BYTES = 1024 * 1024
+
+
+# Imported settings and context files (AGENTS.md, SYSTEM.md, ...).
+MAX_IMPORT_BYTES = 8 * 1024 * 1024
+PINNED_SOURCE_DIR = "/proc/self/fd/9"
+IMPORTABLE_FILES = {"auth.json", "settings.json", "models.json", "AGENTS.md", "SYSTEM.md", "APPEND_SYSTEM.md"}
+IMPORT_OK, IMPORT_MISSING, IMPORT_REFUSED = 0, 2, 3
 
 
 # A stdin record is one line of ASCII-escaped JSON: up to 6 bytes per byte.
@@ -107,6 +120,16 @@ def write_private(path, content, original=None):
         Path(temporary).unlink(missing_ok=True)
 
 
+def lock_wait_seconds():
+    """The lock wait bound. The root entrypoint runs this helper with an empty
+    environment, so only unprivileged test runs can shorten it."""
+    try:
+        value = float(os.environ.get("PROPR_PI_LOCK_WAIT_SECONDS", ""))
+    except ValueError:
+        return LOCK_WAIT_SECONDS
+    return value if 0 < value <= LOCK_WAIT_SECONDS else LOCK_WAIT_SECONDS
+
+
 class LockTimeout(Exception):
     pass
 
@@ -119,26 +142,39 @@ class AuthLock:
         self.path = auth_path.with_name(auth_path.name + ".lock")
 
     def __enter__(self):
-        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        # Every unsuccessful attempt, including a stale lock that cannot be
+        # removed (a nonempty or non-directory `.lock`, a dangling link),
+        # passes the deadline check: the wait is bounded whatever the lock is.
+        wait = lock_wait_seconds()
+        deadline = time.monotonic() + wait
         while True:
             try:
                 os.mkdir(self.path, 0o700)
                 return self
             except FileExistsError:
-                try:
-                    stale = time.time() - self.path.stat().st_mtime > LOCK_STALE_SECONDS
-                except FileNotFoundError:
-                    continue
-                if stale:
-                    try:
-                        os.rmdir(self.path)
-                    except OSError as error:
-                        if error.errno not in (errno.ENOENT, errno.ENOTEMPTY):
-                            raise
+                pass
+            if self._remove_if_stale():
+                # Retry at once, but never past the deadline.
+                if time.monotonic() < deadline:
                     continue
             if time.monotonic() >= deadline:
-                raise LockTimeout(f"{self.path} is held by another process")
+                raise LockTimeout(f"{self.path} is held by another process or could not be removed after {wait:g}s")
             time.sleep(LOCK_RETRY_SECONDS)
+
+    def _remove_if_stale(self):
+        """True when a stale lock was removed; an unremovable one is left intact."""
+        try:
+            stale = time.time() - os.lstat(self.path).st_mtime > LOCK_STALE_SECONDS
+        except OSError:
+            # Gone since mkdir (retry), or not inspectable: wait like contention.
+            return False
+        if not stale:
+            return False
+        try:
+            os.rmdir(self.path)
+        except OSError:
+            return False
+        return True
 
     def __exit__(self, *exc):
         try:
@@ -210,7 +246,50 @@ def write_refreshes(host_auth, seeded, runtime, source=None):
     return written
 
 
+def import_file(name, destination):
+    """Copy an allowlisted regular file from the pinned source dir; returns an IMPORT_* code."""
+    if name not in IMPORTABLE_FILES:
+        print(f"Warning: refusing to import Pi {name!r}: not an importable file", file=sys.stderr)
+        return IMPORT_REFUSED
+    try:
+        fd = os.open(os.path.join(PINNED_SOURCE_DIR, name), os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NOCTTY)
+    except FileNotFoundError:
+        return IMPORT_MISSING
+    except OSError as error:
+        reason = "it is a symlink; replace it with the file itself" if error.errno == errno.ELOOP else error.strerror
+        print(f"Warning: not importing Pi {name}: {reason}", file=sys.stderr)
+        return IMPORT_REFUSED
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            print(f"Warning: not importing Pi {name}: not a regular file", file=sys.stderr)
+            return IMPORT_REFUSED
+        chunks, remaining = [], MAX_IMPORT_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    finally:
+        os.close(fd)
+    content = b"".join(chunks)
+    if len(content) > MAX_IMPORT_BYTES:
+        print(f"Warning: not importing Pi {name}: larger than {MAX_IMPORT_BYTES} bytes", file=sys.stderr)
+        return IMPORT_REFUSED
+    out = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        view = memoryview(content)
+        while view:
+            view = view[os.write(out, view):]
+    finally:
+        os.close(out)
+    return IMPORT_OK
+
+
 def main(argv):
+    if len(argv) == 3 and argv[0] == "import":
+        return import_file(argv[1], argv[2])
     if len(argv) == 3 and argv[0] == "seed":
         seed(argv[1], argv[2])
         return 0
@@ -228,7 +307,7 @@ def main(argv):
                 host_auth = Path("/proc/self/fd/9") / Path(argv[2]).name
                 written = write_refreshes(host_auth, seeded, runtime, source=argv[1])
         except LockTimeout as error:
-            print(f"Not writing Pi credential refreshes back: {error}", file=sys.stderr)
+            print(f"Warning: skipping the Pi credential write-back, the host auth.json keeps its previous login: {error}", file=sys.stderr)
             return 3
         if written:
             print(f"Wrote refreshed Pi OAuth credentials back for: {', '.join(sorted(written))}", file=sys.stderr)

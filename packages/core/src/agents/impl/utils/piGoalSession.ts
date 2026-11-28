@@ -10,10 +10,13 @@ import { randomUUID } from 'crypto';
  */
 export const PI_CONTAINER_GOAL_SESSION_DIR = '/home/node/.propr-pi-goal-session';
 /**
- * pi-entrypoint.sh makes this mounted directory owner-only before and after the
- * run. It hands the directory itself back to its owner (the worker, whatever
- * its UID) after the run; the session files in it stay owned by the
- * container's node user, so the worker lists and deletes them but never reads them.
+ * The mounted directory stays owned by the worker (whatever its UID); nothing
+ * chowns it. When the worker is not the container's node user, pi-entrypoint.sh
+ * opens it to node for the run (mode 0707) and returns it to 0700 afterwards.
+ * A run killed before that leaves it 0707, which {@link preparePiGoalSession}
+ * restores to 0700 as its owner before listing it. The session files in it are
+ * owned by node and owner-only, so the worker lists and deletes them but never
+ * reads them.
  */
 export const PI_GOAL_SESSION_DIR_ENV = 'PROPR_PI_GOAL_SESSION_DIR';
 const DEFAULT_PI_GOAL_SESSIONS_ROOT = path.join('/tmp/git-processor', 'pi-goal-sessions');
@@ -74,7 +77,10 @@ function sessionStoreAccessError(error: unknown, dir: string, action: string): u
     );
 }
 
-/** Creates the directory owner-only; an existing one is only chmodded when it is not owner-only already. */
+/**
+ * Creates the directory owner-only; an existing one is only chmodded when it is
+ * not owner-only already, e.g. a goal store a killed run left open to node.
+ */
 function ensureOwnerOnlyDir(dir: string): void {
     try {
         fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

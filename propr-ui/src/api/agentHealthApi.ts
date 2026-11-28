@@ -6,6 +6,12 @@ export interface AgentHealthResult {
   model?: string;
   error?: string;
   errorCode?: 'auth_required' | 'rate_limit' | 'unknown' | 'preparation_failed';
+  /** Provider credential status from the agent's no-refresh credential check (Pi). */
+  credentials?: {
+    status: 'ready' | 'not_ready' | 'invalid';
+    provider?: string;
+    reason?: string;
+  };
 }
 
 export function checkAgentHealth(agentId: string, configurationKey = agentId, fresh = false): Promise<AgentHealthResult> {

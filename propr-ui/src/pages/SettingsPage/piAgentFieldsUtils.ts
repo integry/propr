@@ -51,6 +51,23 @@ export function envVarsAfterTypeChange(
   return Object.fromEntries(Object.entries(agent.envVars ?? {}).filter(([name]) => !dropped.has(name)));
 }
 
+/**
+ * The env vars a new agent saves under its selected credential setup. Pi's
+ * provider keys are entered only for the API-key setup; with a login or an
+ * existing config dir they are hidden, and if saved they would still reach the
+ * container and override the selected credentials. Other variables stay, and
+ * keys typed earlier are kept in the form, so switching back restores them.
+ */
+export function envVarsForCredentialSetup(
+  agent: Pick<AgentConfig, 'type' | 'supportedModels' | 'defaultModel' | 'envVars'>,
+  credentialSetup: 'login' | 'existing' | 'apiKey',
+): Record<string, string> {
+  const envVars = agent.envVars ?? {};
+  if (agent.type !== 'pi' || credentialSetup === 'apiKey') return envVars;
+  const dropped = new Set(providerKeyEnvNames('pi', agent));
+  return Object.fromEntries(Object.entries(envVars).filter(([name]) => !dropped.has(name)));
+}
+
 /** Providers the agent's models use first, then the rest of the catalog. */
 export function piLoginProviderChoices(agent: Pick<AgentConfig, 'supportedModels' | 'defaultModel'>): string[] {
   const fromModels = getPiLoginProviders(agent.supportedModels, agent.defaultModel);

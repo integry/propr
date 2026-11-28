@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or a pasted redirect URL), or `--api-key`, and writes straight to
   `~/.propr/agent-credentials/<agent-id>/.pi/agent`. The health check runs
   `pi auth check --provider <p> --json --no-refresh` and reports ready,
-  not_ready or invalid without refreshing tokens. Managed diagnostics redact
+  not_ready or invalid (with the provider's reason) in the health response's
+  `credentials` field, without refreshing tokens. Managed diagnostics redact
   Pi's `auth.json` and inventory the host Pi dir. The MCP settings catalog lists
   `PI_CONFIG_PATH`, `PI_TIMEOUT_MS` and `HOST_PI_DIR`, and the agent runtime
   docs describe the disposable agent dir and the OAuth refresh write-back rules.

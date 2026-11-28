@@ -115,9 +115,9 @@ is_root() { [ "$EUID" = "0" ]; }
 # Pi and readers of its disposable credentials run as node.
 run_as_node() {
     if is_root; then
-        /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@" 8<&-
+        /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@" 8<&- 9<&-
     else
-        PATH="$pi_node_path" "$@" 8<&-
+        PATH="$pi_node_path" "$@" 8<&- 9<&-
     fi
 }
 
@@ -125,54 +125,77 @@ run_as_node() {
 # the task itself and signals sent to it reach Pi rather than a subshell.
 exec_as_node() {
     if is_root; then
-        exec /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@" 8<&-
+        exec /usr/local/bin/su-exec node /usr/bin/env HOME=/home/node USER=node LOGNAME=node PATH="$pi_node_path" "$@" 8<&- 9<&-
     else
         export PATH="$pi_node_path"
-        exec "$@" 8<&-
+        exec "$@" 8<&- 9<&-
     fi
 }
 
 # Fixed PATH for everything after the task returns. It never contains the
 # task-time PATH (which starts with /home/node/bin) or any node-owned dir.
 POST_TASK_PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# The write-back runs with an empty environment. Unprivileged test runs may
+# shorten its credential-lock wait (never longer than the built-in 30 s).
+pi_sync_env=("PATH=$POST_TASK_PATH")
+if [ "$EUID" != "0" ] && [ -n "${PROPR_PI_LOCK_WAIT_SECONDS:-}" ]; then
+    pi_sync_env+=("PROPR_PI_LOCK_WAIT_SECONDS=$PROPR_PI_LOCK_WAIT_SECONDS")
+fi
 
 # Post-task commands that only need node's rights (reading the disposable
 # auth.json, restricting goal sessions) drop to node with a clean environment
 # and the fixed PATH, so neither the task's PATH nor its environment applies.
 run_post_task_as_node() {
     if is_root; then
-        /usr/local/bin/su-exec node /usr/bin/env -i HOME=/nonexistent PATH="$POST_TASK_PATH" "$@" 8<&-
+        /usr/local/bin/su-exec node /usr/bin/env -i HOME=/nonexistent PATH="$POST_TASK_PATH" "$@" 8<&- 9<&-
     else
-        /usr/bin/env -i PATH="$POST_TASK_PATH" "$@" 8<&-
+        /usr/bin/env -i PATH="$POST_TASK_PATH" "$@" 8<&- 9<&-
     fi
 }
 
-# Session files hold the whole goal conversation: owner-only (node), before Pi
-# writes and after it exits, whatever modes Pi created them with. Before the
-# run root claims the store (an earlier run or the host may have left other
-# owners); afterwards everything in it was created by the node task, so node
-# itself restricts it and root never walks a tree the task just wrote.
+# Session files hold the whole goal conversation: owner-only (node, 0600),
+# before Pi writes and after it exits, whatever modes Pi created them with.
+# They are restricted by node, their owner, so root never walks a tree a task
+# wrote.
 #
-# The store itself belongs to the ProPR worker, whatever its UID: the worker
-# lists the saved sessions at the next boundary and deletes the store with the
-# goal. So root records the store's owner and pins the directory (fd 8, never
-# passed to a node process) before claiming it for the run, and afterwards
-# hands back only that directory, through the pinned descriptor, so a path the
-# task swapped cannot redirect it. The session files inside stay node's.
-pi_goal_session_owner=""
+# The store directory itself always stays owned by the ProPR worker, whatever
+# its UID: the worker lists the saved sessions at the next boundary and deletes
+# the store with the goal, and a container stopped with SIGKILL runs no
+# epilogue that could hand it back. So nothing ever chowns it. When the worker
+# is not node, root pins the directory (fd 8, never passed to a node process)
+# and opens it to node for the run through its "other" bits (0707), then
+# returns it to 0700 through the pinned descriptor. A run killed before that
+# leaves a worker-owned 0707 directory, which preparePiGoalSession chmods back
+# to 0700 at the next boundary, before it lists or deletes anything. The other
+# bits widen no host access: the per-goal dir sits in the worker's owner-only
+# sessions root, and inside the container only node runs besides root.
+pi_goal_session_opened=""
+restrict_goal_session_files() {
+    run_post_task_as_node /usr/bin/find "$pi_goal_session_dir" -mindepth 1 ! -type l -exec /bin/chmod -- u+rwX,go-rwx {} +
+}
+
 restrict_goal_sessions_before_task() {
     [ -n "$pi_goal_session_dir" ] || return 0
+    local owner node_uid
     if is_root; then
         exec 8<"$pi_goal_session_dir/" || return
-        pi_goal_session_owner="$(/usr/bin/stat -L -c %u:%g -- /proc/self/fd/8)" || return
-        /usr/bin/env -i /bin/chown -hR -- node:node "$pi_goal_session_dir" || return
+        owner="$(/usr/bin/stat -L -c %u -- /proc/self/fd/8)" || return
+        node_uid="$(/usr/bin/id -u node)" || return
+        if [ "$owner" = "$node_uid" ]; then
+            /bin/chmod -- 0700 /proc/self/fd/8 || return
+        else
+            /bin/chmod -- 0707 /proc/self/fd/8 || return
+            pi_goal_session_opened=1
+        fi
+    else
+        /bin/chmod -- 0700 "$pi_goal_session_dir" || return
     fi
-    /usr/bin/env -i /bin/chmod -R -- u+rwX,go-rwx "$pi_goal_session_dir"
+    restrict_goal_session_files || echo "Warning: could not restrict every saved Pi goal session file to owner-only" >&2
 }
 
 restrict_goal_sessions_after_task() {
     [ -n "$pi_goal_session_dir" ] || return 0
-    run_post_task_as_node /bin/chmod -R -- u+rwX,go-rwx "$pi_goal_session_dir"
+    restrict_goal_session_files
 }
 
 prepare_goal_sessions() {
@@ -185,15 +208,15 @@ prepare_goal_sessions() {
     echo "Using persisted Pi goal sessions at $pi_goal_session_dir" >&2
 }
 
-# Non-recursive, through the descriptor pinned before the task: only the store
-# directory returns to the worker, never anything the task created in it.
-restore_goal_session_owner() {
-    [ -n "$pi_goal_session_owner" ] || return 0
-    /usr/bin/env -i /bin/chown -- "$pi_goal_session_owner" /proc/self/fd/8
+# Non-recursive, through the descriptor pinned before the task: only the
+# store directory's own mode changes, never anything the task created in it.
+close_goal_session_store() {
+    [ -n "$pi_goal_session_opened" ] || return 0
+    /usr/bin/env -i /bin/chmod -- 0700 /proc/self/fd/8
 }
 
 prepare_runtime_home() {
-    local file import_path
+    local file import_status
     # Repository setup may already have run as node. Claim the standard home
     # before copying anything so setup cannot redirect privileged writes.
     if is_root && [ "$pi_runtime_home" = /tmp/propr-pi-home ]; then
@@ -208,32 +231,26 @@ prepare_runtime_home() {
 
     if [ -d "$pi_source_dir" ]; then
         echo "Pi agent directory mounted at $pi_source_dir" >&2
-        for file in "${pi_imported_files[@]}"; do
-            import_path="$pi_source_dir/$file"
-            [ -f "$import_path" ] || continue
-            if [ "$file" = auth.json ]; then
-                # Pin the source directory before importing auth.json so the
-                # privileged writer can only access the original destination.
-                # A symlinked auth.json is imported but never written back.
-                pi_host_auth="$(/usr/bin/realpath -m -- "$pi_source_auth")"
-                if [ "$pi_source_dir" = "$pi_protected_source" ] && [[ "$pi_host_auth" != "$pi_protected_source/"* ]]; then
-                    pi_host_auth=""
-                    echo "Warning: skipping Pi auth.json that resolves outside the credential source" >&2
-                    continue
-                fi
-                if [ -L "$pi_source_auth" ]; then
-                    echo "Warning: Pi auth.json is a symlink; refreshed credentials will not be written back, so the host login goes stale once Pi rotates its refresh token. Replace the symlink with the file itself" >&2
-                    pi_host_auth=""
-                elif { exec 9<"${pi_host_auth%/*}/"; }; then
-                    import_path="/proc/self/fd/9/${pi_host_auth##*/}"
-                else
-                    pi_host_auth=""
-                    echo "Warning: could not open the Pi host credential directory for write-back" >&2
-                fi
-            fi
-            (umask 077 && /bin/cp -L -- "$import_path" "$pi_agent_dir/$file") \
-                || echo "Warning: could not import Pi $file" >&2
-        done
+        # Pin the source directory (fd 9, never passed to a node process).
+        # Every import, like the write-back, opens a plain file name under this
+        # descriptor with O_NOFOLLOW through the image's helper, run with the
+        # fixed PATH and an empty environment, and copies only regular files:
+        # no symlink in the host dir can make root read (or later write)
+        # anything outside it, and nothing task-writable is executed.
+        if { exec 9<"$pi_source_dir/"; }; then
+            for file in "${pi_imported_files[@]}"; do
+                import_status=0
+                /usr/bin/env -i PATH="$POST_TASK_PATH" /usr/bin/python3 -I -B "$pi_credentials_helper" import "$file" "$pi_agent_dir/$file" \
+                    || import_status=$?
+                case "$import_status" in
+                    0) if [ "$file" = auth.json ]; then pi_host_auth=auth.json; fi ;;
+                    2|3) ;;  # missing, or refused with the helper's own warning
+                    *) echo "Warning: could not import Pi $file" >&2 ;;
+                esac
+            done
+        else
+            echo "Warning: could not open the Pi host agent directory; nothing imported" >&2
+        fi
     else
         echo "WARNING: Pi agent directory not mounted at $pi_source_dir" >&2
     fi
@@ -403,13 +420,13 @@ if [ -n "$pi_seeded_auth" ]; then
     {
         printf '%s\n' "$pi_seeded_auth"
         run_post_task_as_node /usr/bin/python3 -I -B "$pi_credentials_helper" seed "$pi_agent_dir/auth.json" - 9<&-
-    } | /usr/bin/env -i PATH="$POST_TASK_PATH" /usr/bin/python3 -I -B "$pi_credentials_helper" sync-from-stdin "$pi_source_auth" "${pi_host_auth##*/}" \
-        || echo "Warning: could not write refreshed Pi credentials back to the host" >&2
+    } | /usr/bin/env -i "${pi_sync_env[@]}" /usr/bin/python3 -I -B "$pi_credentials_helper" sync-from-stdin "$pi_source_auth" "${pi_host_auth##*/}" \
+        || echo "Warning: could not write refreshed Pi credentials back to the host; the task's exit status is kept" >&2
 fi
 exec 9<&-
 
 restrict_goal_sessions_after_task || echo "Warning: could not restrict Pi goal session permissions" >&2
-restore_goal_session_owner || echo "Warning: could not return the Pi goal session dir to its owner; the worker may not resume or delete it" >&2
+close_goal_session_store || echo "Warning: could not return the Pi goal session dir to owner-only; the worker restores it at the next boundary" >&2
 exec 8<&-
 
 exit "$command_status"

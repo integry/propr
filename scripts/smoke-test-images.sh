@@ -395,7 +395,11 @@ for pi_source_uid in 1000 1001; do
     -v "$pi_source:/root/propr-pi-source:rw" \
     -e PROPR_PI_GOAL_SESSION_DIR=/tmp/goal-sessions \
     --entrypoint sh "$AGENT_TAG" -ec '
+    # The goal store belongs to the worker (here the source UID). A worker
+    # other than node gets it opened to node for the run only, never chowned.
     mkdir -m 0755 /tmp/goal-sessions
+    chown "$1:$1" /tmp/goal-sessions
+    if [ "$1" = 1000 ]; then goal_mode=700; else goal_mode=707; fi
     printf "%s" "{\"anthropic\":{\"type\":\"oauth\",\"access\":\"new-a\",\"refresh\":\"new-r\",\"expires\":2}}" > /tmp/propr-pi-refreshed.json
     chmod 644 /tmp/propr-pi-refreshed.json
     /opt/propr/pi-entrypoint.sh sh -ec "
@@ -407,7 +411,7 @@ for pi_source_uid in 1000 1001; do
       ! touch /root/propr-pi-source/planted 2>/dev/null
       ! ls -d /root/propr-pi-source/* >/dev/null 2>&1
       test ! -e /proc/self/fd/9
-      test \"\$(stat -c %a /tmp/goal-sessions)\" = 700
+      test \"\$(stat -c %a /tmp/goal-sessions)\" = $goal_mode
       (umask 022 && printf %s {} > /tmp/goal-sessions/session.jsonl)
       cat /tmp/propr-pi-refreshed.json > \"\$PI_CODING_AGENT_DIR/auth.json\"
       # /home/node is node-owned: replace its bin dir wholesale with fakes
@@ -423,6 +427,7 @@ for pi_source_uid in 1000 1001; do
     test ! -e /tmp/propr-fake-bin-ran
     test ! -e /root/propr-pi-source/planted
     test "$(stat -c "%u:%g:%a" /tmp/goal-sessions/session.jsonl)" = "1000:1000:600"
+    test "$(stat -c "%u:%g:%a" /tmp/goal-sessions)" = "$1:$1:700"
     grep -q "\"refresh\": \"new-r\"" /root/propr-pi-source/auth.json
     test "$(stat -c "%u:%g:%a" /root/propr-pi-source/auth.json)" = "$1:1002:600"
     test "$(stat -c "%u:%g:%a" /root/propr-pi-source)" = "$1:$1:700"

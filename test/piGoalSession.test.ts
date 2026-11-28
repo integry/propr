@@ -231,6 +231,25 @@ describe('Pi goal session store', () => {
         assert.equal(fs.existsSync(hostDir), false);
     });
 
+    // A container killed with SIGKILL runs no epilogue: the entrypoint opened
+    // the worker's store to node (0707) and never restored it. Nothing chowned
+    // it, so the worker still owns it, and the next prepare restores it.
+    test('a store a killed run left open to node is restored to owner-only, resumed and deleted by the worker', async () => {
+        const hostDir = piGoalSessionDir('goal-killed');
+        fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+        const saved = path.join(hostDir, '2026-11-28T11-00-00-000Z_session-k.jsonl');
+        fs.writeFileSync(saved, '{}\n', { mode: 0o600 });
+        fs.chmodSync(saved, 0o000);
+        fs.chmodSync(hostDir, 0o707);
+        const session = preparePiGoalSession('goal-killed', 'session-k');
+        assert.equal(session.resumeFile, path.basename(saved));
+        assert.equal(fs.statSync(hostDir).mode & 0o777, 0o700, 'owner-only again before Pi runs');
+        assert.equal(fs.statSync(hostDir).uid, process.getuid?.(), 'still the worker’s');
+        fs.chmodSync(hostDir, 0o707);
+        await removePiGoalSessions('goal-killed');
+        assert.equal(fs.existsSync(hostDir), false);
+    });
+
     test('a store the worker does not own fails with a clear permission error', async () => {
         const hostDir = piGoalSessionDir('goal-foreign');
         fs.mkdirSync(hostDir, { recursive: true, mode: 0o700 });

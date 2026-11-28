@@ -83,6 +83,42 @@ describe('AgentConfigModal for Pi', () => {
     expect(options).toEqual({ loginAfterSave: false });
   });
 
+  for (const [method, configPath] of [
+    ['Log in to a new account', 'managed'],
+    ['Use existing config', '~/.pi/agent'],
+  ] as const) {
+    it(`a key typed for API-key setup is not saved after switching to "${method}"`, () => {
+      const onSave = vi.fn();
+      render(<AgentConfigModal agent={null} existingAliases={[]} onClose={vi.fn()} onSave={onSave} />);
+      fireEvent.click(screen.getByRole('button', { name: 'pi' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Use API keys' }));
+      fireEvent.change(screen.getByLabelText(/^ANTHROPIC_API_KEY/), { target: { value: 'sk-ant-hidden' } });
+
+      fireEvent.click(screen.getByRole('button', { name: method }));
+      expect(screen.queryByLabelText(/^ANTHROPIC_API_KEY/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /^Add Agent/ }));
+
+      expect(onSave).toHaveBeenCalledTimes(1);
+      const [saved, options] = onSave.mock.calls[0];
+      expect(saved.envVars ?? {}).toEqual({});
+      expect(saved.configPath).toBe(configPath === 'managed' ? getManagedAgentConfigPath(saved.id, 'pi') : configPath);
+      expect(options).toEqual({ loginAfterSave: method === 'Log in to a new account' });
+    });
+  }
+
+  it('switching back to API keys keeps the typed key and saves it', () => {
+    const onSave = vi.fn();
+    render(<AgentConfigModal agent={null} existingAliases={[]} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(screen.getByRole('button', { name: 'pi' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use API keys' }));
+    fireEvent.change(screen.getByLabelText(/^ANTHROPIC_API_KEY/), { target: { value: 'sk-ant-kept' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Use existing config' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use API keys' }));
+    expect(screen.getByLabelText(/^ANTHROPIC_API_KEY/)).toHaveValue('sk-ant-kept');
+    fireEvent.click(screen.getByRole('button', { name: 'Add Agent' }));
+    expect(onSave.mock.calls[0][0].envVars).toEqual({ ANTHROPIC_API_KEY: 'sk-ant-kept' });
+  });
+
   it('drops the API-key option when switching to an agent without it', () => {
     render(<AgentConfigModal agent={null} existingAliases={[]} onClose={vi.fn()} onSave={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'pi' }));

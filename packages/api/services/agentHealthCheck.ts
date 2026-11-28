@@ -26,6 +26,28 @@ export interface AgentHealthResult {
   model?: string;
   error?: string;
   errorCode?: 'auth_required' | 'rate_limit' | 'unknown' | 'preparation_failed';
+  /**
+   * The provider credential status from an agent's own credential check (Pi:
+   * `pi auth check --no-refresh`), kept typed so callers can tell a missing
+   * login (`not_ready`) from an unusable one (`invalid`) without parsing
+   * `error`. Absent for agents checked with a prompt.
+   */
+  credentials?: AgentHealthCredentials;
+}
+
+export interface AgentHealthCredentials {
+  status: AgentCredentialCheckResult['status'];
+  provider?: string;
+  /** Provider-reported reason code, e.g. `credentials_not_configured`. */
+  reason?: string;
+}
+
+function healthCredentials(credentials: AgentCredentialCheckResult): AgentHealthCredentials {
+  return {
+    status: credentials.status,
+    ...(credentials.provider ? { provider: credentials.provider } : {}),
+    ...(credentials.reason ? { reason: credentials.reason } : {}),
+  };
 }
 
 function healthErrorCode(error: unknown): NonNullable<AgentHealthResult['errorCode']> {
@@ -38,9 +60,9 @@ function healthErrorCode(error: unknown): NonNullable<AgentHealthResult['errorCo
 }
 
 function credentialCheckResult(agentId: string, model: string, credentials: AgentCredentialCheckResult): AgentHealthResult {
-  if (credentials.status === 'ready') return { agentId, model, status: 'ready' };
+  if (credentials.status === 'ready') return { agentId, model, status: 'ready', credentials: healthCredentials(credentials) };
   return {
-    agentId, model, status: 'error',
+    agentId, model, status: 'error', credentials: healthCredentials(credentials),
     errorCode: credentials.reason === 'provider_not_found' ? 'unknown' : 'auth_required',
     error: redactSecrets(credentials.message || `Credentials are ${credentials.status === 'invalid' ? 'invalid' : 'not configured'}.`).slice(0, 2000),
   };

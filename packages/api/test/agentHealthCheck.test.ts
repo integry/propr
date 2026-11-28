@@ -199,15 +199,24 @@ test('Pi checks the default model provider without running a prompt', async () =
       checkCredentials: async (model: string) => { checkedModels.push(model); return outcomes[checkedModels.length - 1]; },
     }),
   });
-  assert.deepEqual(await check('pi'), { agentId: 'pi', model: pi.defaultModel, status: 'ready' });
-  const notReady = await check('pi', true);
-  assert.equal(notReady?.status, 'error');
-  assert.equal(notReady?.errorCode, 'auth_required');
-  assert.match(notReady?.error ?? '', /no credentials for openrouter/);
-  const invalid = await check('pi', true);
-  assert.equal(invalid?.errorCode, 'auth_required');
-  assert.match(invalid?.error ?? '', /invalid/);
-  assert.equal((await check('pi', true))?.errorCode, 'unknown', 'an unknown provider is not a login problem');
+  // The response is what the route serializes: assert it after a JSON round trip.
+  const response = async (fresh: boolean) => JSON.parse(JSON.stringify(await check('pi', fresh)));
+  assert.deepEqual(await response(false), {
+    agentId: 'pi', model: pi.defaultModel, status: 'ready', credentials: { status: 'ready', provider: 'openrouter' },
+  });
+  const notReady = await response(true);
+  assert.equal(notReady.status, 'error', 'the generic health status is unchanged');
+  assert.equal(notReady.errorCode, 'auth_required');
+  assert.deepEqual(notReady.credentials, { status: 'not_ready', provider: 'openrouter', reason: 'credentials_not_configured' });
+  assert.match(notReady.error ?? '', /no credentials for openrouter/);
+  const invalid = await response(true);
+  assert.equal(invalid.status, 'error');
+  assert.equal(invalid.errorCode, 'auth_required');
+  assert.deepEqual(invalid.credentials, { status: 'invalid', provider: 'openrouter', reason: 'invalid_state' }, 'an unusable login is told apart from a missing one');
+  assert.match(invalid.error ?? '', /invalid/);
+  const unknownProvider = await response(true);
+  assert.equal(unknownProvider.errorCode, 'unknown', 'an unknown provider is not a login problem');
+  assert.deepEqual(unknownProvider.credentials, { status: 'not_ready', provider: 'openrouter', reason: 'provider_not_found' });
   assert.deepEqual(checkedModels, Array(4).fill(pi.defaultModel));
   assert.equal(agentHealthModel({ ...pi, defaultModel: undefined }), pi.supportedModels[0]);
   assert.equal(agentHealthModel({ ...pi, defaultModel: undefined, supportedModels: [] }), undefined);
@@ -239,6 +248,7 @@ test('Pi rechecks readiness when the default provider changes during the credent
   finish();
   assert.deepEqual(await pending, {
     agentId: 'pi', model: openrouter, status: 'error', errorCode: 'auth_required', error: 'Credentials are not configured.',
+    credentials: { status: 'not_ready', provider: 'openrouter' },
   });
   assert.deepEqual(checkedModels, [anthropic, openrouter]);
 });

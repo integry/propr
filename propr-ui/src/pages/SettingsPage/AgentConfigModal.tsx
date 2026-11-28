@@ -25,7 +25,7 @@ import AgentTypeSelector from './AgentTypeSelector';
 import CliVersionSelector from './CliVersionSelector';
 import ModelSelector from './ModelSelector';
 import PiAgentFields from './PiAgentFields';
-import { envVarsAfterTypeChange } from './piAgentFieldsUtils';
+import { envVarsAfterTypeChange, envVarsForCredentialSetup } from './piAgentFieldsUtils';
 import { buildSelectableModels } from './modelSelectionHelpers';
 
 interface AgentConfigModalProps {
@@ -231,7 +231,11 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       return;
     }
 
-    const agentToSave = buildAgentConfig(formData);
+    // A new agent saves only the credentials of the setup it selected; an
+    // edited agent shows (and keeps) its keys whatever the setup.
+    const agentToSave = buildAgentConfig(isEditing
+      ? formData
+      : { ...formData, envVars: envVarsForCredentialSetup(formData, credentialSetup) });
 
     onSave(agentToSave, {
       loginAfterSave: shouldLoginAfterSave(
