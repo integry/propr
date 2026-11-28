@@ -159,14 +159,17 @@ describe('privileged-post-task.sh', () => {
             // socket, which Node's default stdin pipe is.
             fs.writeFileSync(path.join(dir, 'bash-env'), ':\n');
             const script = [
-                // The helper path arrives as $1 so no path text is spliced into the script.
+                // The helper path arrives as $1, and bash runs the script from a file rather
+                // than `-c`, so no path is spliced into a shell command string.
                 '. "$1"',
                 'shift',
                 'shell_only=kept',
                 'step() { printf "%s|%s|" "$shell_only" "$PWD"; /usr/bin/env | /usr/bin/sort | /usr/bin/tr "\\n" " "; }',
                 'run_privileged_post_task WANTED=yes step',
             ].join('\n');
-            const result = spawnSync('/bin/bash', ['-c', script, 'privileged-post-task-test', HELPER], {
+            const scriptPath = path.join(dir, 'privileged-post-task-test.sh');
+            fs.writeFileSync(scriptPath, `${script}\n`);
+            const result = spawnSync('/bin/bash', [scriptPath, HELPER], {
                 env: { PATH: `${dir}:/usr/bin:/bin`, SECRET_TOKEN: 'leak', BASH_ENV: path.join(dir, 'bash-env'), LD_PRELOAD: 'nope' }, encoding: 'utf8', cwd: dir, stdio: ['ignore', 'pipe', 'pipe'],
             });
             assert.equal(result.status, 0, result.stderr);
