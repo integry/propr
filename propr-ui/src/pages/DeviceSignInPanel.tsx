@@ -42,6 +42,8 @@ const DeviceSignInPanel: React.FC<DeviceSignInPanelProps> = ({ onSignedIn }) => 
   const pollTimer = useRef<number | null>(null);
   const copiedTimer = useRef<number | null>(null);
   const generation = useRef(0);
+  /** A cancel still on its way to the API; a retry waits for it before starting. */
+  const pendingCancel = useRef<Promise<void> | null>(null);
 
   const clearPoll = useCallback(() => {
     if (pollTimer.current !== null) window.clearTimeout(pollTimer.current);
@@ -92,6 +94,8 @@ const DeviceSignInPanel: React.FC<DeviceSignInPanelProps> = ({ onSignedIn }) => 
     setState({ kind: 'starting' });
     const current = generation.current;
     try {
+      await pendingCancel.current;
+      if (generation.current !== current) return;
       const start = await startDeviceSignIn();
       if (generation.current !== current) return;
       setState({ kind: 'code', start });
@@ -105,11 +109,15 @@ const DeviceSignInPanel: React.FC<DeviceSignInPanelProps> = ({ onSignedIn }) => 
     }
   }, [clearPoll, schedulePoll]);
 
-  const cancel = useCallback(() => {
+  const cancel = useCallback((attempt: string) => {
     generation.current += 1;
     clearPoll();
     setState({ kind: 'idle' });
-    void cancelDeviceSignIn();
+    const request = cancelDeviceSignIn(attempt);
+    pendingCancel.current = request;
+    void request.finally(() => {
+      if (pendingCancel.current === request) pendingCancel.current = null;
+    });
   }, [clearPoll]);
 
   const copyCode = useCallback(async (code: string) => {
@@ -164,7 +172,7 @@ const DeviceSignInPanel: React.FC<DeviceSignInPanelProps> = ({ onSignedIn }) => 
         </p>
         <button
           type="button"
-          onClick={cancel}
+          onClick={() => cancel(start.attempt)}
           className="mt-4 text-sm text-gray-500 hover:text-gray-700 hover:underline dark:text-gray-400 dark:hover:text-gray-200"
         >
           Cancel

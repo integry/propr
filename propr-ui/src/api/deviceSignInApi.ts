@@ -77,6 +77,7 @@ export const pollDeviceSignIn = async (attempt: string): Promise<DeviceSignInPol
   return { status: 'failed', error: failure.code, message: failure.message };
 };
 
-export const cancelDeviceSignIn = async (): Promise<void> => {
-  await postJson('/api/auth/device/cancel', {}).catch(() => undefined);
+/** Cancel the attempt this page shows; the API ignores it once a newer attempt has replaced it. */
+export const cancelDeviceSignIn = async (attempt: string): Promise<void> => {
+  await postJson('/api/auth/device/cancel', { attempt }).catch(() => undefined);
 };

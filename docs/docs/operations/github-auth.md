@@ -385,7 +385,9 @@ also `GH_INSTALLATION_ID` (which `propr relay enroll` writes).
 
 Cancelling, or starting again, revokes the attempt at once. A poll that was
 already waiting on GitHub then neither signs the browser in nor brings the
-attempt back.
+attempt back. Cancel names the attempt the page shows. If that attempt has
+already been replaced, for example by a sign-in started in another tab, the
+cancel does nothing and the newer attempt continues.
 
 **Tokens.** The user token is stored like a Connect sign-in: the same
 session and the same durable grant (encrypted at rest, `source: connect`) for

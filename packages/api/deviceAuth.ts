@@ -15,7 +15,9 @@
  * error) only if that id is still the session's latest start, so an older
  * start that GitHub answers late cannot displace a newer one.
  *
- * Cancelling or replacing an attempt revokes it. A poll answers only after
+ * Cancelling or replacing an attempt revokes it. A cancel names the attempt
+ * it cancels and is a no-op unless that attempt is still the active one, so
+ * a tab showing a replaced attempt cannot revoke the newer one. A poll answers only after
  * GitHub (and the profile and installation checks) have been awaited, so it
  * re-reads the stored session and the revocations after every await and writes
  * or signs in only while its attempt is still the active one. A stale request
@@ -38,6 +40,7 @@ import {
 } from '@propr/shared';
 import type { GitHubUser } from './authTypes.js';
 import {
+    cancelAttempt,
     currentAttempt,
     endAttempt,
     ownsStart,
@@ -447,14 +450,11 @@ export function createDeviceCancelHandler(deps: Pick<DeviceSignInDependencies, '
     return async (req, res) => {
         noStore(res);
         if (!requiresJson(req, res)) return;
-        const session = req.session as DeviceAuthSession;
-        if (session.deviceLogin || session.deviceLoginStart) {
-            // Revoked first: a poll already waiting on GitHub, or a start
-            // still waiting for its code, must not sign in or write an
-            // attempt back, whatever happens to this save.
-            revokeSessionAttempts(session, deps.now());
-            await saveSession(req).catch(() => undefined);
-        }
+        // Only the attempt the browser names is cancelled. Cancelling one
+        // that was already replaced or ended is a no-op, so a stale tab or a
+        // late cancel cannot revoke a newer attempt in the same session.
+        const requested = typeof req.body?.attempt === 'string' ? req.body.attempt : '';
+        await cancelAttempt(req, requested, deps.now());
         res.json({ status: 'cancelled' });
     };
 }

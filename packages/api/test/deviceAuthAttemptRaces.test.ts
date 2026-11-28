@@ -32,7 +32,7 @@ async function pollAcross(
   harness: Harness,
   browser: Browser,
   held: { answer: TokenAnswer; stage: 'tokenPoll' | 'installations' },
-  interrupt: () => Promise<unknown>,
+  interrupt: (attempt: unknown) => Promise<unknown>,
 ) {
   const { answer, stage } = held;
   const start = await browser.post('/api/auth/device/start');
@@ -46,7 +46,7 @@ async function pollAcross(
     : () => harness.github.calls.some(call => call.url.includes('/user/installations'));
   const poll = browser.post('/api/auth/device/poll', { attempt });
   await until(reached);
-  await interrupt();
+  await interrupt(attempt);
   gate.release();
   return { attempt, poll: await poll };
 }
@@ -60,8 +60,8 @@ for (const [label, answer, stage] of [
     const harness = await startHarness();
     const browser = new Browser(harness.origin);
     try {
-      const { attempt, poll } = await pollAcross(harness, browser, { answer, stage }, async () => {
-        assert.deepEqual((await browser.post('/api/auth/device/cancel')).body, { status: 'cancelled' });
+      const { attempt, poll } = await pollAcross(harness, browser, { answer, stage }, async (shown) => {
+        assert.deepEqual((await browser.post('/api/auth/device/cancel', { attempt: shown })).body, { status: 'cancelled' });
       });
       assert.equal(poll.status, 409, poll.text);
       assert.equal(poll.body.error, 'device_login_missing');
@@ -105,3 +105,65 @@ for (const [label, answer, stage] of [
     }
   });
 }
+
+/** Poll `attempt` once GitHub's interval has passed and expect it to sign in. */
+async function completes(harness: Harness, browser: Browser, attempt: unknown) {
+  harness.clock.now += 5_000;
+  harness.github.tokenAnswers.length = 0;
+  harness.github.tokenAnswers.push(AUTHORIZED);
+  const done = await browser.post('/api/auth/device/poll', { attempt });
+  assert.deepEqual(done.body, { status: 'complete' }, done.text);
+  assert.deepEqual(await browser.get('/me'), { authenticated: true, login: 'octocat', source: 'connect' });
+}
+
+test('device sign-in: Cancel in a tab still showing a replaced attempt leaves the newer attempt usable', async () => {
+  const harness = await startHarness();
+  const tabA = new Browser(harness.origin);
+  try {
+    const older = await tabA.post('/api/auth/device/start');
+    const tabB = tabA.tab();
+    const newer = await tabB.post('/api/auth/device/start');
+    assert.equal(newer.status, 200, newer.text);
+
+    // Tab A has not polled since, so it still shows the older attempt.
+    const cancelled = await tabA.post('/api/auth/device/cancel', { attempt: older.body.attempt });
+    assert.deepEqual(cancelled.body, { status: 'cancelled' });
+
+    const pending = await tabB.post('/api/auth/device/poll', { attempt: newer.body.attempt });
+    assert.equal(pending.body.status, 'pending', pending.text);
+    await completes(harness, tabB, newer.body.attempt);
+  } finally {
+    await harness.close();
+  }
+});
+
+test('device sign-in: a Cancel that reaches the API after the retry started does not revoke the retry', async () => {
+  const harness = await startHarness();
+  const browser = new Browser(harness.origin);
+  try {
+    const first = await browser.post('/api/auth/device/start');
+    const retry = await browser.post('/api/auth/device/start');
+    assert.equal(retry.status, 200, retry.text);
+    await browser.post('/api/auth/device/cancel', { attempt: first.body.attempt });
+    // A cancel that names no attempt cancels nothing either.
+    await browser.post('/api/auth/device/cancel');
+    await completes(harness, browser, retry.body.attempt);
+  } finally {
+    await harness.close();
+  }
+});
+
+test('device sign-in: Cancel naming the active attempt revokes it', async () => {
+  const harness = await startHarness();
+  const browser = new Browser(harness.origin);
+  try {
+    const start = await browser.post('/api/auth/device/start');
+    await browser.post('/api/auth/device/cancel', { attempt: start.body.attempt });
+    harness.clock.now += 5_000;
+    const poll = await browser.post('/api/auth/device/poll', { attempt: start.body.attempt });
+    assert.equal(poll.body.error, 'device_login_missing', poll.text);
+    assert.equal(tokenCalls(harness.github).length, 0);
+  } finally {
+    await harness.close();
+  }
+});

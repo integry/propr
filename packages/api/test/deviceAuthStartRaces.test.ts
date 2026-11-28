@@ -1,8 +1,8 @@
 /**
  * Device sign-in (#3867): a start whose GitHub code request is answered after
- * a newer start (another tab of the same browser) or a Cancel must neither
- * show its code nor displace the newer attempt, whether GitHub answered with
- * a code or an error. Run with:
+ * a newer start (another tab of the same browser) must neither show its code
+ * nor displace the newer attempt, whether GitHub answered with a code or an
+ * error. A Cancel for an attempt the pending start replaced must not affect it. Run with:
  * `NODE_ENV=test npx tsx --test packages/api/test/deviceAuthStartRaces.test.ts`
  */
 import assert from 'node:assert/strict';
@@ -86,24 +86,29 @@ for (const [label, olderAnswer] of [['code', OLDER_CODE], ['error', DISABLED]] a
     }
   });
 
-  test(`device sign-in: a start answered with a ${label} after Cancel leaves no attempt`, async () => {
+  test(`device sign-in: a stale tab's Cancel while a newer start waits on GitHub leaves that start's ${label} intact`, async () => {
     const harness = await startHarness();
     const tabA = new Browser(harness.origin);
     try {
-      await tabA.post('/api/auth/device/start');
+      const shown = await tabA.post('/api/auth/device/start');
       assert.ok(tabA.cookie, 'the session cookie is set');
+      // Tab B still shows the first attempt, which tab A's new start replaces.
       const tabB = tabA.tab();
-      const older = await startAcross(harness, tabA, olderAnswer, async () => {
-        assert.deepEqual((await tabB.post('/api/auth/device/cancel')).body, { status: 'cancelled' });
+      const newer = await startAcross(harness, tabA, olderAnswer, async () => {
+        assert.deepEqual((await tabB.post('/api/auth/device/cancel', { attempt: shown.body.attempt })).body, { status: 'cancelled' });
       });
-      assert.equal(older.status, 409, older.text);
-      assert.equal(older.body.error, 'device_login_missing');
-      assert.ok(!older.text.includes('OLDR-CODE'));
-
-      // Nothing was stored for the cancelled start: a fresh start works normally.
-      const fresh = await tabB.post('/api/auth/device/start');
-      assert.equal(fresh.status, 200, fresh.text);
-      assert.equal(fresh.body.userCode, 'WDJB-MJHT');
+      if (label === 'error') {
+        // Still the latest start, so GitHub's own error is reported.
+        assert.equal(newer.body.error, 'device_flow_disabled', newer.text);
+        return;
+      }
+      assert.equal(newer.status, 200, newer.text);
+      assert.equal(newer.body.userCode, 'OLDR-CODE');
+      harness.clock.now += 5_000;
+      harness.github.tokenAnswers.push(AUTHORIZED);
+      const done = await tabA.post('/api/auth/device/poll', { attempt: newer.body.attempt });
+      assert.deepEqual(done.body, { status: 'complete' }, done.text);
+      assert.equal(new URLSearchParams(tokenCalls(harness.github)[0]?.body).get('device_code'), 'older-device-code');
     } finally {
       await harness.close();
     }

@@ -92,6 +92,24 @@ export async function currentAttempt(req: Request, attemptId: string): Promise<D
     return stored?.attempt === attemptId ? stored : undefined;
 }
 
+/**
+ * Cancel the named attempt if it is still the session's active one. The
+ * session is re-read first, so a cancel from a tab still showing an attempt
+ * that another tab or a retry has replaced (or one that arrives after the
+ * retry started) leaves the newer attempt, or the start waiting on its code,
+ * untouched. Returns whether anything was revoked.
+ */
+export async function cancelAttempt(req: Request, attemptId: string, now: number): Promise<boolean> {
+    if (!attemptId || !(await currentAttempt(req, attemptId))) return false;
+    // Revoked before the save: a poll already waiting on GitHub must not sign
+    // in or write the attempt back, whatever happens to this save.
+    const session = req.session as DeviceAuthSession;
+    revokeAttempt(session.deviceLogin, now);
+    delete session.deviceLogin;
+    await saveSession(req).catch(() => undefined);
+    return true;
+}
+
 /** Drop the attempt from the session if it is still the active one; never restore a replaced one. */
 export async function endAttempt(req: Request, attemptId: string): Promise<void> {
     if (!(await currentAttempt(req, attemptId))) return;

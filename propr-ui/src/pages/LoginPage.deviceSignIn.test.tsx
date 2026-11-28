@@ -117,10 +117,29 @@ describe('LoginPage device sign-in', () => {
     fireEvent.click(await deviceButton());
     await screen.findByLabelText('GitHub sign-in code');
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(cancelDeviceSignIn).toHaveBeenCalled();
+    expect(cancelDeviceSignIn).toHaveBeenCalledWith('attempt-1');
     expect(screen.queryByLabelText('GitHub sign-in code')).not.toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(pollDeviceSignIn).not.toHaveBeenCalled();
+  });
+
+  it('starts a retry only after the cancel has reached the API', async () => {
+    let finishCancel!: () => void;
+    vi.mocked(cancelDeviceSignIn).mockImplementationOnce(() => new Promise<void>(resolve => { finishCancel = resolve; }));
+    renderLogin();
+    fireEvent.click(await deviceButton());
+    await screen.findByLabelText('GitHub sign-in code');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(cancelDeviceSignIn).toHaveBeenCalledWith('attempt-1');
+
+    vi.mocked(startDeviceSignIn).mockResolvedValue({ ...START, attempt: 'attempt-2', userCode: 'NEWR-CODE' });
+    fireEvent.click(await deviceButton());
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    expect(startDeviceSignIn).toHaveBeenCalledTimes(1);
+
+    await act(async () => { finishCancel(); });
+    expect(await screen.findByLabelText('GitHub sign-in code')).toHaveTextContent('NEWR-CODE');
+    expect(startDeviceSignIn).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the redirect sign-in for other modes', async () => {
