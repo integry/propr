@@ -842,13 +842,54 @@ jobs:
           echo "Idle wake webhookRecovery.redelivered=$redelivered"
           jq -e '.error == null' <<< "$recovery" > /dev/null || { echo "::error::App webhook recovery reported an error"; exit 1; }
 
-          for _ in {1..150}; do
+          # The issue's newest task and its latest timeline entry. A task that failed opens no PR, so stop
+          # waiting at once and show its error as the worker recorded it (quota and plan errors included).
+          task_state=$(base64 -w0 <<JS
+          const db = require('/usr/src/app/node_modules/better-sqlite3')('/usr/src/app/data/propr.sqlite', {readonly:true});
+          const row = db.prepare(\`SELECT t.task_id, h.state, h.reason, h.metadata FROM tasks t
+            JOIN task_history h ON h.history_id = (SELECT history_id FROM task_history
+              WHERE task_id = t.task_id ORDER BY timestamp DESC, history_id DESC LIMIT 1)
+            WHERE t.repository = ? COLLATE NOCASE AND t.issue_number = ?
+            ORDER BY t.created_at DESC LIMIT 1\`).get('$REPO', $ISSUE);
+          if (row) {
+            let m = {};
+            try { m = JSON.parse(row.metadata || '{}') || {}; } catch {}
+            console.log('PROPR_E2E_TASK ' + JSON.stringify({ taskId: row.task_id, state: row.state, reason: row.reason,
+              status: m.prResult?.status ?? null, error: m.error?.message ?? null, terminalReason: m.terminalReason ?? null }));
+          }
+          JS
+          )
+          pr= task=
+          # About 37 minutes, as before the task probe; a deadline keeps the probe's SSH time inside the step timeout.
+          deadline=$((SECONDS + 2220))
+          while (( SECONDS < deadline )); do
             pr=$(gh pr list --repo "$REPO" --json number,closingIssuesReferences,isCrossRepository |
               jq -r --argjson issue "$ISSUE" '.[] | select(.isCrossRepository == false and any(.closingIssuesReferences[]; .number == $issue)) | .number')
             [[ -z $pr ]] || break
+            task=$(timeout 60s flyctl ssh console --app "$APP" --container app \
+              -C "node -e \"eval(Buffer.from('$task_state','base64').toString())\"" 2> /dev/null |
+              tr -d '\r' | sed -n 's/^PROPR_E2E_TASK //p' | tail -n 1 || true)
+            if [[ -n $task ]] && jq -e '.state == "failed" or .state == "claude_processing_failed"
+                or .status == "claude_processing_failed"' <<< "$task" > /dev/null 2>&1; then
+              source .github/fly-e2e/propr-api.sh
+              error=$(jq -r '.error // .reason // "no error recorded"' <<< "$task" | propr_redact)
+              outcome=$(jq -r '[.state, .status, .terminalReason] | map(strings) | unique | join(", ")' <<< "$task")
+              echo "::error::Task $(jq -r .taskId <<< "$task") for $REPO#$ISSUE failed ($outcome) before opening a PR: $error"
+              {
+                echo "- Task \`$(jq -r .taskId <<< "$task")\` for $REPO#$ISSUE on \`$AGENT_RUNTIME\` failed (\`$outcome\`); no PR was opened."
+                echo "- Task error:"
+                echo '  ```'
+                sed 's/^/  /' <<< "$error"
+                echo '  ```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             sleep 15
           done
-          [[ $pr =~ ^[0-9]+$ ]] || { echo "No unique linked PR for $REPO#$ISSUE"; exit 1; }
+          if [[ ! $pr =~ ^[0-9]+$ ]]; then
+            echo "No unique linked PR for $REPO#$ISSUE (last task state: $(jq -c '{taskId, state, status}' <<< "${task:-null}" 2> /dev/null || echo unknown))"
+            exit 1
+          fi
           echo "- Linked PR: $REPO#$pr from \`$AGENT\` CLI $AGENT_CLI_VERSION on \`$AGENT_RUNTIME\`" >> "$GITHUB_STEP_SUMMARY"
           sha=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
           token=$(bash "$OUT/installation-token.sh")
