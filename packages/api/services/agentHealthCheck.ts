@@ -1,10 +1,10 @@
-import type { Agent, AgentConfig } from '@propr/core';
+import type { Agent, AgentConfig, AgentCredentialCheckResult } from '@propr/core';
 import { effectiveAgentBaseImage, redactSecrets } from '@propr/core';
 import { AGENT_MODELS } from '@propr/shared';
 
 // Prefer inexpensive, quick models already offered by this configuration.
 // Codex login accounts may not offer API-only nano models, so prefer Luna.
-const PROBE_MODELS: Record<AgentConfig['type'], string[]> = {
+const PROBE_MODELS: Record<Exclude<AgentConfig['type'], 'pi'>, string[]> = {
   claude: ['claude-haiku-5-5', 'claude-haiku-4-5-20251001', ...AGENT_MODELS.claude.map(model => model.id).filter(id => id.includes('sonnet'))],
   codex: ['gpt-6-luna', 'gpt-5.6-luna', 'gpt-5.3-codex-spark', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5-nano', 'gpt-5-mini', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol'],
   antigravity: AGENT_MODELS.antigravity.map(model => model.id).filter(id => id.includes('flash')),
@@ -13,6 +13,8 @@ const PROBE_MODELS: Record<AgentConfig['type'], string[]> = {
 };
 
 export function agentHealthModel(config: AgentConfig): string | undefined {
+  // Pi checks credentials for one provider without invoking a model.
+  if (config.type === 'pi') return config.defaultModel || config.supportedModels[0];
   return PROBE_MODELS[config.type].find(model => config.supportedModels.includes(model))
     ?? (config.defaultModel && config.supportedModels.includes(config.defaultModel) ? config.defaultModel : undefined)
     ?? config.supportedModels[0];
@@ -24,6 +26,28 @@ export interface AgentHealthResult {
   model?: string;
   error?: string;
   errorCode?: 'auth_required' | 'rate_limit' | 'unknown' | 'preparation_failed';
+  /**
+   * The provider credential status from an agent's own credential check (Pi:
+   * `pi auth check --no-refresh`), kept typed so callers can tell a missing
+   * login (`not_ready`) from an unusable one (`invalid`) without parsing
+   * `error`. Absent for agents checked with a prompt.
+   */
+  credentials?: AgentHealthCredentials;
+}
+
+export interface AgentHealthCredentials {
+  status: AgentCredentialCheckResult['status'];
+  provider?: string;
+  /** Provider-reported reason code, e.g. `credentials_not_configured`. */
+  reason?: string;
+}
+
+function healthCredentials(credentials: AgentCredentialCheckResult): AgentHealthCredentials {
+  return {
+    status: credentials.status,
+    ...(credentials.provider ? { provider: credentials.provider } : {}),
+    ...(credentials.reason ? { reason: credentials.reason } : {}),
+  };
 }
 
 function healthErrorCode(error: unknown): NonNullable<AgentHealthResult['errorCode']> {
@@ -35,9 +59,18 @@ function healthErrorCode(error: unknown): NonNullable<AgentHealthResult['errorCo
   return 'unknown';
 }
 
+function credentialCheckResult(agentId: string, model: string, credentials: AgentCredentialCheckResult): AgentHealthResult {
+  if (credentials.status === 'ready') return { agentId, model, status: 'ready', credentials: healthCredentials(credentials) };
+  return {
+    agentId, model, status: 'error', credentials: healthCredentials(credentials),
+    errorCode: credentials.reason === 'provider_not_found' ? 'unknown' : 'auth_required',
+    error: redactSecrets(credentials.message || `Credentials are ${credentials.status === 'invalid' ? 'invalid' : 'not configured'}.`).slice(0, 2000),
+  };
+}
+
 export function createAgentHealthCheck(dependencies: {
   loadAgents: () => Promise<AgentConfig[]>;
-  createAgent: (config: AgentConfig) => Pick<Agent, 'analyze' | 'credentialProblem'>;
+  createAgent: (config: AgentConfig) => Pick<Agent, 'analyze' | 'checkCredentials' | 'credentialProblem'>;
   imageExists?: (image: string) => Promise<boolean>;
   prepareImage?: (image: string) => Promise<void>;
 
@@ -135,6 +168,11 @@ export function createAgentHealthCheck(dependencies: {
         // from a local file check instead of spending a provider call.
         const credentialProblem = agent.credentialProblem?.();
         if (credentialProblem) return { agentId, model, status: 'error', errorCode: 'auth_required', error: redactSecrets(credentialProblem).slice(0, 2000) };
+        if (agent.checkCredentials) {
+          // A credential check (Pi: `pi auth check --no-refresh`) answers
+          // without spending tokens or refreshing a login.
+          return credentialCheckResult(agentId, model, await agent.checkCredentials(model));
+        }
         const result = await agent.analyze('Reply with only OK. Do not use tools.', {
           model,
           timeoutMs: 30_000,

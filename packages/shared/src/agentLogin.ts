@@ -15,6 +15,7 @@ const MANAGED_CONFIG_SUFFIXES = {
   codex: '.codex',
   antigravity: '.gemini',
   opencode: '.config/opencode',
+  pi: '.pi/agent',
 } as const satisfies Record<LoginableAgentType, string>;
 
 const MANAGED_AGENT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
@@ -33,6 +34,19 @@ export interface AgentLoginDescriptor {
   environment?: Readonly<Record<string, string>>;
   /** OpenCode stores provider credentials outside its XDG config directory. */
   additionalCredentialStore?: 'opencode-data';
+  /**
+   * The login command needs a provider (Pi: `pi auth login <provider>`). The
+   * provider and method are appended by buildAgentLoginCommand.
+   */
+  providerLogin?: true;
+}
+
+/** Options a caller may choose for a provider-scoped login (Pi). */
+export interface AgentLoginOptions {
+  /** Provider to sign in to, e.g. `anthropic`. */
+  provider?: string;
+  /** Save an API key for the provider instead of signing in with an account. */
+  apiKey?: boolean;
 }
 
 export const AGENT_LOGIN_DESCRIPTORS = {
@@ -61,6 +75,18 @@ export const AGENT_LOGIN_DESCRIPTORS = {
     command: ['opencode', 'auth', 'login'],
     additionalCredentialStore: 'opencode-data',
   },
+  pi: {
+    type: 'pi',
+    containerConfigPath: '/home/node/.pi/agent',
+    // pi-entrypoint.sh's login mode points PI_CODING_AGENT_DIR at the mounted
+    // credential dir instead of a disposable copy, so the login is kept.
+    command: ['pi', 'auth', 'login'],
+    environment: {
+      PROPR_PI_LOGIN: '1',
+      PROPR_PI_SOURCE_DIR: '/home/node/.pi/agent',
+    },
+    providerLogin: true,
+  },
 } as const satisfies Partial<Record<AgentType, AgentLoginDescriptor>>;
 
 export type LoginableAgentType = keyof typeof AGENT_LOGIN_DESCRIPTORS;
@@ -75,6 +101,62 @@ export function isAgentLoginSupported(type: AgentType): type is LoginableAgentTy
 
 export function getAgentLoginDescriptor(type: AgentType): AgentLoginDescriptor | undefined {
   return isAgentLoginSupported(type) ? AGENT_LOGIN_DESCRIPTORS[type] : undefined;
+}
+
+/** Pi provider ids: lowercase letters, digits, dots, dashes and underscores. */
+const PI_LOGIN_PROVIDER_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+export function isValidAgentLoginProvider(provider: string): boolean {
+  return PI_LOGIN_PROVIDER_RE.test(provider);
+}
+
+/**
+ * Providers named by an agent's Pi models (`pi-<provider>/<model>`), default
+ * model first, without duplicates.
+ */
+export function getPiLoginProviders(models: readonly string[], defaultModel?: string): string[] {
+  const providers: string[] = [];
+  for (const model of [defaultModel, ...models]) {
+    const match = model ? /^(?:[^:/]+:)?pi-([^/]+)\//i.exec(model.trim()) : null;
+    const provider = match?.[1].toLowerCase();
+    if (provider && isValidAgentLoginProvider(provider) && !providers.includes(provider)) providers.push(provider);
+  }
+  return providers;
+}
+
+/**
+ * A Pi model id with its provider lowercased (`pi-OpenRouter/Qwen` →
+ * `pi-openrouter/Qwen`). Pi provider ids are lowercase, and the login, the
+ * credential check and `pi --model` all compare them that way; the model part
+ * keeps its case. Other ids are returned trimmed and otherwise unchanged.
+ */
+export function normalizePiModelId(modelId: string): string {
+  const trimmed = modelId.trim();
+  const match = /^((?:[^:/]+:)?)pi-([^/]+)(\/.*)$/i.exec(trimmed);
+  return match ? `${match[1]}pi-${match[2].toLowerCase()}${match[3]}` : trimmed;
+}
+
+/**
+ * The full command for a login. Provider-scoped logins (Pi) require a valid
+ * provider and always use the headless flow: `--no-browser` for an account
+ * (device code, or a pasted redirect URL), `--api-key` to save a key.
+ */
+export function buildAgentLoginCommand(
+  descriptor: AgentLoginDescriptor,
+  options: AgentLoginOptions = {},
+): string[] {
+  if (!descriptor.providerLogin) {
+    if (options.provider || options.apiKey) {
+      throw new Error(`${descriptor.type} login does not take a provider or API key option`);
+    }
+    return [...descriptor.command];
+  }
+  const provider = options.provider?.trim().toLowerCase();
+  if (!provider) throw new Error(`${descriptor.type} login requires a provider`);
+  if (!isValidAgentLoginProvider(provider)) {
+    throw new Error('Provider must use lowercase letters, numbers, dots, dashes or underscores');
+  }
+  return [...descriptor.command, provider, options.apiKey ? '--api-key' : '--no-browser'];
 }
 
 /**

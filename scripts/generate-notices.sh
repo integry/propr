@@ -143,8 +143,9 @@ for entry in \
   } >> "$OUT"
 done
 
-# @openai/codex, Antigravity CLI, @opencode/cli, and mistral-vibe are installed
-# only in the agent image (not in root node_modules). Reference their licenses.
+# @openai/codex, Antigravity CLI, @opencode/cli, mistral-vibe, and
+# @earendil-works/pi-coding-agent are installed only in the agent image (not in
+# root node_modules). Reference their licenses.
 cat >> "$OUT" <<'EOF'
 ## @openai/codex (installed in propr/agent image)
 
@@ -167,6 +168,12 @@ Source: https://github.com/anomalyco/opencode
 
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/mistralai/mistral-vibe
+
+## @earendil-works/pi-coding-agent (installed in propr/agent image)
+
+Licensed under the MIT License (verified from the published npm package
+metadata of the package and its @earendil-works dependencies).
+Source: https://github.com/earendil-works/pi
 
 ---
 

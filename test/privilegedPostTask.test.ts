@@ -184,6 +184,15 @@ describe('privileged-post-task.sh', () => {
         const supervisedEntrypoints = [];
         for (const name of ENTRYPOINTS) {
             const script = fs.readFileSync(path.join(process.cwd(), 'scripts', name), 'utf8');
+            if (name === 'pi-entrypoint.sh') {
+                // Pi supervises its task itself (backgrounded exec_as_node + wait loop) and hardens
+                // its post-task section inline; piCredentials.test.ts covers that behaviour.
+                const postTask = script.slice(script.indexOf('# ---- Post-task privileged steps'));
+                assert.match(script, /^POST_TASK_PATH=\/usr\/sbin:\/usr\/bin:\/sbin:\/bin$/m, `${name} fixes the post-task PATH`);
+                assert.match(postTask, /^export PATH="\$POST_TASK_PATH"$/m, `${name} resets PATH before post-task steps`);
+                assert.match(postTask, /^cd \/$/m, `${name} leaves the task-writable cwd before post-task steps`);
+                continue;
+            }
             const call = /^\s*run_supervised_task .*$/m.exec(script);
             if (!call) {
                 // Without supervision every task launch must replace the shell, leaving nothing to run after it.

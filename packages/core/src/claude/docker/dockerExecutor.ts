@@ -68,6 +68,8 @@ export interface DockerCommandOptions extends Pick<ExecutionWatchdogOptions, 'wa
     /** Resolve with buffered output on timeout or a spend-cap stop so implementation jobs can publish partial work. */
     preserveOutputOnTimeout?: boolean;
     onSessionId?: (sessionId: string, conversationId?: string) => void | Promise<void>; onContainerId?: (containerId: string, containerName: string) => void | Promise<void>;
+    /** Provider-specific session detection for streams without a `session_id` field (Pi's session header); `onSessionId` receives its result once. */
+    sessionIdFromLine?: (line: string) => string | undefined;
     extraMounts?: string[]; extraEnvVars?: Record<string, string>; streamExtraOutput?: () => string;
     /** Cancels the spawned process and its Docker container when the protected execution loses ownership. */
     signal?: AbortSignal;
@@ -362,7 +364,7 @@ function runDockerCommand(
             pendingCallbacks.add(callbackPromise);
             void callbackPromise.finally(() => pendingCallbacks.delete(callbackPromise));
         };
-        const sessionInspectionContext: SessionLineInspectionContext = { messageTimestamps, state, onSessionId, invokeExecutionCallback };
+        const sessionInspectionContext: SessionLineInspectionContext = { messageTimestamps, state, onSessionId, sessionIdFromLine: options.sessionIdFromLine, invokeExecutionCallback };
         const inspectSessionLines = (chunk: string, timestamp: string, flush = false): void => {
             sessionLineBuffer = boundedProviderOutput(sessionLineBuffer + chunk);
             const lines = sessionLineBuffer.split('\n');

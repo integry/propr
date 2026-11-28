@@ -42,7 +42,8 @@ describe('agent bundle content files', () => {
                     CODEX_CLI_VERSION: AGENT_DEFAULT_VERSIONS.codex,
                     ANTIGRAVITY_CLI_VERSION: AGENT_DEFAULT_VERSIONS.antigravity,
                     OPENCODE_CLI_VERSION: AGENT_DEFAULT_VERSIONS.opencode,
-                    VIBE_CLI_VERSION: AGENT_DEFAULT_VERSIONS.vibe
+                    VIBE_CLI_VERSION: AGENT_DEFAULT_VERSIONS.vibe,
+                    PI_CLI_VERSION: AGENT_DEFAULT_VERSIONS.pi
                 }
             }
         ).trim();

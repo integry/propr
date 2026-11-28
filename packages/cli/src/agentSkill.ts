@@ -26,7 +26,7 @@ import {
   type DirectoryDescriptorAccess,
 } from "./utils/directoryDescriptor.js";
 
-export const AGENT_SKILL_TARGETS = ["codex", "claude", "antigravity", "opencode", "vibe"] as const;
+export const AGENT_SKILL_TARGETS = ["codex", "claude", "antigravity", "opencode", "vibe", "pi"] as const;
 export type AgentSkillTarget = (typeof AGENT_SKILL_TARGETS)[number];
 
 const AGENT_SKILL_EXECUTABLES: Record<AgentSkillTarget, string> = {
@@ -35,6 +35,7 @@ const AGENT_SKILL_EXECUTABLES: Record<AgentSkillTarget, string> = {
   antigravity: "agy",
   opencode: "opencode",
   vibe: "vibe",
+  pi: "pi",
 };
 
 const MANAGED_FILE = ".propr-managed.json";
@@ -104,7 +105,7 @@ export interface AgentSkillOptions {
 
 function environmentValue(
   env: AgentSkillEnvironment,
-  key: "HOME" | "CODEX_HOME" | "XDG_CONFIG_HOME",
+  key: "HOME" | "CODEX_HOME" | "XDG_CONFIG_HOME" | "PI_CODING_AGENT_DIR",
   fallback?: () => string
 ): string {
   if (Object.prototype.hasOwnProperty.call(env, key)) {
@@ -188,6 +189,10 @@ export function resolveAgentSkillLocation(
     }
     case "vibe":
       toolHome = join(home(), ".vibe");
+      break;
+    case "pi":
+      // Pi loads user skills from <agent-dir>/skills (PI_CODING_AGENT_DIR, default ~/.pi/agent).
+      toolHome = assertSafeBase(environmentValue(env, "PI_CODING_AGENT_DIR", () => join(home(), ".pi", "agent")), "PI_CODING_AGENT_DIR", { directRoot });
       break;
   }
   const path = resolve(toolHome, "skills", "propr");

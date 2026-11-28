@@ -21,7 +21,7 @@ import {
 } from "../api/agents.js";
 import { createConfigManager } from "../config/index.js";
 import { getHostConfig } from "../orchestrator/index.js";
-import { localImagePresent, planAgentLogin, loginableAgents } from "./agentValidation.js";
+import { DEFAULT_PI_LOGIN_PROVIDER, localImagePresent, planAgentLogin, loginableAgents } from "./agentValidation.js";
 import { ApiError, NetworkError, NotFoundError } from "../api/errors.js";
 import {
   printOutput,
@@ -31,7 +31,7 @@ import {
 } from "../utils/index.js";
 import { presentApiError } from "../utils/apiErrorPresentation.js";
 import { createAgentPoolCommand } from "./agentPoolCommands.js";
-import { redactAgentConfigsSecrets } from "@propr/shared";
+import { normalizePiModelId, redactAgentConfigsSecrets } from "@propr/shared";
 
 const AGENT_TYPE_LIST = AGENT_TYPES.join(", ");
 
@@ -45,6 +45,7 @@ function formatType(type: string): string {
     antigravity: "Antigravity",
     opencode: "OpenCode",
     vibe: "Mistral Vibe",
+    pi: "Pi",
   };
   return typeMap[type?.toLowerCase()] || type;
 }
@@ -217,6 +218,7 @@ Agent Types:
   antigravity  Antigravity models
   opencode     OpenCode models
   vibe         Mistral Vibe models
+  pi           Pi coding agent models (pi-<provider>/<model>)
 
 JSON File Format:
   {
@@ -232,6 +234,7 @@ JSON File Format:
 Examples:
   $ propr agent add my-claude -t claude -m claude-opus-5-5
   $ propr agent add opencode -t opencode -m opencode-big-pickle
+  $ propr agent add pi -t pi -m pi-anthropic/claude-sonnet-5-5
   $ propr agent add prod-agent -t claude -m claude-opus-5-5,claude-fable-5-2 -d claude-opus-5-5
   $ propr agent add test-agent -t antigravity -m antigravity-gemini-3.8-flash --disabled
   $ propr agent add --file agent-config.json
@@ -320,6 +323,12 @@ Examples:
               `Error: Invalid agent type '${type}'. Must be one of: ${AGENT_TYPE_LIST}`
             );
             process.exit(1);
+          }
+
+          if (type === "pi") {
+            // Pi provider ids are lowercase everywhere they are compared.
+            models = models.map(normalizePiModelId);
+            if (defaultModel) defaultModel = normalizePiModelId(defaultModel);
           }
 
           if (models.length === 0) {
@@ -494,10 +503,16 @@ Examples:
     .command("login [type]")
     .description("Authenticate an agent by logging in through its Docker image (writes host credentials)")
     .option("--root <dir>", "Stack root directory (where .env/data/logs/repos live)")
+    .option("--provider <provider>", `Provider to sign in to (pi only, default ${DEFAULT_PI_LOGIN_PROVIDER})`)
+    .option("--api-key", "Save a provider API key instead of signing in with an account (pi only)")
     .addHelpText("after", `
 Logs in using the agent's own pinned CLI inside its image, with the credential
 directory mounted — so the credentials match exactly what runs jobs (no host
 install or host/image version drift). Useful after a failed image check.
+
+Pi signs in to one provider per login (\`pi auth login <provider> --no-browser\`):
+a device code, or a URL to open and the redirect URL to paste back. Run it once
+per provider your Pi models use.
 
 Antigravity: the container has no OS keyring, so agy saves a file token
 (~/.gemini/antigravity-cli/antigravity-oauth-token) that tasks can read, even
@@ -507,8 +522,10 @@ sign in once with \`AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy\`.
 Examples:
   $ propr agent login antigravity
   $ propr agent login opencode
+  $ propr agent login pi --provider openai-codex
+  $ propr agent login pi --provider openrouter --api-key
 `)
-    .action(async (type: string | undefined, options: { root?: string }) => {
+    .action(async (type: string | undefined, options: { root?: string; provider?: string; apiKey?: boolean }) => {
       try {
         const available = loginableAgents();
         if (!type) {
@@ -529,7 +546,10 @@ Examples:
         mkdirSync(workspaceDir, { recursive: true });
         try {
           const loginType = type.toLowerCase();
-          const { plan, error } = planAgentLogin(loginType, cfg, workspaceDir, orch.validateDockerBindPath);
+          const { plan, error } = planAgentLogin(loginType, cfg, workspaceDir, orch.validateDockerBindPath, {
+            ...(options.provider ? { provider: options.provider } : {}),
+            ...(options.apiKey ? { apiKey: true } : {}),
+          });
           if (error || !plan) {
             console.error(`Error: ${error ?? "could not plan login"}`);
             if (available.length > 0) console.error(`Agents with interactive login: ${available.join(", ")}`);

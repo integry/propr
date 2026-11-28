@@ -84,6 +84,7 @@ function agentDescriptors(): AgentDescriptor[] {
     { type: "opencode", hostDirKey: "hostOpencodeXdgDir", envKey: "HOST_OPENCODE_XDG_DIR", defaultDir: join(home, ".config", "opencode"), imageKey: "agent", bin: "opencode" },
     { type: "opencode-data", runtimeType: "opencode", hostDirKey: "hostOpencodeDataDir", envKey: "HOST_OPENCODE_DATA_DIR", defaultDir: join(home, ".local", "share", "opencode"), imageKey: "agent", bin: "opencode" },
     { type: "vibe", hostDirKey: "hostVibeDir", envKey: "HOST_VIBE_DIR", defaultDir: join(home, ".vibe"), imageKey: "agent", bin: "vibe" },
+    { type: "pi", hostDirKey: "hostPiDir", envKey: "HOST_PI_DIR", defaultDir: join(home, ".pi", "agent"), imageKey: "agent", bin: "pi" },
   ];
 }
 
@@ -1602,6 +1603,8 @@ Notes:
   "check all", "check agents", and --validate-agents run a real prompt through
   configured agents' host CLIs and Docker images (mounts credentials, makes
   billable LLM calls). This is also true with --json. Override with --agents.
+  Pi is the exception: it runs \`pi auth check --no-refresh\` (no prompt, no
+  token refresh) on the host and in the image.
   Use --skip-remote-image-check or PROPR_SKIP_REMOTE_IMAGE_CHECK=1 for offline image checks.
 `)
     .action(async (mode: string, options: { root?: string; verify?: boolean; agents?: string; skipRemoteImageCheck?: boolean; json?: boolean; fix?: boolean; validateAgents?: boolean }) => {

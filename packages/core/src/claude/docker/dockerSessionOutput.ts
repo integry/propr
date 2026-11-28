@@ -12,6 +12,8 @@ export interface SessionLineInspectionContext {
     messageTimestamps: Map<string, string>;
     state: { sessionIdDetected: boolean };
     onSessionId?: (sessionId: string, conversationId?: string) => void | Promise<void>;
+    /** Replaces the `session_id` field lookup for providers that report their session differently. */
+    sessionIdFromLine?: (line: string) => string | undefined;
     invokeExecutionCallback: (callback: () => void | Promise<void>) => void;
 }
 
@@ -35,7 +37,7 @@ export function inspectSessionMessageLine(
                 || `${message.type}-${JSON.stringify(message).substring(0, 100)}`;
             context.messageTimestamps.set(messageId, timestamp);
         }
-        const detectedSessionId = resolveSessionId(message);
+        const detectedSessionId = context.sessionIdFromLine ? context.sessionIdFromLine(line) : resolveSessionId(message);
         if (!context.state.sessionIdDetected && context.onSessionId && detectedSessionId) {
             context.state.sessionIdDetected = true;
             const conversationId = message.conversation_id || message.init?.conversation_id;

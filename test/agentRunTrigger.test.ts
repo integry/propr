@@ -321,9 +321,9 @@ describe('validateAgentDefinitionRuntime', () => {
   test('added extensions require a qualified direct or default runtime even without propr_mcp', async () => {
     const extensions = { servers: ['docs'], skills: [] };
     assert.equal(await check({ extensions }), null);
-    assert.match(await check({ extensions, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude, Codex, Antigravity, OpenCode or Vibe/);
-    assert.match(await check({ extensions, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude, Codex, Antigravity, OpenCode or Vibe/);
-    assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude, Codex, Antigravity, OpenCode or Vibe/);
+    assert.match(await check({ extensions, agentAlias: 'gemini', modelName: 'pro' }) ?? '', /Claude, Codex, Antigravity, OpenCode, Vibe or Pi/);
+    assert.match(await check({ extensions, agentAlias: 'pool', modelName: 'mixed' }) ?? '', /direct Claude, Codex, Antigravity, OpenCode, Vibe or Pi/);
+    assert.match(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'gemini' }) ?? '', /Claude, Codex, Antigravity, OpenCode, Vibe or Pi/);
     assert.equal(await validateAgentDefinitionRuntime({ ...base, extensions, agentAlias: null, modelName: null }, { ...deps, loadDefaultAgentAlias: async () => 'claude' }), null);
     // Without added items, library items that apply automatically never block another runtime.
     assert.equal(await check({ extensions: { servers: [], skills: [] }, agentAlias: 'gemini', modelName: 'pro' }), null);

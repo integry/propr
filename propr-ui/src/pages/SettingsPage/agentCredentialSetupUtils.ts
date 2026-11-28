@@ -11,7 +11,23 @@ import {
 } from '../../config/modelDefinitions';
 
 export type AgentFormData = Omit<AgentConfig, 'id'> & { id?: string };
-export type CredentialSetup = 'login' | 'existing';
+/** apiKey: provider API keys in the agent's environment variables (Pi). */
+export type CredentialSetup = 'login' | 'existing' | 'apiKey';
+
+/** Credential setups a new agent of this type can choose. */
+export function credentialSetupOptions(type: AgentType): { value: CredentialSetup; label: string }[] {
+  if (!isAgentLoginSupported(type)) return [];
+  return [
+    { value: 'login', label: 'Log in to a new account' },
+    { value: 'existing', label: 'Use existing config' },
+    ...(type === 'pi' ? [{ value: 'apiKey' as const, label: 'Use API keys' }] : []),
+  ];
+}
+
+/** Pi reads provider keys from `<NAME>_API_KEY`-style variables. */
+export function hasProviderApiKey(envVars: Record<string, string> | undefined): boolean {
+  return Object.entries(envVars || {}).some(([name, value]) => /_(API_KEY|TOKEN)$/.test(name) && Boolean(value?.trim()));
+}
 
 export function updateModelReasoningLevel(
   formData: AgentFormData,
@@ -28,6 +44,7 @@ export function validateAgentFormData(
   formData: AgentFormData,
   existingAliases: string[],
   originalAlias?: string,
+  credentialSetup?: CredentialSetup,
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!formData.alias) errors.alias = 'Alias is required';
@@ -38,6 +55,9 @@ export function validateAgentFormData(
   }
   if (!formData.configPath) errors.configPath = 'Config path is required';
   if (formData.supportedModels.length === 0) errors.supportedModels = 'At least one model is required';
+  if (credentialSetup === 'apiKey' && !hasProviderApiKey(formData.envVars)) {
+    errors.apiKeys = 'Enter an API key for at least one provider';
+  }
   return errors;
 }
 

@@ -90,7 +90,7 @@ describe('AgentEditor', () => {
     expect(mergeToggle).toBeDisabled();
     expect(mergeToggle).not.toBeChecked();
     expect(screen.getByTestId('agent-capability-merge-hint')).toHaveTextContent('merging happens in the action step');
-    expect(screen.getByTestId('agent-capability-propr_mcp-hint')).toHaveTextContent('Not available for OpenCode: ProPR tools need Claude, Codex, Antigravity, Vibe or OpenCode 2.x');
+    expect(screen.getByTestId('agent-capability-propr_mcp-hint')).toHaveTextContent('Not available for OpenCode: ProPR tools need Claude, Codex, Antigravity, Vibe, OpenCode 2.x or Pi');
     expect(screen.getByTestId('agent-capability-web-hint')).toHaveTextContent('Best effort on OpenCode');
     expect(screen.getByRole('radio', { name: /^Auto/ })).toBeDisabled();
   });

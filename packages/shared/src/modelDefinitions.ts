@@ -2,8 +2,8 @@
 // This file provides a single source of truth for model information
 // Both backend (packages/core) and frontend (propr-ui) import from this package
 
-export type AgentType = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe';
-export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'antigravity', 'opencode', 'vibe'];
+export type AgentType = 'claude' | 'codex' | 'antigravity' | 'opencode' | 'vibe' | 'pi';
+export const AGENT_TYPES: AgentType[] = ['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'pi'];
 
 export interface ModelInfo {
   id: string;
@@ -142,8 +142,20 @@ export const VIBE_MODELS: ModelInfo[] = [
   { id: 'zai-glm-5-2', name: 'GLM 5.2', shortName: 'GLM 5.2', shortAlias: 'glm52', githubLabel: 'llm-vibe-glm52', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'z-ai/glm-5.2', minAgentVersion: '2.25.8' },
 ];
 
+// Pi coding agent models. ProPR IDs are `pi-<provider>/<model>` and run as
+// `pi --model <provider>/<model>`; any provider/model Pi knows can be added to
+// an agent's supportedModels the same way. Defaults use providers on Pi's
+// egress allowlist, checked against the Pi 1.6.1 bundled catalog (2026-11-27).
+export const PI_MODELS: ModelInfo[] = [
+  { id: 'pi-anthropic/claude-opus-5-5', name: 'Pi Claude Opus 5.5', shortName: 'Claude Opus 5.5', shortAlias: 'opus55', githubLabel: 'llm-pi-opus55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-opus-5.5' },
+  { id: 'pi-anthropic/claude-sonnet-5-5', name: 'Pi Claude Sonnet 5.5', shortName: 'Claude Sonnet 5.5', shortAlias: 'sonnet55', githubLabel: 'llm-pi-sonnet55', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'anthropic/claude-sonnet-5.5' },
+  { id: 'pi-openai-codex/gpt-6.2-astra', name: 'Pi GPT-6.2 Astra', shortName: 'GPT-6.2 Astra', shortAlias: 'astra', githubLabel: 'llm-pi-astra', contextWindow: '1.05M', maxTokens: 1050000, openRouterId: 'openai/gpt-6.2-astra' },
+  { id: 'pi-google/gemini-4-argon', name: 'Pi Gemini 4 Argon', shortName: 'Gemini 4 Argon', shortAlias: 'argon', githubLabel: 'llm-pi-argon', contextWindow: '1M', maxTokens: 1000000, openRouterId: 'google/gemini-4-argon' },
+  { id: 'pi-openrouter/mistralai/devstral-2512', name: 'Pi Devstral 2 (OpenRouter)', shortName: 'Devstral 2', shortAlias: 'devstral2', githubLabel: 'llm-pi-devstral2', contextWindow: '262K', maxTokens: 262144, openRouterId: 'mistralai/devstral-2512' },
+];
+
 // All models combined
-export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...ANTIGRAVITY_MODELS, ...OPENCODE_MODELS, ...VIBE_MODELS];
+export const ALL_MODELS: ModelInfo[] = [...CLAUDE_MODELS, ...CODEX_MODELS, ...ANTIGRAVITY_MODELS, ...OPENCODE_MODELS, ...VIBE_MODELS, ...PI_MODELS];
 
 // Map of agent types to their models
 export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
@@ -152,6 +164,7 @@ export const AGENT_MODELS: Record<AgentType, ModelInfo[]> = {
   antigravity: ANTIGRAVITY_MODELS,
   opencode: OPENCODE_MODELS,
   vibe: VIBE_MODELS,
+  pi: PI_MODELS,
 };
 
 export const AGENT_DISPLAY: Record<AgentType, AgentDisplayInfo> = {
@@ -160,6 +173,7 @@ export const AGENT_DISPLAY: Record<AgentType, AgentDisplayInfo> = {
   codex: { label: 'Codex (OpenAI)', order: 30 },
   opencode: { label: 'OpenCode', order: 40 },
   vibe: { label: 'Vibe', order: 50 },
+  pi: { label: 'Pi', order: 60 },
 };
 
 export const AGENT_DISPLAY_ORDER: AgentType[] = (Object.keys(AGENT_DISPLAY) as AgentType[])
@@ -225,6 +239,14 @@ export const AGENT_DEFAULTS: Record<AgentType, {
     defaultAlias: 'vibe',
     npmPackage: 'mistral-vibe',
     defaultCliVersion: '3.1.5'
+  },
+  pi: {
+    dockerImage: 'propr/agent:latest',
+    configPath: '~/.pi/agent',
+    defaultModels: PI_MODELS.map(m => m.id),
+    defaultAlias: 'pi',
+    npmPackage: '@earendil-works/pi-coding-agent',
+    defaultCliVersion: '1.6.1'
   }
 };
 
@@ -234,5 +256,6 @@ export const typeBadgeColors: Record<AgentType, string> = {
   codex: 'bg-green-100 text-green-800 border-green-300',
   antigravity: 'bg-violet-100 text-violet-800 border-violet-300',
   opencode: 'bg-cyan-100 text-cyan-800 border-cyan-300',
-  vibe: 'bg-red-100 text-red-700 border-red-400'  // Mistral Vibe brand orange-red (#FA500F)
+  vibe: 'bg-red-100 text-red-700 border-red-400',  // Mistral Vibe brand orange-red (#FA500F)
+  pi: 'bg-slate-100 text-slate-800 border-slate-300'
 };

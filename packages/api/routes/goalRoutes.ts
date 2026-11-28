@@ -25,6 +25,7 @@ import {
   loadRepositoryVisualPreviewSettings,
   logger,
   parsePublishedVisualPreviews,
+  removePiGoalSessions,
   type GoalCapability,
   type GoalJobData,
   type GoalLaunchStrategy,
@@ -1085,6 +1086,10 @@ export function createGoalRoutes(deps: GoalRoutesDeps) {
     if (!deleted) return void res.status(409).json({ error: 'Goal state changed before deletion' });
     await deleteGoalAttachmentDirectory(row.goal_id).catch(error => {
       logger.warn({ goalId: row.goal_id, error: (error as Error).message }, 'Could not remove deleted goal attachments');
+    });
+    // A Pi goal keeps its conversation in its own session store; nothing can resume it now.
+    await removePiGoalSessions(row.goal_id).catch(error => {
+      logger.warn({ goalId: row.goal_id, error: (error as Error).message }, 'Could not remove deleted goal Pi sessions');
     });
     await getEventPublisher().publishGoalUpdate({ goalId: row.goal_id, repository: row.repository, ownerId: row.owner_id });
     res.status(204).send();

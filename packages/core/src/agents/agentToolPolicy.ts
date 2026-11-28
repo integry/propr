@@ -12,7 +12,7 @@ export const PROPR_MCP_BEARER_TOKEN_ENV = 'PROPR_MCP_BEARER_TOKEN';
 
 // Per-runtime MCP rendering lives in one builder per agent type (`./mcpLaunch`);
 // these re-exports keep the existing import paths.
-export { CLAUDE_WEB_TOOLS, antigravityToolPolicyArgs, claudeToolPolicyArgs, codexToolPolicyArgs, openCodeToolPolicyArgs, vibeToolPolicyArgs, mcpLaunchBuilder, MCP_LAUNCH_BUILDERS, type McpLaunchBuilder, type ToolPolicyLaunchArgs } from './mcpLaunch/index.js';
+export { CLAUDE_WEB_TOOLS, antigravityToolPolicyArgs, claudeToolPolicyArgs, codexToolPolicyArgs, openCodeToolPolicyArgs, piToolPolicyArgs, vibeToolPolicyArgs, mcpLaunchBuilder, MCP_LAUNCH_BUILDERS, type McpLaunchBuilder, type PiToolPolicyLaunchArgs, type ToolPolicyLaunchArgs } from './mcpLaunch/index.js';
 
 /**
  * Tool policies are only applied to task execution. Goal mode launches through
@@ -26,7 +26,7 @@ export function assertToolPolicySupported(options: Pick<AgentTaskOptions, 'execu
 }
 
 /**
- * Runtimes without a native switch (Antigravity, OpenCode, Vibe) get the web
+ * Runtimes without a native switch (Antigravity, OpenCode, Vibe, Pi) get the web
  * restriction as a prompt notice only: best effort, not enforcement. Returns
  * an empty string when nothing needs saying.
  */

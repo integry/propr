@@ -38,6 +38,7 @@ ANTIGRAVITY_CLI_RELEASE_ID="${ANTIGRAVITY_CLI_RELEASE_ID:-5514532022517760}"
 ANTIGRAVITY_CLI_SHA512="${ANTIGRAVITY_CLI_SHA512:-af3f0be58b8475940d79f9abea19e762ecc3d265ea9f56cff8dd805e27ba299b44a305a79504a7ffe6ebdfa29a294c56edc4caed1875990bfaf2fef1508ec8b0}"
 OPENCODE_CLI_VERSION="${OPENCODE_CLI_VERSION:-2.4.2}"
 VIBE_CLI_VERSION="${VIBE_CLI_VERSION:-3.1.5}"
+PI_CLI_VERSION="${PI_CLI_VERSION:-1.6.1}"
 # Keep this default identical to the ARG default in Dockerfile.agent: only the
 # Dockerfile literal participates in the agent bundle content hash, so a
 # mismatch here would ship a different Agent Tank build under an existing tag.
@@ -69,6 +70,8 @@ AGENT_BUNDLE_CONTENT_FILES=(
   scripts/opencode-run.sh
   scripts/vibe-entrypoint.sh
   scripts/vibe-prompt-file-runner.py
+  scripts/pi-entrypoint.sh
+  scripts/pi-credentials.py
   scripts/gh-wrapper.sh
   scripts/extension-stdio-bridge.mjs
   NOTICE
@@ -110,10 +113,11 @@ resolve_agent_bundle_tag() {
   ANTIGRAVITY_CLI_VERSION="$ANTIGRAVITY_CLI_VERSION" \
   OPENCODE_CLI_VERSION="$OPENCODE_CLI_VERSION" \
   VIBE_CLI_VERSION="$VIBE_CLI_VERSION" \
+  PI_CLI_VERSION="$PI_CLI_VERSION" \
     node --input-type=module -e '
       import crypto from "node:crypto";
       import fs from "node:fs";
-      const types = ["claude", "codex", "antigravity", "opencode", "vibe"];
+      const types = ["claude", "codex", "antigravity", "opencode", "vibe", "pi"];
       const versions = Object.fromEntries(types.map(type => [
         type,
         process.env[`${type.toUpperCase()}_CLI_VERSION`]
@@ -620,6 +624,7 @@ build_image() {
         "--build-arg" "ANTIGRAVITY_CLI_SHA512=$ANTIGRAVITY_CLI_SHA512"
         "--build-arg" "OPENCODE_CLI_VERSION=$OPENCODE_CLI_VERSION"
         "--build-arg" "VIBE_CLI_VERSION=$VIBE_CLI_VERSION"
+        "--build-arg" "PI_CLI_VERSION=$PI_CLI_VERSION"
         "--build-arg" "AGENT_TANK_CLI_VERSION=$AGENT_TANK_CLI_VERSION"
       )
       ;;

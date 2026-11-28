@@ -11,7 +11,8 @@ export const DEFAULT_CONFIG_PATHS: Record<AgentType, string> = {
     codex: '~/.codex',
     antigravity: '~/.gemini',
     opencode: '~/.config/opencode',
-    vibe: '~/.vibe'
+    vibe: '~/.vibe',
+    pi: '~/.pi/agent'
 };
 
 export class AgentConfigPathUnavailableError extends Error {
@@ -44,7 +45,8 @@ export const DEFAULT_CONFIG_PATH_MAPPINGS: Record<AgentType, readonly string[]> 
     codex: ['CODEX_CONFIG_PATH', 'HOST_CODEX_DIR'],
     antigravity: ['ANTIGRAVITY_CONFIG_PATH', 'HOST_ANTIGRAVITY_DIR'],
     opencode: ['OPENCODE_CONFIG_PATH', 'HOST_OPENCODE_XDG_DIR'],
-    vibe: ['VIBE_CONFIG_PATH', 'HOST_VIBE_DIR']
+    vibe: ['VIBE_CONFIG_PATH', 'HOST_VIBE_DIR'],
+    pi: ['PI_CONFIG_PATH', 'HOST_PI_DIR']
 };
 
 const PROVIDER_NAMES: Record<AgentType, string> = {
@@ -52,7 +54,8 @@ const PROVIDER_NAMES: Record<AgentType, string> = {
     codex: 'Codex',
     antigravity: 'Antigravity',
     opencode: 'OpenCode',
-    vibe: 'Vibe'
+    vibe: 'Vibe',
+    pi: 'Pi'
 };
 
 function validateCredentialMapping(value: string, source: string): string {

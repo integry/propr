@@ -68,7 +68,7 @@ export interface AgentToolPolicy {
     localMcpServers?: { name: string; bridgeConfig: string; env: Record<string, string> }[];
     /**
      * Skill bundles staged read-only at `/opt/propr/extensions/<id>`, set for
-     * runtimes whose capability map entry has native skills (Antigravity, OpenCode, Vibe),
+     * runtimes whose capability map entry has native skills (Antigravity, OpenCode, Vibe, Pi),
      * which also register them through their own skill mechanism.
      */
     skills?: { id: string; name: string }[];
@@ -111,6 +111,11 @@ export interface AgentTaskOptions {
      * Omitted for the existing one-shot task behavior.
      */
     executionMode?: 'task' | 'goal';
+    /**
+     * The goal this run belongs to, in goal mode. Providers whose session store
+     * is disposable per run (Pi) keep the goal's sessions under this identity.
+     */
+    goalId?: string;
     /** Exact provider session identity to resume in goal mode. */
     resumeSessionId?: string;
     /** Provider conversation identity when it differs from the session ID. */
@@ -351,6 +356,8 @@ export interface AgentExecutionResult {
     summary?: string;       // Extracted summary of work
     modifiedFiles: string[];
     cost?: number;          // Estimated cost in USD
+    /** Run cost the provider reported as authoritative (Pi `totalFromProvider`); recorded instead of ProPR pricing. */
+    providerCostUsd?: number;
 
     // Metadata
     modelUsed: string;
@@ -432,6 +439,26 @@ export interface Agent {
      * when no problem is visible.
      */
     credentialProblem?(): string | undefined;
+
+    /**
+     * Checks the provider credentials a model would use without running a
+     * prompt or refreshing tokens. Agents whose CLI has no such check omit it,
+     * and health checks fall back to a short analysis.
+     */
+    checkCredentials?(model: string): Promise<AgentCredentialCheckResult>;
+}
+
+/** Outcome of Agent.checkCredentials. */
+export interface AgentCredentialCheckResult {
+    /** ready: usable; not_ready: none configured; invalid: present but unusable. */
+    status: 'ready' | 'not_ready' | 'invalid';
+    provider?: string;
+    /** Provider-reported reason code, e.g. `credentials_not_configured`. */
+    reason?: string;
+    /** How the provider is authenticated when ready, e.g. `oauth` or `api_key`. */
+    authType?: string;
+    /** Human-readable explanation for not_ready and invalid. */
+    message?: string;
 }
 
 // Re-export types that are commonly needed with agent types
@@ -451,5 +478,6 @@ export const CONTAINER_CONFIG_PATHS: Record<AgentType, string> = {
     codex: '/home/node/.codex',
     antigravity: '/home/node/.gemini',
     opencode: '/home/node/.config/opencode',
-    vibe: '/home/node/.vibe'
+    vibe: '/home/node/.vibe',
+    pi: '/home/node/.pi/agent'
 };

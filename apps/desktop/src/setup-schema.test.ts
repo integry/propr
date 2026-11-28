@@ -29,6 +29,12 @@ describe('desktop setup request mode policy', () => {
     }
   });
 
+  it('accepts every supported agent type, including Pi', () => {
+    const agents = ['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'pi'];
+    assert.deepEqual(parseDesktopSetupRequest({ ...baseRequest, agents }).agents, agents);
+    assert.throws(() => parseDesktopSetupRequest({ ...baseRequest, agents: ['unknown'] }));
+  });
+
   it('rejects desktop Demo requests at the IPC trust boundary', () => {
     assert.throws(
       () => parseDesktopSetupRequest({ ...baseRequest, github: { mode: 'demo' }, intake: { mode: 'keep' } }),

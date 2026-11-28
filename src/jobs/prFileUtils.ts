@@ -155,6 +155,7 @@ export function agentResultToClaudeResponse(result: AgentExecutionResult): Claud
         ...(result.commitSubject && { commitSubject: result.commitSubject }),
         conversationLog: result.conversationLog,
         tokenUsage: result.tokenUsage,
+        ...(result.providerCostUsd !== undefined && { providerCostUsd: result.providerCostUsd }),
         usageMetrics: result.usageMetrics
     };
 }

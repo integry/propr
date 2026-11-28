@@ -24,6 +24,8 @@ import {
 import AgentTypeSelector from './AgentTypeSelector';
 import CliVersionSelector from './CliVersionSelector';
 import ModelSelector from './ModelSelector';
+import PiAgentFields from './PiAgentFields';
+import { envVarsAfterTypeChange, envVarsForCredentialSetup } from './piAgentFieldsUtils';
 import { buildSelectableModels } from './modelSelectionHelpers';
 
 interface AgentConfigModalProps {
@@ -116,6 +118,9 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const handleTypeChange = (newType: AgentType) => {
     const defaults = AGENT_DEFAULTS[newType];
     const prevDefaults = AGENT_DEFAULTS[formData.type];
+    // API-key credentials are a Pi option; other types fall back to a login.
+    const usesManagedPath = credentialSetup === 'login' || credentialSetup === 'apiKey';
+    if (credentialSetup === 'apiKey' && newType !== 'pi') setCredentialSetup('login');
     setFormData(prev => ({
       ...prev,
       type: newType,
@@ -123,7 +128,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       alias: prev.alias === prevDefaults.defaultAlias ? defaults.defaultAlias : prev.alias,
       dockerImage: defaults.dockerImage, // Docker image is predefined and not editable
       configPath: (
-        (!isEditing && credentialSetup === 'login')
+        (!isEditing && usesManagedPath)
         || isManagedAgentConfigPath(prev.configPath)
       ) && isAgentLoginSupported(newType)
         ? getManagedAgentConfigPath(prev.id!, newType)
@@ -132,6 +137,8 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           : prev.configPath,
       supportedModels: defaults.defaultModels,
       defaultModel: defaults.defaultModels[0],
+      // The previous type's provider keys have no field in the new type.
+      envVars: envVarsAfterTypeChange(prev.type, prev),
       // Reset version to default when changing agent type
       cliVersionType: 'default',
       cliVersion: undefined,
@@ -141,10 +148,11 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   const handleCredentialSetupChange = (next: CredentialSetup) => {
     setCredentialSetup(next);
-    setErrors(prev => ({ ...prev, configPath: '' }));
+    setErrors(prev => ({ ...prev, configPath: '', apiKeys: '' }));
     setFormData(prev => ({
       ...prev,
-      configPath: next === 'login' && isAgentLoginSupported(prev.type)
+      // API keys keep a managed (initially empty) Pi dir, not the host one.
+      configPath: (next === 'login' || next === 'apiKey') && isAgentLoginSupported(prev.type)
         ? getManagedAgentConfigPath(prev.id!, prev.type)
         : AGENT_DEFAULTS[prev.type].configPath,
     }));
@@ -210,7 +218,7 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   };
 
   const validateForm = (): boolean => {
-    const newErrors = validateAgentFormData(formData, existingAliases, agent?.alias);
+    const newErrors = validateAgentFormData(formData, existingAliases, agent?.alias, isEditing ? undefined : credentialSetup);
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -223,7 +231,11 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       return;
     }
 
-    const agentToSave = buildAgentConfig(formData);
+    // A new agent saves only the credentials of the setup it selected; an
+    // edited agent shows (and keeps) its keys whatever the setup.
+    const agentToSave = buildAgentConfig(isEditing
+      ? formData
+      : { ...formData, envVars: envVarsForCredentialSetup(formData, credentialSetup) });
 
     onSave(agentToSave, {
       loginAfterSave: shouldLoginAfterSave(
@@ -339,6 +351,22 @@ const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
               setFormData(prev => ({ ...prev, configPath }));
             }}
           />
+
+          {formData.type === 'pi' && (
+            <PiAgentFields
+              supportedModels={formData.supportedModels}
+              defaultModel={formData.defaultModel}
+              envVars={formData.envVars || {}}
+              showApiKeys={isEditing || credentialSetup === 'apiKey'}
+              apiKeyError={errors.apiKeys}
+              onEnvVarChange={(name, value) => setFormData(prev => ({ ...prev, envVars: { ...prev.envVars, [name]: value } }))}
+              onAddModel={modelId => setFormData(prev => ({
+                ...prev,
+                supportedModels: [...prev.supportedModels, modelId],
+                defaultModel: prev.defaultModel || modelId,
+              }))}
+            />
+          )}
 
           <ModelSelector
             agentType={formData.type} agentAlias={formData.alias}

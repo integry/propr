@@ -342,7 +342,7 @@ check_ui_api_configuration
 
 docker run --rm "$AGENT_TAG" sh -c '
   set -eu
-  for executable in claude codex agy opencode vibe agent-tank git gh rg python3; do
+  for executable in claude codex agy opencode vibe pi agent-tank git gh rg python3; do
     command -v "$executable" >/dev/null
   done
 ' >/dev/null
@@ -357,11 +357,93 @@ echo "✓ agent-tank runs through the entrypoint without a provider entrypoint"
 # Exercise GitHub CLI through every normal agent entrypoint. Merely checking
 # command -v is insufficient because each entrypoint places gh-wrapper first in
 # PATH; a wrapper that delegates back through PATH resolves itself and hangs.
-for entrypoint in claude codex antigravity opencode vibe; do
+for entrypoint in claude codex antigravity opencode vibe pi; do
   docker run --rm --network none --entrypoint "/home/node/${entrypoint}-entrypoint.sh" \
     "$AGENT_TAG" gh --version >/dev/null
 done
 echo "✓ agent entrypoints can execute GitHub CLI through the wrapper"
+
+# Pi runs through the shared entrypoint's dispatch, as ProPR starts it.
+pi_version="$(docker run --rm --network none -e PROPR_AGENT_TYPE=pi "$AGENT_TAG" pi --version 2>"$DATA_DIR/pi-version.log")" || {
+  echo "✗ pi --version failed through the agent entrypoint"
+  cat "$DATA_DIR/pi-version.log"
+  exit 1
+}
+pi_label="$(docker image inspect --format '{{ index .Config.Labels "dev.propr.agent.pi.version" }}' "$AGENT_TAG")"
+if [ -z "$pi_label" ] || [ "$pi_version" != "$pi_label" ]; then
+  echo "✗ pi --version ($pi_version) through the entrypoint does not match the image label ($pi_label)"
+  exit 1
+fi
+echo "✓ pi --version runs through the agent entrypoint"
+
+# Exercise the real source bind mount with a private UID 1001 store and with a
+# UID 1000 store that would be writable by the task without the root-only parent.
+for pi_source_uid in 1000 1001; do
+  pi_source="$DATA_DIR/pi-source-$pi_source_uid"
+  mkdir -p "$pi_source"
+  docker run --rm --network none --user 0:0 -v "$pi_source:/source:rw" --entrypoint sh "$AGENT_TAG" -ec '
+    mkdir -p /source/sessions /source/extensions
+    printf "%s" "{\"anthropic\":{\"type\":\"oauth\",\"access\":\"a\",\"refresh\":\"r\",\"expires\":1}}" > /source/auth.json
+    printf "%s" "{}" > /source/settings.json
+    printf "%s" "{}" > /source/mcp.json
+    chown -R "$1:$1" /source
+    chmod 700 /source
+    chown "$1:1002" /source/auth.json
+    chmod 600 /source/auth.json
+  ' pi-fixture "$pi_source_uid"
+  if ! docker run --rm --network none --user 0:0 --security-opt no-new-privileges \
+    -v "$pi_source:/root/propr-pi-source:rw" \
+    -e PROPR_PI_GOAL_SESSION_DIR=/tmp/goal-sessions \
+    --entrypoint sh "$AGENT_TAG" -ec '
+    # The goal store belongs to the worker (here the source UID). A worker
+    # other than node gets it opened to node for the run only, never chowned.
+    mkdir -m 0755 /tmp/goal-sessions
+    chown "$1:$1" /tmp/goal-sessions
+    if [ "$1" = 1000 ]; then goal_mode=700; else goal_mode=707; fi
+    printf "%s" "{\"anthropic\":{\"type\":\"oauth\",\"access\":\"new-a\",\"refresh\":\"new-r\",\"expires\":2}}" > /tmp/propr-pi-refreshed.json
+    chmod 644 /tmp/propr-pi-refreshed.json
+    /opt/propr/pi-entrypoint.sh sh -ec "
+      test \"\$(id -u)\" = 1000
+      test ! -r /root/propr-pi-source/auth.json
+      test ! -w /root/propr-pi-source/auth.json
+      test ! -x /root/propr-pi-source
+      ! ls /root/propr-pi-source >/dev/null 2>&1
+      ! touch /root/propr-pi-source/planted 2>/dev/null
+      ! ls -d /root/propr-pi-source/* >/dev/null 2>&1
+      test ! -e /proc/self/fd/9
+      test \"\$(stat -c %a /tmp/goal-sessions)\" = $goal_mode
+      (umask 022 && printf %s {} > /tmp/goal-sessions/session.jsonl)
+      cat /tmp/propr-pi-refreshed.json > \"\$PI_CODING_AGENT_DIR/auth.json\"
+      # /home/node is node-owned: replace its bin dir wholesale with fakes
+      # (last, so the task itself still runs the real tools).
+      mv /home/node/bin /home/node/bin.task-moved 2>/dev/null || true
+      mkdir /home/node/bin
+      for tool in cp chown chmod python3 python3.11 env mkdir rm ln mv realpath stat su-exec cat find; do
+        printf \"%s\\n\" \"#!/bin/sh\" \"echo \\\$0 >> /tmp/propr-fake-bin-ran\" \"exit 0\" > /home/node/bin/\$tool
+        /bin/chmod +x /home/node/bin/\$tool
+      done
+    "
+    test -x /home/node/bin/python3
+    test ! -e /tmp/propr-fake-bin-ran
+    test ! -e /root/propr-pi-source/planted
+    test "$(stat -c "%u:%g:%a" /tmp/goal-sessions/session.jsonl)" = "1000:1000:600"
+    test "$(stat -c "%u:%g:%a" /tmp/goal-sessions)" = "$1:$1:700"
+    grep -q "\"refresh\": \"new-r\"" /root/propr-pi-source/auth.json
+    test "$(stat -c "%u:%g:%a" /root/propr-pi-source/auth.json)" = "$1:1002:600"
+    test "$(stat -c "%u:%g:%a" /root/propr-pi-source)" = "$1:$1:700"
+    test "$(stat -c "%u:%g" /root/propr-pi-source/sessions)" = "$1:$1"
+    test ! -e /root/propr-pi-source/auth.json.lock
+    test ! -e /tmp/propr-pi-home/agent/mcp.json
+    test ! -e /tmp/propr-pi-home/agent/extensions
+    test -f /tmp/propr-pi-home/agent/auth.json
+    test -z "$(find /tmp/propr-pi-home ! -user node -print)"
+  ' pi-check "$pi_source_uid" 2>"$DATA_DIR/pi-entrypoint.log"; then
+    echo "✗ Pi entrypoint failed with a mounted UID $pi_source_uid source"
+    cat "$DATA_DIR/pi-entrypoint.log"
+    exit 1
+  fi
+done
+echo "✓ Pi isolates UID 1000 and UID 1001 credential sources from the task, ignores a task-replaced /home/node/bin after the run, writes back refreshes keeping owner and mode, and restricts goal session permissions"
 
 # ProPR starts OpenCode task containers as root (--user 0:0) with disposable
 # state and a mounted host data directory. Everything the entrypoint runs

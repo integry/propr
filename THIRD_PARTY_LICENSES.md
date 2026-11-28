@@ -72,6 +72,12 @@ Source: https://github.com/anomalyco/opencode
 Licensed under the Apache License, Version 2.0.
 Source: https://github.com/mistralai/mistral-vibe
 
+## @earendil-works/pi-coding-agent (installed in propr/agent image)
+
+Licensed under the MIT License (verified from the published npm package
+metadata of the package and its @earendil-works dependencies).
+Source: https://github.com/earendil-works/pi
+
 ---
 
 ## Apache License 2.0 (full text)

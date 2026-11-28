@@ -29,8 +29,8 @@ export interface AgentRuntimeCapabilityEntry extends AgentRuntimeCapabilities {
 const NONE: AgentRuntimeCapabilities = { extensions: false, proprMcp: false, skills: 'prompt' };
 
 /**
- * The runtime capability map. Claude, Codex, Antigravity, OpenCode 2.x and
- * Vibe are supported. OpenCode 1.x ignores the 2.x `mcp.servers` and
+ * The runtime capability map. Claude, Codex, Antigravity, OpenCode 2.x, Vibe
+ * and Pi are supported. OpenCode 1.x ignores the 2.x `mcp.servers` and
  * `skills.paths` config, so its entry carries the 2.x predicate.
  */
 export const AGENT_RUNTIME_CAPABILITIES: Readonly<Record<AgentType, Readonly<AgentRuntimeCapabilityEntry>>> = {
@@ -42,9 +42,11 @@ export const AGENT_RUNTIME_CAPABILITIES: Readonly<Record<AgentType, Readonly<Age
   opencode: { extensions: true, proprMcp: true, skills: 'native', cliVersion: { minMajor: 2 } },
   // Vibe registers staged bundles through its own `skill` tool (VIBE_SKILL_PATHS).
   vibe: { extensions: true, proprMcp: true, skills: 'native' },
+  // Pi loads each staged bundle through `--skill <path>` and a generated `mcp.json`.
+  pi: { extensions: true, proprMcp: true, skills: 'native' },
 };
 
-const RUNTIME_LABELS: Record<AgentType, string> = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity', opencode: 'OpenCode', vibe: 'Vibe' };
+const RUNTIME_LABELS: Record<AgentType, string> = { claude: 'Claude', codex: 'Codex', antigravity: 'Antigravity', opencode: 'OpenCode', vibe: 'Vibe', pi: 'Pi' };
 
 const isAgentType = (value: unknown): value is AgentType => typeof value === 'string' && Object.hasOwn(AGENT_RUNTIME_CAPABILITIES, value);
 

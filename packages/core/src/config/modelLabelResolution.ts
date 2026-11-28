@@ -124,7 +124,7 @@ function resolveBySupportedModelId(label: string, agents: { config: AgentConfig 
 
 function resolveByAgentTypePrefix(label: string, agents: { config: AgentConfig }[]): LlmLabelResolution | null {
     const lowerLabel = label.toLowerCase();
-    const agentTypes: AgentType[] = ['claude', 'codex', 'antigravity', 'opencode', 'vibe'];
+    const agentTypes: AgentType[] = ['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'pi'];
 
     for (const agentType of agentTypes) {
         if (!lowerLabel.startsWith(`${agentType}-`)) {

@@ -373,6 +373,154 @@ test('parseRedisOutput keeps Vibe 2 role-based records unchanged', () => {
     ]);
 });
 
+const PI_FIXTURE = new URL('./fixtures/pi/pi-1.6.1-json-tool-task.jsonl', import.meta.url);
+
+test('parseRedisOutput projects the Pi 1.6.1 JSON fixture as tool pairs, final text and summed usage', async () => {
+    const { readFileSync } = await import('node:fs');
+    const lines = readFileSync(PI_FIXTURE, 'utf8').split('\n').filter(Boolean);
+    const parsed = parseRedisOutput(lines);
+
+    const toolUses = parsed.events.filter(event => event.type === 'tool_use');
+    const toolResults = parsed.events.filter(event => event.type === 'tool_result');
+    assert.deepStrictEqual(toolUses.map(event => [event.toolName, event.id]), [
+        ['read', 'HEFIeQfFW'],
+        ['read', '7Rc4Yw8fp'],
+        ['bash', '4vK53wBZb'],
+        ['edit', '6UNoPXH4u'],
+    ]);
+    assert.deepStrictEqual(toolUses[2].input, { command: 'cat missing.txt', timeout: 5 });
+    // One result per call, though Pi repeats them in toolResult messages and turn_end.
+    assert.deepStrictEqual(toolResults.map(event => [event.toolUseId, event.isError]), [
+        ['4vK53wBZb', true],
+        ['6UNoPXH4u', false],
+        ['HEFIeQfFW', false],
+    ]);
+    for (const result of toolResults) {
+        const use = parsed.events.findIndex(event => event.type === 'tool_use' && event.id === result.toolUseId);
+        assert.ok(use >= 0 && use < parsed.events.indexOf(result), `tool_use precedes result ${result.toolUseId}`);
+    }
+    assert.match(String(toolResults[0].result), /^cat: missing\.txt: No such file or directory/);
+    assert.match(String(toolResults[2].result), /^function add\(a, b\)/);
+
+    const answer = parsed.events.at(-1);
+    assert.strictEqual(answer?.type, 'thought');
+    assert.strictEqual(answer?.content, 'Done. Added subtract(a, b) to math.js, exported it, and added a test; node --test passes.');
+    assert.strictEqual(answer?.timestamp, new Date(1795790316556).toISOString());
+    assert.ok(!parsed.events.some(event => String(event.content).startsWith('Read math.js')), 'user prompt is not a thought');
+    assert.deepStrictEqual(parsed.tokenUsage, {
+        input_tokens: 1583 + 2202,
+        output_tokens: 65 + 164,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+    });
+});
+
+test('Pi message_update deltas are buffered per contentIndex until text_end, thinking_end or message_end', async () => {
+    const { createRedisOutputProjection } = await import('../packages/api/services/redisOutputParser.ts');
+    const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } };
+    const update = (assistantMessageEvent: Record<string, unknown>) => JSON.stringify({ type: 'message_update', usage, assistantMessageEvent });
+    const projection = createRedisOutputProjection();
+    const feed = (line: string, key: string) => projection.feed(line, key).events.map(({ event }) => event);
+
+    feed(JSON.stringify({ type: 'session', version: 3, id: 's-1', timestamp: '2026-11-27T14:00:00.000Z', cwd: '/w' }), '0');
+    feed(JSON.stringify({ type: 'message_start', message: { role: 'assistant', content: [], stopReason: 'pending', timestamp: 1795790400000 } }), '1');
+    assert.deepStrictEqual(feed(update({ type: 'thinking_start', contentIndex: 0 }), '2'), []);
+    assert.deepStrictEqual(feed(update({ type: 'thinking_delta', contentIndex: 0, delta: 'Look at ' }), '3'), []);
+    feed(update({ type: 'thinking_delta', contentIndex: 0, delta: 'math.js' }), '4');
+    assert.strictEqual(projection.pendingEvent()?.event.content, 'Look at math.js');
+    assert.strictEqual(projection.pendingEvent()?.event.internalReasoning, true);
+    assert.strictEqual(projection.pendingEvent()?.key, 'pi:block:1795790400000:0', 'a block streams under its message key');
+
+    const thought = feed(update({ type: 'thinking_end', contentIndex: 0, content: 'Look at math.js first.' }), '5');
+    assert.deepStrictEqual(thought.map(event => [event.content, event.internalReasoning]), [['Look at math.js first.', true]]);
+    assert.strictEqual(projection.pendingEvent(), null);
+
+    feed(update({ type: 'text_start', contentIndex: 1 }), '6');
+    feed(update({ type: 'text_delta', contentIndex: 1, delta: 'Reading ' }), '7');
+    feed(update({ type: 'text_delta', contentIndex: 1, delta: 'it now' }), '8');
+    assert.strictEqual(projection.pendingEvent()?.event.content, 'Reading it now');
+    assert.strictEqual(projection.pendingEvent()?.event.internalReasoning, undefined);
+    feed(update({ type: 'toolcall_start', contentIndex: 2, id: 'call-1', toolName: 'read' }), '9');
+    // No text_end: the final message is authoritative for the streamed block.
+    const end = feed(JSON.stringify({ type: 'message_end', message: {
+        role: 'assistant',
+        content: [
+            { type: 'thinking', thinking: 'Look at math.js first.' },
+            { type: 'text', text: 'Reading it now.' },
+            { type: 'toolCall', id: 'call-1', name: 'read', arguments: { path: 'math.js' } },
+        ],
+        usage: { input: 100, output: 20, cacheRead: 30, cacheWrite: 5, totalTokens: 155 },
+        stopReason: 'toolUse',
+        // Pi stamps the assistant message once, when it starts streaming.
+        timestamp: 1795790400000,
+    } }), '10');
+    assert.deepStrictEqual(end.map(event => [event.type, event.content ?? event.toolName]), [
+        ['thought', 'Reading it now.'],
+        ['tool_use', 'read'],
+    ]);
+    assert.strictEqual(projection.pendingEvent(), null);
+
+    assert.deepStrictEqual(feed(JSON.stringify({ type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'read', args: { path: 'math.js' } }), '11'), []);
+    feed(JSON.stringify({ type: 'tool_execution_start', toolCallId: 'call-2', toolName: 'bash', args: { command: 'false' } }), '12');
+    feed(JSON.stringify({ type: 'tool_execution_end', toolCallId: 'call-2', toolName: 'bash', result: { content: [{ type: 'text', text: 'exit 1' }] }, isError: true }), '13');
+    feed(JSON.stringify({ type: 'tool_execution_end', toolCallId: 'call-1', toolName: 'read', result: { content: [{ type: 'text', text: 'module.exports = {}' }] }, isError: false }), '14');
+    feed(JSON.stringify({ type: 'message_end', message: { role: 'toolResult', toolCallId: 'call-1', toolName: 'read', content: [{ type: 'text', text: 'module.exports = {}' }], isError: false, timestamp: 1795790402000 } }), '15');
+    feed(JSON.stringify({ type: 'agent_settled', aborted: false }), '16');
+
+    const result = projection.result();
+    assert.deepStrictEqual(result.events.map(event => [event.type, event.id ?? event.toolUseId ?? event.content, event.isError]), [
+        ['thought', 'Look at math.js first.', undefined],
+        ['thought', 'Reading it now.', undefined],
+        ['tool_use', 'call-1', undefined],
+        ['tool_use', 'call-2', undefined],
+        ['tool_result', 'call-2', true],
+        ['tool_result', 'call-1', false],
+    ]);
+    assert.deepStrictEqual(result.events[3].input, { command: 'false' });
+    assert.strictEqual(result.events[1].timestamp, new Date(1795790400000).toISOString(), 'streamed block keeps its message timestamp');
+    assert.deepStrictEqual(result.tokenUsage, { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 5, cache_read_input_tokens: 30 });
+});
+
+test('parseRedisOutput keeps Pi output away from the Vibe transcript scan and other agents away from Pi', async () => {
+    const assistant = { role: 'assistant', content: [{ type: 'text', text: 'All done.' }], usage: { input: 3, output: 1 }, stopReason: 'stop', timestamp: 1795790500000 };
+    const parsed = parseRedisOutput([
+        JSON.stringify({ type: 'session', version: 3, id: 's-2', timestamp: '2026-11-27T14:00:00.000Z', cwd: '/w' }),
+        JSON.stringify({ type: 'message_end', message: { role: 'user', content: 'Do it', timestamp: 1795790499000 } }),
+        // The first `[` of the stream: a whole-transcript scan would read these messages as Vibe records.
+        JSON.stringify({ type: 'agent_end', messages: [{ role: 'user', content: 'Do it' }, { role: 'tool', tool_call_id: 'x', content: 'zzz' }], willRetry: true }),
+        JSON.stringify({ type: 'message_end', message: assistant }),
+    ]);
+    assert.deepStrictEqual(parsed.events.map(event => [event.type, event.content]), [['thought', 'All done.']]);
+    assert.deepStrictEqual(parsed.tokenUsage, { input_tokens: 3, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 });
+
+    const { isPiRecord } = await import('../packages/api/services/redisOutputParserPi.ts');
+    for (const other of [
+        { type: 'message', role: 'assistant', content: 'hi', delta: true },
+        { type: 'turn.started' },
+        { type: 'tool_use', tool_name: 'read', tool_id: 't' },
+        { type: 'effect', turnId: 't', generationStatus: 'completed', toolCallId: 'c' },
+        { type: 'assistant', message: { role: 'assistant', content: [] } },
+        { type: 'session', sessionID: 'ses_1' },
+        { type: 'message_end' },
+        { type: 'tool_execution_end' },
+    ]) {
+        assert.strictEqual(isPiRecord(other), false, JSON.stringify(other));
+    }
+});
+
+test('stored Pi output is detected and parsed for the live-details routes', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { detectStoredOutputFormat } = await import('../packages/api/routes/liveDetailsStoredOutputFormat.ts');
+    const { parsePiOutputToConversationResult } = await import('../packages/api/routes/liveDetailsOutputParsers.ts');
+    const output = readFileSync(PI_FIXTURE, 'utf8');
+    assert.strictEqual(detectStoredOutputFormat(output), 'pi');
+    // Container banners before the stream and CRLF framing do not change the result.
+    const parsed = parsePiOutputToConversationResult(`starting pi\n${output.replace(/\n/g, '\r\n')}`);
+    assert.strictEqual(parsed?.events.filter(event => event.type === 'tool_result').length, 3);
+    assert.strictEqual(parsed?.events.at(-1)?.content, 'Done. Added subtract(a, b) to math.js, exported it, and added a test; node --test passes.');
+    assert.strictEqual(parsed?.tokenUsage?.input_tokens, 3785);
+});
+
 test('parseRedisOutput projects agy stream-json envelopes into thoughts, step tools and usage', () => {
     const step = (index: number, state: string, stepType: string, extra: Record<string, unknown> = {}) => JSON.stringify({
         event: 'step_update', step_update: { conversation_id: 'agy-task', step_index: index, state, step_type: stepType, ...extra },

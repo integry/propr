@@ -8,6 +8,8 @@ import {
   type AgentLoginSession,
 } from '../../api/agentLoginApi';
 import { ProviderLogo } from '../../components/ui/ProviderLogo';
+import type { AgentLoginOptions } from '@propr/shared';
+import PiLoginOptionsDialog from './PiLoginOptionsDialog';
 
 const POLL_INTERVAL_MS = 750;
 const URL_RE = /(https?:\/\/[^\s<>"']+)/g;
@@ -24,6 +26,10 @@ const FOCUSABLE_SELECTOR = [
 interface AgentLoginModalProps {
   agent: AgentConfig;
   onClose: () => void;
+}
+
+interface AgentLoginSessionModalProps extends AgentLoginModalProps {
+  loginOptions?: AgentLoginOptions;
 }
 
 function isActive(session?: AgentLoginSession): boolean {
@@ -63,6 +69,11 @@ function statusClasses(session?: AgentLoginSession): string {
   }
 }
 
+function loginSubtitle(agent: AgentConfig, session?: AgentLoginSession): string {
+  const target = `Credentials are saved to ${agent.configPath}`;
+  return session?.provider ? `${session.provider} · ${target}` : target;
+}
+
 function trimUrlPunctuation(value: string): { url: string; suffix: string } {
   const match = value.match(/^(.*?)([),.;]+)?$/);
   return { url: match?.[1] || value, suffix: match?.[2] || '' };
@@ -93,7 +104,7 @@ function LinkifiedOutput({ output }: { output: string }) {
   );
 }
 
-const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => {
+const AgentLoginSessionModal: React.FC<AgentLoginSessionModalProps> = ({ agent, onClose, loginOptions }) => {
   const [session, setSession] = useState<AgentLoginSession>();
   const [input, setInput] = useState('');
   const [requestError, setRequestError] = useState<string>();
@@ -148,7 +159,7 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
     startAgentIdRef.current = agent.id;
 
     let disposed = false;
-    startPromiseRef.current ??= startAgentLogin(agent.id);
+    startPromiseRef.current ??= loginOptions ? startAgentLogin(agent.id, loginOptions) : startAgentLogin(agent.id);
     const startPromise = startPromiseRef.current;
     void startPromise
       .then(next => {
@@ -187,6 +198,8 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
       }, 0);
       cancelTimerRef.current = { id: timerId, agentId: agent.id };
     };
+    // Options are chosen once, before this modal mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
 
   useEffect(() => {
@@ -304,7 +317,9 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
               <h2 id="agent-login-title" className="truncate text-lg font-semibold text-gray-900">
                 Log in to {agent.alias}
               </h2>
-              <p className="truncate text-xs text-gray-500">Credentials are saved to {agent.configPath}</p>
+              <p className="truncate text-xs text-gray-500">
+                {loginSubtitle(agent, session)}
+              </p>
             </div>
           </div>
           <span className={`ml-3 rounded-full border px-2.5 py-1 text-xs font-medium ${statusClasses(session)}`}>
@@ -395,6 +410,27 @@ const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => 
       </div>
     </div>
   );
+};
+
+/**
+ * Pi signs in to one provider per login, so its provider and method are chosen
+ * before the login container starts. Other agents start immediately.
+ */
+const AgentLoginModal: React.FC<AgentLoginModalProps> = ({ agent, onClose }) => {
+  // Options belong to the agent they were chosen for.
+  const [chosen, setChosen] = useState<{ agentId: string; options: AgentLoginOptions }>();
+  const loginOptions = chosen?.agentId === agent.id ? chosen.options : undefined;
+  if (agent.type === 'pi' && !loginOptions) {
+    return (
+      <PiLoginOptionsDialog
+        key={agent.id}
+        agent={agent}
+        onStart={options => setChosen({ agentId: agent.id, options })}
+        onClose={onClose}
+      />
+    );
+  }
+  return <AgentLoginSessionModal agent={agent} onClose={onClose} loginOptions={loginOptions} />;
 };
 
 export default AgentLoginModal;

@@ -235,6 +235,22 @@ describe('agent model reasoning level configuration', () => {
     assert.equal(validateAgentsConfig([normalized]), null);
   });
 
+  test('lowercases Pi provider ids from the agents API and keeps the model part as typed', () => {
+    const [normalized] = normalizeAgentsConfig([{
+      ...baseAgent,
+      id: 'pi', type: 'pi', alias: 'pi', configPath: '~/.pi/agent',
+      supportedModels: [' Pi-OpenRouter/Qwen/Qwen3-Coder ', 'pi-anthropic/claude-opus-5-5:high'],
+      defaultModel: 'PI-OPENROUTER/Qwen/Qwen3-Coder',
+      modelReasoningLevels: { 'pi-Anthropic/claude-opus-5-5:high': 'high' },
+    }]);
+    assert.deepEqual(normalized.supportedModels, ['pi-openrouter/Qwen/Qwen3-Coder', 'pi-anthropic/claude-opus-5-5:high']);
+    assert.equal(normalized.defaultModel, 'pi-openrouter/Qwen/Qwen3-Coder');
+    assert.deepEqual(normalized.modelReasoningLevels, { 'pi-anthropic/claude-opus-5-5:high': 'high' });
+    // Other agents' ids keep their case.
+    const [codex] = normalizeAgentsConfig([{ ...baseAgent, supportedModels: ['GPT-5.6-Sol'] }]);
+    assert.deepEqual(codex.supportedModels, ['GPT-5.6-Sol']);
+  });
+
   test('rejects invalid per-model reasoning levels from the agents API', () => {
     const error = validateAgentsConfig([{
       ...baseAgent,

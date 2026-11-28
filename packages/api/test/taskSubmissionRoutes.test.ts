@@ -354,14 +354,14 @@ test('submission routing rejects extension selections on unsupported runtimes be
   const { routing } = await import('../routes/taskSubmissionRoutes.js');
   const extensionProfile = { instanceId: 'instance', profileId: 'profile', revision: 1 };
   // OpenCode 1.x ignores the 2.x MCP and skills config; OpenCode 2.x is supported.
-  for (const [type, cliVersionResolved] of [['vibe'], ['opencode', '1.19.6'], ['opencode', '2.4.2'], ['antigravity'], ['claude'], ['codex']]) {
+  for (const [type, cliVersionResolved] of [['vibe'], ['opencode', '1.19.6'], ['opencode', '2.4.2'], ['antigravity'], ['claude'], ['codex'], ['pi']]) {
     const registry = { ensureInitialized: async () => undefined, getAgentByAlias: () => ({ config: { alias: 'selected', type, cliVersionResolved, enabled: true, defaultModel: 'model', supportedModels: ['model'] } }) } as never;
     let labelCalls = 0;
     const labels = async () => { labelCalls++; return 'llm-selected'; };
     if (cliVersionResolved !== '1.19.6') {
       assert.equal((await routing({ agentAlias: 'selected', extensionProfile }, registry, labels, async () => ({ agentAlias: 'selected', model: 'model' }))).agentAlias, 'selected');
     } else {
-      await assert.rejects(routing({ agentAlias: 'selected', extensionProfile }, registry, labels, async () => ({ agentAlias: 'selected', model: 'model' })), error => (error as Error & { status?: number }).status === 400 && /Claude, Codex, Antigravity, OpenCode or Vibe/.test((error as Error).message));
+      await assert.rejects(routing({ agentAlias: 'selected', extensionProfile }, registry, labels, async () => ({ agentAlias: 'selected', model: 'model' })), error => (error as Error & { status?: number }).status === 400 && /Claude, Codex, Antigravity, OpenCode, Vibe or Pi/.test((error as Error).message));
       assert.equal(labelCalls, 0);
     }
     assert.equal((await routing({ agentAlias: 'selected' }, registry, labels)).agentAlias, 'selected');

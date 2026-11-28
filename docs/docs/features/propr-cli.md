@@ -64,7 +64,7 @@ locally on both hosts regardless of this setting.
 
 The full-screen wizard requires an interactive terminal. Over SSH or in shells without raw-mode support, setup falls back to line-by-line prompts automatically (or pass `--no-tui`). When stdin is not a terminal at all (piped, redirected, CI), setup cannot prompt and exits with guidance — scaffold non-interactively with `propr init stack`, edit `<root>/.env`, then run `propr start`.
 
-- `propr init stack [--root <dir>]` creates `data/`, `logs/`, `repos/`, writes `.env` from the bundled template, and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`).
+- `propr init stack [--root <dir>]` creates `data/`, `logs/`, `repos/`, writes `.env` from the bundled template, and auto-detects agent credential directories on the host (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.config/opencode`, `~/.vibe`, `~/.pi/agent`).
 - `propr check` reports the detected [GitHub auth mode](../operations/github-auth.md) (own App, relay, or demo) and flags missing or placeholder configuration before anything starts. `--verify` additionally verifies GitHub App access (minting an installation token) and runs an image/CLI smoke test per agent. GitHub transport failures are warnings.
 - `propr start --no-tui` starts without the interactive dashboard (for scripts/CI); `--no-pull` skips image pulls; `--restart` recreates running services.
 - `propr tank [bundled|external|off] [--url <url>]` configures [Agent Tank](../operations/agent-tank.md) LLM usage tracking on a running stack (omit the mode to print the current one). `bundled` runs Agent Tank inside the agent image with nothing to install; `external` needs `--url` pointing at a daemon you run. `on` remains a deprecated alias for `external`.
@@ -532,9 +532,9 @@ propr agent pool apply pools.json       # Also accepts '-' for stdin
 propr agent pool delete balanced-pool
 ```
 
-Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`.
+Agent types: `claude`, `codex`, `antigravity`, `opencode`, `vibe`, `pi`.
 
-`propr agent login [type]` runs the agent's pinned CLI inside its image with the host credential directory mounted, so the stored credentials match what runs jobs. Use it when no host login exists or after a failed image check (`propr check agents`).
+`propr agent login [type]` runs the agent's pinned CLI inside its image with the host credential directory mounted, so the stored credentials match what runs jobs. Use it when no host login exists or after a failed image check (`propr check agents`). Pi signs in to one provider per login: pass `--provider <provider>` (default: the default model's provider) and `--api-key` to save a key instead of an account sign-in.
 
 See [Agents and Models](./agents-and-models.md) for the model catalog, label formats, and per-agent credential setup, including the OpenCode host-authentication steps and the `XDG_DATA_HOME` requirement for file-based OpenCode auth.
 

@@ -18,6 +18,7 @@ Goals retain an objective, provider session, goal branch, and delivery history a
 | Claude Code | Native goal execution. Corrections reach the running session live. |
 | Codex | Native goal execution. Corrections reach the running session live. |
 | Antigravity CLI | Native goal execution with resumable sessions. ProPR resumes the same session after checkpoints; corrections and pause apply at the next safe boundary. |
+| Pi coding agent | Whole-session goals. ProPR resumes the goal's saved Pi session after checkpoints; corrections, pause and model changes apply at the next safe boundary. |
 | OpenCode, Mistral Vibe | Not supported. Use tasks or plans with these agents. |
 
 Synthetic pools cannot run goals. Availability is also checked against the configured runtime image: an agent listed for ordinary tasks is not necessarily goal-capable in your installation. If no goal-capable agent is available, use the capability diagnostics and recheck after updating the runtime.
@@ -42,7 +43,7 @@ In both strategies, **max parallel tasks** is a limit the agent enforces itself;
 
 ## Corrections, pause and cancel
 
-Send a correction from the goal console or through MCP's `send_goal_input` to steer the existing session. The timeline records your message verbatim so you can distinguish operator input from agent output. All three deliver it into the running goal: Codex and Claude over their live control channels, and Antigravity by stopping at the next finished step and resuming the same conversation (see below). A queued input is not proof that the agent has already acted on it.
+Send a correction from the goal console or through MCP's `send_goal_input` to steer the existing session. The timeline records your message verbatim so you can distinguish operator input from agent output. Codex and Claude deliver it over their live control channels, Antigravity by stopping at the next finished step and resuming the same conversation, and Pi by stopping the current run and resuming the goal's saved session with your message (see below). A queued input is not proof that the agent has already acted on it.
 
 **Pause**, **Resume** and **Cancel** also follow provider boundaries. A pending pause or cancellation can take time to acknowledge; watch the displayed state. Model changes apply at a boundary. Terminal goals no longer accept corrections; continue them instead (see below).
 
@@ -96,6 +97,7 @@ Silence, slow work, rate limits, infrastructure failures, the agent's narration 
 | Codex | Supported | Reported; pause or cancel to hand off |
 | Claude | Supported through the `ask_operator` tool | Not available (headless, permissions bypassed) |
 | Antigravity | Not available (print mode, permissions bypassed) | Not available |
+| Pi | Not available (print mode, no permission prompts) | Not available |
 
 Confirmed pauses are reported for every provider.
 
@@ -118,6 +120,16 @@ ProPR launches an Antigravity goal with the CLI's native `/goal` command, sent t
 The CLI's print mode holds new messages until a goal finishes, so ProPR reaches control boundaries itself. When a checkpoint is declared, input is sent, or a pause, cancel or model change is requested, ProPR interrupts at the next finished step. It then resumes the exact conversation, where the goal is still set, with the checkpoint acknowledgement or your message. Resumed messages are sent with slash commands disabled, so they reach the conversation verbatim.
 
 The stream supplies live narration to goal details and `get_agent_activity`. A goal completes only when Antigravity marks it complete; a turn that ends without that mark is nudged to continue, and repeated unexplained stops fail the goal. The capability check requires the pinned CLI to expose `--print`, `--output-format`, `--conversation`, `--disable-slash-commands` and the built-in `/goal` command.
+
+## Pi goals
+
+Pi has no native goal command, so a Pi goal is a whole session that ProPR drives. The first run sends the objective and ProPR's delivery context as the first message of a new Pi session (`pi -p --mode json --session-id <id>`), under a session ID ProPR assigns. ProPR saves that ID as soon as Pi has written the prompt to its session file, so a run interrupted later still resumes the same conversation. Every later run reopens the exact saved session file with `--session <file>`, so the goal keeps its whole conversation, and sends the next message: the checkpoint acknowledgement, your correction, or a request to continue.
+
+Pi's own agent directory is disposable and recreated for every run, so goal sessions are kept outside it. Each goal has its own directory under `/tmp/git-processor/pi-goal-sessions/<goal-id>` (set `PI_GOAL_SESSIONS_PATH` to move it), mounted into the run and passed as `--session-dir`. The directory and its session files are owner-only, before and after each run. The directory stays owned by the user ProPR runs as, so a goal whose run was killed can still be resumed or deleted. They are removed when the goal is deleted; a finished goal keeps them so that it can be continued. If a goal's saved session file is missing, the next run fails instead of continuing the goal with an empty conversation.
+
+Checkpoints, model changes, pause and input take effect at a boundary. A checkpoint is declared at the end of a run, as for the other agents. When you pause, send input or change the model, ProPR stops the current run and later resumes the same session with your message or the new model. The capability check requires the pinned CLI's `pi --help` to list `-p`, `--mode`, `--session`, `--session-id`, `--session-dir` and `--no-session`, run offline with no credentials mounted.
+
+Pi's RPC mode (`--mode rpc`, with steering and follow-up queues) could deliver corrections into a running Pi goal without stopping it. ProPR does not use it yet, so Pi corrections wait for the next boundary.
 
 ## Checkpoints and controls
 

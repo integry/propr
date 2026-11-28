@@ -100,7 +100,7 @@ test('wildcards never match IP literals and malformed entries are rejected', () 
 });
 
 test('every agent base list covers GitHub and the package registries', () => {
-    for (const agent of ['claude', 'codex', 'antigravity', 'opencode', 'vibe'] as const) {
+    for (const agent of ['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'pi'] as const) {
         const hosts = baseEgressAllowlist(agent);
         for (const host of ['github.com', 'api.github.com', 'objects.githubusercontent.com', 'registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org',
             // Git LFS: the batch API is on github.com; objects come from these.
@@ -112,6 +112,16 @@ test('every agent base list covers GitHub and the package registries', () => {
     assert.ok(new Set(baseEgressAllowlist('claude')).has('api.anthropic.com'));
     assert.ok(new Set(baseEgressAllowlist('codex')).has('api.openai.com'));
     assert.ok(new Set(baseEgressAllowlist('vibe')).has('api.mistral.ai'));
+});
+
+test('the Pi base list covers its configured providers and keeps Pi\'s own endpoints off', () => {
+    const pi = compileEgressAllowlist(baseEgressAllowlist('pi'));
+    for (const host of ['api.anthropic.com', 'platform.claude.com', 'api.openai.com', 'auth.openai.com', 'chatgpt.com',
+        'openrouter.ai', 'generativelanguage.googleapis.com', 'api.individual.githubcopilot.com']) {
+        assert.ok(pi.allows(host, 443), host);
+    }
+    // Update check, install telemetry, model catalog and the Radius gateway.
+    for (const host of ['pi.dev', 'radius.pi.dev', 'api.pi.dev']) assert.equal(pi.allows(host, 443), false, host);
 });
 
 test('CONNECT authorities are parsed with ports and IPv6 brackets', () => {

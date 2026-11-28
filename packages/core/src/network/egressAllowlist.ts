@@ -1,5 +1,5 @@
 import { SocketAddress, isIP } from 'node:net';
-import type { AgentType } from '../agents/types.js';
+import type { AgentCliType } from '../agents/constants.js';
 
 /**
  * Hostname allowlists for restricted agent networking. Entries are exact
@@ -28,12 +28,26 @@ const COMMON_HOSTS = [
 ];
 
 /** Provider API and sign-in hosts each agent needs for its own traffic. */
-export const AGENT_EGRESS_BASE_HOSTS: Record<AgentType, readonly string[]> = {
+export const AGENT_EGRESS_BASE_HOSTS: Record<AgentCliType, readonly string[]> = {
     claude: ['api.anthropic.com', 'console.anthropic.com', 'platform.claude.com'],
     codex: ['api.openai.com', 'auth.openai.com', 'chatgpt.com'],
     antigravity: ['generativelanguage.googleapis.com', 'cloudcode-pa.googleapis.com', 'oauth2.googleapis.com'],
     opencode: ['opencode.ai', 'models.dev', 'api.anthropic.com', 'api.openai.com', 'openrouter.ai', 'generativelanguage.googleapis.com'],
     vibe: ['api.mistral.ai'],
+    // The providers ProPR configures for Pi: Anthropic, OpenAI (API and
+    // ChatGPT/Codex sign-in), OpenRouter, Gemini, and GitHub Copilot (whose
+    // token exchange uses api.github.com from COMMON_HOSTS), with the hosts
+    // their OAuth refreshes call. Pi's own pi.dev endpoints (update check,
+    // install telemetry, model catalog, Radius) are deliberately absent; the
+    // entrypoint also turns them off (PI_SKIP_VERSION_CHECK, PI_TELEMETRY=0,
+    // PI_OFFLINE=1).
+    pi: [
+        'api.anthropic.com', 'platform.claude.com',
+        'api.openai.com', 'auth.openai.com', 'chatgpt.com',
+        'openrouter.ai',
+        'generativelanguage.googleapis.com',
+        'api.individual.githubcopilot.com',
+    ],
 };
 
 /**
@@ -42,11 +56,12 @@ export const AGENT_EGRESS_BASE_HOSTS: Record<AgentType, readonly string[]> = {
  * timeline warning) instead of failing every request, unless the instance
  * enforces restricted mode, in which case its run is refused.
  */
-export const AGENT_EGRESS_PROXY_SUPPORT: Record<AgentType, { supported: boolean; note: string }> = {
+export const AGENT_EGRESS_PROXY_SUPPORT: Record<AgentCliType, { supported: boolean; note: string }> = {
     claude: { supported: true, note: 'Claude Code honours HTTPS_PROXY and HTTP_PROXY for API traffic.' },
     codex: { supported: true, note: 'Codex CLI honours HTTPS_PROXY and HTTP_PROXY for API traffic.' },
     opencode: { supported: true, note: 'OpenCode runs on Bun, whose HTTP client honours HTTPS_PROXY and HTTP_PROXY.' },
     vibe: { supported: true, note: 'Vibe uses httpx, which honours HTTPS_PROXY and HTTP_PROXY.' },
+    pi: { supported: true, note: "Pi sends provider traffic through undici's EnvHttpProxyAgent, which honours HTTPS_PROXY and HTTP_PROXY." },
     antigravity: {
         supported: false,
         note: 'Antigravity CLI has not been verified to send its Google sign-in and API traffic through HTTPS_PROXY.',
@@ -60,11 +75,11 @@ export const AGENT_EGRESS_PROXY_SUPPORT: Record<AgentType, { supported: boolean;
  * flags the run as needing attention for nothing. A value the caller set
  * explicitly is kept.
  */
-export const AGENT_EGRESS_RESTRICTED_ENV: Partial<Record<AgentType, ReadonlyArray<readonly [string, string]>>> = {
+export const AGENT_EGRESS_RESTRICTED_ENV: Partial<Record<AgentCliType, ReadonlyArray<readonly [string, string]>>> = {
     claude: [['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '1']],
 };
 
-export function baseEgressAllowlist(agentType: AgentType): string[] {
+export function baseEgressAllowlist(agentType: AgentCliType): string[] {
     return [...new Set([...COMMON_HOSTS, ...AGENT_EGRESS_BASE_HOSTS[agentType]])];
 }
 

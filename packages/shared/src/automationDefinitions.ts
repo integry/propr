@@ -1,4 +1,4 @@
-import { automationExtensionsSchema, type AutomationExtensions } from './extensionLibrary.js';
+import { automationExtensionsSchema, EXTENSION_RUNTIMES, type AutomationExtensions } from './extensionLibrary.js';
 /**
  * Authoritative automation definition contract shared by the REST API, MCP, web UI,
  * CLI, worker and daemon scheduler. An automation is a saved, reusable definition

@@ -2,8 +2,7 @@
  * Version management types and constants for agent CLI tools.
  */
 
-import { AGENT_IMAGE_NAME } from '../constants.js';
-import type { AgentType } from '../types.js';
+import { AGENT_IMAGE_NAME, type AgentCliType } from '../constants.js';
 
 // Re-export CliVersionType from configManager for convenience
 // (it's the canonical definition there since it's part of AgentConfig)
@@ -12,36 +11,39 @@ export type { CliVersionType } from '../../config/configManager.js';
 /**
  * Package names for each agent CLI.
  */
-export const AGENT_CLI_PACKAGES: Record<AgentType, string> = {
+export const AGENT_CLI_PACKAGES: Record<AgentCliType, string> = {
     claude: '@anthropic-ai/claude-code',
     codex: '@openai/codex',
     antigravity: 'https://antigravity.google/cli/install.sh',
     opencode: '@opencode/cli',
-    vibe: 'mistral-vibe'
+    vibe: 'mistral-vibe',
+    pi: '@earendil-works/pi-coding-agent'
 } as const;
 
 /**
  * Available package tags for each agent type.
  * These are the common tags that can be selected in the UI.
  */
-export const AGENT_CLI_TAGS: Record<AgentType, string[]> = {
+export const AGENT_CLI_TAGS: Record<AgentCliType, string[]> = {
     claude: ['stable', 'latest', 'next'],
     codex: ['latest', 'alpha'],
     antigravity: ['latest'],
     opencode: ['latest', 'beta', 'dev'],
-    vibe: ['latest']
+    vibe: ['latest'],
+    pi: ['latest']
 };
 
 /**
  * Default CLI versions for each agent type.
  * These are used when cliVersionType is 'default'.
  */
-export const AGENT_DEFAULT_VERSIONS: Record<AgentType, string> = {
+export const AGENT_DEFAULT_VERSIONS: Record<AgentCliType, string> = {
     claude: '2.1.330',
     codex: '0.171.0',
     antigravity: '1.5.15',
     opencode: '2.4.2',
-    vibe: '3.1.5'
+    vibe: '3.1.5',
+    pi: '1.6.1'
 };
 
 /** The single repository used for every managed agent execution. */
@@ -66,6 +68,8 @@ export const AGENT_BUNDLE_CONTENT_FILES = [
     'scripts/opencode-run.sh',
     'scripts/vibe-entrypoint.sh',
     'scripts/vibe-prompt-file-runner.py',
+    'scripts/pi-entrypoint.sh',
+    'scripts/pi-credentials.py',
     'scripts/gh-wrapper.sh',
     'scripts/extension-stdio-bridge.mjs',
     'NOTICE',
@@ -96,7 +100,7 @@ export interface NpmVersionInfo {
  * Available versions response for the API.
  */
 export interface AvailableVersionsResponse {
-    agentType: AgentType;
+    agentType: AgentCliType;
     packageName: string;
     defaultVersion: string;
     availableTags: Array<{ tag: string; version: string }>;

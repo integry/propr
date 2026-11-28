@@ -56,7 +56,7 @@ The launcher starts these images, pinned to the release version in its manifest:
 | `propr/app` | Server image; the start command selects the role (daemon, worker, indexing worker, API) |
 | `propr/ui` | Web UI static bundle |
 | `propr/docs` | Documentation site (started only with `DOCS_ENABLED=true`) |
-| `propr/agent` | Unified Claude, Codex, Antigravity, OpenCode, and Vibe execution container |
+| `propr/agent` | Unified Claude, Codex, Antigravity, OpenCode, Vibe, and Pi execution container |
 | `redis:7-alpine` | Queue and cache state |
 
 Images are published to Docker Hub under the `propr/` namespace. Docker Hub is the single public release registry; the namespace can be overridden with `DOCKERHUB_NS` for development or private distributions.
@@ -123,7 +123,7 @@ curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy login
 ```
 
-Use `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` so the launcher can mount the authenticated CLI state into Antigravity worker runs. For OpenCode and Vibe agents, see the `HOST_OPENCODE_*` and `HOST_VIBE_*` variables documented in `.env.example`.
+Use `HOST_ANTIGRAVITY_DIR="$HOME/.gemini"` so the launcher can mount the authenticated CLI state into Antigravity worker runs. For OpenCode and Vibe agents, see the `HOST_OPENCODE_*`, `HOST_VIBE_*` and `HOST_PI_DIR` variables documented in `.env.example`.
 
 ## Issue Intake Modes
 

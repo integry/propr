@@ -103,7 +103,7 @@ describe('runtime capability map drives every gate', () => {
     assert.deepEqual([...AUTOMATION_DEFINITION_CONTRACT.extensions.runtimes], extensionTypes);
     assert.deepEqual([...AUTOMATION_DEFINITION_CONTRACT.proprMcpAgentTypes], AGENT_TYPES.filter(type => map[type].proprMcp));
     // Every runtime is on; OpenCode only from CLI 2.x.
-    assert.deepEqual(extensionTypes, ['claude', 'codex', 'antigravity', 'opencode', 'vibe']);
+    assert.deepEqual(extensionTypes, ['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'pi']);
     assert.equal(map.vibe.skills, 'native');
     assert.equal(map.opencode.skills, 'native');
     assert.deepEqual(map.opencode.cliVersion, { minMajor: 2 });
@@ -147,6 +147,6 @@ test('a runtime without extension support records its skipped auto-applied items
     assert.deepEqual(event.skipped, [{ kind: 'server', name: 'docs', reason: 'runtime', source: 'auto' }]);
     // Explicitly added items still refuse on such a runtime.
     await assert.rejects(executeWithExtensions(config, { ...options, extensions: { ...options.extensions, servers: ['docs'] } } as never, async () => ({ success: true }) as never, store),
-      (error: Error & { status?: number }) => error.status === 400 && /Claude, Codex, Antigravity, OpenCode or Vibe/.test(error.message));
+      (error: Error & { status?: number }) => error.status === 400 && /Claude, Codex, Antigravity, OpenCode, Vibe or Pi/.test(error.message));
   } finally { await database.destroy(); }
 });

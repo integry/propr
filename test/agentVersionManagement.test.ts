@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { AGENT_DEFAULTS } from '@propr/shared';
 import {
+    AGENT_CLI_TYPES,
     AGENT_IMAGE_NAME,
     AGENT_TYPES,
     DEFAULT_AGENT_DOCKER_IMAGES,
@@ -100,6 +101,50 @@ describe('agent version management', () => {
         assert.match(fetchedUrl, /\/@opencode%2Fcli$/);
     });
 
+    test('bundles the Pi CLI in the agent image version matrix', () => {
+        assert.ok(AGENT_CLI_TYPES.includes('pi'));
+        assert.strictEqual(new Set(AGENT_CLI_TYPES).size, AGENT_CLI_TYPES.length);
+        assert.deepStrictEqual(AGENT_CLI_TYPES.slice(0, AGENT_TYPES.length), [...AGENT_TYPES]);
+        assert.strictEqual(AGENT_CLI_PACKAGES.pi, '@earendil-works/pi-coding-agent');
+        assert.deepStrictEqual(AGENT_CLI_TAGS.pi, ['latest']);
+        assert.strictEqual(AGENT_DEFAULT_VERSIONS.pi, '1.6.1');
+        assert.strictEqual(getDefaultAgentCliVersionMatrix().pi, '1.6.1');
+    });
+
+    test('resolves Pi versions against the scoped npm package', async () => {
+        const fetchedUrls: string[] = [];
+        globalThis.fetch = (async (input: string | URL | Request) => {
+            fetchedUrls.push(input.toString());
+            return new Response(JSON.stringify({
+                name: '@earendil-works/pi-coding-agent',
+                'dist-tags': { latest: '1.7.0' },
+                versions: {
+                    '1.6.1': { name: '@earendil-works/pi-coding-agent', version: '1.6.1' },
+                    '1.7.0': { name: '@earendil-works/pi-coding-agent', version: '1.7.0' }
+                },
+                time: { '1.6.1': '2026-11-20T00:00:00.000Z', '1.7.0': '2026-11-26T00:00:00.000Z' }
+            }), { status: 200, headers: { 'content-type': 'application/json' } });
+        }) as typeof fetch;
+
+        assert.strictEqual(await resolveVersion('pi', 'default'), '1.6.1');
+        assert.strictEqual(await resolveVersion('pi', 'tag', 'latest'), '1.7.0');
+        assert.strictEqual(await resolveVersion('pi', 'specific', '1.6.1'), '1.6.1');
+        assert.ok(fetchedUrls.length > 0);
+        for (const url of fetchedUrls) assert.match(url, /\/@earendil-works%2Fpi-coding-agent$/);
+
+        const available = await getAvailableVersions('pi');
+        assert.strictEqual(available.packageName, '@earendil-works/pi-coding-agent');
+        assert.strictEqual(available.defaultVersion, '1.6.1');
+        assert.deepStrictEqual(available.availableTags, [{ tag: 'latest', version: '1.7.0' }]);
+    });
+
+    test('the Pi CLI version is part of the unified bundle image tag', () => {
+        const versions = getDefaultAgentCliVersionMatrix();
+        const before = generateAgentBundleImageTag(versions, 'abc123');
+        versions.pi = '1.7.0';
+        assert.notStrictEqual(generateAgentBundleImageTag(versions, 'abc123'), before);
+    });
+
     test('reports conflicting CLI versions among enabled aliases of one agent type', () => {
         const conflicts = findAgentCliVersionConflicts([
             { type: 'claude', alias: 'claude-stable', cliVersionResolved: '2.1.220', enabled: true },
@@ -133,6 +178,17 @@ describe('agent version management', () => {
 
         assert.match(agentDockerfile, new RegExp(`^ARG OPENCODE_CLI_VERSION=${AGENT_DEFAULT_VERSIONS.opencode}$`, 'm'));
         assert.match(agentDockerfile, new RegExp(`^ARG VIBE_CLI_VERSION=${AGENT_DEFAULT_VERSIONS.vibe}$`, 'm'));
+        const piPins = [...agentDockerfile.matchAll(/^ARG PI_CLI_VERSION=(.+)$/gm)].map(match => match[1]);
+        assert.strictEqual(piPins.length, 2, 'the pi-cli stage and the final stage both pin PI_CLI_VERSION');
+        assert.deepStrictEqual(new Set(piPins), new Set([AGENT_DEFAULT_VERSIONS.pi]));
+        assert.match(agentDockerfile, /npm install -g "@earendil-works\/pi-coding-agent@\$\{PI_CLI_VERSION\}"/);
+        assert.match(agentDockerfile, /^COPY --from=pi-cli \/usr\/local\/lib\/node_modules\/@earendil-works /m);
+        assert.match(agentDockerfile, /dev\.propr\.agent\.pi\.version="\$\{PI_CLI_VERSION\}"/);
+        for (const flag of ['--mode', '--print', '--model', '--thinking', '--tools', '--no-builtin-tools', '--session-dir', '--no-approve']) {
+            assert.ok(agentDockerfile.includes(` ${flag} `) || agentDockerfile.includes(` ${flag};`), `Dockerfile.agent must verify pi --help lists ${flag}`);
+        }
+        assert.match(buildScript, new RegExp(`^PI_CLI_VERSION="\\$\\{PI_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.pi}\\}"$`, 'm'));
+        assert.match(buildScript, /"--build-arg" "PI_CLI_VERSION=\$PI_CLI_VERSION"/);
         assert.match(buildScript, new RegExp(`^CLAUDE_CLI_VERSION="\\$\\{CLAUDE_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.claude}\\}"$`, 'm'));
         assert.match(buildScript, new RegExp(`^CODEX_CLI_VERSION="\\$\\{CODEX_CLI_VERSION:-${AGENT_DEFAULT_VERSIONS.codex}\\}"$`, 'm'));
     });

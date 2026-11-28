@@ -8,6 +8,8 @@
  *   • Host    — run the agent's CLI on the host with host credentials (billable).
  *   • Image   — run the agent's Docker image with the credential directory
  *               mounted, mirroring the worker (billable).
+ *   Pi's host and image checks run `pi auth check --no-refresh` instead of a
+ *   prompt, so they neither rotate OAuth tokens nor spend model tokens.
  *
  * Comparing host vs image pinpoints failures: host OK + image FAIL ⇒ a
  * credential mount / container config problem rather than a bad credential.
@@ -23,12 +25,16 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } f
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import {
+  AGENT_DEFAULTS,
   AGENT_LOGIN_DESCRIPTORS,
   ANTIGRAVITY_KEYRING_MARKER_FILE,
   ANTIGRAVITY_TOKEN_FILE,
   antigravityLoginFailureReason,
   antigravityMissingLoginReason,
   LOGINABLE_AGENT_TYPES,
+  buildAgentLoginCommand,
+  getPiLoginProviders,
+  type AgentLoginOptions,
 } from "@propr/shared";
 import type { OrchestratorConfig, OrchestratorModule } from "../orchestrator/index.js";
 import type { CheckResult, CheckStatus } from "./checkCommands.js";
@@ -45,7 +51,7 @@ const PROMPT_FILE = "/home/node/propr-prompt.txt";
 // whole response; the validation prompt is constrained enough that accidental
 // mentions of words like "quota" should be rare.
 const FAILURE_MARKERS =
-  /authentication required|please (?:visit|log ?in|sign ?in|authenticate)|not (?:logged ?in|authenticated|signed ?in)|unauthorized|\b401\b|\b403\b|invalid (?:api ?key|credentials|token)|(?:missing|no) api key|api key (?:not|is missing|required)|login required|permission denied|errno 13|command not found|must provide a (?:message|command)|quota|rate limit/i;
+  /authentication required|please (?:visit|log ?in|sign ?in|authenticate)|not (?:logged ?in|authenticated|signed ?in)|unauthorized|\b401\b|\b403\b|invalid (?:api ?key|credentials|token)|(?:missing|no) api key|api key (?:not|is missing|required)|login required|permission denied|errno 13|command not found|must provide a (?:message|command)|quota|rate limit|no models available/i;
 
 // Container entrypoint / setup chatter to drop from the captured response.
 const NOISE_MARKERS =
@@ -210,6 +216,47 @@ interface AgentValidationDescriptor {
   loginArgs?: string[];
   /** Extra docker args (env / mounts) the login needs beyond the credential mount. */
   loginExtraArgs?: (cfg: OrchestratorConfig) => string[];
+  /** The login signs in to one provider (Pi): loginArgs get `<provider> --no-browser|--api-key`. */
+  providerLogin?: boolean;
+  /** Reads a host/image run's result; defaults to {@link evaluateRun} (a prompt reply). */
+  evaluate?: (run: ExecResult) => { ok: boolean; detail: string };
+}
+
+/** Provider a Pi login uses when none is given: that of Pi's first default model. */
+export const DEFAULT_PI_LOGIN_PROVIDER = getPiLoginProviders(AGENT_DEFAULTS.pi.defaultModels)[0] ?? "anthropic";
+
+/** Pi's validation: the health check's non-refreshing credential check for the default provider. */
+const PI_AUTH_CHECK_ARGS = ["auth", "check", "--provider", DEFAULT_PI_LOGIN_PROVIDER, "--json", "--no-refresh"];
+
+/**
+ * Reads `pi auth check --json`: its last result line (`{"status":"ready"|…}`).
+ * Pi's exit codes overlap the entrypoint's own `set -e` failures, so a run
+ * without that line is a failure whatever its exit code.
+ */
+function evaluatePiAuthCheck(run: ExecResult): { ok: boolean; detail: string } {
+  let result: { status?: unknown; provider?: unknown; reason?: unknown } | undefined;
+  for (const line of run.stdout.replace(ANSI_RE, "").split(/\r?\n/).reverse()) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const value = JSON.parse(trimmed) as typeof result;
+      if (value && typeof value === "object" && ["ready", "not_ready", "invalid"].includes(value.status as string)) {
+        result = value;
+        break;
+      }
+    } catch { /* not the result line */ }
+  }
+  if (!result) {
+    const ev = evaluateRun(run);
+    return { ok: false, detail: ev.ok ? "pi auth check printed no result" : ev.detail };
+  }
+  const id = (value: unknown) => (typeof value === "string" && /^[a-z0-9_.-]{1,64}$/i.test(value) ? value : undefined);
+  const provider = id(result.provider) ?? DEFAULT_PI_LOGIN_PROVIDER;
+  const reason = id(result.reason);
+  return {
+    ok: result.status === "ready",
+    detail: `${provider} credentials ${result.status}${reason ? ` (${reason})` : ""}`,
+  };
 }
 
 /** Shared `docker run` prefix (ends with the image). */
@@ -376,6 +423,40 @@ const DESCRIPTORS: AgentValidationDescriptor[] = [
     containerConfigPath: "/home/node/.vibe",
     // Vibe has no interactive login flow here — it uses MISTRAL_API_KEY or a
     // pre-populated ~/.vibe — so loginArgs is intentionally omitted.
+  },
+  {
+    type: "pi",
+    imageKey: "agent",
+    hostDirKey: "hostPiDir",
+    envKey: "HOST_PI_DIR",
+    defaultHostDir: join(home, ".pi", "agent"),
+    hostBin: "pi",
+    // No prompt: a prompt could refresh an OAuth token, and a refresh made in
+    // the container's disposable copy cannot reach the read-only source, so
+    // the host login would keep a consumed refresh token. Both checks run the
+    // health check's `pi auth check --no-refresh` instead: no token rotation
+    // and no model tokens spent. (The version cell covers `pi --version`.)
+    hostInvocation: () => ({ args: PI_AUTH_CHECK_ARGS }),
+    imageInvocation: ({ image, hostDir, workspaceDir }) => ({
+      args: [
+        // Read-only, as for the health check: nothing is refreshed, so the
+        // entrypoint's write-back has nothing to write.
+        ...baseArgs(image, hostDir, AGENT_LOGIN_DESCRIPTORS.pi.containerConfigPath, workspaceDir, {
+          agentType: "pi",
+          configMode: "ro",
+          env: ["-e", `PROPR_PI_SOURCE_DIR=${AGENT_LOGIN_DESCRIPTORS.pi.containerConfigPath}`],
+        }),
+        "pi", ...PI_AUTH_CHECK_ARGS,
+      ],
+    }),
+    evaluate: evaluatePiAuthCheck,
+    versionArgs: ["pi", "--version"],
+    containerConfigPath: AGENT_LOGIN_DESCRIPTORS.pi.containerConfigPath,
+    loginArgs: [...AGENT_LOGIN_DESCRIPTORS.pi.command],
+    providerLogin: true,
+    // Login mode writes auth.json straight into the mounted dir (no disposable copy).
+    loginExtraArgs: () => Object.entries(AGENT_LOGIN_DESCRIPTORS.pi.environment)
+      .flatMap(([key, value]) => ["-e", `${key}=${value}`]),
   },
 ];
 
@@ -610,7 +691,7 @@ export async function validateAgents(
       timeoutMs: VALIDATION_TIMEOUT_MS,
       signal: options.signal,
     });
-    const ev = evaluateRun(run);
+    const ev = (d.evaluate ?? evaluateRun)(run);
     return { status: ev.ok ? "ok" : "fail", detail: ev.detail, ...(ev.ok ? {} : { fix: `Run \`${hostDebugCommand(d)}\` on the host to debug ${d.type} auth.` }) };
   };
 
@@ -656,7 +737,7 @@ export async function validateAgents(
       timeoutMs: VALIDATION_TIMEOUT_MS,
       signal: options.signal,
     });
-    const ev = evaluateRun(run);
+    const ev = (d.evaluate ?? evaluateRun)(run);
     const loginHint = d.loginArgs ? ` Re-authenticate with: propr agent login ${d.type}.` : "";
     const loginFailure = d.type === "antigravity" && !ev.ok
       ? antigravityLoginFailureReason(`${run.stdout}\n${run.stderr}`, { keyringMarkerDetected: antigravityKeyringLogin })
@@ -724,12 +805,28 @@ export function planAgentLogin(
   type: string,
   cfg: OrchestratorConfig,
   workspaceDir: string,
-  validateDockerBindPath: (name: string, value?: string, opts?: { containerPath?: boolean }) => string | null = validateBindPath
+  validateDockerBindPath: (name: string, value?: string, opts?: { containerPath?: boolean }) => string | null = validateBindPath,
+  loginOptions: AgentLoginOptions = {}
 ): { plan?: AgentLoginPlan; error?: string } {
   const d = DESCRIPTORS.find((x) => x.type === type);
   if (!d) return { error: `unknown agent '${type}'` };
   if (!d.loginArgs) {
     return { error: `${type} has no interactive login — authenticate via its API key (e.g. MISTRAL_API_KEY) or a pre-populated ${d.defaultHostDir}` };
+  }
+  let loginArgs: string[];
+  if (d.providerLogin) {
+    try {
+      loginArgs = buildAgentLoginCommand(AGENT_LOGIN_DESCRIPTORS.pi, {
+        provider: loginOptions.provider?.trim() || DEFAULT_PI_LOGIN_PROVIDER,
+        apiKey: loginOptions.apiKey,
+      });
+    } catch (error) {
+      return { error: (error as Error).message };
+    }
+  } else if (loginOptions.provider || loginOptions.apiKey) {
+    return { error: `${type} login does not take --provider or --api-key` };
+  } else {
+    loginArgs = d.loginArgs;
   }
   const image = cfg.images[d.imageKey];
   if (!image) return { error: `no image configured for ${type}` };
@@ -752,7 +849,7 @@ export function planAgentLogin(
     ...(d.loginExtraArgs?.(cfg) ?? []),
     "-w", WORKSPACE,
     image,
-    ...d.loginArgs,
+    ...loginArgs,
   ];
   return { plan: { image, hostDir, dockerArgs } };
 }

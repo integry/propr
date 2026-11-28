@@ -1,0 +1,321 @@
+import fs from 'fs';
+import path from 'path';
+import { executeWithExtensions } from '../../extensions/extensionLaunch.js';
+import { assertToolPolicySupported, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
+import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
+import logger from '../../utils/logger.js';
+import type { Agent, AgentConfig, AgentCredentialCheckResult, AgentTaskOptions, AgentExecutionResult, AnalysisResult, AnalyzeOptions } from '../types.js';
+import { executeDockerCommand, type ExecutionResult as DockerCommandResult } from '../../claude/docker/dockerExecutor.js';
+import { verifyWorktreeStructure, verifyWorktreePostExecution, setWorktreeOwnership, UsageLimitError } from '../../claude/claudeHelpers.js';
+import { isAgentCapacityError } from '../agentCapacity.js';
+import { resolveConfigPath, AgentConfigPathUnavailableError, loadModelReasoningLevel, resolveAgentModelReasoningLevel, resolvePiReasoningLevel, type PiThinkingLevel } from '../../config/configManager.js';
+import type { ModelReasoningLevel } from '../../config/configManagerReasoning.js';
+import { persistLlmLog, createLlmLogFromAnalysis, buildTaskWorkRef, buildAnalysisWorkRef, formatUsageMetrics, resolveTaskLogAttribution } from '../../utils/llmLogger.js';
+import type { ExecutionType } from '../../utils/llmMetrics.types.js';
+import { analysisReasoningLevelField, buildAnalysisSafetySuffix, executeWithUsageTracking } from './utils/index.js';
+import { buildPromptWithRetryContext, buildLogMetadata, resolveHostBindPath } from './utils/vibeAgentHelpers.js';
+import { buildPiDockerArgs, type PiDockerArgsParams, type PiDockerInvocation } from './utils/piDockerArgsBuilder.js';
+import { buildPiFailureMessage, isSuccessfulPiResult, parsePiOutput, type ParsedPiOutput } from './utils/piOutputParser.js';
+import { buildPiAuthCheckDockerArgs, runPiAuthCheck, type PiAuthCheckRunner } from './utils/piAuthCheck.js';
+import { resolvePiThinkingLevel, toPiCliModel } from './piModelIds.js';
+import { buildPiExecutionResult, reportedPiReasoningLevel } from './utils/piExecutionResult.js';
+import { failedExecutionResult } from './utils/failedAgentExecution.js';
+import { DEFAULT_AGENT_EXECUTION_TIMEOUT_MS } from '../constants.js';
+import { NoDefaultModelConfiguredError } from '../../config/modelAliases.js';
+import { createPiSessionSavedDetector, findPiGoalSessionFile, preparePiGoalSession, type PiGoalSession } from './utils/piGoalSession.js';
+
+export { UsageLimitError };
+export { parsePiOutput, parsePiConversationLog, isSuccessfulPiResult } from './utils/piOutputParser.js';
+
+const DEFAULT_PI_ANALYSIS_TIMEOUT_MS = 1800000;
+/**
+ * Analysis workspaces live under the host-shared git-processor dir (as for
+ * OpenCode): in a containerized deployment the host daemon resolves the bind
+ * mount against the host, so a worker-local tmpdir would make Docker create a
+ * root-owned host directory that the worker's cleanup never removes.
+ */
+const DEFAULT_PI_ANALYSIS_ROOT = '/tmp/git-processor/pi-analysis';
+
+function piAnalysisRoot(): string {
+    return path.resolve((process.env.PI_ANALYSIS_ROOT || DEFAULT_PI_ANALYSIS_ROOT).replace(/\/+$/, '') || DEFAULT_PI_ANALYSIS_ROOT);
+}
+
+/** The run that threw as a failed result, keeping a finished run's tokens, cost, session and trace. */
+function buildFailedExecutionResult(error: Error, context: { executionTimeMs: number; model?: string; prompt?: string; completed?: AgentExecutionResult }): AgentExecutionResult {
+    const { executionTimeMs, model, prompt, completed } = context;
+    const failed = failedExecutionResult(error, { completed, model: model || 'unknown', executionTimeMs });
+    if (!completed && prompt) failed.prompt = prompt;
+    if (completed?.usageMetrics) failed.usageMetrics = completed.usageMetrics;
+    return failed;
+}
+
+/** A goal run must stay in the goal's session: a run that reports any other session cannot be resumed. */
+function withGoalSessionCheck(response: AgentExecutionResult, parsed: ParsedPiOutput, session: PiGoalSession): AgentExecutionResult {
+    if (!parsed.sessionId || parsed.sessionId === session.sessionId) return response;
+    return { ...response, success: false, error: `Pi opened session ${parsed.sessionId} instead of the goal's session ${session.sessionId}` };
+}
+
+/**
+ * Reports the run's session once. A goal's session is reported from the stream
+ * as soon as Pi has written the prompt to the session file, so a run
+ * interrupted later still resumes the same conversation; otherwise it is
+ * reported after the run, and for a goal only if its session file was saved.
+ */
+function createSessionReporter(onSessionId: AgentTaskOptions['onSessionId'], goalSession?: PiGoalSession) {
+    let reported = false;
+    const report = onSessionId && (async (sessionId: string, conversationId?: string) => {
+        reported = true;
+        await onSessionId(sessionId, conversationId);
+    });
+    return {
+        streamOptions: { onSessionId: report, ...(goalSession && { sessionIdFromLine: createPiSessionSavedDetector(goalSession.sessionId) }) },
+        async afterRun(sessionId: string | undefined): Promise<void> {
+            if (!sessionId || !report || reported) return;
+            if (goalSession && (sessionId !== goalSession.sessionId || !findPiGoalSessionFile(goalSession.hostDir, sessionId))) return;
+            await report(sessionId);
+        },
+    };
+}
+
+export class PiAgent implements Agent {
+    readonly config: AgentConfig;
+    /** Goals run as whole sessions: each boundary resumes the goal's saved Pi session with `--session`. */
+    readonly goalCapable = true;
+    private readonly timeoutMs: number;
+
+    constructor(config: AgentConfig) {
+        this.config = config;
+        this.timeoutMs = parseInt(process.env.PI_TIMEOUT_MS || String(DEFAULT_AGENT_EXECUTION_TIMEOUT_MS), 10);
+    }
+
+    /** Extension library items reach Pi through the generated `mcp.json` and `--skill` paths. */
+    async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        return executeWithExtensions(this.config, options, prepared => this.executeTaskWithoutExtensions(prepared));
+    }
+
+    private async executeTaskWithoutExtensions(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        const { worktreePath, issueRef, prompt: customPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, taskId, prNumber, metadata, environment } = options;
+        const goalMode = options.executionMode === 'goal';
+        const startTime = Date.now();
+        const effectiveModel = model || this.config.defaultModel;
+        const repository = `${issueRef.repoOwner}/${issueRef.repoName}`;
+        logger.info({ issueNumber: issueRef.number, repository, worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason },
+            isRetry ? 'Starting Pi agent execution (RETRY)...' : 'Starting Pi agent execution...');
+
+        let prompt: string | undefined;
+        // A finished run whose later step throws still spent tokens and produced a trace.
+        let completed: { response: AgentExecutionResult; parsed: ParsedPiOutput; result: DockerCommandResult } | undefined;
+        let logsPersisted = false;
+        try {
+            if (!effectiveModel) throw new NoDefaultModelConfiguredError();
+            assertToolPolicySupported(options);
+            // Goal input is delivered verbatim (goal mode has no tool policy or retry context).
+            // Pi has no native web switch: the restriction is best effort through the prompt.
+            prompt = goalMode ? customPrompt : buildPromptWithRetryContext(withPromptOnlyToolPolicy(customPrompt, options.toolPolicy), isRetry, retryReason);
+            const thinkingLevel = await this.resolveThinkingLevel(options.reasoningLevel, effectiveModel);
+            await setWorktreeOwnership(worktreePath, issueRef.number, { protectGitMetadata: goalMode && environment?.PROPR_GOAL_LAUNCH_STRATEGY === 'direct' });
+            const worktreeGitContent = verifyWorktreeStructure(worktreePath, issueRef.number);
+            const goalSession = goalMode ? this.prepareGoalSession(options) : undefined;
+            const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
+            const invocation = this.buildDockerArgs({ worktreePath, gitMountArgs, modelName: effectiveModel, thinkingLevel, issueNumber: issueRef.number, taskId, toolPolicy: options.toolPolicy, goalSession, environment }, githubToken);
+            const sessionReporter = createSessionReporter(onSessionId, goalSession);
+            const { result, usageMetrics } = await executeWithUsageTracking('pi', async () => executeDockerCommand('docker', invocation.args, {
+                agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: this.diagnosticContext(invocation),
+                timeout: this.timeoutMs, cwd: worktreePath, ...sessionReporter.streamOptions, onContainerId, worktreePath, taskId,
+                stdinData: prompt, extraEnvVars: { ...invocation.configEnv, ...invocation.secretEnv },
+                streamToRedis: true, streamStderrToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
+            }));
+
+            const built = buildPiExecutionResult({ result, modelUsed: effectiveModel, thinkingLevel, prompt, executionTimeMs: Date.now() - startTime, usageMetrics });
+            const parsed = built.parsed;
+            const response = goalSession ? withGoalSessionCheck(built.response, parsed, goalSession) : built.response;
+            completed = { response, parsed, result };
+            await sessionReporter.afterRun(parsed.sessionId);
+            await this.persistTaskLog(response, parsed, { result, metadata, issueNumber: issueRef.number, repository, taskId, prNumber, isRetry, retryReason });
+            logsPersisted = true;
+            if (response.success) {
+                logger.info({ issueNumber: issueRef.number, model: effectiveModel, agentAlias: this.config.alias }, 'Pi agent execution succeeded');
+                verifyWorktreePostExecution(worktreePath, issueRef.number, worktreeGitContent);
+            } else {
+                logger.error({ issueNumber: issueRef.number, exitCode: result.exitCode, stderr: result.stderr, agentAlias: this.config.alias, error: response.error }, 'Pi agent execution failed');
+            }
+            return response;
+        } catch (error) {
+            // A capacity wait is not a provider failure: the job defers or reports the wait.
+            if (error instanceof UsageLimitError || isAgentCapacityError(error)) throw error;
+            const executionTimeMs = Date.now() - startTime;
+            const err = error as Error;
+            logger.error({ issueNumber: issueRef.number, repository, executionTimeMs, error: err.message, agentAlias: this.config.alias, hadCompletedRun: !!completed }, 'Error during Pi agent execution');
+            const failed = buildFailedExecutionResult(err, { executionTimeMs, model: effectiveModel, prompt, completed: completed?.response });
+            if (completed && !logsPersisted) {
+                // The run's log row was never written: write it as failed, with the run's tokens and provider cost.
+                try {
+                    await this.persistTaskLog(failed, completed.parsed, { result: completed.result, metadata, issueNumber: issueRef.number, repository, taskId, prNumber, isRetry, retryReason });
+                } catch (persistError) {
+                    logger.warn({ issueNumber: issueRef.number, error: (persistError as Error).message, agentAlias: this.config.alias }, 'Failed to persist Pi task log after execution error');
+                }
+            }
+            return failed;
+        }
+    }
+
+    /** The goal's persisted session store, and the exact session to resume when the goal has one. */
+    private prepareGoalSession(options: AgentTaskOptions): PiGoalSession {
+        if (!options.goalId) throw new Error('Pi goal runs need the goal identity to keep their session');
+        const session = preparePiGoalSession(options.goalId, options.resumeSessionId || options.resumeConversationId);
+        logger.info({ agentAlias: this.config.alias, goalId: options.goalId, sessionId: session.sessionId, resume: !!session.resumeFile }, session.resumeFile ? 'Resuming Pi goal session' : 'Starting Pi goal session');
+        return session;
+    }
+
+    private async persistTaskLog(response: AgentExecutionResult, parsed: ParsedPiOutput, context: {
+        result: DockerCommandResult; metadata?: Record<string, unknown>; issueNumber: number; repository: string; taskId?: string; prNumber?: number; isRetry: boolean; retryReason?: string;
+    }): Promise<void> {
+        const { result, metadata, issueNumber, repository, taskId, prNumber, isRetry, retryReason } = context;
+        const usage = formatUsageMetrics(response.usageMetrics ?? null);
+        const baseMetadata = { isRetry, retryReason, ...(parsed.providerModel && { providerModel: parsed.providerModel }) };
+        await persistLlmLog({
+            ...createLlmLogFromAnalysis({
+                ...resolveTaskLogAttribution(metadata, buildTaskWorkRef(taskId, issueNumber, repository, prNumber), buildLogMetadata(baseMetadata, result, !response.success)),
+                modelUsed: response.modelUsed, executionTimeMs: response.executionTimeMs, success: response.success, tokenUsage: response.tokenUsage,
+                error: response.error, sessionId: response.sessionId, draftId: taskId, repository, agentAlias: this.config.alias,
+                reasoningLevel: response.reasoningLevel, usageMetrics: usage.metrics, usageMetricRecords: usage.records,
+            }),
+            ...(response.providerCostUsd !== undefined && { costUsd: response.providerCostUsd }),
+        });
+    }
+
+    async analyze(prompt: string, options?: AnalyzeOptions): Promise<AnalysisResult> {
+        const { context, model, taskId, taskNumber, prNumber, executionType, correlationId, repository, metadata, timeoutMs, responseFormat = 'text', suppressLlmLog, readOnlyWorkspacePath, allowReadOnlyCommands = false, reasoningLevel, useConfiguredReasoningLevel = false } = options || {};
+        const startTime = Date.now();
+        const effectiveModel = model || this.config.defaultModel;
+        if (!effectiveModel) throw new NoDefaultModelConfiguredError();
+        const suffix = buildAnalysisSafetySuffix(responseFormat, allowReadOnlyCommands, readOnlyWorkspacePath);
+        const analysisPrompt = context ? `${prompt}\n\nContext:\n${context}${suffix}` : `${prompt}${suffix}`;
+        logger.info({ agentAlias: this.config.alias, promptLength: prompt.length, hasContext: !!context, requestedModel: model, taskId, executionType }, 'Running lightweight analysis via Pi agent...');
+
+        let analysisWorkspace: string | undefined;
+        try {
+            analysisWorkspace = readOnlyWorkspacePath || this.createAnalysisWorkspace();
+            const thinkingLevel = await this.resolveThinkingLevel(reasoningLevel, effectiveModel, useConfiguredReasoningLevel);
+            const gitAccess = await prepareAnalysisGitAccess(options, analysisWorkspace);
+            const invocation = this.buildDockerArgs({
+                // The host daemon resolves bind mounts, so mount the host-visible path.
+                worktreePath: readOnlyWorkspacePath ? analysisWorkspace : resolveHostBindPath(analysisWorkspace), gitMountArgs: gitAccess.gitMountArgs, modelName: effectiveModel, thinkingLevel,
+                issueNumber: 0, taskId, executionType, mode: 'analysis', repositoryInspection: !!readOnlyWorkspacePath && allowReadOnlyCommands,
+            }, gitAccess.githubToken);
+            const { result, usageMetrics } = await executeWithUsageTracking('pi', async () => executeDockerCommand('docker', invocation.args, {
+                agentAlias: this.config.alias, diagnostics: this.diagnosticContext(invocation),
+                timeout: timeoutMs ?? parseInt(process.env.PI_ANALYSIS_TIMEOUT_MS || String(DEFAULT_PI_ANALYSIS_TIMEOUT_MS), 10),
+                stdinData: analysisPrompt, extraEnvVars: { ...invocation.configEnv, ...invocation.secretEnv }, taskId, model: effectiveModel,
+            }), { alias: this.config.alias, skipUsageTracking: options?.skipUsageTracking });
+            return await this.finishAnalysis({ result, usageMetrics, effectiveModel, thinkingLevel, startTime, suppressLlmLog, executionType, taskId, taskNumber, prNumber, correlationId, repository, metadata });
+        } catch (error) {
+            const executionTimeMs = Date.now() - startTime;
+            const err = error as Error;
+            logger.error({ agentAlias: this.config.alias, error: err.message, executionTimeMs }, 'Lightweight analysis failed');
+            return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: err.message };
+        } finally {
+            if (analysisWorkspace && !readOnlyWorkspacePath) {
+                try { fs.rmSync(analysisWorkspace, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+            }
+        }
+    }
+
+    private async finishAnalysis(params: {
+        result: DockerCommandResult; usageMetrics: Parameters<typeof formatUsageMetrics>[0]; effectiveModel: string; thinkingLevel: PiThinkingLevel | null; startTime: number;
+        suppressLlmLog?: boolean; executionType?: string; taskId?: string; taskNumber?: number; prNumber?: number; correlationId?: string; repository?: string; metadata?: Record<string, unknown>;
+    }): Promise<AnalysisResult> {
+        const { result, usageMetrics, effectiveModel, thinkingLevel, startTime, executionType, taskId, repository } = params;
+        const executionTimeMs = Date.now() - startTime;
+        const parsed = parsePiOutput(result.stdout);
+        const analysisText = (parsed.summary || '').trim();
+        const success = !result.timedOut && isSuccessfulPiResult(result.exitCode, parsed) && !!analysisText;
+        const errorMsg = success ? undefined : (analysisText || !isSuccessfulPiResult(result.exitCode, parsed) ? buildPiFailureMessage(result, parsed) : 'Pi returned an empty response');
+        const reasoningLevel = reportedPiReasoningLevel(thinkingLevel);
+        if (!params.suppressLlmLog) {
+            const usage = formatUsageMetrics(usageMetrics);
+            await persistLlmLog({
+                ...createLlmLogFromAnalysis({
+                    executionType: (executionType || 'other') as ExecutionType, modelUsed: effectiveModel, executionTimeMs, success,
+                    tokenUsage: parsed.tokenUsage, error: errorMsg, sessionId: parsed.sessionId, draftId: taskId, correlationId: params.correlationId, repository,
+                    metadata: buildLogMetadata(params.metadata || {}, result, !success), agentAlias: this.config.alias, reasoningLevel,
+                    usageMetrics: usage.metrics, usageMetricRecords: usage.records,
+                    workRef: buildAnalysisWorkRef(executionType, taskId, repository, { taskNumber: params.taskNumber, prNumber: params.prNumber }),
+                }),
+                ...(parsed.costUsd !== undefined && { costUsd: parsed.costUsd }),
+            });
+        }
+        if (!success) return { response: '', modelUsed: effectiveModel, executionTimeMs, success: false, error: `Analysis failed: ${errorMsg}` };
+        return { response: analysisText, modelUsed: effectiveModel, executionTimeMs, success: true, tokenUsage: parsed.tokenUsage, sessionId: parsed.sessionId, ...analysisReasoningLevelField(reasoningLevel) };
+    }
+
+    async healthCheck(): Promise<boolean> {
+        const model = this.config.defaultModel || this.config.supportedModels[0];
+        if (!model) return false;
+        try {
+            return (await this.checkCredentials(model)).status === 'ready';
+        } catch {
+            logger.warn({ agentAlias: this.config.alias }, 'Pi credential check could not run');
+            return false;
+        }
+    }
+
+    /**
+     * `pi auth check --provider <p> --json --no-refresh` for the model's
+     * provider: reports ready, not_ready or invalid without a prompt or a
+     * token refresh.
+     */
+    async checkCredentials(model: string, run?: PiAuthCheckRunner): Promise<AgentCredentialCheckResult> {
+        const { provider } = toPiCliModel(model);
+        const invocation = buildPiAuthCheckDockerArgs({ config: this.config, configPath: this.resolveOptionalConfigPath(), provider });
+        const result = await runPiAuthCheck(invocation, provider, { run });
+        logger.info({ agentAlias: this.config.alias, provider, status: result.status, reason: result.reason, authType: result.authType }, 'Pi credential check finished');
+        return result;
+    }
+
+    /** The run's one thinking level; see {@link resolvePiThinkingLevel} for the precedence. `auto` defers to the next source. */
+    private async resolveThinkingLevel(reasoningLevel: ModelReasoningLevel | undefined, model: string, useConfiguredReasoningLevel = true): Promise<PiThinkingLevel | null> {
+        const agentModelLevel = useConfiguredReasoningLevel ? resolveAgentModelReasoningLevel(this.config.modelReasoningLevels, model) : undefined;
+        const sources = {
+            explicit: reasoningLevel ? resolvePiReasoningLevel(reasoningLevel) : null,
+            agentModel: agentModelLevel ? resolvePiReasoningLevel(agentModelLevel) : null,
+            modelId: model,
+        };
+        // The global default is only read when nothing more specific applies.
+        if (!useConfiguredReasoningLevel || resolvePiThinkingLevel(sources)) return resolvePiThinkingLevel(sources);
+        return resolvePiThinkingLevel({ ...sources, globalDefault: resolvePiReasoningLevel(await loadModelReasoningLevel()) });
+    }
+
+    /**
+     * The host Pi agent dir, or undefined when a containerized install has no
+     * mapping for it: provider API keys alone are enough to run Pi.
+     */
+    private resolveOptionalConfigPath(): string | undefined {
+        try {
+            return resolveConfigPath(this.config.configPath);
+        } catch (error) {
+            if (error instanceof AgentConfigPathUnavailableError) return undefined;
+            throw error;
+        }
+    }
+
+    private createAnalysisWorkspace(): string {
+        const root = piAnalysisRoot();
+        fs.mkdirSync(root, { recursive: true, mode: 0o755 });
+        return fs.mkdtempSync(path.join(root, 'analysis-'));
+    }
+
+    private diagnosticContext(invocation: PiDockerInvocation) {
+        return { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, credentials: { ...this.config.envVars, ...invocation.secretEnv } };
+    }
+
+    buildDockerArgs(params: Omit<PiDockerArgsParams, 'config' | 'configPath'>, githubToken: string): PiDockerInvocation {
+        const invocation = buildPiDockerArgs({ ...params, config: this.config, configPath: this.resolveOptionalConfigPath() }, githubToken);
+        logger.info({
+            issueNumber: params.issueNumber, agentAlias: this.config.alias, mode: params.mode ?? 'execute', repositoryInspection: !!params.repositoryInspection,
+            dockerImage: this.config.dockerImage, thinkingLevel: params.thinkingLevel ?? null, forwardedEnv: Object.keys(invocation.secretEnv),
+            mcpServers: params.toolPolicy ? [...(params.toolPolicy.localMcpServers ?? []), ...(params.toolPolicy.mcpServers ?? [])].map(server => server.name) : [],
+        }, 'Docker args built for Pi agent');
+        return invocation;
+    }
+}

@@ -93,9 +93,9 @@ function toPersistedTokenUsage(tokens: CumulativeTokenUsage): TokenUsage {
 }
 
 async function calculateCost(model: string, tokens: CumulativeTokenUsage, claudeResult: ClaudeResult | null): Promise<number> {
-    const openRouterId = getOpenRouterId(model);
-    const pricing = await getModelPricing(openRouterId) as ModelPricing | null;
-    const { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens } = tokens;
+    const providerCost = claudeResult?.providerCostUsd; // authoritative provider-reported total (Pi)
+    if (typeof providerCost === 'number' && Number.isFinite(providerCost) && providerCost >= 0) return providerCost;
+    const openRouterId = getOpenRouterId(model), pricing = await getModelPricing(openRouterId) as ModelPricing | null, { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens } = tokens;
     logger.info({ model, openRouterId, pricingFound: !!pricing, pricing, inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens },
         'Cost calculation: looking up pricing');
     const hasTokens = inputTokens > 0 || outputTokens > 0 || cacheCreationTokens > 0 || cacheReadTokens > 0;

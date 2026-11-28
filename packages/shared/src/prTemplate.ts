@@ -37,7 +37,7 @@ export const PR_TEMPLATE_PLACEHOLDERS = {
   issue_number: 'Number of the issue the pull request resolves',
   issue_title: 'Title of that issue (untrusted; sanitized)',
   model: 'Display name of the model that implemented the change',
-  agent: 'Agent type (claude, codex, antigravity, opencode or vibe)',
+  agent: 'Agent type (claude, codex, antigravity, opencode, vibe or pi)',
   cost: 'API cost of the run, for example $0.42',
   tokens: 'Total tokens used by the run',
   execution_time: 'Wall-clock execution time, for example 4m 12s',

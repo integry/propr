@@ -9,6 +9,7 @@ export {
   ANTIGRAVITY_MODELS,
   OPENCODE_MODELS,
   VIBE_MODELS,
+  PI_MODELS,
   ALL_MODELS,
   AGENT_MODELS,
   AGENT_DISPLAY,
@@ -346,15 +347,27 @@ export {
 } from './taskIdentifiers.js';
 
 export {
+  PI_PROVIDERS,
+  getPiProviderApiKeyEnv,
+  getPiProviderInfo,
+  type PiProviderInfo,
+} from './piProviders.js';
+
+export {
   AGENT_LOGIN_DESCRIPTORS,
   LOGINABLE_AGENT_TYPES,
   MANAGED_AGENT_CREDENTIALS_PREFIX,
+  buildAgentLoginCommand,
   getAgentLoginDescriptor,
+  getPiLoginProviders,
+  isValidAgentLoginProvider,
+  normalizePiModelId,
   getManagedAgentConfigPath,
   getManagedAgentConfigRelativePath,
   isAgentLoginSupported,
   isManagedAgentConfigPath,
   type AgentLoginDescriptor,
+  type AgentLoginOptions,
   type LoginableAgentType,
 } from './agentLogin.js';
 
@@ -362,6 +375,7 @@ export {
   REASONING_LEVELS,
   CODEX_REASONING_LEVELS,
   CLAUDE_REASONING_LEVELS,
+  PI_REASONING_LEVELS,
   getReasoningLevelsForAgentType,
   isReasoningLevelSupportedByAgentType,
   isReasoningLevel,

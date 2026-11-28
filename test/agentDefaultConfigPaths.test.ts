@@ -35,6 +35,7 @@ const HOST_DIRS: Record<AgentType, string> = {
     antigravity: `${HOST}/.gemini`,
     opencode: `${HOST}/.config/opencode`,
     vibe: `${HOST}/.vibe`,
+    pi: `${HOST}/.pi/agent`,
 };
 const ENV_KEYS = [
     'HOME', 'PROPR_CONTAINERIZED', 'PROPR_MANAGED_CREDENTIALS_DIR', 'HOST_OPENCODE_DATA_DIR', 'CLAUDE_JSON_PATH',

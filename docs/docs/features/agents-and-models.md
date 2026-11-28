@@ -35,8 +35,9 @@ For virtual routing across several configured direct agents, see [Synthetic Pool
 | Antigravity (Google, multi-model) | `antigravity` | `propr/agent` | `HOST_ANTIGRAVITY_DIR` → `~/.gemini` (authenticate with `agy login`) |
 | OpenCode | `opencode` | `propr/agent` | `HOST_OPENCODE_XDG_DIR` → `~/.config/opencode` (plus data dir; see below) |
 | Mistral Vibe | `vibe` | `propr/agent` | `HOST_VIBE_DIR` → `~/.vibe` (plus `HOST_VIBE_PROMPT_CACHE_DIR`/`VIBE_PROMPT_CACHE_DIR` for the prompt cache) |
+| Pi coding agent | `pi` | `propr/agent` | `HOST_PI_DIR` → `~/.pi/agent` (or provider API keys such as `OPENROUTER_API_KEY` in the agent's environment variables) |
 
-When adding Claude, Codex, Antigravity, or OpenCode in the Web UI, choose either **Log in to a new account** or **Use existing config**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config.
+When adding Claude, Codex, Antigravity, OpenCode, or Pi in the Web UI, choose either **Log in to a new account** or **Use existing config**. Pi also offers **API keys in env vars**. Direct login saves the agent first, starts its configured image, and writes credentials to a new directory owned by that agent. This makes it possible to attach several accounts from the same provider without sharing or overwriting their login state. The dialog displays authorization links and accepts confirmation codes or terminal-menu input. Vibe continues to use `MISTRAL_API_KEY` or a pre-populated config. A Pi login signs in to one provider at a time; see [Pi](#pi).
 
 Direct-login accounts use the portable saved path `~/.propr/agent-credentials/<agent-id>/…`. ProPR maps it automatically to `~/.propr/agent-credentials` for native and Compose installs, or to `PROPR_DATA_DIR/agent-credentials` for the launcher container. You do not enter a host path. The generated provider subdirectory is mounted read-write so its CLI can refresh auth state, and the agent image normalizes ownership before dropping to its unprivileged runtime user.
 
@@ -44,17 +45,35 @@ To reuse an account that is already authenticated on the host, select **Use exis
 
 For Antigravity, an existing `~/.gemini` works only if it contains the file token `antigravity-cli/antigravity-oauth-token`. On macOS and Linux desktops with a keyring, `agy` keeps its login in the OS keyring instead, which agent containers cannot read; ProPR then reports the agent as not ready. Sign in once with `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy` (your keyring login keeps working), or use the managed login, which runs `agy` in a container with no keyring and always writes the file token. See [Antigravity troubleshooting](../architecture/agent-runtime.md#troubleshooting-run-agy-to-log-in-although-you-are-signed-in).
 
+### Pi
+
+Pi routes to many providers, so its model IDs name the provider: `pi-<provider>/<model>` runs as `pi --model <provider>/<model>` (for example `pi-openrouter/mistralai/devstral-2512`). Add any provider/model Pi knows to the agent's supported models; an optional `:<thinking>` suffix (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) pins a thinking level. ProPR sends exactly one level, as `--thinking` (the suffix never reaches `--model`): a task's explicit reasoning level wins, then the agent's reasoning setting for that model, then the suffix, then the global default (`ultra` and `ultracode` run at `max`). Provider IDs are stored lowercase. PR titles show the underlying model.
+
+Pi has three credential choices in the agent dialog:
+
+- **Use existing config** mounts a host Pi agent directory (`~/.pi/agent`, or `HOST_PI_DIR`/`PI_CONFIG_PATH` for launcher and Compose installs) that you signed in to with `pi auth login` on the host.
+- **Log in to a new account** creates a managed `~/.propr/agent-credentials/<agent-id>/.pi/agent` and runs `pi auth login <provider> --no-browser` in the agent image. Depending on the provider, the dialog shows a device code, a URL whose code you paste back, or a URL whose final redirect URL you paste back. Choose **API key** in the login dialog to run `pi auth login <provider> --api-key` and type the key at Pi's prompt instead. `propr agent login <pi-agent> --provider <provider> [--api-key]` does the same from the CLI. The provider defaults to the default model's provider, and you can log in again for each provider your models use.
+- **API keys in env vars** stores provider keys such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` or `GEMINI_API_KEY` in the agent's environment variables. No host directory is needed.
+
+The health check runs `pi auth check --provider <provider> --json --no-refresh`: it reports whether credentials for the health-check model's provider are ready, missing (`not_ready`) or invalid, without spending tokens or refreshing OAuth tokens. See [Agent Runtime](../architecture/agent-runtime.md#pi) for the disposable agent directory and the token refresh write-back rules.
+
+Each run is `pi -p --mode json --no-approve` with the prompt on stdin, so repository `.pi/` extensions, settings and prompts are never trusted; `AGENTS.md` and `CLAUDE.md` still load. Task sessions go to a disposable directory inside the container; goal sessions are kept per goal (see [Goal sessions](#goal-sessions)). ProPR records the full event stream (messages, thinking, tool calls and tool results) as the task's execution events, sums token usage over every response, and uses the provider-reported cost when every response carries one. The live view shows the same events while the task runs.
+
+Analysis runs (AI reviews, PR and task summaries, commit subjects, plan generation and repository indexing) use the same JSON parser and success rule, on a read-only workspace with no saved session and no tools (`--no-tools`), like the other agents. The review context scout is the only analysis with tools, and only ProPR's repository MCP tools: ProPR writes an `mcp.json` with just the `propr_repository` server into the disposable agent dir and runs Pi with `--no-builtin-tools`, an allowlist of the three `mcp__propr_repository__*` tools, `--no-extensions --extension builtin:mcp`, `--no-skills`, `--no-prompt-templates` and `--no-approve`. `bash`, `edit`, `write` and `read` are unavailable, and no host or repository `mcp.json`, extension or skill loads. The repository is mounted read-only at the scout server's root and the scout gets no git credentials.
+
+Pi task runs receive the [extension library](./agent-extensions.md) and the `propr` MCP server for automations the same way: through a ProPR-generated `mcp.json` that names token variables (`Bearer ${PROPR_EXTENSION_MCP_0_TOKEN}`) and never their values, plus one `--skill /opt/propr/extensions/<id>` per staged skill bundle with `--no-skills`. MCP calls made from Pi's `codemode` scripts appear in the execution events as their own tool events, named `<server>/<tool>`. Pi has no web tool of its own, so a run's web restriction is a prompt notice only.
+
 ## Goal sessions
 
-Codex, Claude and Antigravity run goals on their native goal support. Antigravity goals use its `/goal` command in a persistent CLI conversation: ProPR streams activity, saves the conversation ID, and delivers checkpoints, operator input, pause and cancel by interrupting at the next finished step and resuming that exact conversation. Availability is checked against the configured image's CLI capabilities.
+Codex, Claude and Antigravity run goals on their native goal support. Pi runs goals as whole sessions: ProPR keeps each goal's Pi session in its own owner-only directory outside Pi's disposable agent directory and resumes it with `--session` at every boundary. Antigravity goals use its `/goal` command in a persistent CLI conversation: ProPR streams activity, saves the conversation ID, and delivers checkpoints, operator input, pause and cancel by interrupting at the next finished step and resuming that exact conversation. Availability is checked against the configured image's CLI capabilities.
 
-Keep Antigravity's mounted configuration directory across goal attempts, since it holds the goal conversation. See [Goals](./goals.md) for checkpoint, pause/resume, cancellation, and draft PR behavior.
+Keep Antigravity's mounted configuration directory across goal attempts, since it holds the goal conversation. Pi goal sessions are kept under `/tmp/git-processor/pi-goal-sessions/<goal-id>` (`PI_GOAL_SESSIONS_PATH`) and removed when the goal is deleted. See [Goals](./goals.md) for checkpoint, pause/resume, cancellation, and draft PR behavior.
 
 ## Agent Configuration
 
 The Web UI includes a Coding agents page for configuring coding agents. Each agent entry defines:
 
-- Agent type (claude, codex, antigravity, opencode, vibe)
+- Agent type (claude, codex, antigravity, opencode, vibe, pi)
 - A unique alias (lowercase alphanumeric and hyphens)
 - An enable toggle
 - The Docker image (predefined per agent type)

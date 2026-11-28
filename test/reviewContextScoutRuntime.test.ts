@@ -107,7 +107,7 @@ test('context scout runs every supported agent with repository-confined inspecti
     const root = await mkdtemp(join(tmpdir(), 'propr-review-scout-runtime-'));
     const logger = { info: mock.fn(), warn: mock.fn(), error: mock.fn(), debug: mock.fn() };
 
-    for (const type of ['claude', 'codex', 'opencode', 'antigravity', 'vibe'] as const) {
+    for (const type of ['claude', 'codex', 'opencode', 'antigravity', 'vibe', 'pi'] as const) {
         let receivedOptions: Record<string, unknown> | undefined;
         const analyze = mock.fn(async (_prompt: string, options: Record<string, unknown>) => {
             receivedOptions = options;

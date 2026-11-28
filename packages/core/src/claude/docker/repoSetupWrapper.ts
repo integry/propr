@@ -1,24 +1,26 @@
 import { repositoryWorkflowExecution, buildWorkflowWrapper, markWorkflowWrapperBuilt } from '../../workflow/workflowExecution.js';
-import type { AgentType } from '../../agents/types.js';
+import type { AgentCliType } from '../../agents/constants.js';
 import { buildAgentContainerResourceArgs } from '../../agents/agentContainerResources.js';
 import { claudeConfigSeedScript } from './claudeConfigSeed.js';
 
 export { buildAgentContainerResourceArgs };
 
-const ENTRYPOINT_PATHS: Record<AgentType, string> = {
+const ENTRYPOINT_PATHS: Record<AgentCliType, string> = {
     claude: '/home/node/claude-entrypoint.sh',
     codex: '/home/node/codex-entrypoint.sh',
     antigravity: '/home/node/antigravity-entrypoint.sh',
     opencode: '/home/node/opencode-entrypoint.sh',
-    vibe: '/home/node/vibe-entrypoint.sh'
+    vibe: '/home/node/vibe-entrypoint.sh',
+    pi: '/opt/propr/pi-entrypoint.sh'
 };
 
-const GIT_IDENTITIES: Record<AgentType, { name: string; email: string }> = {
+const GIT_IDENTITIES: Record<AgentCliType, { name: string; email: string }> = {
     claude: { name: 'ProPR Claude Bot', email: 'claude-bot@propr.dev' },
     codex: { name: 'ProPR Codex Bot', email: 'codex-bot@propr.dev' },
     antigravity: { name: 'ProPR Antigravity Bot', email: 'antigravity-bot@propr.dev' },
     opencode: { name: 'ProPR OpenCode Bot', email: 'opencode-bot@propr.dev' },
-    vibe: { name: 'ProPR Vibe Bot', email: 'vibe-bot@propr.dev' }
+    vibe: { name: 'ProPR Vibe Bot', email: 'vibe-bot@propr.dev' },
+    pi: { name: 'ProPR Pi Bot', email: 'pi-bot@propr.dev' }
 };
 
 const WORKSPACE_PATH = '/home/node/workspace';
@@ -44,7 +46,7 @@ if [ "\${PROPR_REPO_SETUP:-1}" != "0" ] && [ -f "$setup_script" ]; then
     set +e
     if [ "$(id -u)" = "0" ] && command -v su-exec >/dev/null 2>&1 && id node >/dev/null 2>&1; then
         cd "$PROPR_WORKSPACE"
-        su-exec node env HOME=/home/node USER=node LOGNAME=node /bin/bash "$setup_script" </dev/null >&2
+        su-exec node env HOME=/home/node USER=node LOGNAME=node PATH="\${PROPR_PI_NODE_PATH:-$PATH}" /bin/bash "$setup_script" </dev/null >&2
         setup_exit=$?
     else
         cd "$PROPR_WORKSPACE"
@@ -69,7 +71,7 @@ exec "$entrypoint" "$@"
 export function wrapDockerRunArgsWithRepoSetup(
     dockerArgs: string[],
     dockerImage: string,
-    agentType: AgentType
+    agentType: AgentCliType
 ): string[] {
     const imageIndex = dockerArgs.indexOf(dockerImage);
     if (imageIndex === -1) {
@@ -95,14 +97,18 @@ export function wrapDockerRunArgsWithRepoSetup(
         : [...resourceArgs, ...setupEnv, ...beforeImage];
 
     const execution = repositoryWorkflowExecution.getStore();
+    const wrapper = execution ? buildWorkflowWrapper(execution.workflow, execution.marker) : REPO_SETUP_WRAPPER_SCRIPT;
+    // Pi's setup, validation and cleanup hooks can write to node's executable
+    // directories. Keep their PATH available only after dropping privileges.
+    const piPathSetup = agentType === 'pi'
+        ? 'export PROPR_PI_NODE_PATH="$PATH"\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+        : '';
     const args = [
         ...beforeImageWithSetupEnv,
         '--entrypoint', '/bin/bash',
         dockerImage,
         '-lc',
-        execution
-            ? buildWorkflowWrapper(execution.workflow, execution.marker)
-            : REPO_SETUP_WRAPPER_SCRIPT,
+        piPathSetup + wrapper,
         ENTRYPOINT_PATHS[agentType],
         ...afterImage
     ];

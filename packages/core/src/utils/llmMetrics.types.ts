@@ -65,6 +65,8 @@ export interface ClaudeResult {
     error?: string;
     tokenUsage?: TokenUsage;
     usageMetrics?: SubscriptionUsageMetrics | null;
+    /** Run cost the provider reported as authoritative (Pi `totalFromProvider`); recorded instead of ProPR pricing. */
+    providerCostUsd?: number;
 }
 
 export interface IssueRef {

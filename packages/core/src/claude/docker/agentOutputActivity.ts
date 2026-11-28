@@ -2,7 +2,7 @@
  * Provider-neutral classification of one agent output record for the activity
  * watchdog. Every supported agent streams newline-delimited JSON (Claude
  * stream-json, Codex exec events, OpenCode parts, Antigravity events, Vibe
- * session messages); only the few shapes that matter here are recognized:
+ * session messages, Pi `--mode json` session events); only the few shapes that matter here are recognized:
  * assistant text, the start of a tool call and its end. Anything else is plain
  * activity. One record can carry several of them (a message starting two tool
  * calls), so a record classifies to a list, in record order. Tool transitions
@@ -18,7 +18,8 @@ export type AgentOutputActivity =
 
 const ACTIVITY: AgentOutputActivity = { kind: 'activity' };
 const TOOL_ID_KEYS = ['tool_use_id', 'tool_call_id', 'call_id', 'callID', 'tool_id', 'id'] as const;
-const TOOL_START_TYPES = new Set(['tool_use', 'tool_call', 'tool']);
+// `toolcall` is Pi's content block (`toolCall`), compared lowercased.
+const TOOL_START_TYPES = new Set(['tool_use', 'tool_call', 'tool', 'toolcall']);
 const TOOL_END_TYPES = new Set(['tool_result', 'tool_response']);
 const CODEX_TOOL_ITEMS = new Set(['command_execution', 'mcp_tool_call', 'web_search', 'file_change']);
 const FINISHED_TOOL_STATUSES = new Set(['completed', 'error', 'failed', 'cancelled']);
@@ -165,8 +166,45 @@ function classifySingleEvent(event: JsonRecord, type: string): AgentOutputActivi
     return part ?? classifyFlatEvent(event, type);
 }
 
+const PI_TOOL_EVENTS = new Set(['tool_execution_start', 'tool_execution_update', 'tool_execution_end']);
+
+/** Pi `message_update` deltas: streamed assistant text, thinking and tool-call blocks. */
+function classifyPiMessageUpdate(update: JsonRecord): AgentOutputActivity {
+    const updateType = lower(update.type);
+    if (updateType === 'text_delta' && typeof update.delta === 'string') return { kind: 'text', text: update.delta };
+    if (updateType === 'toolcall_start') return toolStart(update);
+    if (updateType === 'toolcall_end' && isRecord(update.toolCall)) return toolStart(update.toolCall);
+    return ACTIVITY;
+}
+
+/**
+ * Pi `--mode json` session events. Tool executions carry `toolCallId`; a
+ * `toolResult` message and a `turn_end`'s results also end their calls.
+ * Assistant messages fall through to the generic message classification.
+ */
+function classifyPiEvent(event: JsonRecord, type: string): AgentOutputActivity[] | null {
+    if (type === 'message_update' && isRecord(event.assistantMessageEvent)) return [classifyPiMessageUpdate(event.assistantMessageEvent)];
+    if (PI_TOOL_EVENTS.has(type)) {
+        if (type === 'tool_execution_update') return [ACTIVITY];
+        const call = { id: event.toolCallId };
+        return [type === 'tool_execution_start' ? toolStart(call) : toolEnd(call)];
+    }
+    if ((type === 'message_start' || type === 'message_end') && isRecord(event.message) && event.message.role === 'toolResult') {
+        return [toolEnd({ id: event.message.toolCallId })];
+    }
+    // A turn's closing record repeats its assistant message, already classified at message_end.
+    if (type === 'turn_end' && (Array.isArray(event.toolResults) || isRecord(event.message))) {
+        const results = Array.isArray(event.toolResults) ? event.toolResults.filter(isRecord) : [];
+        const ends = results.map(result => toolEnd({ id: result.toolCallId }));
+        return ends.length > 0 ? ends : [ACTIVITY];
+    }
+    return null;
+}
+
 function classifyEvent(event: JsonRecord): AgentOutputActivity[] {
     const type = lower(event.type);
+    const pi = classifyPiEvent(event, type);
+    if (pi) return pi;
     const message = classifyMessage(event, type);
     if (message.length > 0) return message;
     return classifyChatMessage(event) ?? [classifySingleEvent(event, type)];

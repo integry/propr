@@ -180,6 +180,79 @@ test('distinguishes authentication, quota, HTTP 429, and unrelated failures for 
   assert.equal((await check(config.id))?.errorCode, 'rate_limit');
 });
 
+test('Pi checks the default model provider without running a prompt', async () => {
+  const pi: AgentConfig = {
+    id: 'pi', type: 'pi', alias: 'pi', enabled: true, configPath: '~/.pi/agent', dockerImage: 'propr/agent:test',
+    supportedModels: ['pi-openrouter/mistralai/devstral-2512', 'pi-anthropic/claude-sonnet-5-5'], defaultModel: 'pi-openrouter/mistralai/devstral-2512',
+  };
+  const outcomes = [
+    { status: 'ready', provider: 'openrouter', authType: 'api_key' },
+    { status: 'not_ready', provider: 'openrouter', reason: 'credentials_not_configured', message: 'Pi has no credentials for openrouter.' },
+    { status: 'invalid', provider: 'openrouter', reason: 'invalid_state', message: 'Pi\'s openrouter credentials are invalid (invalid_state).' },
+    { status: 'not_ready', provider: 'openrouter', reason: 'provider_not_found', message: 'Pi does not know the provider "openrouter".' },
+  ] as const;
+  const checkedModels: string[] = [];
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [pi],
+    createAgent: () => ({
+      analyze: async () => { throw new Error('A credential check must not run a prompt'); },
+      checkCredentials: async (model: string) => { checkedModels.push(model); return outcomes[checkedModels.length - 1]; },
+    }),
+  });
+  // The response is what the route serializes: assert it after a JSON round trip.
+  const response = async (fresh: boolean) => JSON.parse(JSON.stringify(await check('pi', fresh)));
+  assert.deepEqual(await response(false), {
+    agentId: 'pi', model: pi.defaultModel, status: 'ready', credentials: { status: 'ready', provider: 'openrouter' },
+  });
+  const notReady = await response(true);
+  assert.equal(notReady.status, 'error', 'the generic health status is unchanged');
+  assert.equal(notReady.errorCode, 'auth_required');
+  assert.deepEqual(notReady.credentials, { status: 'not_ready', provider: 'openrouter', reason: 'credentials_not_configured' });
+  assert.match(notReady.error ?? '', /no credentials for openrouter/);
+  const invalid = await response(true);
+  assert.equal(invalid.status, 'error');
+  assert.equal(invalid.errorCode, 'auth_required');
+  assert.deepEqual(invalid.credentials, { status: 'invalid', provider: 'openrouter', reason: 'invalid_state' }, 'an unusable login is told apart from a missing one');
+  assert.match(invalid.error ?? '', /invalid/);
+  const unknownProvider = await response(true);
+  assert.equal(unknownProvider.errorCode, 'unknown', 'an unknown provider is not a login problem');
+  assert.deepEqual(unknownProvider.credentials, { status: 'not_ready', provider: 'openrouter', reason: 'provider_not_found' });
+  assert.deepEqual(checkedModels, Array(4).fill(pi.defaultModel));
+  assert.equal(agentHealthModel({ ...pi, defaultModel: undefined }), pi.supportedModels[0]);
+  assert.equal(agentHealthModel({ ...pi, defaultModel: undefined, supportedModels: [] }), undefined);
+});
+
+test('Pi rechecks readiness when the default provider changes during the credential probe', async () => {
+  const anthropic = 'pi-anthropic/claude-sonnet-5-5';
+  const openrouter = 'pi-openrouter/mistralai/devstral-2512';
+  let pi: AgentConfig = { ...config, id: 'pi', type: 'pi', supportedModels: [anthropic, openrouter], defaultModel: anthropic };
+  const checkedModels: string[] = [];
+  let finish!: () => void;
+  const check = createAgentHealthCheck({
+    loadAgents: async () => [pi],
+    createAgent: () => ({
+      analyze: async () => { throw new Error('A credential check must not run a prompt'); },
+      checkCredentials: async model => {
+        checkedModels.push(model);
+        if (model === anthropic) {
+          await new Promise<void>(resolve => { finish = resolve; });
+          return { status: 'ready', provider: 'anthropic' };
+        }
+        return { status: 'not_ready', provider: 'openrouter' };
+      },
+    }),
+  });
+  const pending = check(pi.id);
+  await new Promise(resolve => setImmediate(resolve));
+  pi = { ...pi, defaultModel: openrouter };
+  finish();
+  assert.deepEqual(await pending, {
+    agentId: 'pi', model: openrouter, status: 'error', errorCode: 'auth_required', error: 'Credentials are not configured.',
+    credentials: { status: 'not_ready', provider: 'openrouter' },
+  });
+  assert.deepEqual(checkedModels, [anthropic, openrouter]);
+});
+
 test('an unreadable login is not ready with its actionable reason, without a provider call', async () => {
   const reason = "agy stores its login in the OS keyring on desktops, which ProPR containers can't read. Sign in once with `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 agy`, or use ProPR's managed login.";
   const antigravity: AgentConfig = { ...config, id: 'agy', type: 'antigravity', alias: 'antigravity', configPath: '~/.gemini', supportedModels: ['antigravity-gemini-3.8-flash'], defaultModel: 'antigravity-gemini-3.8-flash' };

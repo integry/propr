@@ -15,6 +15,9 @@
 # For Vibe support, also create:
 #   mkdir -p ~/.vibe
 #
+# For Pi support, also create (or log in with `pi auth login <provider>` first):
+#   mkdir -p ~/.pi/agent
+#
 # For OpenCode support, also create the OpenCode directories and include the
 # override file:
 #   mkdir -p ~/.config/opencode ~/.local/share/opencode
@@ -100,12 +103,15 @@ services:
       # Mount agent credentials at the same path on both sides so the worker
       # can pass host-valid paths when spawning sibling agent containers.
       # IMPORTANT: Create any missing directories before starting:
-      #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe
+      #   mkdir -p ~/.claude ~/.codex ~/.gemini ~/.vibe ~/.pi/agent
       # Docker will create them as root-owned if they do not exist.
       - ${HOME:?HOME must be set}/.claude:${HOME:?HOME must be set}/.claude
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
+      # Pi agent dir: agent containers mount it writable through the host
+      # daemon for OAuth refresh write-back; the app only needs to see it.
+      - ${HOME:?HOME must be set}/.pi/agent:${HOME:?HOME must be set}/.pi/agent:ro
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
@@ -132,6 +138,7 @@ services:
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
+      - PI_CONFIG_PATH=${HOME:?HOME must be set}/.pi/agent
       - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
       # Optional override for the encrypted OAuth credential collected through
       # the Web UI. App installation tokens cannot upload GitHub attachments.
@@ -161,6 +168,9 @@ services:
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
+      # Pi agent dir: agent containers mount it writable through the host
+      # daemon for OAuth refresh write-back; the app only needs to see it.
+      - ${HOME:?HOME must be set}/.pi/agent:${HOME:?HOME must be set}/.pi/agent:ro
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/claude-logs:/tmp/claude-logs
@@ -186,6 +196,7 @@ services:
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
+      - PI_CONFIG_PATH=${HOME:?HOME must be set}/.pi/agent
       - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
       - PROPR_CONTAINERIZED=1
       # How often to scan for repos needing indexing (default: 5 minutes)
@@ -253,6 +264,9 @@ services:
       - ${HOME:?HOME must be set}/.gemini:${HOME:?HOME must be set}/.gemini:ro
       - ${HOME:?HOME must be set}/.codex:${HOME:?HOME must be set}/.codex:ro
       - ${HOME:?HOME must be set}/.vibe:${HOME:?HOME must be set}/.vibe:ro
+      # Pi agent dir: agent containers mount it writable through the host
+      # daemon for OAuth refresh write-back; the app only needs to see it.
+      - ${HOME:?HOME must be set}/.pi/agent:${HOME:?HOME must be set}/.pi/agent:ro
       - ${HOME:?HOME must be set}/.propr/agent-credentials:${HOME:?HOME must be set}/.propr/agent-credentials
       # An absolute PROPR_DATA_DIR is mounted at the same path so host DB_FILENAME paths work.
       - ${PROPR_DATA_DIR:-./data}:${PROPR_DATA_DIR:-/usr/src/app/data}
@@ -281,6 +295,7 @@ services:
       # Requires docker-compose.opencode.yml to mount this host path for OpenCode.
       - OPENCODE_CONFIG_PATH=${HOME:?HOME must be set}/.config/opencode
       - VIBE_CONFIG_PATH=${HOME:?HOME must be set}/.vibe
+      - PI_CONFIG_PATH=${HOME:?HOME must be set}/.pi/agent
       - PROPR_MANAGED_CREDENTIALS_DIR=${HOME:?HOME must be set}/.propr/agent-credentials
       - PROPR_CONTAINERIZED=1
       - PROPR_STACK=${PROPR_STACK:-propr}
