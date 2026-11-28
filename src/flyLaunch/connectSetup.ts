@@ -37,7 +37,7 @@
  */
 import { hostname } from 'node:os';
 import { DEFAULT_PROPR_GH_RELAY_URL } from '@propr/shared';
-import { GithubSetupError, githubJson } from './githubSetup.js';
+import { GithubSetupError, listInstallationRepositories } from './githubSetup.js';
 import { GITHUB_APP_KEY_FILE, type LaunchConfig, type LaunchConnect } from './launchConfig.js';
 import type { LaunchStore } from './launchStore.js';
 
@@ -142,13 +142,7 @@ export async function discoverInstallations(call: RelayCall): Promise<RelayInsta
 async function relayRepositories(call: RelayCall, installationId: string): Promise<string[]> {
     const minted = await relayJson<{ token?: string }>(call, '/installation-token', 'repositories', { method: 'POST', body: { installation_id: Number(installationId) } });
     if (!minted.token) throw new GithubSetupError('ProPR Connect did not return an installation token. Try again.');
-    const repositories: string[] = [];
-    for (let page = 1; page <= 10; page++) {
-        const list = await githubJson<{ repositories: Array<{ full_name: string }> }>(call.fetcher, `https://api.github.com/installation/repositories?per_page=100&page=${page}`, { token: minted.token });
-        repositories.push(...list.repositories.map(repository => repository.full_name));
-        if (list.repositories.length < 100) break;
-    }
-    return repositories;
+    return listInstallationRepositories(call.fetcher, minted.token);
 }
 
 /** Best effort: a token enrolled for a step that then failed must not stay valid. */

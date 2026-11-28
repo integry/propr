@@ -164,13 +164,24 @@ export async function verifyInstallation(appId: number, pem: string, installatio
     const installation = await githubJson<{ id: number; app_id: number }>(fetcher, `https://api.github.com/app/installations/${installationId}`, { jwt });
     if (installation.app_id !== appId) throw new GithubSetupError('That installation belongs to a different GitHub App.');
     const { token } = await githubJson<{ token: string }>(fetcher, `https://api.github.com/app/installations/${installationId}/access_tokens`, { method: 'POST', jwt });
+    return { repositories: await listInstallationRepositories(fetcher, token) };
+}
+
+/** Pages GitHub may serve for one installation: 100,000 repositories, far beyond any real install. */
+export const INSTALLATION_REPOSITORY_PAGE_LIMIT = 1000;
+
+/**
+ * Every repository an installation token can see, paging until GitHub returns a short page.
+ * Reaching the page limit is an error, never a silently partial list.
+ */
+export async function listInstallationRepositories(fetcher: Fetcher, token: string): Promise<string[]> {
     const repositories: string[] = [];
-    for (let page = 1; page <= 10; page++) {
+    for (let page = 1; page <= INSTALLATION_REPOSITORY_PAGE_LIMIT; page++) {
         const list = await githubJson<{ repositories: Array<{ full_name: string }> }>(fetcher, `https://api.github.com/installation/repositories?per_page=100&page=${page}`, { token });
         repositories.push(...list.repositories.map(repository => repository.full_name));
-        if (list.repositories.length < 100) break;
+        if (list.repositories.length < 100) return repositories;
     }
-    return { repositories };
+    throw new GithubSetupError(`The installation lists more than ${INSTALLATION_REPOSITORY_PAGE_LIMIT * 100} repositories; ProPR could not read them all, so nothing was saved.`);
 }
 
 /** Exchange the OAuth code for a user token and read who signed in. The token is discarded. */

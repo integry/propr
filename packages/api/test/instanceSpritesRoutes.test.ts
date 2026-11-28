@@ -8,6 +8,7 @@ import type { Request, Response } from 'express';
 import { spritePoolKey } from '@propr/shared';
 import { createInstanceSpritesRoutes, type InstanceSpritesRouteDeps } from '../routes/instanceSpritesRoutes.js';
 import { instanceSpritesPrefix, type SpritesProvider } from '../services/instanceSprites.js';
+import type { SpriteRemovalFence } from '../services/spriteRemovalFence.js';
 
 const MARKER = 'a21b1d274add47ba';
 const PREFIX = `propr-${MARKER}-`;
@@ -31,8 +32,19 @@ function fakeProvider(names: string[], failing: string[] = []) {
   return { provider, calls, live };
 }
 
-function harness(options: { names?: string[]; failing?: string[]; busy?: number | (() => Promise<number>); token?: string | null; marker?: string | null; env?: NodeJS.ProcessEnv } = {}) {
+/** Records reservations; `reserve` decides what the pool's atomic check answers. */
+function fakeFence(reserve: SpriteRemovalFence['reserve'] = async () => ({ token: 'removal' })) {
+  const calls = { reserved: [] as string[][], released: [] as Array<{ token: string; deleted: string[]; failed: string[] }> };
+  const fence: SpriteRemovalFence = {
+    async reserve(names) { calls.reserved.push(names); return reserve(names); },
+    async release(reservation, deleted, failed) { calls.released.push({ token: reservation.token, deleted, failed }); },
+  };
+  return { fence, calls };
+}
+
+function harness(options: { names?: string[]; failing?: string[]; busy?: number | (() => Promise<number>); token?: string | null; marker?: string | null; env?: NodeJS.ProcessEnv; reserve?: SpriteRemovalFence['reserve'] } = {}) {
   const fake = fakeProvider(options.names ?? [`${PREFIX}aaa`, `${PREFIX}bbb`], options.failing);
+  const removal = fakeFence(options.reserve);
   const env: NodeJS.ProcessEnv = { DATA_DIR: mkdtempSync(path.join(tmpdir(), 'sprites-')), ...options.env };
   if (options.token !== null) env.SPRITES_TOKEN = options.token ?? 'tok';
   const marker = options.marker === undefined ? MARKER : options.marker;
@@ -41,8 +53,9 @@ function harness(options: { names?: string[]; failing?: string[]; busy?: number 
     redis: { get: async key => (key === spritePoolKey(env.PROPR_INSTANCE_ID) + ':deployment' ? marker : null) },
     createProvider: () => fake.provider,
     readBusy: typeof options.busy === 'function' ? options.busy : async () => (options.busy as number | undefined) ?? 0,
+    fence: removal.fence,
   };
-  return { routes: createInstanceSpritesRoutes(deps), ...fake, env };
+  return { routes: createInstanceSpritesRoutes(deps), ...fake, env, removal: removal.calls };
 }
 
 async function call(handler: (req: Request, res: Response) => Promise<void>, body?: unknown) {
@@ -91,6 +104,42 @@ describe('instance Sprites admin routes', () => {
     assert.deepEqual(json, { deleted: 2, failed: [] });
     assert.deepEqual(h.calls.deleted.sort(), [`${PREFIX}aaa`, `${PREFIX}bbb`]);
     assert.equal(h.live.size, 0);
+    assert.deepEqual(h.removal.reserved, [[`${PREFIX}aaa`, `${PREFIX}bbb`]]);
+    assert.deepEqual(h.removal.released, [{ token: 'removal', deleted: [`${PREFIX}aaa`, `${PREFIX}bbb`], failed: [] }]);
+  });
+
+  test('deletes nothing when a Sprite turned busy after the zero-busy snapshot', async () => {
+    const h = harness({ reserve: async () => ({ busy: 1 }) });
+    const { status, json } = await call(h.routes.removeSprites, { count: 2 });
+    assert.equal(status, 409);
+    assert.equal(json.code, 'SPRITES_BUSY');
+    assert.equal(json.busy, 1);
+    assert.deepEqual(h.calls.deleted, []);
+    assert.deepEqual(h.removal.released, []);
+  });
+
+  test('deletes nothing when the Sprites cannot be reserved in the pool', async () => {
+    const h = harness({ reserve: async () => { throw new Error('redis down'); } });
+    const { status, json } = await call(h.routes.removeSprites, { count: 2 });
+    assert.equal(status, 503);
+    assert.equal(json.code, 'SPRITES_ACTIVITY_UNAVAILABLE');
+    assert.deepEqual(h.calls.deleted, []);
+  });
+
+  test('a Sprites client that cannot start releases every reservation as failed', async () => {
+    const h = harness();
+    const removal = fakeFence();
+    let provided = 0;
+    const routes = createInstanceSpritesRoutes({
+      env: h.env, redis: { get: async () => MARKER }, readBusy: async () => 0, fence: removal.fence,
+      // The listing gets a client; the deletion's client fails to start.
+      createProvider: () => { if (provided++) throw new Error('sdk'); return h.provider; },
+    });
+    const { status, json } = await call(routes.removeSprites, { count: 2 });
+    assert.equal(status, 502);
+    assert.equal(json.code, 'SPRITES_UNAVAILABLE');
+    assert.deepEqual(removal.calls.released, [{ token: 'removal', deleted: [], failed: [`${PREFIX}aaa`, `${PREFIX}bbb`] }]);
+    assert.deepEqual(h.calls.deleted, []);
   });
 
   test('deletes nothing when the count changed since the confirmation', async () => {
@@ -157,6 +206,7 @@ describe('instance Sprites admin routes', () => {
     assert.equal(json.code, 'PARTIAL_FAILURE');
     assert.equal(json.deleted, 1);
     assert.deepEqual(json.failed, [`${PREFIX}bbb`]);
+    assert.deepEqual(h.removal.released, [{ token: 'removal', deleted: [`${PREFIX}aaa`], failed: [`${PREFIX}bbb`] }]);
   });
 
   test('rejects a body without a positive count', async () => {

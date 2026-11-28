@@ -135,7 +135,10 @@ function deviceRoute(device: DeviceFake, key: string, init: RequestInit | undefi
     return undefined;
 }
 
-function fakeGithub(calls: string[], relay: RelayFake = relayFake(), device: DeviceFake = deviceFake()): typeof fetch {
+/** What GET /installation/repositories serves, 100 per page like GitHub. */
+const DEFAULT_REPOSITORIES = ['octo/repo', 'octo/other'];
+
+function fakeGithub(calls: string[], relay: RelayFake = relayFake(), device: DeviceFake = deviceFake(), repositories: string[] = DEFAULT_REPOSITORIES): typeof fetch {
     return (async (input: string | URL | Request, init?: RequestInit) => {
         const url = new URL(String(input));
         const key = `${init?.method ?? 'GET'} ${url.host}${url.pathname}`;
@@ -150,7 +153,11 @@ function fakeGithub(calls: string[], relay: RelayFake = relayFake(), device: Dev
             case 'GET api.github.com/app/installations/7': return json({ id: 7, app_id: 42 });
             case 'GET api.github.com/app/installations/8': return json({ id: 8, app_id: 99 });
             case 'POST api.github.com/app/installations/7/access_tokens': return json({ token: 'ghs_installation' }, 201);
-            case 'GET api.github.com/installation/repositories': return json({ repositories: [{ full_name: 'octo/repo' }, { full_name: 'octo/other' }] });
+            case 'GET api.github.com/installation/repositories': {
+                assert.equal(url.searchParams.get('per_page'), '100');
+                const page = Number(url.searchParams.get('page'));
+                return json({ total_count: repositories.length, repositories: repositories.slice((page - 1) * 100, page * 100).map(full_name => ({ full_name })) });
+            }
             case 'POST github.com/login/oauth/access_token': return json({ access_token: 'gho_user' });
             case 'GET api.github.com/user': return json({ login: 'Octo', id: 1001 });
             default: return json({ message: 'not found' }, 404);
@@ -189,6 +196,8 @@ interface WizardOverrides {
     /** Reuse a volume (a restart); the claim on it carries over. */
     store?: LaunchStore;
     countMachines?: () => Promise<number | undefined>;
+    /** The installation's repositories; two by default. */
+    repositories?: string[];
 }
 
 async function startWizard(overrides: WizardOverrides = {}): Promise<Harness> {
@@ -206,7 +215,7 @@ async function startWizard(overrides: WizardOverrides = {}): Promise<Harness> {
     const calls: string[] = [];
     const logs: string[] = [];
     const options: SetupWizardOptions = {
-        store, access, publicUrl: PUBLIC_URL, controlPlaneApp: 'propr-test', labelHost: 'machine-1', fetcher: fakeGithub(calls, relay, device), log: message => logs.push(message),
+        store, access, publicUrl: PUBLIC_URL, controlPlaneApp: 'propr-test', labelHost: 'machine-1', fetcher: fakeGithub(calls, relay, device, overrides.repositories), log: message => logs.push(message),
         now: () => clock,
         ...(overrides.relayUrl ? { relayUrl: overrides.relayUrl } : {}),
         ...(overrides.deviceClientId ? { deviceClientId: overrides.deviceClientId } : {}),
@@ -690,6 +699,38 @@ test('more than one installation: the wizard asks which one, keeps no token, and
     assert.equal((await enroll(h, cookie, { installation: '78' })).status, 303);
     assert.deepEqual(relay.enrolled, [{ installation_id: 78, label: 'fly:propr-test@machine-1' }]);
     assert.equal(readLaunchConfig(h.store).env.GH_INSTALLATION_ID, '78');
+});
+
+test('an installation with more than 1,000 repositories is stored whole on both paths', async () => {
+    const repositories = Array.from({ length: 1001 }, (_, index) => `octo/repo-${index}`);
+    const pages = (h: Harness) => h.calls.filter(call => call === 'GET api.github.com/installation/repositories').length;
+
+    // Own App: the install callback lists every page before storing the installation.
+    const own = await startWizard({ repositories });
+    const ownCookie = await claim(own);
+    const start = await (await own.request('/setup/github/start', { method: 'POST', cookie: ownCookie, form: { org: '', name: 'ProPR test' } })).text();
+    assert.equal((await own.request(`/setup/github/created?code=manifest-code&state=${stateIn(start)}`, { cookie: ownCookie })).status, 303);
+    const install = await own.request('/setup/github/install', { cookie: ownCookie });
+    assert.equal((await own.request(`/setup/github/installed?installation_id=7&setup_action=install&state=${stateIn(install.headers.get('location')!)}`, { cookie: ownCookie })).status, 303);
+    assert.equal(pages(own), 11);
+    assert.deepEqual(readLaunchConfig(own.store).env.GITHUB_REPOS_TO_MONITOR?.split(','), repositories);
+
+    // ProPR App: enrollment lists every page with the minted installation token.
+    const connected = await startWizard({ repositories });
+    assert.equal((await enroll(connected, await claim(connected))).status, 303);
+    assert.equal(pages(connected), 11);
+    assert.deepEqual(readLaunchConfig(connected.store).env.GITHUB_REPOS_TO_MONITOR?.split(','), repositories);
+});
+
+test('an installation listing that never ends is an error, never a partial repository list', async () => {
+    const endless = Array.from({ length: 100_000 }, (_, index) => `octo/repo-${index}`);
+    const h = await startWizard({ repositories: endless });
+    const response = await enroll(h, await claim(h));
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /could not read them all, so nothing was saved/);
+    assert.equal(readLaunchConfig(h.store).connect, undefined);
+    assert.equal(readLaunchConfig(h.store).env.GITHUB_REPOS_TO_MONITOR, undefined);
+    assert.deepEqual(h.relay.revoked, [{ installation_id: 77, token_id: 'tok-1' }]);
 });
 
 test('enrollment failures store nothing and say what to do', async () => {
