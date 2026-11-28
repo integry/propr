@@ -16,7 +16,8 @@ import { taskRunExtensionRequest } from '../src/extensions/extensionRunResolutio
 import { extensionGatewayCall } from '../src/extensions/mcpGateway.js';
 import { ExtensionPackageCache, type NpmRunner } from '../src/extensions/packageCache.js';
 import { resolveNpmPackage } from '../src/extensions/packageRegistry.js';
-import { claudeToolPolicyArgs, codexToolPolicyArgs } from '../src/agents/agentToolPolicy.js';
+import { claudeToolPolicyArgs, codexToolPolicyArgs, openCodeToolPolicyArgs, vibeToolPolicyArgs } from '../src/agents/agentToolPolicy.js';
+import { openCodeMcpConfig } from '../src/agents/mcpLaunch/openCodeMcpLaunch.js';
 import { PACKAGE_SERVER_INSTALLER, packageServerInstallSpec, packageServersDigest } from '../src/extensions/remotePackageServers.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -30,6 +31,8 @@ const plainValue = 'plain-greeting-value';
 const result = { success: true, executionTimeMs: 0, modifiedFiles: [], commitMessage: null, logs: '', modelUsed: 'synthetic' };
 const claude = { type: 'claude', alias: 'claude-main', id: randomUUID(), enabled: true, dockerImage: 'synthetic', configPath: '/unused', supportedModels: ['synthetic'] } as AgentConfig;
 const codex = { ...claude, type: 'codex', alias: 'codex-main' } as AgentConfig;
+const vibe = { ...claude, type: 'vibe', alias: 'vibe-main' } as AgentConfig;
+const openCode = { ...claude, type: 'opencode', alias: 'opencode-main', cliVersionResolved: '2.4.2' } as AgentConfig;
 type PackageServerInput = Extract<ExtensionLibraryServerInput, { kind: 'package' }>;
 const packageServer = (extra: Record<string, unknown> = {}): PackageServerInput => ({
   kind: 'package', name: 'local-tools', ecosystem: 'npm', package: 'propr-fixture-mcp', version: '1.0.0', enabled: true, tools: ['echo', 'secret_length'], capability: 'read',
@@ -270,6 +273,43 @@ test('a runtime without bind mounts gets the verified install to replay: npm ci 
   assert.notEqual(JSON.parse(await fs.readFile(resultFile, 'utf8')).code, 0);
   assert.ok(!await fs.stat(path.join(sandbox, tampered.key)).catch(() => null));
   if (process.getuid?.() !== 0) await import('node:child_process').then(c => c.execFileSync('chmod', ['-R', 'u+w', sandbox]));
+});
+
+test('Vibe gets the package server as a VIBE_MCP_SERVERS stdio entry whose own env is all the bridge needs', async t => {
+  const { save, run, cache, store } = await fixture(t);
+  await save([packageServer({ secretEnv: ['FIXTURE_TOKEN'] })], { 'local-tools/FIXTURE_TOKEN': secret }, ['local-tools']);
+  const { launched } = await run(issueTask(), vibe);
+  const local = launched.toolPolicy!.localMcpServers!;
+  const policy = vibeToolPolicyArgs(launched.toolPolicy!);
+  assert.deepEqual(policy.cliArgs, []);
+  assert.ok(!JSON.stringify(policy).includes(secret), 'no secret in launch arguments or serialized config');
+  assert.deepEqual(Object.keys(policy.env).sort(), ['PROPR_EXTENSION_EXCLUSIVE_MCP', 'VIBE_ENABLE_CONNECTORS', 'VIBE_MCP_SERVERS']);
+  assert.deepEqual(JSON.parse(policy.env.VIBE_MCP_SERVERS), [{ name: 'local-tools', transport: 'stdio', command: '/usr/local/bin/node', args: ['/opt/propr/extension-stdio-bridge.mjs', local[0].bridgeConfig], env: { PROPR_EXTENSION_STDIO_0_0_SECRET: secret } }]);
+  // Vibe hands only the entry's env (plus the MCP SDK's minimal defaults) to the stdio server.
+  const [entry] = JSON.parse(policy.env.VIBE_MCP_SERVERS);
+  const installed = await cache.verify((await store.readLibrary('1')).servers[0] as any);
+  const call = await bridgeSession(t, entry.args[1], { ...entry.env }, installed.localDirectory);
+  assert.equal((await call('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'vibe', version: '3.1.5' } })).result.serverInfo.name, 'local-tools');
+  assert.deepEqual((await call('tools/list')).result.tools.map((tool: { name: string }) => tool.name), ['echo', 'secret_length']);
+  assert.equal((await call('tools/call', { name: 'secret_length', arguments: {} })).result.content[0].text, `${secret.length}:[REDACTED]`, 'the server received the secret; the bridge redacts it');
+});
+
+test('OpenCode gets the package server as a local mcp.servers entry; its inherited environment is all the bridge needs', async t => {
+  const { save, run, cache, store } = await fixture(t);
+  await save([packageServer({ secretEnv: ['FIXTURE_TOKEN'] })], { 'local-tools/FIXTURE_TOKEN': secret }, ['local-tools']);
+  const { launched } = await run(issueTask(), openCode);
+  const local = launched.toolPolicy!.localMcpServers!;
+  const config = openCodeMcpConfig(launched.toolPolicy!)!;
+  const policy = openCodeToolPolicyArgs(launched.toolPolicy!);
+  assert.deepEqual(policy.cliArgs, []);
+  assert.ok(!JSON.stringify([config, policy]).includes(secret), 'no secret in the inline config or serialized result');
+  assert.deepEqual(config.mcp, { servers: { 'local-tools': { type: 'local', command: ['/usr/local/bin/node', '/opt/propr/extension-stdio-bridge.mjs', local[0].bridgeConfig] } } });
+  // OpenCode starts local servers with its own environment, which carries the secret by name.
+  assert.deepEqual(Object.keys(policy.env), ['PROPR_EXTENSION_STDIO_0_0_SECRET']);
+  const installed = await cache.verify((await store.readLibrary('1')).servers[0] as any);
+  const call = await bridgeSession(t, local[0].bridgeConfig, { ...policy.env }, installed.localDirectory);
+  assert.equal((await call('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'opencode', version: '2.4.2' } })).result.serverInfo.name, 'local-tools');
+  assert.equal((await call('tools/call', { name: 'secret_length', arguments: {} })).result.content[0].text, `${secret.length}:[REDACTED]`, 'the server received the secret; the bridge redacts it');
 });
 
 test('changed installed files refuse the server at launch; the run proceeds without it and records why', async t => {

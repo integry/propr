@@ -287,7 +287,7 @@ test('an administrator adds additional extensions to an automation and sees skip
   const form = page.getByTestId('agent-editor');
   const items = form.getByRole('group', { name: 'Additional extensions' });
   await items.scrollIntoViewIfNeeded();
-  await expect(form.getByText('Extra skills and MCP servers for this automation. Claude and Codex only.')).toBeVisible();
+  await expect(form.getByText('Extra skills and MCP servers for this automation. OpenCode agents need CLI 2.x.')).toBeVisible();
   await expect(items.getByLabel(/Documentation review/)).toHaveAccessibleName(/already applies automatically/);
   await expect(items.getByLabel(/retired-docs/)).toHaveAccessibleName(/skipped: switched off in the library/);
   // An item limited to other repositories is not offered.

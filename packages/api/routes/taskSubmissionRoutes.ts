@@ -18,7 +18,7 @@ import { isDemoMode } from '../demoMode.js';
 import { getLlmLabel, enqueueIssueImplementationJob } from './planIssueHelpers.js';
 import { goalAttachmentUpload } from './plannerRoutes.js';
 import { goalUploadIdentity, removeTemporaryGoalUploads } from '../services/goalAttachmentService.js';
-import { EXTENSION_OPT_OUT_LABELS, agentSupportsSavedModel, githubInlineEligibility, MAX_RUN_COST_CAP_USD, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
+import { EXTENSION_OPT_OUT_LABELS, agentRuntimeSupportsExtensions, agentSupportsSavedModel, extensionRuntimesLabel, unsupportedExtensionRuntimeMessage, githubInlineEligibility, MAX_RUN_COST_CAP_USD, VISUAL_PREVIEW_CONTENT_TYPES } from '@propr/shared';
 import { uploadGitHubAttachment } from '../../../src/github/visualPreviewAttachments.js';
 
 export const taskSubmissionUpload: RequestHandler = (req, res, next) => {
@@ -68,8 +68,8 @@ export async function routing(body: { agentAlias?: string; model?: string; exten
   if (!agent?.config.enabled || !model || !agentSupportsSavedModel(agent.config, model)) {
     throw Object.assign(new Error('Selected agent or model is no longer available. Choose a supported selection in Options.'), { status: 400 });
   }
-  if (body.extensionProfile && !['claude', 'codex'].includes(agent.config.type)) {
-    throw Object.assign(new Error('Extension profiles require Claude or Codex task execution'), { status: 400 });
+  if (body.extensionProfile && !agentRuntimeSupportsExtensions(agent.config.type, agent.config.cliVersionResolved)) {
+    throw Object.assign(new Error(`Extension profiles require ${extensionRuntimesLabel()} task execution`), { status: 400 });
   }
   const label = await labelLookup(model, agent.config.alias);
   if (!label) throw Object.assign(new Error('Selected agent/model cannot be routed through GitHub issues'), { status: 400 });
@@ -80,7 +80,7 @@ export async function routing(body: { agentAlias?: string; model?: string; exten
       throw Object.assign(new Error('Selected extension agent/model cannot be routed exactly through GitHub issues'), { status: 400 });
     }
   }
-  return { agentAlias: agent.config.alias, model, routingLabel: label, runtime: agent.config.type };
+  return { agentAlias: agent.config.alias, model, routingLabel: label, runtime: agent.config.type, ...(agent.config.cliVersionResolved ? { cliVersion: agent.config.cliVersionResolved } : {}) };
 }
 
 async function storeUploads(files: MulterFile[]): Promise<SubmissionAttachment[]> {
@@ -340,7 +340,7 @@ export async function linkSubmissionTodos(db: Knex, row: TaskSubmission, complet
 
 export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; services?: Partial<{
   authorize: typeof authorizeTaskSubmissionRepository;
-  routing: (body: Parameters<typeof routing>[0]) => Promise<Omit<Awaited<ReturnType<typeof routing>>, 'runtime'> & { runtime?: string }>;
+  routing: (body: Parameters<typeof routing>[0]) => Promise<Omit<Awaited<ReturnType<typeof routing>>, 'runtime'> & { runtime?: string; cliVersion?: string }>;
   getOctokit: typeof getAuthenticatedOctokit;
   processingLabels: typeof loadPrimaryProcessingLabels;
   enqueue: typeof enqueueIssueImplementationJob;
@@ -361,7 +361,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
     // These local rejections precede the GitHub POST. Mark them definite,
     // so the submission retains permission to retry rather than reconcile.
     const resolved = await resolveRouting(payload);
-    if (!['claude', 'codex'].includes(resolved.runtime ?? '')) throw new ExtensionError(400, 'Extensions require Claude or Codex task execution');
+    if (!agentRuntimeSupportsExtensions(resolved.runtime, resolved.cliVersion)) throw new ExtensionError(400, unsupportedExtensionRuntimeMessage());
   };
   const resume = async (id: string) => {
     const octokit = await getOctokit();
@@ -464,7 +464,7 @@ export function createTaskSubmissionRoutes({ db, services = {} }: { db: Knex; se
       if (isDemoMode()) { res.json({ qualified: false, revision: 0, servers: [], skills: [] }); return; }
       await checkAccess(req, repository);
       const resolved = await resolveRouting({ agentAlias, model });
-      res.json(await new ExtensionLibraryStore(db).taskPreview({ repository, agentAlias: resolved.agentAlias, runtime: resolved.runtime ?? '' }));
+      res.json(await new ExtensionLibraryStore(db).taskPreview({ repository, agentAlias: resolved.agentAlias, runtime: resolved.runtime ?? '', cliVersion: resolved.cliVersion }));
     } catch (error) { await sendError(req, res, error); }
   };
   return { submit, get, retry, extensions };

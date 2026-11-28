@@ -4,11 +4,13 @@ import { currentOpenCodeModel, isManagedAgentConfigPath } from '@propr/shared';
 import logger from '../../utils/logger.js';
 import { resolveConfigPath } from '../../config/configManager.js';
 import { applyAgentRunLaunchWrapper } from '../../claude/docker/repoSetupWrapper.js';
-import { AgentRunSpecBuilder, agentRunNetwork } from '../runtime/agentRunSpec.js';
+import { AgentRunSpecBuilder, agentRunMcpGrant, agentRunNetwork } from '../runtime/agentRunSpec.js';
 import { renderDockerRunArgs } from '../runtime/dockerRunArgs.js';
 import type { AgentRunSpec } from '../runtime/types.js';
 import { generateClaudePrompt, type IssueDetails, type IssueRef } from '../../claude/prompts/promptGenerator.js';
-import type { AgentConfig, AnalysisResult } from '../types.js';
+import type { AgentConfig, AgentToolPolicy, AnalysisResult } from '../types.js';
+import { agentContainerNetwork } from '../agentContainerNetwork.js';
+import { mergeOpenCodeConfigContent, openCodeMcpConfig, openCodeToolPolicyArgs, openCodeToolPolicyEnvironment } from '../mcpLaunch/openCodeMcpLaunch.js';
 import { createContainerExecutionId } from './utils/containerExecutionId.js';
 import {
     buildOpenCodeRepositoryScoutConfig,
@@ -34,6 +36,8 @@ export interface OpenCodeDockerArgsParams {
     gitMountArgs?: string[];
     dataPath?: string;
     ensureConfigPath?: (configPath: string) => void;
+    /** Task runs only: run MCP servers, skills and the exclusive switch (OpenCode 2.x). */
+    toolPolicy?: AgentToolPolicy;
 }
 
 export function evaluateOpenCodeAnalysis(options: {
@@ -96,7 +100,7 @@ export function buildOpenCodePrompt(options: BuildOpenCodePromptOptions): string
 }
 
 export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRunSpec {
-    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, repositoryInspection = false, dataPath, ensureConfigPath = ensureDirectory } = params;
+    const { config, worktreePath, githubToken, modelName, issueNumber, taskId, executionType, readOnlyWorkspace, repositoryInspection = false, dataPath, ensureConfigPath = ensureDirectory, toolPolicy } = params;
     assertRepositoryInspectionMode(repositoryInspection, readOnlyWorkspace);
     const configPath = params.configPath || resolveConfigPath(config.configPath);
     const managedCredentials = isManagedAgentConfigPath(config.configPath);
@@ -113,10 +117,12 @@ export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRun
     // mode, which still enforces explicit denies.
     const title = issueNumber === 0 ? 'ProPR analysis' : 'ProPR task';
     const legacyCli = isLegacyOpenCodeCli(config);
+    assertOpenCodeToolPolicySupported(legacyCli, toolPolicy);
     const commandArgs = ['opencode-run', '--format', 'json', '--title', title, ...buildOpenCodePermissionFlags(legacyCli, repositoryInspection)];
     const builder = new AgentRunSpecBuilder({
         agentType: 'opencode', image: config.dockerImage, alias: config.alias, name: containerName, stdin: true, user: '0:0',
-        network: agentRunNetwork('bridge'), security: { capAdd: ['CHOWN'] },
+        network: agentRunNetwork(agentContainerNetwork(toolPolicy)), security: { capAdd: ['CHOWN'] },
+        mcpGrant: agentRunMcpGrant(toolPolicy),
         workspace: {
             hostPath: worktreePath,
             containerPath: repositoryInspection ? REPOSITORY_SCOUT_CONTAINER_ROOT : '/home/node/workspace',
@@ -129,7 +135,7 @@ export function buildOpenCodeRunSpec(params: OpenCodeDockerArgsParams): AgentRun
     // User env vars precede the ProPR-managed OpenCode config vars so the
     // managed values (scout isolation in particular) win on duplicates.
     addEnvVars(builder, config);
-    addOpenCodeConfigEnv(builder, legacyCli, repositoryInspection);
+    addOpenCodeConfigEnv(builder, legacyCli, repositoryInspection, toolPolicy);
     if (readOnlyWorkspace) builder.env('PROPR_REPO_SETUP', '0');
     builder.env('XDG_CONFIG_HOME', '/home/node/.config').env('XDG_DATA_HOME', CONTAINER_RUNTIME_DATA_HOME).env('PROPR_EPHEMERAL_STATE', '1');
     if (managedCredentials) builder.env('PROPR_MANAGED_CREDENTIALS', '1');
@@ -164,14 +170,39 @@ function buildOpenCodePermissionFlags(legacyCli: boolean, repositoryInspection: 
     return repositoryInspection ? ['--pure', '--auto'] : ['--dangerously-skip-permissions'];
 }
 
-function addOpenCodeConfigEnv(builder: AgentRunSpecBuilder, legacyCli: boolean, repositoryInspection: boolean): void {
+/**
+ * OpenCode 1.x ignores `mcp.servers` and `skills.paths`, so a run that needs
+ * them must not start on it with the servers silently missing. The capability
+ * map already withholds extensions from 1.x; this guards direct policies.
+ */
+function assertOpenCodeToolPolicySupported(legacyCli: boolean, toolPolicy: AgentToolPolicy | undefined): void {
+    if (legacyCli && toolPolicy && openCodeMcpConfig(toolPolicy)) {
+        throw new Error('MCP servers and skills require OpenCode CLI 2.x; this agent runs OpenCode 1.x');
+    }
+}
+
+/**
+ * The run's MCP servers and skill path (merged into any existing inline config),
+ * the exclusive switches, then the token and stdio secret names. Names only, after
+ * operator variables so their envVars cannot change them: the runtime copies the
+ * values from the launch environment.
+ */
+function addOpenCodeToolPolicyEnv(builder: AgentRunSpecBuilder, existingContent: string | undefined, toolPolicy: AgentToolPolicy | undefined): void {
+    const content = mergeOpenCodeConfigContent(existingContent, toolPolicy && openCodeMcpConfig(toolPolicy));
+    if (content) builder.env('OPENCODE_CONFIG_CONTENT', content);
+    if (!toolPolicy) return;
+    builder.dockerOptions(openCodeToolPolicyEnvironment(toolPolicy), 'scratch');
+    for (const name of Object.keys(openCodeToolPolicyArgs(toolPolicy).env)) builder.env(name);
+}
+
+function addOpenCodeConfigEnv(builder: AgentRunSpecBuilder, legacyCli: boolean, repositoryInspection: boolean, toolPolicy?: AgentToolPolicy): void {
     if (!repositoryInspection || legacyCli) builder.env('OPENCODE_CONFIG_DIR', CONTAINER_CONFIG_PATH);
     else {
         builder
             .env('OPENCODE_CONFIG_DIR', '/tmp/propr-opencode-scout-config')
             .env('OPENCODE_CONFIG_PROJECT_DISABLE', '1').env('OPENCODE_DISABLE_CLAUDE_CODE', '1').env('OPENCODE_CONFIG', '');
     }
-    if (repositoryInspection) builder.env('OPENCODE_CONFIG_CONTENT', buildOpenCodeRepositoryScoutConfig(legacyCli));
+    addOpenCodeToolPolicyEnv(builder, repositoryInspection ? buildOpenCodeRepositoryScoutConfig(legacyCli) : undefined, toolPolicy);
 }
 
 function assertRepositoryInspectionMode(repositoryInspection: boolean, readOnlyWorkspace: boolean | undefined): void {

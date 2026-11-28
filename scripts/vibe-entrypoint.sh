@@ -27,9 +27,52 @@ copy_vibe_home() {
         fi
     fi
     normalize_vibe_config_paths
+    configure_exclusive_mcp
     configure_repository_scout
     configure_tool_permissions
     ensure_runtime_dirs
+}
+
+# Extension runs (PROPR_EXTENSION_EXCLUSIVE_MCP=1) get only the run's MCP
+# servers from VIBE_MCP_SERVERS. Vibe union-merges mcp_servers by name with
+# config.toml, so drop them from the runtime copy (the mounted source is never
+# touched). When the run limits skills through VIBE_ENABLED_SKILLS, also drop
+# the config's enabled_skills, which Vibe would concatenate with it. Mistral
+# cloud connectors would add tools too, so turn them off. Fails closed.
+strip_vibe_config_keys() {
+    "${PROPR_VIBE_PYTHON:-/opt/uv/tools/mistral-vibe/bin/python}" -I - "$@" <<'PY'
+import sys, tomllib, tomli_w
+path, keys = sys.argv[1], sys.argv[2:]
+with open(path, 'rb') as handle:
+    config = tomllib.load(handle)
+for key in keys:
+    config.pop(key, None)
+with open(path, 'wb') as handle:
+    tomli_w.dump(config, handle)
+PY
+}
+
+configure_exclusive_mcp() {
+    if [ "${PROPR_EXTENSION_EXCLUSIVE_MCP:-0}" != "1" ]; then
+        return
+    fi
+    export VIBE_ENABLE_CONNECTORS=false
+    if [ -z "${VIBE_MCP_SERVERS:-}" ]; then
+        export VIBE_MCP_SERVERS='[]'
+    fi
+    local config_file="$RUNTIME_VIBE_HOME/config.toml"
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+    local keys=(mcp_servers)
+    if [ -n "${VIBE_ENABLED_SKILLS:-}" ]; then
+        keys+=(enabled_skills)
+    fi
+    if ! strip_vibe_config_keys "$config_file" "${keys[@]}"; then
+        echo "Could not remove ambient MCP servers from the Vibe config for this extension run" >&2
+        exit 1
+    fi
+    echo "Using only this run's MCP servers" >&2
 }
 
 configure_repository_scout() {

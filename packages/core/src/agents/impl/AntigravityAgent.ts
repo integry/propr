@@ -1,5 +1,6 @@
+import { executeWithExtensions } from '../../extensions/extensionLaunch.js';
 import { antigravityCredentialRoot } from '../../diagnostics/credentialRedaction.js';
-import { assertToolPolicySupported, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
+import { antigravityToolPolicyArgs, assertToolPolicySupported, withPromptOnlyToolPolicy } from '../agentToolPolicy.js';
 import { prepareAgentGitAccess, prepareAnalysisGitAccess } from '../agentGitAccess.js';
 import logger from '../../utils/logger.js';
 import { type ModelReasoningLevel } from '@propr/shared';
@@ -73,7 +74,7 @@ function formatAnalysisFailure(protocolError: string | undefined, stderr: string
     return `Analysis failed: ${loginFailure || protocolError || stderr || 'No result returned'}`;
 }
 
-type AntigravityRunParams = { gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number; streamOutput?: boolean };
+type AntigravityRunParams = { toolPolicy?: AgentTaskOptions['toolPolicy']; gitMountArgs?: string[]; worktreePath: string; githubToken: string; modelName?: string; reasoningLevel?: ModelReasoningLevel; issueNumber: number; environment?: Record<string, string>; taskId?: string; executionType?: string; transcriptPath?: string; readOnlyWorkspace?: boolean; repositoryInspection?: boolean; executionMode?: 'task' | 'goal'; resumeConversationId?: string; nativeGoalLaunch?: boolean; printTimeoutMs?: number; streamOutput?: boolean };
 
 export class AntigravityAgent implements Agent {
     readonly config: AgentConfig;
@@ -89,7 +90,12 @@ export class AntigravityAgent implements Agent {
         return antigravityCredentialRoot(this.config.configPath, resolveConfigPath);
     }
 
+    /** The capability map decides whether library items reach this runtime; skipped ones are recorded. */
     async executeTask(options: AgentTaskOptions): Promise<AgentExecutionResult> {
+        return executeWithExtensions(this.config, options, prepared => this.executeTaskWithoutExtensions(prepared));
+    }
+
+    private async executeTaskWithoutExtensions(options: AgentTaskOptions): Promise<AgentExecutionResult> {
         const { worktreePath, issueRef, prompt: rawCustomPrompt, model, isRetry = false, retryReason, onSessionId, onContainerId, environment, taskId, prNumber, metadata } = options;
         // No native web switch: the restriction is best effort through the prompt.
         const customPrompt = withPromptOnlyToolPolicy(rawCustomPrompt, options.toolPolicy);
@@ -99,10 +105,7 @@ export class AntigravityAgent implements Agent {
         if (options.executionMode === 'goal') return this.executeNativeGoal(options, effectiveModel);
         const transcriptPath = this.createTransientTranscriptPath(taskId);
 
-        logger.info({
-            issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`,
-            worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason
-        }, isRetry ? 'Starting Antigravity agent execution (RETRY)...' : 'Starting Antigravity agent execution...');
+        logger.info({ issueNumber: issueRef.number, repository: `${issueRef.repoOwner}/${issueRef.repoName}`, worktreePath, dockerImage: this.config.dockerImage, agentAlias: this.config.alias, isRetry, retryReason }, isRetry ? 'Starting Antigravity agent execution (RETRY)...' : 'Starting Antigravity agent execution...');
 
         try {
             const prompt = this.buildPromptWithRetryContext(customPrompt, isRetry, retryReason);
@@ -111,13 +114,14 @@ export class AntigravityAgent implements Agent {
             const { githubToken, gitMountArgs } = await prepareAgentGitAccess(options);
             const reasoningLevel = await this.resolveReasoningLevel(options.reasoningLevel, effectiveModel);
             const requestedCliModel = effectiveModel ? toAntigravityCliModelId(effectiveModel, reasoningLevel) : undefined;
-            const runSpec = this.buildRunSpec({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, reasoningLevel, issueNumber: issueRef.number, environment, taskId, transcriptPath, streamOutput: true });
+            const runSpec = this.buildRunSpec({ worktreePath, githubToken, gitMountArgs, modelName: effectiveModel, reasoningLevel, issueNumber: issueRef.number, environment, taskId, transcriptPath, toolPolicy: options.toolPolicy, streamOutput: true });
 
             const { result, usageMetrics } = await executeWithUsageTracking(
                 'antigravity',
-                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
+                async () => runAgent(this.config, runSpec, { agentAlias: this.config.alias, extensionAgentLaunch: !!options.extensions, diagnostics: { provider: this.config.type, agent: this.config.id, configPath: this.config.configPath, authenticationRoot: this.getHostConfigPath(), credentials: this.config.envVars },
                     timeout: this.timeoutMs, cwd: worktreePath, onSessionId, onContainerId, worktreePath, stdinData: prompt,
-                    taskId, streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel
+                    taskId, streamToRedis: true, preserveOutputOnTimeout: true, model: effectiveModel,
+                    ...(options.toolPolicy && { extraEnvVars: antigravityToolPolicyArgs(options.toolPolicy).env })
                 }),
                 { alias: this.config.alias }
             );
@@ -173,10 +177,8 @@ export class AntigravityAgent implements Agent {
     }
 
     private buildPromptWithRetryContext(prompt: string, isRetry: boolean, retryReason?: string): string {
-        if (isRetry && retryReason) {
-            return `${prompt}\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
-        }
-        return prompt;
+        if (!isRetry || !retryReason) return prompt;
+        return `${prompt}\n\n---\n\n**RETRY CONTEXT**: This is a retry attempt. Previous attempt failed with: ${retryReason}\n\nPlease address the issues from the previous attempt.`;
     }
 
     private async processExecutionResult(opts: {
@@ -483,7 +485,7 @@ export class AntigravityAgent implements Agent {
             configEnvironment: this.config.envVars, taskId, executionType, transcriptPath,
             readOnlyWorkspace, repositoryInspection, executionMode, configPath,
             dockerImage: this.config.dockerImage, agentAlias: this.config.alias,
-            shellCommand: this.buildAntigravityShellCommand(repositoryInspection),
+            shellCommand: this.buildAntigravityShellCommand(repositoryInspection), toolPolicy: params.toolPolicy,
         });
         const cliArgs = spec.args;
         // The prompt is delivered through non-TTY stdin, not as an argv element,

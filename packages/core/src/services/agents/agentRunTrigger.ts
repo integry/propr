@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { JobsOptions } from 'bullmq';
 import type { Knex } from 'knex';
-import { agentSupportsSavedModel, agentTypeSupportsProprMcp, hasAutomationExtensions, parseAutomationExtensions, type AutomationRunTrigger, type AutomationTriggerEvent, type SyntheticAgentConfig } from '@propr/shared';
+import { agentRuntimeSupportsExtensions, agentSupportsSavedModel, agentTypeSupportsProprMcp, extensionRuntimesLabel, hasAutomationExtensions, parseAutomationExtensions, type AutomationRunTrigger, type AutomationTriggerEvent, type SyntheticAgentConfig } from '@propr/shared';
 import { loadMonitoredReposRaw, loadSettings, type RepoToMonitor } from '../../config/configManager.js';
 import { loadAgents, type AgentConfig } from '../../config/configManagerAgents.js';
 import { loadSyntheticAgents } from '../../config/configManagerSyntheticAgents.js';
@@ -225,7 +225,12 @@ function syntheticAgentSupportsProprMcp(agent: SyntheticAgentConfig, modelName: 
     const direct = agents.find(candidate => candidate.alias === member.directAgentAlias);
     return direct?.enabled ? [direct] : [];
   });
-  return selectable.length > 0 && selectable.every(direct => agentTypeSupportsProprMcp(direct.type));
+  return selectable.length > 0 && selectable.every(direct => agentTypeSupportsProprMcp(direct.type, agentCliVersion(direct)));
+}
+
+/** The agent's CLI version for capability predicates (OpenCode 1.x has none): resolved, else pinned. */
+function agentCliVersion(agent: Pick<AgentConfig, 'cliVersion' | 'cliVersionResolved'> | undefined): string | null {
+  return agent?.cliVersionResolved ?? agent?.cliVersion ?? null;
 }
 
 /** The configured default agent alias (settings.default_agent_alias), or null. */
@@ -305,14 +310,15 @@ export async function validateAgentDefinitionRuntime(
     const [agents, configuredAlias] = await Promise.all([loadDirectAgents(), loadDefaultAgentAlias()]);
     const agent = defaultAgent(agents, configuredAlias);
     const type = agent?.type ?? (agents.length ? null : 'claude');
-    if (explicitExtensions && (!type || !['claude', 'codex'].includes(type))) return 'Added extensions require a Claude or Codex task runtime';
+    const cliVersion = agentCliVersion(agent);
+    if (explicitExtensions && !agentRuntimeSupportsExtensions(type, cliVersion)) return `Added extensions require a ${extensionRuntimesLabel()} task runtime`;
     if (explicitExtensions) {
       const refusal = await extensionAdmissionRefusal(agent);
       if (refusal) return refusal;
     }
     if (!needsProprMcp) return null;
     if (type === null) return 'No default agent is configured; choose an agent that supports propr_mcp';
-    if (!agentTypeSupportsProprMcp(type)) {
+    if (!agentTypeSupportsProprMcp(type, cliVersion)) {
       return 'The default agent does not support propr_mcp, which the propr_mcp capability and the preview and auto acting steps require';
     }
     return null;
@@ -324,13 +330,13 @@ export async function validateAgentDefinitionRuntime(
     : synthetic.find(agent => agent.alias === alias && syntheticAgentSupportsModel(agent, modelName));
   if (!direct && !syntheticAgent) return 'Choose an enabled agent and a model it supports';
 
-  if (hasAutomationExtensions(definition.extensions) && (!direct || !['claude', 'codex'].includes(direct.type))) return 'Added extensions require a direct Claude or Codex task runtime';
+  if (hasAutomationExtensions(definition.extensions) && (!direct || !agentRuntimeSupportsExtensions(direct.type, agentCliVersion(direct)))) return `Added extensions require a direct ${extensionRuntimesLabel()} task runtime`;
   if (hasAutomationExtensions(definition.extensions)) {
     const refusal = await extensionAdmissionRefusal(direct);
     if (refusal) return refusal;
   }
   if (needsProprMcp) {
-    const supported = direct ? agentTypeSupportsProprMcp(direct.type)
+    const supported = direct ? agentTypeSupportsProprMcp(direct.type, agentCliVersion(direct))
       : syntheticAgentSupportsProprMcp(syntheticAgent!, modelName, agents);
     if (!supported) return `Agent ${alias} does not support propr_mcp, which the propr_mcp capability and the preview and auto acting steps require`;
   }
