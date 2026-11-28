@@ -34,8 +34,9 @@ Object.assign(process.env, {
   PROPR_DEMO_MODE: 'true',
 });
 
-const { closeConnection } = await import('../src/db/connection.js');
+const { closeConnection, db } = await import('../src/db/connection.js');
 const { createWorker, getIssueQueue, shutdownQueue, GITHUB_ISSUE_QUEUE_NAME } = await import('../src/queue/taskQueue.js');
+const { removeOwnFailedJob } = await import('../src/queue/removeOwnFailedJob.js');
 
 let redis: Redis | null = null;
 let worker: Worker | null = null;
@@ -45,6 +46,8 @@ const failures: Array<{ id?: string; attemptsMade: number; finishedOn?: number; 
 const failOtherwise = new Set<string>();
 /** Job IDs whose processor throws once and then makes admission refuse the retry. */
 const refuseAfterFailure = new Set<string>();
+/** Per job ID, called from a `failed` listener registered after the queue's own. */
+const onFailed = new Map<string, (job: Job) => void>();
 
 before(async () => {
   const client = new Redis({ host: REDIS_HOST, port: REDIS_PORT, connectTimeout: 250, lazyConnect: true, maxRetriesPerRequest: null, retryStrategy: () => null });
@@ -69,7 +72,12 @@ before(async () => {
     if (failOtherwise.delete(String(job.id))) throw new Error('processor failed');
     return { status: 'dispatched' };
   }, { concurrency: 1 });
-  worker.on('failed', (job, error) => { if (job) failures.push({ id: job.id, attemptsMade: job.attemptsMade, finishedOn: job.finishedOn, message: error.message, data: job.data }); });
+  worker.on('failed', (job, error) => {
+    if (!job) return;
+    failures.push({ id: job.id, attemptsMade: job.attemptsMade, finishedOn: job.finishedOn, message: error.message, data: job.data });
+    // Runs right after the queue's own failure handler started reporting, before it removes anything.
+    onFailed.get(String(job.id))?.(job);
+  });
 });
 
 after(async () => {
@@ -179,4 +187,84 @@ test('a retry refused after an admitted attempt failed keeps the evidence that t
   assert.doesNotMatch(body, /nothing was changed/i);
   assert.match(body, /The latest attempt was refused/);
   await until(() => jobState(jobId(47)), value => value.state === 'absent', 'removal of the refused job');
+});
+
+test('a replacement added under the same job ID while the refusal is reported is not removed by the old delivery\'s cleanup', async t => {
+  if (!requireRedis(t)) return;
+  const queue = await getIssueQueue();
+  const since = Date.now() - 2 * 60 * 60_000;
+  // Hold the failure handling's database access (submission intake, then the plan-issue report) at a gate,
+  // so the old delivery's cleanup can only run after the replacement exists.
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let held = 0;
+  const client = db.client as { acquireConnection: () => Promise<unknown> };
+  const acquire = client.acquireConnection;
+  let gated = false;
+  client.acquireConnection = async function (this: unknown) {
+    if (gated) { held += 1; await gate; }
+    return acquire.call(this);
+  };
+  t.after(() => { client.acquireConnection = acquire; release(); });
+  // BullMQ removes the failed delivery on failure (as both producers set); a relabel adds the issue again.
+  onFailed.set(jobId(48), () => { gated = true; });
+  await queue.add('processGitHubIssue', issueJob(48, { diskPressureDeferrals: 6, diskPressureSince: since }), jobOptions(48));
+  await until(async () => held, count => count > 0, 'the failure handling to reach the paused report');
+  assert.equal((await jobState(jobId(48))).state, 'absent', 'the failed delivery was removed on failure');
+  await queue.add('processGitHubIssue', issueJob(48, { correlationId: 'corr-48-replacement' }), jobOptions(48));
+  await until(() => jobState(jobId(48)), value => value.state === 'delayed' && value.job?.data.correlationId === 'corr-48-replacement', 'the replacement to wait for space');
+  gated = false;
+  release();
+  // Let the old delivery's failure handling (report, then cleanup) finish.
+  await new Promise(resolve => setTimeout(resolve, 1_500));
+  const after = await jobState(jobId(48));
+  assert.equal(after.state, 'delayed', 'the replacement survives the old delivery\'s cleanup');
+  assert.equal(after.job?.data.correlationId, 'corr-48-replacement');
+  onFailed.delete(jobId(48));
+  await after.job?.remove();
+});
+
+test('cleanup of a retained failed delivery removes only that delivery, never a later one under its ID', async t => {
+  if (!requireRedis(t)) return;
+  process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
+  const queue = await getIssueQueue();
+  const failedDelivery = async (number: number) => {
+    failOtherwise.add(jobId(number));
+    await queue.add('processGitHubIssue', issueJob(number), { ...jobOptions(number), attempts: 1, removeOnFail: false });
+    const { job } = await until(() => jobState(jobId(number)), value => value.state === 'failed', 'the failed delivery');
+    assert.ok(job);
+    return job;
+  };
+
+  // The held delivery is still the failed job under its ID: it is removed.
+  const own = await failedDelivery(49);
+  assert.equal(await removeOwnFailedJob(queue, own), 'removed');
+  assert.equal((await jobState(jobId(49))).state, 'absent');
+
+  // The held delivery is gone (retention, another cleanup) and a replacement waits or is delayed under its ID.
+  const stale = await failedDelivery(50);
+  await stale.remove();
+  await queue.pause();
+  try {
+    await queue.add('processGitHubIssue', issueJob(50), jobOptions(50));
+    assert.equal(await removeOwnFailedJob(queue, stale), 'not_owned');
+    assert.equal((await jobState(jobId(50))).state, 'waiting', 'the waiting replacement is kept');
+    await (await jobState(jobId(50))).job?.remove();
+    await queue.add('processGitHubIssue', issueJob(50), { ...jobOptions(50), delay: 60_000 });
+    assert.equal(await removeOwnFailedJob(queue, stale), 'not_owned');
+    assert.equal((await jobState(jobId(50))).state, 'delayed', 'the delayed replacement is kept');
+    await (await jobState(jobId(50))).job?.remove();
+  } finally {
+    await queue.resume();
+  }
+
+  // The replacement failed for good too: it is another delivery, which its own handler settles.
+  const replacement = await failedDelivery(50);
+  assert.notEqual(replacement.timestamp, stale.timestamp);
+  assert.equal(await removeOwnFailedJob(queue, stale), 'not_owned');
+  assert.equal((await jobState(jobId(50))).state, 'failed', 'the later failed delivery is kept');
+
+  // A delivery BullMQ removed on failure is never removed again by ID.
+  assert.equal(await removeOwnFailedJob(queue, { ...replacement, id: replacement.id, timestamp: replacement.timestamp, finishedOn: replacement.finishedOn, opts: { removeOnFail: true } } as Job), 'removed_on_fail');
+  assert.equal((await jobState(jobId(50))).state, 'failed');
 });

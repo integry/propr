@@ -231,10 +231,12 @@ async function finalizeSubmissionIntakeAttempt(job: Job | undefined, err: Error)
  * free space ran out, or waiting is disabled and its retries are spent): the
  * refused attempt never reached its processor, so nothing told the issue or its
  * plan. Earlier attempts may have run (`issueJobAdmitted`); the report says
- * which. The failed job is then removed: retained under its deterministic job
- * ID it would swallow the issue's next trigger (a relabel, a later poll), which
- * BullMQ deduplicates against it. Runs after the submission intake read the
- * failed job. Best effort.
+ * which. A failed job retained under its deterministic job ID would swallow
+ * the issue's next trigger (a relabel, a later poll), which BullMQ deduplicates
+ * against it, so it is then removed, but only while the ID still names this
+ * failed delivery (`removeOwnFailedJob`): one removed on failure may already
+ * have a replacement. Runs after the submission intake read the failed job.
+ * Best effort.
  */
 async function settleIssueDiskPressureFailure(job: Job | undefined, err: Error): Promise<void> {
     if (!job || job.name !== ISSUE_JOB_NAME || !isWorktreeDiskPressureError(err) || !isFinalJobFailure(job, err)) return;
@@ -244,8 +246,15 @@ async function settleIssueDiskPressureFailure(job: Job | undefined, err: Error):
     } catch (error) {
         logger.warn({ jobId: job.id, error: (error as Error).message }, 'Failed to report an issue job refused for disk pressure');
     }
-    await job.remove().then(
-        () => logger.info({ jobId: job.id }, 'Removed the issue job refused for disk pressure, so a later trigger enqueues it again'),
+    // The ID may name a replacement by now (added during the report): remove only the failed delivery held here.
+    await getIssueQueue().then(async queue => {
+        const { removeOwnFailedJob } = await import('./removeOwnFailedJob.js');
+        return removeOwnFailedJob(queue, job);
+    }).then(
+        outcome => {
+            if (outcome === 'removed') logger.info({ jobId: job.id }, 'Removed the issue job refused for disk pressure, so a later trigger enqueues it again');
+            else if (outcome === 'refused') logger.warn({ jobId: job.id }, 'Could not remove the issue job refused for disk pressure');
+        },
         error => logger.warn({ jobId: job.id, error: (error as Error).message }, 'Could not remove the issue job refused for disk pressure'),
     );
 }
