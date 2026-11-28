@@ -4,7 +4,8 @@ import { MachinesClient, MachinesHttpError, type MachinesApi } from './fly/api.j
 import { flyConfig, type FlyConfig } from './fly/config.js';
 import { resolveFlyImage } from './fly/imageResolution.js';
 import { FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME } from './runtimeSelection.js';
-import { spritesCliVersionRefusal, spritesProvidedCliVersion } from './sprites/spritesCliVersions.js';
+import { SPRITES_AGENT_TYPES, spritesCliVersionRefusal, spritesProvidedCliVersion } from './sprites/spritesCliVersions.js';
+import { isRemoteAgentType } from './remoteRunMounts.js';
 
 /**
  * Readiness of a remote agent runtime for one agent, without launching a Sprite
@@ -28,9 +29,6 @@ export interface RemoteRuntimeReadinessDeps {
     /** Resolves PROPR_FLY_IMAGE in its registry; throws when it does not resolve. */
     resolveFlyImage?: (config: FlyConfig) => Promise<void>;
 }
-
-const SPRITES_AGENT_TYPES = ['claude', 'codex', 'antigravity'];
-const FLY_AGENT_TYPES = ['claude', 'codex'];
 
 function statusOf(error: unknown): number | undefined {
     const status = (error as { statusCode?: unknown; status?: unknown })?.statusCode ?? (error as { status?: unknown })?.status;
@@ -77,7 +75,8 @@ async function spritesReadiness(config: AgentConfig, environment: NodeJS.Process
 
 async function flyReadiness(config: AgentConfig, environment: NodeJS.ProcessEnv, deps: RemoteRuntimeReadinessDeps): Promise<RemoteRuntimeReadiness> {
     const runtime = FLY_MACHINES_AGENT_RUNTIME;
-    if (!FLY_AGENT_TYPES.includes(config.type)) return { runtime, ready: false, error: `Fly Machines does not run ${config.type} agents.` };
+    // The same predicate FlyMachinesRuntime refuses unsupported providers with.
+    if (!isRemoteAgentType(config.type)) return { runtime, ready: false, error: `Fly Machines does not run ${config.type} agents.` };
     if (config.cliVersionType && config.cliVersionType !== 'default') {
         return { runtime, ready: false, error: 'Fly Machines uses the CLI version in PROPR_FLY_IMAGE. Select the default CLI version for this agent.' };
     }

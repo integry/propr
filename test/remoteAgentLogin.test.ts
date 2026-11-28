@@ -9,7 +9,9 @@ import { FLY_LOGIN_DIR, flyLoginRelayScript, parseFlyLoginPoll, startFlyLogin } 
 import { MachinesHttpError, type MachineLaunch, type MachinesApi } from '../packages/core/src/agents/runtime/fly/api.js';
 import type { FlyConfig } from '../packages/core/src/agents/runtime/fly/config.js';
 import { startSpriteLogin } from '../packages/core/src/agents/runtime/sprites/spritesLogin.js';
-import { SpritePoolCapacityError } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.js';
+import { SpritePoolCapacityError, readSpritesCliPins } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.js';
+import { SPRITES_AGENT_TYPES } from '../packages/core/src/agents/runtime/sprites/spritesCliVersions.js';
+import { unsupportedFlyAgentType } from '../packages/core/src/agents/runtime/fly/launch.js';
 import { RemoteLoginCapacityError, parseRemoteFileReply } from '../packages/core/src/agents/runtime/remoteLogin.js';
 import { checkRemoteRuntimeReadiness } from '../packages/core/src/agents/runtime/remoteRuntimeReadiness.js';
 import { FlyImageResolutionError, parseImageReference, resolveFlyImage } from '../packages/core/src/agents/runtime/fly/imageResolution.js';
@@ -355,6 +357,34 @@ describe('remote runtime readiness', () => {
         const pinned = await checkRemoteRuntimeReadiness({ ...agent, cliVersionType: 'specific', cliVersion: '0.0.1', cliVersionResolved: '0.0.1' },
             'sprites', { PROPR_SPRITES_TOKEN: 't' }, { listSprites: async () => ({}) });
         assert.match(pinned?.error ?? '', /runs only claude CLI/);
+    });
+
+    test('Sprites: OpenCode and Vibe are ready on their pinned CLI versions', async () => {
+        const pins = readSpritesCliPins();
+        for (const [type, version] of [['opencode', pins.OPENCODE_CLI_VERSION], ['vibe', pins.VIBE_CLI_VERSION]] as const) {
+            const ready = await checkRemoteRuntimeReadiness({ ...agent, id: type, alias: type, type }, 'sprites',
+                { PROPR_SPRITES_TOKEN: 't' }, { listSprites: async () => ({}) });
+            assert.deepEqual(ready, { runtime: 'sprites', ready: true, detail: `Sprites, ${type} CLI ${version}` });
+            const missing = await checkRemoteRuntimeReadiness({ ...agent, type }, 'sprites', {}, { listSprites: async () => ({}) });
+            assert.match(missing?.error ?? '', /PROPR_SPRITES_TOKEN/);
+            const pinned = await checkRemoteRuntimeReadiness({ ...agent, type, cliVersionType: 'specific', cliVersion: '0.0.1', cliVersionResolved: '0.0.1' },
+                'sprites', { PROPR_SPRITES_TOKEN: 't' }, { listSprites: async () => ({}) });
+            assert.match(pinned?.error ?? '', new RegExp(`runs only ${type} CLI ${version.replace(/\./g, '\\.')}`));
+        }
+    });
+
+    test('readiness accepts exactly the agent types each remote runtime runs', async () => {
+        const types = ['claude', 'codex', 'antigravity', 'opencode', 'vibe', 'gemini'] as const;
+        const env = { PROPR_SPRITES_TOKEN: 't', PROPR_FLY_API_TOKEN: 'tok', PROPR_FLY_APP: 'agents', PROPR_FLY_IMAGE: 'registry.fly.io/agents:1' };
+        const deps = { listSprites: async () => ({}), machines: () => ({ list: async () => [] }), resolveFlyImage: async () => {} };
+        for (const type of types) {
+            const config = { ...agent, type } as AgentConfig;
+            const sprites = await checkRemoteRuntimeReadiness(config, 'sprites', env, deps);
+            assert.equal(sprites?.ready, (SPRITES_AGENT_TYPES as readonly string[]).includes(type), `sprites ${type}: ${sprites?.error}`);
+            const fly = await checkRemoteRuntimeReadiness(config, 'fly-machines', env, deps);
+            assert.equal(fly?.ready, unsupportedFlyAgentType(type) === undefined, `fly-machines ${type}: ${fly?.error}`);
+        }
+        assert.deepEqual([...SPRITES_AGENT_TYPES].sort(), ['antigravity', 'claude', 'codex', 'opencode', 'vibe']);
     });
 
     test('Fly Machines: configuration resolves and the token lists Machines; Docker is not judged', async () => {

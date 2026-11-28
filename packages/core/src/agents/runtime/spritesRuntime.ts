@@ -9,7 +9,7 @@ import { AGENT_EGRESS_RESTRICTED_ENV } from '../../network/egressAllowlist.js';
 import { currentNetworkEgressDiagnostics } from '../../network/egressExecution.js';
 import { WORKSPACE_TRANSPORT_RESULT_DIR } from '../../git/workspaceTransportScript.js';
 import { AgentRunStoppedError, LazyOutputStreams, type AgentRunOptions } from './dockerRuntime.js';
-import { spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
+import { SPRITES_AGENT_TYPES, spritesCliVersionRefusal } from './sprites/spritesCliVersions.js';
 import { execute } from './sprites/spritesExecution.js';
 import { applySpriteNetworkPolicy, spriteNetworkPolicy, SPRITES_RESTRICTED_NETWORK_ENFORCEMENT } from './sprites/spritesNetwork.js';
 import { SpritePool, startupStep, type Slot, type SpriteClient } from './sprites/spritesProvisioning.js';
@@ -43,11 +43,6 @@ function mcpForwardTarget(spec: AgentRunSpec, environment: NodeJS.ProcessEnv, ga
     return target;
 }
 
-/**
- * Agents a Sprite is provisioned with (the pinned CLIs scripts/sprites-agent-setup.sh installs);
- * runs and interactive logins accept the same list.
- */
-const SPRITES_AGENT_TYPES: readonly string[] = ['codex', 'claude', 'antigravity', 'vibe', 'opencode'];
 
 // Operator catalog executables are not part of a Sprite: those servers stay refused (explicit) or dropped (auto-applied).
 const SPRITES_EXTENSION_CAPABILITIES = Object.freeze({ skills: true, remoteMcp: true, packageMcp: true, catalogMcp: false });
