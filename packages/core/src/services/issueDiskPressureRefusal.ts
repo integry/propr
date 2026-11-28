@@ -7,9 +7,11 @@
  * and its plan keeps reporting it as in progress. This posts one comment that
  * says what stopped the run and how to retry, and takes the plan issue out of
  * `processing` (back to `pending`, with its queued execution blocked on the
- * reason), so `get_plan` and the Studio show it. The plan issue is changed
- * only while it is not finished and is linked to this run: no task owns it
- * yet, or its task is one this job created (same correlation ID). Finished
+ * reason), so `get_plan` and the Studio show it. The comment says plainly that
+ * a relabel does not retry while the failed job stays in the queue, and how an
+ * operator clears it. The plan issue is changed only while it is not finished
+ * and is linked to this run: no task owns it yet, or its task is one this job
+ * created (same correlation ID). Finished
  * plan issues, historical ones and those another run took over keep their
  * status. Best effort: never throws.
  */
@@ -55,9 +57,45 @@ export function refusalDetails(job: RefusedIssueJob, error?: unknown): string | 
     return worktreeDiskPressureDetails(error) ?? (typeof job.data.diskPressureDetails === 'string' ? job.data.diskPressureDetails : null);
 }
 
+/** The issue queue's name, as `taskQueue.ts` resolves it (not imported: that module loads this one). */
+function issueQueueName(): string {
+    return process.env.GITHUB_ISSUE_QUEUE_NAME || 'github-issue-processor';
+}
+
+/**
+ * How to retry. The refused job stays in the queue as a failed job (evidence; its retention applies), and while
+ * it is there BullMQ deduplicates a new trigger for the issue (a relabel, a plan retry) against its job ID, so
+ * nothing runs until an operator clears it. Fresh job IDs per dispatch (integry/propr#3873) remove this step.
+ */
+function retryText(job: RefusedIssueJob, label: string, inPlan: boolean, queueName: string): string[] {
+    const retrigger = `remove the \`${label}\` label from this issue and add it again` + (inPlan ? ', or retry the issue from its plan' : '');
+    if (!job.id) {
+        return [
+            `**Relabeling will not retry this issue until the stale failed job for it is cleared** from the worker's queue \`${queueName}\``
+                + ' (or until integry/propr#3873 lands). A ProPR operator can find it in Redis under `bull:' + queueName + ':failed`.',
+            '',
+            `Once space has been freed on the worker host and the job is cleared, ${retrigger}.`,
+        ];
+    }
+    const key = `bull:${queueName}:${job.id}`;
+    return [
+        `**Relabeling will not retry this issue until the stale job \`${job.id}\` is cleared** (or until integry/propr#3873 lands).`
+            + ' The refused job stays in the worker\'s queue as a failed job, and while it is there ProPR ignores a new trigger for this issue.',
+        '',
+        'To retry once space has been freed on the worker host, a ProPR operator clears the job from Redis:',
+        '',
+        '```',
+        `redis-cli ZREM bull:${queueName}:failed ${job.id}`,
+        `redis-cli DEL ${key} ${key}:logs`,
+        '```',
+        '',
+        `Then ${retrigger}.`,
+    ];
+}
+
 export function diskPressureRefusalCommentBody(
     job: RefusedIssueJob,
-    { inPlan, now = Date.now(), details = null }: { inPlan: boolean; now?: number; details?: string | null },
+    { inPlan, now = Date.now(), details = null, queueName = issueQueueName() }: { inPlan: boolean; now?: number; details?: string | null; queueName?: string },
 ): string {
     const label = job.data.triggeringLabel || 'AI';
     // Only the absence of an admitted attempt supports saying that the job changed nothing.
@@ -79,8 +117,7 @@ export function diskPressureRefusalCommentBody(
             ]),
         '',
         ...(details ? ['Measured at the last refusal:', '', '```', details, '```', ''] : []),
-        `To run it again once space has been freed on the worker host, remove the \`${label}\` label from this issue and add it again`
-            + (inPlan ? ', or retry the issue from its plan.' : '.'),
+        ...retryText(job, label, inPlan, queueName),
     ].join('\n');
 }
 

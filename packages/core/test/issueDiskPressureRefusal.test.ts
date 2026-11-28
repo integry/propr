@@ -84,7 +84,11 @@ test('an exhausted refusal of a queued issue is reported on the issue and blocks
   const body = String(comments[0].params.body);
   assert.match(body, /no free disk space/);
   assert.match(body, /waited about 60 minutes/);
-  assert.match(body, /remove the `AI` label from this issue and add it again, or retry the issue from its plan\./);
+  assert.match(body, /Then remove the `AI` label from this issue and add it again, or retry the issue from its plan\.$/);
+  // The failed job stays as evidence and deduplicates a relabel: the comment says so, and how to clear it.
+  assert.match(body, /\*\*Relabeling will not retry this issue until the stale job `issue-acme-repo-1` is cleared\*\* \(or until integry\/propr#3873 lands\)\./);
+  assert.ok(body.includes('```\nredis-cli ZREM bull:github-issue-processor:failed issue-acme-repo-1\nredis-cli DEL bull:github-issue-processor:issue-acme-repo-1 bull:github-issue-processor:issue-acme-repo-1:logs\n```'), body);
+  assert.doesNotMatch(body, /automatic|will be retried|picks it up again/i, 'no automatic retry is promised');
 
   assert.equal((await planIssue(1)).status, 'pending', 'no longer reported as processing');
   const queue = (await getEpicExecutionQueue('draft'))!;
@@ -146,9 +150,13 @@ test('only the refused occurrence is released; the issue\'s completed occurrence
 });
 
 test('an issue outside any plan gets the report without a plan retry hint', async () => {
-  const outcome = await reportIssueDiskPressureRefusal({ data: { ...refusedJob(9).data, triggeringLabel: 'propr' } }, { octokit, database, now: () => NOW });
+  const outcome = await reportIssueDiskPressureRefusal({ ...refusedJob(9), data: { ...refusedJob(9).data, triggeringLabel: 'propr' } }, { octokit, database, now: () => NOW });
   assert.deepEqual(outcome, { commented: true, planIssueReleased: false, queueBlocked: false });
-  assert.match(String(comments[0].params.body), /remove the `propr` label from this issue and add it again\.$/);
+  assert.match(String(comments[0].params.body), /Then remove the `propr` label from this issue and add it again\.$/);
+  // Without a job ID the comment still says a relabel does not retry until the stale job is cleared.
+  const noId = diskPressureRefusalCommentBody({ data: { triggeringLabel: 'propr' } }, { inPlan: false, queueName: 'q' });
+  assert.match(noId, /\*\*Relabeling will not retry this issue until the stale failed job for it is cleared\*\* from the worker's queue `q`/);
+  assert.match(noId, /`bull:q:failed`/);
   assert.equal(diskPressureRefusalCommentBody({ data: {} }, { inPlan: false }).includes('waited about'), false);
 });
 
