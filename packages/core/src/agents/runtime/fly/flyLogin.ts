@@ -25,6 +25,8 @@ const LIVE_STATES = new Set(['created', 'starting', 'started', 'stopping', 'stop
 export interface FlyLoginOptions {
     pollMs?: number;
     slotWaitMs?: number;
+    /** How often a full Machine inventory is rechecked within the slot wait. */
+    capacityPollMs?: number;
     /** Consecutive failed polls tolerated once the Machine answered (before that, `config.bootTimeout` applies). */
     maxPollFailures?: number;
 }
@@ -75,13 +77,34 @@ export function parseFlyLoginPoll(stdout: string): { exitCode?: number; chunk: B
     return { exitCode: Number(status), chunk };
 }
 
-async function assertFreeMachine(api: MachinesApi, config: FlyConfig) {
+async function liveMachines(api: MachinesApi): Promise<number> {
+    const machines = await api.list!('');
+    return machines.filter(machine => !machine.state || LIVE_STATES.has(machine.state)).length;
+}
+
+interface InventoryWait { signal: AbortSignal; cancel: AbortSignal; pollMs: number; waitMs: number; onWaiting: () => void }
+
+/**
+ * Waits until the app has fewer than `PROPR_FLY_MACHINES_MAX` live Machines.
+ * Slot accounting is per process, so Machines another process (the worker)
+ * created only show in Fly's inventory: it is rechecked every `pollMs` until
+ * `signal` (the login's cancellation plus the slot-wait deadline the local
+ * slot acquisition also used) ends the wait.
+ */
+async function waitForFreeMachine(api: MachinesApi, config: FlyConfig, { signal, cancel, pollMs, waitMs, onWaiting }: InventoryWait) {
     if (config.maxMachines === undefined || !api.list) return;
-    const machines = await api.list('');
-    const live = machines.filter(machine => !machine.state || LIVE_STATES.has(machine.state)).length;
-    if (live >= config.maxMachines) {
-        throw new RemoteLoginCapacityError(`No Fly Machine is free for the login: ${live} of ${config.maxMachines} Machines (PROPR_FLY_MACHINES_MAX) `
-            + `exist in app ${config.app}. Wait for a running task to finish and try again.`);
+    let waited = false;
+    for (;;) {
+        const live = await liveMachines(api);
+        cancel.throwIfAborted();
+        if (live < config.maxMachines) return;
+        if (!waited) { waited = true; onWaiting(); }
+        try { await delay(pollMs, undefined, { signal }); }
+        catch {
+            cancel.throwIfAborted();
+            throw new RemoteLoginCapacityError(`No Fly Machine is free for the login: ${live} of ${config.maxMachines} Machines (PROPR_FLY_MACHINES_MAX) `
+                + `exist in app ${config.app} and none was freed within ${Math.round(waitMs / 1000)}s. Wait for a running task to finish and try again.`);
+        }
     }
 }
 
@@ -92,7 +115,7 @@ async function assertFreeMachine(api: MachinesApi, config: FlyConfig) {
  * and the Machine stops and auto-destroys.
  */
 export async function startFlyLogin(api: MachinesApi, config: FlyConfig, request: RemoteLoginRequest,
-    { pollMs = 1000, slotWaitMs = REMOTE_LOGIN_SLOT_WAIT_MS, maxPollFailures = 10 }: FlyLoginOptions = {}): Promise<RemoteLoginProcess> {
+    { pollMs = 1000, slotWaitMs = REMOTE_LOGIN_SLOT_WAIT_MS, capacityPollMs = 2000, maxPollFailures = 10 }: FlyLoginOptions = {}): Promise<RemoteLoginProcess> {
     const name = FLY_LOGIN_PREFIX + randomUUID();
     const slot = new FlyMachineSlot(api, config, name, 'agent-login');
     const waitSignal = AbortSignal.any([request.signal, AbortSignal.timeout(slotWaitMs)]);
@@ -104,7 +127,11 @@ export async function startFlyLogin(api: MachinesApi, config: FlyConfig, request
     }
     let id: string | undefined;
     try {
-        await assertFreeMachine(api, config);
+        // One deadline for both waits: the local slot and Fly's Machine inventory.
+        await waitForFreeMachine(api, config, {
+            signal: waitSignal, cancel: request.signal, pollMs: capacityPollMs, waitMs: slotWaitMs,
+            onWaiting: () => request.onProgress?.(`All ${config.maxMachines} Fly Machines are in use; waiting up to ${Math.round(slotWaitMs / 1000)}s for a free one…`),
+        });
         const launch: MachineLaunch = { name, skip_service_registration: true, skip_secrets: true, region: config.region, config: {
             image: config.image, guest: config.guest, metadata: { propr_run_id: name }, auto_destroy: true, restart: { policy: 'no' },
             processes: [{ user: 'root', ignore_app_secrets: true, entrypoint: ['/bin/sh', '-c'], cmd: [flyLoginRelayScript(request)] }], files: [],

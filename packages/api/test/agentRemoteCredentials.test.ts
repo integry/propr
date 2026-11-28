@@ -92,6 +92,25 @@ describe('pasted agent credentials', () => {
     await assert.rejects(setAgentPastedCredential(codex, 'codex-auth-json', 'not json'), /not valid JSON/);
   });
 
+  test('a stale Remove of one Codex kind keeps the other kind that replaced it', async () => {
+    const codex = agent('codex');
+    const authFile = path.join(storeDir(codex), 'auth.json');
+    const login = { tokens: { access_token: 'access-abcdefgh', refresh_token: 'refresh-abcdefgh9876' }, last_refresh: '2026-11-27T00:00:00Z' };
+    await setAgentPastedCredential(codex, 'openai-api-key', 'sk-proj-abcdefghijklmnopqrst');
+    await setAgentPastedCredential(codex, 'codex-auth-json', JSON.stringify(login));
+    const afterStaleKeyRemove = await clearAgentPastedCredential(codex, 'openai-api-key');
+    assert.deepEqual(JSON.parse(fs.readFileSync(authFile, 'utf8')), login);
+    assert.equal(afterStaleKeyRemove.credentials.find(item => item.kind === 'codex-auth-json')?.set, true);
+    assert.equal(remoteCredentialProblem(codex), undefined);
+
+    await setAgentPastedCredential(codex, 'openai-api-key', 'sk-proj-abcdefghijklmnopqrst');
+    await clearAgentPastedCredential(codex, 'codex-auth-json');
+    assert.equal(JSON.parse(fs.readFileSync(authFile, 'utf8')).OPENAI_API_KEY, 'sk-proj-abcdefghijklmnopqrst');
+
+    await clearAgentPastedCredential(codex, 'openai-api-key');
+    assert.equal(fs.existsSync(authFile), false);
+  });
+
   test('routes are write-only, no-store, and map bad input to 400', async () => {
     const claude = agent('claude');
     const routes = createAgentLoginRoutes({ resolveAgent: async id => id === claude.id ? claude : undefined });

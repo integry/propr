@@ -143,8 +143,28 @@ export function removePastedCredential(kind: PastedAgentCredentialKind, current:
         if (Object.keys(env).length === 0) delete next.env;
         return serialize(next);
     }
-    // auth.json holds one login; removing it removes the file.
+    if (kind === 'openai-api-key' || kind === 'codex-auth-json') return removeCodexCredential(kind, current, definition.path);
+    // OpenCode's auth.json is its only pasted kind; removing it removes the file.
     return null;
+}
+
+/**
+ * Both Codex kinds live in the same auth.json, so the kind being removed is
+ * checked against the current file (read under the store lock): removing a
+ * kind the file no longer holds, because the other kind has since replaced
+ * it, leaves the replacement in place. A file holding both drops only the
+ * removed one.
+ */
+function removeCodexCredential(kind: 'openai-api-key' | 'codex-auth-json', current: Buffer | undefined, path: string): Buffer | null {
+    const auth = existingObject(current, path);
+    const hasKey = STORED_SECRET['openai-api-key'](auth) !== undefined;
+    const hasLogin = STORED_SECRET['codex-auth-json'](auth) !== undefined;
+    if (kind === 'openai-api-key') {
+        if (!hasKey) return current ?? null;
+        return hasLogin ? serialize({ ...auth, OPENAI_API_KEY: null }) : null;
+    }
+    if (!hasLogin) return current ?? null;
+    return hasKey ? serialize({ OPENAI_API_KEY: auth.OPENAI_API_KEY, tokens: null, last_refresh: null }) : null;
 }
 
 /**

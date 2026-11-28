@@ -115,10 +115,42 @@ describe('Fly Machines interactive login', () => {
         assert.deepEqual(calls.destroyed, ['m-1']);
     });
 
-    test('fails clearly, without creating a Machine, when PROPR_FLY_MACHINES_MAX Machines already exist', async () => {
+    test('fails clearly, without creating a Machine, when PROPR_FLY_MACHINES_MAX Machines stay in use for the slot wait', async () => {
         const { api, calls } = fakeMachines({ live: 3 });
-        await assert.rejects(startFlyLogin(api, flyConfig({ maxMachines: 3, app: `full-${Date.now()}` }), request(), { pollMs: 1 }),
-            (error: Error) => error instanceof RemoteLoginCapacityError && /3 of 3 Machines \(PROPR_FLY_MACHINES_MAX\)/.test(error.message));
+        let lists = 0;
+        const list = api.list!;
+        api.list = async prefix => { lists++; return list(prefix); };
+        const progress: string[] = [];
+        const started = Date.now();
+        await assert.rejects(startFlyLogin(api, flyConfig({ maxMachines: 3, app: `full-${Date.now()}` }),
+            request({ onProgress: message => progress.push(message) }), { pollMs: 1, slotWaitMs: 200, capacityPollMs: 20 }),
+        (error: Error) => error instanceof RemoteLoginCapacityError
+                && /3 of 3 Machines \(PROPR_FLY_MACHINES_MAX\).*within 0s/.test(error.message));
+        assert.ok(Date.now() - started >= 190, 'waited for the slot deadline before refusing');
+        assert.ok(lists > 1, 'rechecked the Machine inventory');
+        assert.match(progress.join('\n'), /All 3 Fly Machines are in use; waiting/);
+        assert.equal(calls.created.length, 0);
+    });
+
+    test('waits for Machines another process created and starts the login once one is freed', async () => {
+        const fake = fakeMachines({ files: {} });
+        let live = 3;
+        fake.api.list = async () => Array.from({ length: live }, (_, index) => ({ id: `x${index}`, name: `propr-${index}`, state: 'started' }));
+        setTimeout(() => { live = 2; }, 60);
+        const login = await startFlyLogin(fake.api, flyConfig({ maxMachines: 3, app: `freed-${Date.now()}` }), request(),
+            { pollMs: 1, slotWaitMs: 5000, capacityPollMs: 10 });
+        assert.equal(fake.calls.created.length, 1);
+        await login.close();
+        assert.deepEqual(fake.calls.destroyed, ['m-1']);
+    });
+
+    test('a login cancelled while waiting for Machine inventory is aborted, not reported as a capacity error', async () => {
+        const { api, calls } = fakeMachines({ live: 3 });
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(new Error('cancelled by user')), 40);
+        await assert.rejects(startFlyLogin(api, flyConfig({ maxMachines: 3, app: `cancel-${Date.now()}` }), request({ signal: controller.signal }),
+            { pollMs: 1, slotWaitMs: 5000, capacityPollMs: 10 }),
+        (error: Error) => !(error instanceof RemoteLoginCapacityError) && /cancelled by user/.test(error.message));
         assert.equal(calls.created.length, 0);
     });
 
@@ -211,6 +243,21 @@ describe('pasted credentials', () => {
         assert.throws(() => applyPastedCredential('codex-auth-json', '[]', undefined), /JSON object/);
         assert.equal(removePastedCredential('codex-auth-json', Buffer.from(JSON.stringify(auth))), null);
         assert.throws(() => applyPastedCredential('opencode-auth-json', '{"anthropic":{}}', undefined), /has no "type"/);
+    });
+
+    test('removing a Codex kind the auth.json no longer holds keeps the kind that replaced it', () => {
+        const login = { tokens: { access_token: 'access-abcdefgh', refresh_token: 'refresh-abcdefgh9876' }, last_refresh: '2026-11-27T00:00:00Z' };
+        const loginFile = applyPastedCredential('codex-auth-json', JSON.stringify(login), applyPastedCredential('openai-api-key', 'sk-proj-abcdefghijklmnop', undefined));
+        assert.deepEqual(JSON.parse(removePastedCredential('openai-api-key', loginFile)!.toString()), login);
+        const keyFile = applyPastedCredential('openai-api-key', 'sk-proj-abcdefghijklmnop', loginFile);
+        assert.equal(removePastedCredential('codex-auth-json', keyFile)?.toString(), keyFile.toString());
+        assert.equal(removePastedCredential('openai-api-key', keyFile), null);
+        assert.equal(removePastedCredential('openai-api-key', undefined), null);
+        // A file holding both drops only the removed one.
+        const both = Buffer.from(JSON.stringify({ OPENAI_API_KEY: 'sk-proj-abcdefghijklmnop', ...login }));
+        assert.deepEqual(JSON.parse(removePastedCredential('openai-api-key', both)!.toString()), { OPENAI_API_KEY: null, ...login });
+        assert.deepEqual(JSON.parse(removePastedCredential('codex-auth-json', both)!.toString()),
+            { OPENAI_API_KEY: 'sk-proj-abcdefghijklmnop', tokens: null, last_refresh: null });
     });
 
     test('status reports set and the last four characters, never the value', () => {
