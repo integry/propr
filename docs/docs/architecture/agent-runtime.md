@@ -285,7 +285,7 @@ The host Pi agent directory (an existing `~/.pi/agent`, `HOST_PI_DIR`/`PI_CONFIG
 
 The mounted directory is only a source. Each run gets a fresh, owner-only disposable agent directory at `/tmp/propr-pi-home/agent` (`PI_CODING_AGENT_DIR`), with its sessions under `sessions/`. The entrypoint imports only `auth.json`, `settings.json`, `models.json`, `AGENTS.md`, `SYSTEM.md` and `APPEND_SYSTEM.md`. Host `sessions/`, `extensions/` and `mcp.json` are never copied, and ProPR writes its own `mcp.json` from `PROPR_PI_MCP_CONFIG` when it needs MCP servers. Sessions, extensions and package installs from a run therefore never reach the host. The entrypoint refuses a runtime home that overlaps the host directory in either direction. Pi's update check, install telemetry and startup catalog fetches are turned off (`PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0`, `PI_OFFLINE=1`), and the restricted-network allowlist omits `pi.dev`. `--no-approve` keeps repository-provided `.pi/` extensions, settings and prompts from loading; `AGENTS.md` and `CLAUDE.md` context files still load.
 
-Every Pi call the entrypoint makes (the version probe, the run itself, and credential seeding and sync) runs as `node`.
+The Pi CLI and reads of disposable credentials run as `node`. The credential synchronizer uses the entrypoint's privileges to update the host store, including private directories owned by a different UID.
 
 #### Goal Sessions
 
@@ -298,7 +298,7 @@ After the run, `scripts/pi-credentials.py` writes OAuth token refreshes from the
 - Only OAuth entries (`"type": "oauth"`) that Pi changed during the run are written. API-key entries are never rewritten, and nothing is written when no OAuth entry changed.
 - Each provider entry is a compare-and-swap: it is written only while the host entry still equals what was imported, so a host login, logout or refresh during the run wins.
 - A login made inside a run is never written back, because it is not a refresh of an imported entry. Use a managed login or `pi auth login` on the host instead.
-- The write is atomic, under Pi's own `auth.json.lock` (the proper-lockfile lock Pi takes, stale after 30 seconds), through an owner-only temporary file that keeps the original file mode.
+- The write is atomic, under Pi's own `auth.json.lock` (the proper-lockfile lock Pi takes, stale after 30 seconds), through an owner-only temporary file. The replacement keeps the original file's UID, GID, and mode.
 - The sync also runs when the container is stopped mid-run: the entrypoint forwards `SIGTERM`, `SIGINT` and `SIGHUP` to Pi, waits for it to exit, and then syncs before exiting with Pi's status.
 
 #### Managed Login

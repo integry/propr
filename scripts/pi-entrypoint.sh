@@ -11,9 +11,13 @@
 set -euo pipefail
 
 pi_source_dir="${PROPR_PI_SOURCE_DIR:-/home/node/.pi/agent}"
+pi_source_auth="$pi_source_dir/auth.json"
+case "$pi_source_auth" in
+    /*) ;;
+    *) pi_source_auth="$PWD/$pi_source_auth" ;;
+esac
 pi_runtime_home="${PROPR_PI_RUNTIME_HOME:-/tmp/propr-pi-home}"
 pi_agent_dir="$pi_runtime_home/agent"
-pi_seed_snapshot="$pi_runtime_home/propr-seeded-auth.json"
 pi_credentials_helper="${PROPR_PI_CREDENTIALS_HELPER:-/opt/propr/pi-credentials.py}"
 # Goal runs only: the goal's persisted session store, mounted outside the
 # disposable home so its sessions survive the run and are resumed next time.
@@ -72,13 +76,12 @@ export PI_SKIP_VERSION_CHECK=1
 export PI_TELEMETRY=0
 export PI_OFFLINE="${PI_OFFLINE:-1}"
 
-is_root() { [ "$(id -u)" = "0" ]; }
+is_root() { [ "$EUID" = "0" ]; }
 
-# Everything Pi-related runs as node, never as root: a root-owned file in the
-# node-owned disposable dir (a log, lock or models-store.json) breaks the run.
+# Pi and readers of its disposable credentials run as node.
 run_as_node() {
     if is_root; then
-        su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
+        /usr/local/bin/su-exec node env HOME=/home/node USER=node LOGNAME=node "$@"
     else
         "$@"
     fi
@@ -115,17 +118,29 @@ prepare_goal_sessions() {
 }
 
 prepare_runtime_home() {
+    local file import_path
     # A fresh dir every run, created owner-only: auth.json holds tokens.
-    rm -rf -- "$pi_agent_dir" "$pi_seed_snapshot"
+    rm -rf -- "$pi_agent_dir" "$pi_runtime_home/propr-seeded-auth.json"
     (umask 077 && mkdir -p "$pi_agent_dir/sessions")
 
     if [ -d "$pi_source_dir" ]; then
         echo "Pi agent directory mounted at $pi_source_dir" >&2
         for file in "${pi_imported_files[@]}"; do
-            if [ -f "$pi_source_dir/$file" ]; then
-                (umask 077 && cp -L -- "$pi_source_dir/$file" "$pi_agent_dir/$file") \
-                    || echo "Warning: could not import Pi $file" >&2
+            import_path="$pi_source_dir/$file"
+            [ -f "$import_path" ] || continue
+            if [ "$file" = auth.json ]; then
+                # Pin the source directory before importing auth.json so the
+                # privileged writer can only access the original destination.
+                pi_host_auth="$(realpath -m -- "$pi_source_auth")"
+                if { exec 9<"${pi_host_auth%/*}/"; }; then
+                    import_path="/proc/self/fd/9/${pi_host_auth##*/}"
+                else
+                    pi_host_auth=""
+                    echo "Warning: could not open the Pi host credential directory for write-back" >&2
+                fi
             fi
+            (umask 077 && cp -L -- "$import_path" "$pi_agent_dir/$file") \
+                || echo "Warning: could not import Pi $file" >&2
         done
     else
         echo "WARNING: Pi agent directory not mounted at $pi_source_dir" >&2
@@ -181,12 +196,16 @@ if [ "${PROPR_PI_LOGIN:-}" = "1" ]; then
     exec_as_node "$@"
 fi
 
+pi_host_auth=""
 prepare_runtime_home
 prepare_goal_sessions
 
+pi_seeded_auth=""
 if [ -f "$pi_agent_dir/auth.json" ]; then
-    # Record what was imported before Pi can rewrite it.
-    run_as_node python3 "$pi_credentials_helper" seed "$pi_agent_dir/auth.json" "$pi_seed_snapshot"
+    # Keep the baseline in this shell, out of the disposable agent's reach.
+    if [ -n "$pi_host_auth" ]; then
+        pi_seeded_auth="$(run_as_node /usr/bin/python3 -I "$pi_credentials_helper" seed "$pi_agent_dir/auth.json" - 9<&-)"
+    fi
     echo "Pi credentials imported" >&2
 else
     echo "Warning: no Pi auth.json imported; relying on provider API key environment variables" >&2
@@ -215,7 +234,7 @@ fi
 
 if [ $# -eq 0 ]; then
     echo "No command provided, starting interactive shell" >&2
-    exec /bin/bash
+    exec /bin/bash 9<&-
 fi
 
 # Callers may pass only Pi flags after the image.
@@ -223,7 +242,7 @@ case "$1" in
     -*) set -- pi "$@" ;;
 esac
 
-if pi_version="$(run_as_node pi --version 2>/dev/null)"; then
+if pi_version="$(run_as_node pi --version 9<&- 2>/dev/null)"; then
     echo "Pi CLI version: $pi_version" >&2
 fi
 
@@ -251,7 +270,7 @@ trap 'forward_signal TERM' TERM
 trap 'forward_signal INT' INT
 trap 'forward_signal HUP' HUP
 set +e
-exec_as_node env --default-signal=INT,QUIT "$@" 0<&0 &
+exec_as_node env --default-signal=INT,QUIT "$@" 0<&0 9<&- &
 pi_task_pid=$!
 while :; do
     wait "$pi_task_pid"
@@ -277,8 +296,13 @@ fi
 
 # Signals arriving during the sync are deferred until it finishes, so the
 # write-back completes once before the container exits.
-if [ -f "$pi_seed_snapshot" ]; then
-    run_as_node python3 "$pi_credentials_helper" sync "$pi_source_dir/auth.json" "$pi_agent_dir/auth.json" "$pi_seed_snapshot" \
+if [ -n "$pi_seeded_auth" ]; then
+    # Use the entrypoint's privileges only on the host side. Read the runtime
+    # as node and pass JSON through stdin to the writer, outside the task's PATH.
+    {
+        printf '%s\n' "$pi_seeded_auth"
+        run_as_node /usr/bin/python3 -I "$pi_credentials_helper" seed "$pi_agent_dir/auth.json" - 9<&-
+    } | /usr/bin/python3 -I "$pi_credentials_helper" sync-from-stdin "$pi_source_auth" "${pi_host_auth##*/}" \
         || echo "Warning: could not write refreshed Pi credentials back to the host" >&2
 fi
 

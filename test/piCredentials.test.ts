@@ -291,7 +291,7 @@ import json, os, runpy, stat, sys
 os.umask(0)
 script, log = sys.argv[1], sys.argv[2]
 modes = []
-real_open, real_chmod, real_replace = os.open, os.chmod, os.replace
+real_open, real_fchmod, real_replace = os.open, os.fchmod, os.replace
 def record(path):
     if "propr-tmp" in os.fspath(path):
         modes.append(stat.S_IMODE(os.lstat(path).st_mode))
@@ -301,13 +301,13 @@ def tracked_open(path, flags, mode=0o777, *args, **kwargs):
         assert flags & os.O_EXCL and flags & os.O_CREAT, "temp file must be created exclusively"
         record(path)
     return fd
-def chmod(path, *args, **kwargs):
-    record(path)
-    return real_chmod(path, *args, **kwargs)
+def fchmod(fd, *args, **kwargs):
+    modes.append(stat.S_IMODE(os.fstat(fd).st_mode))
+    return real_fchmod(fd, *args, **kwargs)
 def replace(source, *args, **kwargs):
     record(source)
     return real_replace(source, *args, **kwargs)
-os.open, os.chmod, os.replace = tracked_open, chmod, replace
+os.open, os.fchmod, os.replace = tracked_open, fchmod, replace
 sys.argv = [script, *sys.argv[3:]]
 try:
     runpy.run_path(script, run_name="__main__")
@@ -367,6 +367,9 @@ auth = json.load(open(path))
 auth["anthropic"] = {**auth["anthropic"], "access": "access-2", "refresh": "refresh-2", "expires": 2}
 json.dump(auth, open(path, "w"))
 '
+if [ -n "\${PROPR_TEST_RETARGET_AUTH:-}" ]; then
+  ln -sfn "$PROPR_TEST_RETARGET_AUTH" "$PROPR_PI_SOURCE_DIR/auth.json"
+fi
 # Keep working after the refresh until the container is stopped.
 if [ -n "\${PROPR_TEST_HANG:-}" ]; then echo $$ > "$PROPR_TEST_HANG"; exec sleep 60; fi
 exit "\${PROPR_TEST_EXIT:-0}"
@@ -465,6 +468,26 @@ exit "\${PROPR_TEST_EXIT:-0}"
             assert.equal(result.status, 7, result.stderr);
             const host = JSON.parse(fs.readFileSync(path.join(dirs.source, 'auth.json'), 'utf8')) as Auth;
             assert.equal(host.anthropic.refresh, 'refresh-2');
+        });
+    });
+
+    test('does not write a refresh to either target if the host auth link changed during the run', () => {
+        withEntrypoint((env, dirs) => {
+            const link = path.join(dirs.source, 'auth.json');
+            const original = path.join(dirs.source, 'original.json');
+            const replacement = path.join(dirs.source, 'replacement.json');
+            fs.renameSync(link, original);
+            fs.copyFileSync(original, replacement);
+            fs.symlinkSync(original, link);
+
+            const result = spawnSync('bash', [entrypoint, 'pi', '-p'], {
+                env: { ...env, PROPR_TEST_RETARGET_AUTH: replacement }, encoding: 'utf8',
+            });
+            assert.equal(result.status, 0, result.stderr);
+            assert.equal(fs.readlinkSync(link), replacement);
+            for (const target of [original, replacement]) {
+                assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), hostAuth());
+            }
         });
     });
 
@@ -618,9 +641,9 @@ exit "\${PROPR_TEST_EXIT:-0}"
 
     test('drops to node through su-exec for every Pi call when started as root', () => {
         const script = fs.readFileSync(entrypoint, 'utf8');
-        assert.match(script, /\n        su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);
+        assert.match(script, /\n        \/usr\/local\/bin\/su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);
         assert.match(script, /\n        exec su-exec node env HOME=\/home\/node USER=node LOGNAME=node "\$@"/);
-        for (const call of ['run_as_node python3 "$pi_credentials_helper" seed', 'run_as_node pi --version', 'exec_as_node env --default-signal=INT,QUIT "$@"', 'run_as_node python3 "$pi_credentials_helper" sync']) {
+        for (const call of ['run_as_node /usr/bin/python3 -I "$pi_credentials_helper" seed', 'run_as_node pi --version', 'exec_as_node env --default-signal=INT,QUIT "$@"']) {
             assert.ok(script.includes(call), `${call} must run as node`);
         }
         // Outside run_as_node itself, nothing invokes pi or the helper directly.

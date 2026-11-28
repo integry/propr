@@ -377,9 +377,8 @@ fi
 echo "✓ pi --version runs through the agent entrypoint"
 
 # ProPR starts Pi task containers as root (--user 0:0) with a mounted host Pi
-# dir as the credential source. Everything the entrypoint does before the task
-# (import, seeding, version probe) and after it (credential sync) must leave
-# the disposable runtime dir node-owned, or Pi cannot write its state there.
+# dir as the credential source. Exercise OAuth write-back to a private source
+# owned by a different UID and check that the disposable state stays node-owned.
 pi_root_owned="$(docker run --rm --network none --user 0:0 \
   -e PROPR_PI_SOURCE_DIR=/tmp/propr-pi-source \
   --entrypoint sh "$AGENT_TAG" -c '
@@ -388,9 +387,22 @@ pi_root_owned="$(docker run --rm --network none --user 0:0 \
     printf "%s" "{\"anthropic\":{\"type\":\"oauth\",\"access\":\"a\",\"refresh\":\"r\",\"expires\":1}}" > /tmp/propr-pi-source/auth.json
     printf "%s" "{}" > /tmp/propr-pi-source/settings.json
     printf "%s" "{}" > /tmp/propr-pi-source/mcp.json
-    chown -R node:node /tmp/propr-pi-source
+    chown -R 1001:1001 /tmp/propr-pi-source
+    chmod 700 /tmp/propr-pi-source
+    chown 1001:1002 /tmp/propr-pi-source/auth.json
     chmod 600 /tmp/propr-pi-source/auth.json
-    /home/node/pi-entrypoint.sh pi --version >/dev/null
+    printf "%s" "{\"anthropic\":{\"type\":\"oauth\",\"access\":\"new-a\",\"refresh\":\"new-r\",\"expires\":2}}" > /tmp/propr-pi-refreshed.json
+    chmod 644 /tmp/propr-pi-refreshed.json
+    /home/node/pi-entrypoint.sh sh -ec "
+      test \"\$(id -u)\" = 1000
+      test ! -r /tmp/propr-pi-source/auth.json
+      cat /tmp/propr-pi-refreshed.json > \"\$PI_CODING_AGENT_DIR/auth.json\"
+    "
+    grep -q "\"refresh\": \"new-r\"" /tmp/propr-pi-source/auth.json
+    test "$(stat -c "%u:%g:%a" /tmp/propr-pi-source/auth.json)" = "1001:1002:600"
+    test "$(stat -c "%u:%g:%a" /tmp/propr-pi-source)" = "1001:1001:700"
+    test "$(stat -c "%u:%g" /tmp/propr-pi-source/sessions)" = "1001:1001"
+    test ! -e /tmp/propr-pi-source/auth.json.lock
     test ! -e /tmp/propr-pi-home/agent/mcp.json
     test ! -e /tmp/propr-pi-home/agent/extensions
     test -f /tmp/propr-pi-home/agent/auth.json
@@ -406,7 +418,7 @@ if [ -n "$pi_root_owned" ]; then
   cat "$DATA_DIR/pi-entrypoint.log"
   exit 1
 fi
-echo "✓ Pi entrypoint keeps disposable state node-owned when started as root"
+echo "✓ Pi entrypoint writes refreshes to a private UID 1001 source and keeps disposable state node-owned"
 
 # ProPR starts OpenCode task containers as root (--user 0:0) with disposable
 # state and a mounted host data directory. Everything the entrypoint runs
