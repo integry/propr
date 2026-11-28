@@ -857,6 +857,7 @@ async function runSetupAttempt(options: RunSetupOptions): Promise<SetupRunResult
       const hasExplicitBrowserAuthMode =
         explicitBrowserAuthMode === "connect" ||
         explicitBrowserAuthMode === "github" ||
+        explicitBrowserAuthMode === "device" ||
         explicitBrowserAuthMode === "disabled";
       const customBrowserOAuthApplies =
         !managedTunnelEnabled &&

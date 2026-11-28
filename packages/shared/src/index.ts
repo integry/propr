@@ -184,6 +184,7 @@ export { validateRelayUrl } from './validateRelayUrl.js';
 export {
   DEFAULT_PROPR_ROUTING_URL,
   DEFAULT_PROPR_GH_RELAY_URL,
+  DEFAULT_PROPR_GH_DEVICE_CLIENT_ID,
   DEFAULT_LOCAL_API_PORT,
   DEFAULT_LOCAL_API_BINDING,
   DEFAULT_LOCAL_API_BASE_URL,
@@ -623,3 +624,5 @@ export * from './ultrafixCycle.js';
 export * from './repositoryEventWait.js';
 // Opt-in control-plane idle shutdown: settings, Redis keys and wake hint shapes.
 export * from './idleShutdown.js';
+// GitHub OAuth device flow (public client ID only): code request and token poll steps.
+export * from './githubDeviceFlow.js';

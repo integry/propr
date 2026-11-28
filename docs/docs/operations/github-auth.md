@@ -336,6 +336,92 @@ self-hosted (own) relay must implement this contract:
 The relay token is the long-lived secret binding your stack to your installation;
 treat it like a password. ProPR redacts it (and `ghs_` tokens) from logs.
 
+## Device sign-in
+
+A relay-enrolled instance that has neither its own OAuth client nor a usable
+Connect callback signs browsers in with GitHub's
+[device flow](https://docs.github.com/en/apps/creating-github-apps/writing-code-for-a-github-app/building-a-cli-with-a-github-app).
+The device flow needs only the App's **public client ID**: no client secret and
+no callback URL. It works on any hostname, port or private network, such as
+`https://<app>.fly.dev`, a VPS, or `https://propr.internal.example` reached over
+a VPN, and ProPR's hosted services never see the user token at sign-in.
+
+**When it is used.** `PROPR_WEB_AUTH_MODE` picks the browser sign-in. Unset, the
+API infers it in this order:
+
+| Instance | Sign-in |
+| --- | --- |
+| Relay token and the managed UI tunnel | `connect` (from `https://app.propr.dev`) |
+| `GH_OAUTH_CLIENT_ID` and `GH_OAUTH_CLIENT_SECRET` | `github` (your own OAuth client) |
+| Hosted relay, callback on `localhost` | `connect` |
+| Hosted relay (`https://webhook.propr.dev/v1`) on any other host | `device` |
+| Another relay with `PROPR_GH_DEVICE_CLIENT_ID` set | `device` |
+| Anything else | `disabled` |
+
+Set `PROPR_WEB_AUTH_MODE=device` to choose it explicitly. The instance needs
+`PROPR_GH_RELAY_URL`, `PROPR_GH_RELAY_TOKEN` and `FRONTEND_URL`; preferably
+also `GH_INSTALLATION_ID` (which `propr relay enroll` writes).
+
+**Flow.**
+
+1. On the login page, **Sign in with GitHub** asks the API for a device code
+   (`POST https://github.com/login/device/code` with the client ID).
+2. The page shows the user code with a **Copy** button and a link to
+   `https://github.com/login/device`. The code is returned only to the browser
+   that asked for it: the attempt is bound to that browser's session cookie,
+   the device code never leaves the API, and each attempt gets its own code.
+3. The API polls `https://github.com/login/oauth/access_token`, waiting
+   GitHub's `interval` between polls, adding to it on `slow_down`, and stopping
+   at `expires_in`.
+4. With the token, the API reads `GET /user` and checks that the user can
+   access the relay's installation: `GET /user/installations` must list it.
+   With `GH_INSTALLATION_ID` the installation IDs must match. Without it, the
+   relay installation's account is read with a relay installation token and
+   must be the account of one of the user's installations of the App. This is
+   the same check Connect makes before it issues a sign-in. The instance
+   whitelist then applies as for every sign-in.
+5. The API creates the normal browser session.
+
+**Tokens.** The user token is handled like a Connect sign-in: the same
+session, the same durable grant (encrypted at rest) for desktop, MCP and
+agent runs, and the same renewal. GitHub App user tokens expire after eight
+hours; their refresh token is renewed through the relay, which holds the App's
+secret (`POST <PROPR_GH_RELAY_URL>/auth/instance-grants/refresh`). Tokens and
+device codes are never logged or returned in a response.
+
+**Limits.** Starts are limited per client IP
+(`PROPR_DEVICE_SIGN_IN_START_RATE_LIMIT_MAX`, default 10 per 15 minutes) and
+per browser session (5 per 15 minutes). Polls have their own per-IP quota.
+
+**Errors** shown on the login page:
+
+| Cause | Message |
+| --- | --- |
+| Device Flow is off on the App (`device_flow_disabled`) | Device sign-in isn't enabled for this GitHub App. |
+| The user cancelled on GitHub (`access_denied`) | GitHub sign-in was cancelled. |
+| The code expired (`expired_token`, or past `expires_in`) | The GitHub sign-in code expired before it was entered. |
+| The user can't access the relay installation | This GitHub account doesn't have access to the GitHub App installation this instance uses. |
+| The user is not on the whitelist | This GitHub account is not authorized to use this instance. |
+
+### Use device sign-in with your own App
+
+The shared ProPR App's client ID ships as the default. A self-hosted relay that
+mints tokens for its own App needs that App's client ID:
+
+1. In the App's settings on GitHub (**Settings → Developer settings → GitHub
+   Apps → your App → General**), check **Enable Device Flow** and save.
+2. Copy the App's **Client ID** and set it on the instance:
+
+   ```dotenv
+   PROPR_GH_DEVICE_CLIENT_ID=Iv23li...
+   ```
+
+3. Restart the API. The login page now shows the device sign-in.
+
+The relay's `auth/instance-grants/refresh` endpoint must renew that App's
+refresh tokens, as it does for Connect sign-ins. Until Device Flow is enabled,
+GitHub answers `device_flow_disabled`.
+
 ## Connect browser sign-in renewal
 
 With `PROPR_WEB_AUTH_MODE=connect`, Connect hands the instance a one-use code. The

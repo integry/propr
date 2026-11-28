@@ -25,7 +25,7 @@ import { FlyMachinesApi } from "./deploy/flyMachinesApi.js";
 import { planFlyRelay, plannedFlyRelaySecrets, resolveFlyRelaySecrets, type FlyRelayDeps } from "./deploy/flyRelay.js";
 import { selectFlyIntakeMode } from "./deploy/flyIntake.js";
 import { flyDeployEnablesMcp, generateFlySecrets } from "./deploy/flyGeneratedSecrets.js";
-import { describeFlyBrowserAuth, flyOAuthCallbackUrl, planFlyBrowserAuth, type FlyBrowserAuth } from "./deploy/flyBrowserAuth.js";
+import { describeFlyBrowserAuth, flyOAuthCallbackUrl, flyWantsDeviceSignIn, planFlyBrowserAuth, type FlyBrowserAuth } from "./deploy/flyBrowserAuth.js";
 import {
   createFlyctlTarget,
   createMachinesApiTarget,
@@ -296,10 +296,17 @@ export function prepareFlyDeploy(
     throw new Error("Set PROPR_ADMIN_USERS to at least one administrator's GitHub login in the environment or stack .env.");
   }
   const { secrets, notes } = collectFlySecrets(plan, options, envFileValues, readFile);
-  const relayPlan = planFlyRelay(options, secrets, { connect: Boolean(plan.tunnel), githubToken });
-  const browserAuth = planFlyBrowserAuth(plan, secrets);
+  const relayPlan = planFlyRelay(options, secrets, {
+    connect: Boolean(plan.tunnel),
+    deviceSignIn: flyWantsDeviceSignIn(plan, secrets),
+    githubToken,
+  });
+  const browserAuth = planFlyBrowserAuth(plan, secrets, relayPlan);
   if (browserAuth === "github") {
     notes.push(`Browser sign-in uses the stack's GitHub OAuth client; its callback URL must be ${flyOAuthCallbackUrl(plan)}.`);
+  }
+  if (browserAuth === "device") {
+    notes.push("Browser sign-in uses GitHub device flow with the relay's GitHub App: no OAuth App or callback URL. Device Flow must be enabled on that App.");
   }
   // Fly secrets are only ever added or replaced: a PROPR_DEMO_MODE=true left
   // by an earlier deploy would keep the API in demo mode (no sign-in at all)
@@ -379,7 +386,12 @@ export async function deployPreparedFly(
 ): Promise<FlyDeployResult> {
   const { plan } = prepared;
   const secrets = { ...prepared.secrets };
-  const relayContext = { connect: Boolean(plan.tunnel), githubToken: context.githubToken, label: context.label };
+  const relayContext = {
+    connect: Boolean(plan.tunnel),
+    deviceSignIn: prepared.browserAuth === "device",
+    githubToken: context.githubToken,
+    label: context.label,
+  };
   const relay = await resolveFlyRelaySecrets(options, secrets, relayContext, relayDeps);
   if (relay) {
     Object.assign(secrets, relay.secrets);
