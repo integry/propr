@@ -227,20 +227,39 @@ async function finalizeSubmissionIntakeAttempt(job: Job | undefined, err: Error)
 }
 
 /**
+ * Whether this failed job instance is still in the queue, read after BullMQ moved it to failed: `removed` when
+ * its `removeOnFail` deleted it, or when the ID now holds another job (a replacement, recognised by its
+ * creation timestamp); `retained` when this instance is in the failed set. The retry instructions follow it.
+ */
+async function failedJobRetention(job: Job): Promise<'removed' | 'retained' | 'unknown'> {
+    if (job.opts?.removeOnFail === true) return 'removed';
+    if (!job.id) return 'unknown';
+    try {
+        const stored = await (await getIssueQueue()).getJob(job.id) as Job | undefined;
+        if (!stored || stored.timestamp !== job.timestamp) return 'removed';
+        return await stored.getState() === 'failed' ? 'retained' : 'unknown';
+    } catch (error) {
+        logger.warn({ jobId: job.id, error: (error as Error).message }, 'Could not read whether a failed issue job is retained');
+        return 'unknown';
+    }
+}
+
+/**
  * An issue job that failed for good on a disk-pressure refusal (its wait for
  * free space ran out, or waiting is disabled and its retries are spent): the
  * refused attempt never reached its processor, so nothing told the issue or its
  * plan. Earlier attempts may have run (`issueJobAdmitted`); the report says
- * which. The failed job is left in the queue as evidence (its retention
- * applies); while it is kept, BullMQ deduplicates the issue's next trigger
- * against its job ID, which the report tells the issue. Runs after the
+ * which. The failed job is left to its retention: removed on failure, a
+ * relabel retries it; kept as evidence, BullMQ deduplicates the issue's next
+ * trigger against its job ID. The report reads which (`failedJobRetention`)
+ * and tells the issue how to retry accordingly. Runs after the
  * submission intake read the failed job. Best effort.
  */
 async function settleIssueDiskPressureFailure(job: Job | undefined, err: Error): Promise<void> {
     if (!job || job.name !== ISSUE_JOB_NAME || !isWorktreeDiskPressureError(err) || !isFinalJobFailure(job, err)) return;
     try {
         const { reportIssueDiskPressureRefusal } = await import('../services/issueDiskPressureRefusal.js');
-        await reportIssueDiskPressureRefusal(job as unknown as Parameters<typeof reportIssueDiskPressureRefusal>[0], { error: err });
+        await reportIssueDiskPressureRefusal(job as unknown as Parameters<typeof reportIssueDiskPressureRefusal>[0], { error: err, retention: await failedJobRetention(job) });
     } catch (error) {
         logger.warn({ jobId: job.id, error: (error as Error).message }, 'Failed to report an issue job refused for disk pressure');
     }

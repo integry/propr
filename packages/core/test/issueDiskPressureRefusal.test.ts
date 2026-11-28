@@ -64,7 +64,8 @@ beforeEach(async () => {
   starts.length = 0; comments.length = 0;
 });
 
-const refusedJob = (number: number) => ({ id: `issue-acme-repo-${number}`, data: {
+const JOB_TIMESTAMP = 1_764_300_000_000;
+const refusedJob = (number: number) => ({ id: `issue-acme-repo-${number}`, timestamp: JOB_TIMESTAMP, data: {
   repoOwner: 'acme', repoName: 'repo', number, triggeringLabel: 'AI', correlationId: `corr-${number}`, diskPressureDeferrals: 6, diskPressureSince: NOW - 60 * 60_000,
 } });
 const planIssue = (number: number) => database('plan_issues').where({ issue_number: number }).first();
@@ -75,7 +76,7 @@ test('an exhausted refusal of a queued issue is reported on the issue and blocks
   assert.deepEqual(starts, [1]);
   await updatePlanIssue('draft', 1, { status: S.PROCESSING });
 
-  const outcome = await reportIssueDiskPressureRefusal(refusedJob(1), { octokit, database, now: () => NOW });
+  const outcome = await reportIssueDiskPressureRefusal(refusedJob(1), { octokit, database, now: () => NOW, retention: 'retained' });
   assert.deepEqual(outcome, { commented: true, planIssueReleased: true, queueBlocked: true });
 
   assert.equal(comments.length, 1);
@@ -85,9 +86,13 @@ test('an exhausted refusal of a queued issue is reported on the issue and blocks
   assert.match(body, /no free disk space/);
   assert.match(body, /waited about 60 minutes/);
   assert.match(body, /Then remove the `AI` label from this issue and add it again, or retry the issue from its plan\.$/);
-  // The failed job stays as evidence and deduplicates a relabel: the comment says so, and how to clear it.
+  // The failed job stays as evidence and deduplicates a relabel: the comment says so, and how to clear only that instance.
   assert.match(body, /\*\*Relabeling will not retry this issue until the stale job `issue-acme-repo-1` is cleared\*\* \(or until integry\/propr#3873 lands\)\./);
-  assert.ok(body.includes('```\nredis-cli ZREM bull:github-issue-processor:failed issue-acme-repo-1\nredis-cli DEL bull:github-issue-processor:issue-acme-repo-1 bull:github-issue-processor:issue-acme-repo-1:logs\n```'), body);
+  const key = 'bull:github-issue-processor:issue-acme-repo-1';
+  assert.ok(body.includes(`\`\`\`\nredis-cli EVAL "`), body);
+  assert.ok(body.includes(`" 3 bull:github-issue-processor:failed ${key} ${key}:logs issue-acme-repo-1 ${JOB_TIMESTAMP}\n\`\`\``), body);
+  assert.match(body, /removes it only while it is still this failed job, and otherwise prints `0` and changes nothing/);
+  assert.doesNotMatch(body, /redis-cli (ZREM|DEL) /, 'no unconditional deletion of the job ID');
   assert.doesNotMatch(body, /automatic|will be retried|picks it up again/i, 'no automatic retry is promised');
 
   assert.equal((await planIssue(1)).status, 'pending', 'no longer reported as processing');
@@ -153,11 +158,31 @@ test('an issue outside any plan gets the report without a plan retry hint', asyn
   const outcome = await reportIssueDiskPressureRefusal({ ...refusedJob(9), data: { ...refusedJob(9).data, triggeringLabel: 'propr' } }, { octokit, database, now: () => NOW });
   assert.deepEqual(outcome, { commented: true, planIssueReleased: false, queueBlocked: false });
   assert.match(String(comments[0].params.body), /Then remove the `propr` label from this issue and add it again\.$/);
-  // Without a job ID the comment still says a relabel does not retry until the stale job is cleared.
-  const noId = diskPressureRefusalCommentBody({ data: { triggeringLabel: 'propr' } }, { inPlan: false, queueName: 'q' });
+  // Without a job ID a retained job still blocks a relabel; no command is given that could hit another job.
+  const noId = diskPressureRefusalCommentBody({ data: { triggeringLabel: 'propr' } }, { inPlan: false, queueName: 'q', retention: 'retained' });
   assert.match(noId, /\*\*Relabeling will not retry this issue until the stale failed job for it is cleared\*\* from the worker's queue `q`/);
-  assert.match(noId, /`bull:q:failed`/);
+  assert.match(noId, /`bull:q:failed`; remove it only after checking that it is this issue's failed job\./);
+  assert.doesNotMatch(noId, /redis-cli/);
   assert.equal(diskPressureRefusalCommentBody({ data: {} }, { inPlan: false }).includes('waited about'), false);
+});
+
+test('a job removed on failure, as the daemon and the plan route add it, is retried by an ordinary relabel', async () => {
+  // Both producers set removeOnFail: true, so BullMQ deleted the failed job and a new trigger enqueues a fresh one.
+  await reportIssueDiskPressureRefusal(refusedJob(9), { octokit, database, now: () => NOW, retention: 'removed' });
+  const body = String(comments[0].params.body);
+  assert.match(body, /The refused job was removed from the worker's queue\. To retry once space has been freed on the worker host, remove the `AI` label from this issue and add it again\.$/);
+  assert.doesNotMatch(body, /will not retry|stale|redis-cli|cleared/, 'no stale-job warning and no deletion command for an ID a replacement may reuse');
+});
+
+test('when retention could not be read, the comment gives both outcomes and only the guarded command', () => {
+  const body = diskPressureRefusalCommentBody(refusedJob(9), { inPlan: true, queueName: 'q' });
+  assert.match(body, /\*\*If relabeling does not start a new run, the refused job is still kept\*\* in the worker's queue as the failed job `issue-acme-repo-9`/);
+  assert.ok(body.includes(`" 3 bull:q:failed bull:q:issue-acme-repo-9 bull:q:issue-acme-repo-9:logs issue-acme-repo-9 ${JOB_TIMESTAMP}\n`), body);
+  assert.doesNotMatch(body, /redis-cli (ZREM|DEL) /);
+  // Without the job's instance (its creation timestamp) no command can tell it from a replacement.
+  const noInstance = diskPressureRefusalCommentBody({ id: 'issue-acme-repo-9', data: {} }, { inPlan: false, queueName: 'q', retention: 'retained' });
+  assert.doesNotMatch(noInstance, /redis-cli/);
+  assert.match(noInstance, /remove it only after checking that it is this issue's failed job/);
 });
 
 test('a failed comment is logged, never thrown', async () => {

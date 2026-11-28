@@ -36,6 +36,24 @@ Object.assign(process.env, {
 
 const { closeConnection, db } = await import('../src/db/connection.js');
 const { createWorker, getIssueQueue, shutdownQueue, GITHUB_ISSUE_QUEUE_NAME } = await import('../src/queue/taskQueue.js');
+const { default: logger } = await import('../src/utils/logger.js');
+const { clearFailedJobCommand, diskPressureRefusalCommentBody } = await import('../src/services/issueDiskPressureRefusal.js');
+
+/** What the worker's refusal report logged (its retention among it), by job ID. */
+const reports = new Map<string, Record<string, unknown>>();
+const withCorrelation = logger.withCorrelation.bind(logger);
+logger.withCorrelation = (...args: Parameters<typeof withCorrelation>) => {
+  const child = withCorrelation(...args);
+  const warn = child.warn.bind(child) as (...rest: unknown[]) => void;
+  child.warn = ((obj: unknown, ...rest: unknown[]) => {
+    if (typeof rest[0] === 'string' && rest[0].startsWith('Reported an issue job refused') && obj && typeof obj === 'object') {
+      const entry = obj as Record<string, unknown>;
+      reports.set(String(entry.jobId), entry);
+    }
+    warn(obj, ...rest);
+  }) as typeof child.warn;
+  return child;
+};
 
 let redis: Redis | null = null;
 let worker: Worker | null = null;
@@ -159,15 +177,52 @@ test('an issue job whose wait for disk space ran out fails for good on that refu
   assert.equal((await jobState(jobId(42))).state, 'failed');
   assert.deepEqual(processed.filter(id => id === jobId(42)), []);
 
-  // The commands the issue comment gives an operator clear it; the next relabel then runs.
-  const { diskPressureRefusalCommentBody } = await import('../src/services/issueDiskPressureRefusal.js');
-  const body = diskPressureRefusalCommentBody({ id: jobId(42), data: issueJob(42) }, { inPlan: false, queueName: GITHUB_ISSUE_QUEUE_NAME });
-  const commands = [...body.matchAll(/^redis-cli (.+)$/gm)].map(match => match[1].split(' '));
-  assert.equal(commands.length, 2, body);
-  for (const [command, ...args] of commands) await redis!.call(command, ...args);
+  // The worker's report read that the job is retained, so the comment warns and gives the guarded command.
+  const report = await until(async () => reports.get(jobId(42)), Boolean, 'the refusal report');
+  assert.equal(report?.retention, 'retained');
+  const refused = { id: jobId(42), timestamp: kept.job!.timestamp, data: issueJob(42) };
+  const body = diskPressureRefusalCommentBody(refused, { inPlan: false, queueName: GITHUB_ISSUE_QUEUE_NAME, retention: 'retained' });
+  assert.match(body, /Relabeling will not retry this issue until the stale job/);
+  const commands = [...body.matchAll(/^redis-cli EVAL "([^"]+)" (.+)$/gm)];
+  assert.equal(commands.length, 1, body);
+  const [, script, args] = commands[0];
+  // Built for another instance under the same ID (a replacement's), the command changes nothing.
+  const otherInstance = clearFailedJobCommand({ ...refused, timestamp: refused.timestamp + 1 }, GITHUB_ISSUE_QUEUE_NAME)!.split('" ')[1];
+  assert.equal(await redis!.call('EVAL', script, ...otherInstance.split(' ')), 0);
+  assert.equal((await jobState(jobId(42))).state, 'failed');
+  // The command from the comment clears this failed job; the next relabel then runs.
+  assert.ok(Number(await redis!.call('EVAL', script, ...args.split(' '))) >= 1, 'the job hash (and its logs, if any) are deleted');
   assert.equal((await jobState(jobId(42))).state, 'absent');
+  assert.equal(await redis!.zscore(`bull:${GITHUB_ISSUE_QUEUE_NAME}:failed`, jobId(42)), null);
   await queue.add('processGitHubIssue', issueJob(42), { ...jobOptions(42), removeOnFail: false });
   await until(async () => processed.filter(id => id === jobId(42)).length, count => count === 1, 'the relabelled job to run');
+});
+
+test('an issue job removed on failure, as the daemon and the plan route add it, is reported as retried by a relabel', async t => {
+  if (!requireRedis(t)) return;
+  const queue = await getIssueQueue();
+  // The producers' own options: removeOnFail: true.
+  await queue.add('processGitHubIssue', issueJob(44, { diskPressureDeferrals: 6, diskPressureSince: Date.now() - 2 * 60 * 60_000 }), jobOptions(44));
+  const failure = await until(async () => failures.find(entry => entry.id === jobId(44)), Boolean, 'the final failure');
+  const report = await until(async () => reports.get(jobId(44)), Boolean, 'the refusal report');
+  assert.equal(report?.retention, 'removed', 'BullMQ deleted the failed job, and the report read that');
+  assert.equal((await jobState(jobId(44))).state, 'absent');
+  const body = diskPressureRefusalCommentBody({ id: jobId(44), data: issueJob(44) }, { inPlan: false, queueName: GITHUB_ISSUE_QUEUE_NAME, retention: 'removed' });
+  assert.match(body, /The refused job was removed from the worker's queue\. To retry once space has been freed on the worker host, remove the `AI` label/);
+  assert.doesNotMatch(body, /will not retry|redis-cli/);
+
+  // A relabel enqueues a replacement under the same ID (refused again here, so it waits as a delayed job).
+  await queue.add('processGitHubIssue', issueJob(44), jobOptions(44));
+  const replacement = await until(() => jobState(jobId(44)), value => value.state === 'delayed', 'the replacement');
+  assert.notEqual(replacement.job?.timestamp, undefined);
+  // Even the guarded command an operator might hold for the removed instance leaves the replacement intact.
+  const removedInstance = clearFailedJobCommand({ id: jobId(44), timestamp: replacement.job!.timestamp - 1, data: {} }, GITHUB_ISSUE_QUEUE_NAME)!;
+  const [, script, args] = /^redis-cli EVAL "([^"]+)" (.+)$/.exec(removedInstance)!;
+  assert.equal(await redis!.call('EVAL', script, ...args.split(' ')), 0);
+  assert.equal((await jobState(jobId(44))).state, 'delayed', 'the replacement keeps its hash and queue membership');
+  assert.ok(await redis!.exists(`bull:${GITHUB_ISSUE_QUEUE_NAME}:${jobId(44)}`));
+  assert.ok(failure);
+  await replacement.job!.remove();
 });
 
 test('an issue job that fails for another reason keeps its own retention', async t => {
@@ -192,7 +247,6 @@ test('a retry refused after an admitted attempt failed keeps the evidence that t
   assert.deepEqual(processed.filter(id => id === jobId(47)), [jobId(47)], 'only the first attempt entered the processor');
   assert.match(final.message, /^Worktree disk pressure: admission reserve unavailable/);
   assert.equal(final.data?.issueJobAdmitted, true, 'the final refusal knows an earlier attempt ran, so it is not reported as never started');
-  const { diskPressureRefusalCommentBody } = await import('../src/services/issueDiskPressureRefusal.js');
   const body = diskPressureRefusalCommentBody({ data: final.data ?? {} }, { inPlan: false });
   assert.doesNotMatch(body, /nothing was changed/i);
   assert.match(body, /The latest attempt was refused/);

@@ -7,11 +7,12 @@
  * and its plan keeps reporting it as in progress. This posts one comment that
  * says what stopped the run and how to retry, and takes the plan issue out of
  * `processing` (back to `pending`, with its queued execution blocked on the
- * reason), so `get_plan` and the Studio show it. The comment says plainly that
- * a relabel does not retry while the failed job stays in the queue, and how an
- * operator clears it. The plan issue is changed only while it is not finished
- * and is linked to this run: no task owns it yet, or its task is one this job
- * created (same correlation ID). Finished
+ * reason), so `get_plan` and the Studio show it. The retry instructions follow
+ * the job's actual retention: a job removed on failure is retried by a relabel;
+ * while a failed job is kept a relabel does not retry, and the comment gives an
+ * operator a command that clears only that failed instance. The plan issue is
+ * changed only while it is not finished and is linked to this run: no task owns
+ * it yet, or its task is one this job created (same correlation ID). Finished
  * plan issues, historical ones and those another run took over keep their
  * status. Best effort: never throws.
  */
@@ -29,6 +30,8 @@ export interface DiskPressureRefusalOctokit {
 
 export interface RefusedIssueJob {
     id?: string;
+    /** Creation time of this job instance (BullMQ's `timestamp`); identifies it among jobs reusing its ID. */
+    timestamp?: number;
     data: {
         repoOwner?: string; repoName?: string; number?: number; triggeringLabel?: string; correlationId?: string;
         diskPressureDeferrals?: number; diskPressureSince?: number; diskPressureDetails?: string;
@@ -63,30 +66,68 @@ function issueQueueName(): string {
 }
 
 /**
- * How to retry. The refused job stays in the queue as a failed job (evidence; its retention applies), and while
- * it is there BullMQ deduplicates a new trigger for the issue (a relabel, a plan retry) against its job ID, so
- * nothing runs until an operator clears it. Fresh job IDs per dispatch (integry/propr#3873) remove this step.
+ * Whether the refused job is still in the queue after its final failure, as the worker read it
+ * (`taskQueue.ts`): `removed` when BullMQ deleted it on failure (`removeOnFail: true`, as the daemon and the
+ * plan route add issue jobs) or another job now holds its ID; `retained` when this very job is in the failed
+ * set; `unknown` when that could not be read.
  */
-function retryText(job: RefusedIssueJob, label: string, inPlan: boolean, queueName: string): string[] {
+export type RefusedJobRetention = 'removed' | 'retained' | 'unknown';
+
+/**
+ * Removes the job only while it is still this failed job: in the queue's failed set and with the creation
+ * timestamp of this instance. A job added later under the same ID (a replacement) is left alone; prints 0 then.
+ */
+const CLEAR_FAILED_JOB_SCRIPT = "if redis.call('ZSCORE', KEYS[1], ARGV[1]) and redis.call('HGET', KEYS[2], 'timestamp') == ARGV[2]"
+    + " then redis.call('ZREM', KEYS[1], ARGV[1]) return redis.call('DEL', KEYS[2], KEYS[3]) end return 0";
+
+/** The guarded command that clears this failed job instance, or null when the job's ID or instance is unknown. */
+export function clearFailedJobCommand(job: RefusedIssueJob, queueName: string): string | null {
+    if (!job.id || typeof job.timestamp !== 'number') return null;
+    const key = `bull:${queueName}:${job.id}`;
+    return `redis-cli EVAL "${CLEAR_FAILED_JOB_SCRIPT}" 3 bull:${queueName}:failed ${key} ${key}:logs ${job.id} ${job.timestamp}`;
+}
+
+/**
+ * How to retry. A job BullMQ removed on failure is gone, so a new trigger (a relabel, a plan retry) starts a
+ * fresh run. A retained failed job deduplicates a new trigger against its job ID, so nothing runs until an
+ * operator clears it; the command given clears only this failed instance, never a replacement under the same
+ * ID. Fresh job IDs per dispatch (integry/propr#3873) remove this step.
+ */
+function retryText(
+    job: RefusedIssueJob, label: string,
+    { inPlan, queueName, retention }: { inPlan: boolean; queueName: string; retention: RefusedJobRetention },
+): string[] {
     const retrigger = `remove the \`${label}\` label from this issue and add it again` + (inPlan ? ', or retry the issue from its plan' : '');
-    if (!job.id) {
+    if (retention === 'removed') {
+        return [`The refused job was removed from the worker's queue. To retry once space has been freed on the worker host, ${retrigger}.`];
+    }
+    const command = clearFailedJobCommand(job, queueName);
+    const lead = retention === 'retained'
+        ? (job.id
+            ? `**Relabeling will not retry this issue until the stale job \`${job.id}\` is cleared** (or until integry/propr#3873 lands).`
+            : `**Relabeling will not retry this issue until the stale failed job for it is cleared** from the worker's queue \`${queueName}\``
+                + ' (or until integry/propr#3873 lands).')
+            + ' The refused job stays in the worker\'s queue as a failed job, and while it is there ProPR ignores a new trigger for this issue.'
+        : '**If relabeling does not start a new run, the refused job is still kept** in the worker\'s queue'
+            + `${job.id ? ` as the failed job \`${job.id}\`` : ''}, and ProPR ignores a new trigger for this issue until it is cleared`
+            + ' (or until integry/propr#3873 lands).';
+    if (!command) {
         return [
-            `**Relabeling will not retry this issue until the stale failed job for it is cleared** from the worker's queue \`${queueName}\``
-                + ' (or until integry/propr#3873 lands). A ProPR operator can find it in Redis under `bull:' + queueName + ':failed`.',
+            lead,
+            '',
+            `A ProPR operator can find it in Redis under \`bull:${queueName}:failed\`; remove it only after checking that it is this issue's failed job.`,
             '',
             `Once space has been freed on the worker host and the job is cleared, ${retrigger}.`,
         ];
     }
-    const key = `bull:${queueName}:${job.id}`;
     return [
-        `**Relabeling will not retry this issue until the stale job \`${job.id}\` is cleared** (or until integry/propr#3873 lands).`
-            + ' The refused job stays in the worker\'s queue as a failed job, and while it is there ProPR ignores a new trigger for this issue.',
+        lead,
         '',
-        'To retry once space has been freed on the worker host, a ProPR operator clears the job from Redis:',
+        'To retry once space has been freed on the worker host, a ProPR operator clears the job from Redis. The command removes it only while'
+            + ' it is still this failed job, and otherwise prints `0` and changes nothing:',
         '',
         '```',
-        `redis-cli ZREM bull:${queueName}:failed ${job.id}`,
-        `redis-cli DEL ${key} ${key}:logs`,
+        command,
         '```',
         '',
         `Then ${retrigger}.`,
@@ -95,7 +136,8 @@ function retryText(job: RefusedIssueJob, label: string, inPlan: boolean, queueNa
 
 export function diskPressureRefusalCommentBody(
     job: RefusedIssueJob,
-    { inPlan, now = Date.now(), details = null, queueName = issueQueueName() }: { inPlan: boolean; now?: number; details?: string | null; queueName?: string },
+    { inPlan, now = Date.now(), details = null, queueName = issueQueueName(), retention = 'unknown' }:
+        { inPlan: boolean; now?: number; details?: string | null; queueName?: string; retention?: RefusedJobRetention },
 ): string {
     const label = job.data.triggeringLabel || 'AI';
     // Only the absence of an admitted attempt supports saying that the job changed nothing.
@@ -117,7 +159,7 @@ export function diskPressureRefusalCommentBody(
             ]),
         '',
         ...(details ? ['Measured at the last refusal:', '', '```', details, '```', ''] : []),
-        ...retryText(job, label, inPlan, queueName),
+        ...retryText(job, label, { inPlan, queueName, retention }),
     ].join('\n');
 }
 
@@ -183,7 +225,9 @@ async function releasePlanIssue(
 
 export async function reportIssueDiskPressureRefusal(
     job: RefusedIssueJob,
-    { octokit, database = db, now = Date.now, error }: { octokit?: DiskPressureRefusalOctokit; database?: Knex; now?: () => number; error?: unknown } = {},
+    { octokit, database = db, now = Date.now, error, retention = 'unknown' }: {
+        octokit?: DiskPressureRefusalOctokit; database?: Knex; now?: () => number; error?: unknown; retention?: RefusedJobRetention;
+    } = {},
 ): Promise<DiskPressureRefusalOutcome> {
     const details = refusalDetails(job, error);
     const { repoOwner, repoName, number } = job.data;
@@ -203,13 +247,13 @@ export async function reportIssueDiskPressureRefusal(
     try {
         const client = octokit ?? await (await import('../auth/githubAuth.js')).getAuthenticatedOctokit();
         await client.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-            owner: repoOwner, repo: repoName, issue_number: number, body: diskPressureRefusalCommentBody(job, { inPlan, now: now(), details }),
+            owner: repoOwner, repo: repoName, issue_number: number, body: diskPressureRefusalCommentBody(job, { inPlan, now: now(), details, retention }),
         });
         outcome.commented = true;
     } catch (error) {
         log.error({ jobId: job.id, repository, issueNumber: number, error: (error as Error).message }, 'Failed to report an issue job refused for disk pressure on the issue');
     }
-    log.warn({ jobId: job.id, repository, issueNumber: number, ...outcome, ...(details ? { diskPressureDetails: details } : {}) },
+    log.warn({ jobId: job.id, repository, issueNumber: number, retention, ...outcome, ...(details ? { diskPressureDetails: details } : {}) },
         `Reported an issue job refused for disk pressure${details ? ` (${details})` : ''}`);
     return outcome;
 }
