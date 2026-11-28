@@ -7,10 +7,13 @@ import {
   type AgentLoginDescriptor,
   type AgentType,
 } from '@propr/shared';
-import type { AgentConfig, RemoteLoginProcess } from '@propr/core';
+import { redactSecrets, type AgentConfig, type RemoteLoginProcess } from '@propr/core';
+import { clearPastedAuthenticationAfterLogin, pastedAuthenticationOverridesLogin } from './agentCredentialStore.js';
 import {
   AgentLoginInputError,
   buildAgentLoginCreateArgs,
+  ensureAgentLoginImage,
+  removeOrphanedAgentLoginContainers,
   resolveAgentLoginConfigPath,
   resolveAgentLoginImage,
 } from './agentLoginDocker.js';
@@ -64,6 +67,8 @@ interface AgentLoginSession extends AgentLoginSessionSnapshot {
   /** Set when the login runs on Sprites or Fly Machines instead of a local container. */
   remote?: RemoteLoginProcess;
   remoteAbort?: AbortController;
+  /** Cancels a local login's settings cleanup while it waits for the store lock. */
+  localAbort?: AbortController;
   timeout?: ReturnType<typeof setTimeout>;
   retentionTimeout?: ReturnType<typeof setTimeout>;
   cleanupStarted?: boolean;
@@ -157,19 +162,7 @@ export class AgentLoginSessionManager {
   async cleanupOrphanedContainers(): Promise<number> {
     // Sprites-only and Fly-only instances have no Docker daemon to sweep.
     if (!this.dockerAvailable()) return 0;
-    const { stdout } = await this.runDocker([
-      'ps',
-      '-aq',
-      '--filter', 'label=propr.agent-login=true',
-      '--filter', `label=propr.agent-login.scope=${this.scope}`,
-    ]);
-    const containerIds = stdout
-      .split(/\s+/)
-      .map(value => value.trim())
-      .filter(value => /^[a-fA-F0-9]{12,64}$/.test(value));
-    if (containerIds.length === 0) return 0;
-    await this.runDocker(['rm', '-f', ...containerIds]);
-    return containerIds.length;
+    return removeOrphanedAgentLoginContainers(this.runDocker, this.scope);
   }
 
   async start(agent: AgentConfig, owner: string): Promise<AgentLoginSessionSnapshot> {
@@ -229,20 +222,9 @@ export class AgentLoginSessionManager {
         containerName,
         this.scope,
       );
-      try {
-        await this.runDocker(['image', 'inspect', image]);
-      } catch {
-        this.appendOutput(session, `Agent image ${image} is not available locally; pulling it now…\n`);
-        try {
-          await this.runDocker(['pull', image]);
-        } catch (pullError) {
-          throw new AgentLoginInputError(
-            `Agent image "${image}" is unavailable and could not be pulled: ${(pullError as Error).message}`,
-          );
-        }
-      }
+      await ensureAgentLoginImage(this.runDocker, image, chunk => this.appendOutput(session, chunk));
       await this.runDocker(createArgs);
-      this.attach(session);
+      this.attach(session, agent);
     } catch (error) {
       this.appendOutput(session, `${(error as Error).message}\n`);
       this.finish(session, 'failed', undefined, (error as Error).message || 'Could not start the agent login container');
@@ -307,7 +289,7 @@ export class AgentLoginSessionManager {
     await this.closeRemote();
   }
 
-  private attach(session: AgentLoginSession): void {
+  private attach(session: AgentLoginSession, agent: AgentConfig): void {
     const child = this.spawnDocker(['start', '-a', '-i', session.containerName]);
     session.process = child;
     session.status = 'running';
@@ -325,6 +307,10 @@ export class AgentLoginSessionManager {
     });
     child.on('close', code => {
       if (isTerminal(session.status)) return;
+      if (code === 0 && pastedAuthenticationOverridesLogin(agent.type)) {
+        void this.completeLocalLogin(session, agent);
+        return;
+      }
       this.finish(
         session,
         code === 0 ? 'succeeded' : 'failed',
@@ -333,6 +319,29 @@ export class AgentLoginSessionManager {
       );
       void this.cleanupContainer(session);
     });
+  }
+
+  /**
+   * A local login container wrote its files into the store itself, so a
+   * pasted credential that would override them is removed (as a remote
+   * login's collection does) before the session reports success. A session
+   * cancelled or timed out meanwhile aborts the cleanup before it publishes.
+   */
+  private async completeLocalLogin(session: AgentLoginSession, agent: AgentConfig): Promise<void> {
+    const abort = new AbortController();
+    session.localAbort = abort;
+    try {
+      await clearPastedAuthenticationAfterLogin(agent, abort.signal);
+      if (!isTerminal(session.status)) this.finish(session, 'succeeded', 0);
+    } catch (error) {
+      if (!isTerminal(session.status)) {
+        const message = redactSecrets((error as Error).message);
+        this.appendOutput(session, `${message}\n`);
+        this.finish(session, 'failed', 0, `Could not save the login: ${message}`);
+      }
+    } finally {
+      await this.cleanupContainer(session);
+    }
   }
 
   private async timeoutSession(session: AgentLoginSession): Promise<void> {
@@ -394,6 +403,7 @@ export class AgentLoginSessionManager {
 
   private stopProcess(session: AgentLoginSession): void {
     session.process?.kill();
+    session.localAbort?.abort();
     session.remoteAbort?.abort();
     session.remote?.kill();
   }

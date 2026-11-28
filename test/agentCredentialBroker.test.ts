@@ -324,6 +324,50 @@ describe('operator mutations while a run is active', () => {
         assert.equal(fs.readFileSync(path.join(root, 'auth.json'), 'utf8'), pastedKey('sk-proj-replacementkey0000WXYZ'));
     });
 
+    test('a run staged while a replacement is being published does not overwrite it', async () => {
+        const root = makeStore({ 'auth.json': '{"tokens":{"refresh_token":"old-account"}}' });
+        const replacement = pastedKey('sk-proj-replacementkey0000WXYZ');
+        let run: ReturnType<typeof codexRun> | undefined;
+        // A worker stages between the record and the file: the new tokens alongside the old auth.json.
+        await writeCredentialStoreFiles(root, [{ path: 'auth.json', content: Buffer.from(replacement) }], {
+            ...operatorLock(), onBeforePublish: () => { run ??= codexRun(root); },
+        });
+        assert.ok(run);
+        assert.equal(fs.readFileSync(path.join(stagedSource(run.spec, '/home/node/.codex'), 'auth.json'), 'utf8'), '{"tokens":{"refresh_token":"old-account"}}');
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, OPERATOR_MUTATIONS_FILE), 'utf8')).pending, [], 'the mark is cleared once published');
+        const replaced = Date.now() - 60_000;
+        fs.utimesSync(path.join(root, 'auth.json'), replaced / 1000, replaced / 1000);
+        refreshIn(stagedSource(run.spec, '/home/node/.codex'), 'auth.json', '{"tokens":{"refresh_token":"old-account-refreshed"}}', Date.now() + 60_000);
+        assert.deepEqual((await run.complete()).map(result => result.outcome), ['kept-operator-change']);
+        assert.equal(fs.readFileSync(path.join(root, 'auth.json'), 'utf8'), replacement);
+        const after = codexRun(root);
+        refreshIn(stagedSource(after.spec, '/home/node/.codex'), 'auth.json', 'replacement-refreshed');
+        assert.deepEqual((await after.complete()).map(result => result.outcome), ['written'], 'a run staged after publication is not fenced');
+    });
+
+    test('a mark left by a writer that stopped mid-publication fences until the path\'s next mutation ends', async () => {
+        const root = makeStore({ 'auth.json': 'v0' });
+        const recordFile = path.join(root, OPERATOR_MUTATIONS_FILE);
+        await writeCredentialStoreFiles(root, [{ path: 'auth.json', content: Buffer.from('v1') }], {
+            ...operatorLock(), onBeforePublish: () => { throw new Error('publication failed'); },
+        }).then(() => assert.fail('the write must fail'), (error: Error) => assert.match(error.message, /publication failed/));
+        assert.deepEqual(JSON.parse(fs.readFileSync(recordFile, 'utf8')).pending, [], 'a writer that stops publishing clears its own mark');
+        // A writer that died after publishing its file but before clearing the mark.
+        fs.writeFileSync(recordFile, JSON.stringify({ id: 'dead-writer', paths: { 'auth.json': 't-dead' }, pending: ['auth.json'] }));
+        const staged = codexRun(root);
+        fs.writeFileSync(path.join(root, 'auth.json'), 'v-dead-writer');
+        fs.utimesSync(path.join(root, 'auth.json'), 0, 0);
+        refreshIn(stagedSource(staged.spec, '/home/node/.codex'), 'auth.json', 'v0-refreshed');
+        assert.deepEqual((await staged.complete()).map(result => result.outcome), ['kept-operator-change']);
+        await writeCredentialStoreFiles(root, [{ path: 'auth.json', content: Buffer.from('v2') }], operatorLock());
+        assert.deepEqual(JSON.parse(fs.readFileSync(recordFile, 'utf8')).pending, []);
+        const [first, second] = [codexRun(root), codexRun(root)];
+        refreshIn(stagedSource(first.spec, '/home/node/.codex'), 'auth.json', 'v2-first', Date.now() + 10_000);
+        refreshIn(stagedSource(second.spec, '/home/node/.codex'), 'auth.json', 'v2-second', Date.now() + 20_000);
+        assert.deepEqual((await first.complete()).map(result => result.outcome), ['written']);
+        assert.deepEqual((await second.complete()).map(result => result.outcome), ['written-newer'], 'recency decides between runs again');
+    });
+
     test('a removed OpenCode auth.json is not recreated through the transport-neutral API', async () => {
         const root = makeStore({ 'auth.json': '{"anthropic":{"type":"oauth","refresh":"r1"}}' });
         const broker = new CredentialBroker({ lock: { lockRoot: path.join(runRoot, '.locks') } });

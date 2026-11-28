@@ -58,7 +58,7 @@ export interface CredentialStoreBundle {
     skipped: Array<{ path: string; reason: CredentialSkipReason }>;
     /** sha256 of each output at materialisation; `null` when it did not exist. */
     baseline: Record<string, string | null>;
-    /** The store's operator mutations, read before its files (see `operatorMutations.ts`). */
+    /** The store's operator mutations, read before its files without the store lock (see `operatorMutations.ts`). */
     operatorMutations: OperatorMutationState;
 }
 
@@ -344,8 +344,10 @@ export class CredentialBroker {
         request: CredentialStoreRequest, manifest: ProviderCredentialManifest, definedEnv: Set<string>, secretEnv: Record<string, string>,
     ): CredentialStoreBundle {
         const root = path.resolve(request.canonicalRoot);
-        // Read before the files: a mutation landing in between then counts as
-        // after staging, which only withholds the recency rule (below).
+        // Read before the files: a mutation beginning in between counts as
+        // after staging, and so does one still being published when it is
+        // read (its paths are pending; see operatorMutations.ts). Either only
+        // withholds the recency rule (below).
         const operatorMutations = readOperatorMutations(root);
         const reader = new StoreReader(root, { maxFiles: this.options.maxFiles ?? DEFAULT_MAX_FILES, maxBytes: this.options.maxBytes ?? DEFAULT_MAX_BYTES });
         for (const source of manifest.secretEnvFiles ?? []) {

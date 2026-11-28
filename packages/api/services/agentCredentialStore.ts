@@ -150,9 +150,14 @@ export function clearAgentPastedCredential(agent: AgentConfig, kind: unknown): P
 
 const CLAUDE_SETTINGS = 'settings.json';
 
+/** Whether a pasted credential of this provider overrides its interactive login until removed (Claude's settings.json env). */
+export function pastedAuthenticationOverridesLogin(type: AgentConfig['type']): boolean {
+  return type === 'claude';
+}
+
 /** The settings.json rewrite that drops pasted Claude authentication, read under the store lock. */
 function pastedAuthenticationCleanup(agent: AgentConfig, store: CredentialStoreKind, root: string): CredentialStoreWrite[] {
-  if (agent.type !== 'claude' || store !== 'config') return [];
+  if (!pastedAuthenticationOverridesLogin(agent.type) || store !== 'config') return [];
   const next = withoutPastedClaudeAuthentication(strictRead(root, CLAUDE_SETTINGS));
   return next ? [{ path: CLAUDE_SETTINGS, content: next }] : [];
 }
@@ -205,6 +210,25 @@ export async function storeReturnedLoginFiles(
     written += writes.length;
   }
   return written;
+}
+
+/**
+ * After a local (Docker) login, whose container wrote the login files into
+ * the store itself: remove the pasted authentication that would override
+ * them from settings.json under the store lock, as
+ * {@link storeReturnedLoginFiles} does for a remote login, keeping other
+ * settings. `signal` (the session's cancellation) is checked under the lock
+ * immediately before publication.
+ */
+export async function clearPastedAuthenticationAfterLogin(agent: AgentConfig, signal?: AbortSignal): Promise<void> {
+  if (!pastedAuthenticationOverridesLogin(agent.type)) return;
+  const root = storeRoot(resolveAgentCredentialStores(agent), 'config');
+  try {
+    await writeCredentialStoreFiles(root, () => pastedAuthenticationCleanup(agent, 'config', root), { signal });
+  } catch (error) {
+    if (error instanceof PastedCredentialError) throw new AgentCredentialInputError(error.message);
+    throw error;
+  }
 }
 
 /**

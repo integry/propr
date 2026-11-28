@@ -2,9 +2,11 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CredentialBrokerError, lstatInside, MAX_RETURNED_CREDENTIAL_BYTES, readRegularFileInside } from './broker.js';
-import { CredentialStoreLeaseRevokedError, withCredentialStoreLock, type CredentialStoreLockOptions } from './credentialStoreLock.js';
+import {
+    CredentialStoreLeaseRevokedError, withCredentialStoreLock, type CredentialStoreLease, type CredentialStoreLockOptions,
+} from './credentialStoreLock.js';
 import { credentialRunRoot } from './hostCredentialStaging.js';
-import { recordOperatorMutation } from './operatorMutations.js';
+import { beginOperatorMutation, endOperatorMutation } from './operatorMutations.js';
 
 /**
  * Writes files into a canonical credential store outside a run: credentials
@@ -13,9 +15,10 @@ import { recordOperatorMutation } from './operatorMutations.js';
  * never interleaves with a run returning a refreshed token, and replaces each
  * file atomically with mode 0600.
  *
- * Every write is an operator mutation: it is recorded (see
- * `operatorMutations.ts`) before anything is published, so a run staged
- * before it cannot later overwrite the change or recreate a removed file
+ * Every write is an operator mutation: it is recorded as pending (see
+ * `operatorMutations.ts`) before anything is published and the mark is
+ * cleared afterwards, so a run staged before it, or while it was being
+ * published, cannot later overwrite the change or recreate a removed file
  * with its own refreshed copy.
  */
 
@@ -34,6 +37,8 @@ export interface CredentialStoreWriterOptions {
      * changes nothing.
      */
     signal?: AbortSignal;
+    /** Test hook: runs after the mutation is recorded as pending, immediately before each file is published. */
+    onBeforePublish?: (relative: string) => void;
 }
 
 /**
@@ -72,6 +77,38 @@ function checkWrites(canonical: string, writes: readonly CredentialStoreWrite[])
     }
 }
 
+function publishWrite(canonical: string, write: CredentialStoreWrite, lease: CredentialStoreLease): void {
+    const target = path.join(canonical, write.path);
+    if (write.content === null) {
+        if (lstatInside(canonical, write.path)) fs.rmSync(target, { force: true });
+        return;
+    }
+    const owner = ownerOf(canonical, write.path);
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+    const temporary = path.join(lease.publicationDir, `${randomBytes(6).toString('hex')}.tmp`);
+    let fd: number;
+    try { fd = fs.openSync(temporary, 'wx', 0o600); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new CredentialStoreLeaseRevokedError(canonical, lease.epoch);
+        throw error;
+    }
+    try {
+        fs.writeSync(fd, write.content);
+        if (process.getuid?.() === 0 && owner) fs.fchownSync(fd, owner.uid, owner.gid);
+        fs.fchmodSync(fd, 0o600);
+        fs.fsyncSync(fd);
+    } catch (error) {
+        fs.closeSync(fd);
+        fs.rmSync(temporary, { force: true });
+        throw error;
+    }
+    fs.closeSync(fd);
+    try { fs.renameSync(temporary, target); }
+    catch (error) {
+        fs.rmSync(temporary, { force: true });
+        throw error;
+    }
+}
+
 export async function writeCredentialStoreFiles(
     root: string, input: CredentialStoreWrites, options: CredentialStoreWriterOptions = {},
 ): Promise<void> {
@@ -82,37 +119,20 @@ export async function writeCredentialStoreFiles(
         const writes = typeof input === 'function' ? input() : input;
         checkWrites(canonical, writes);
         options.signal?.throwIfAborted();
-        recordOperatorMutation(canonical, writes.map(write => write.path), lease);
-        for (const write of writes) {
-            const target = path.join(canonical, write.path);
-            if (write.content === null) {
-                if (lstatInside(canonical, write.path)) fs.rmSync(target, { force: true });
-                continue;
+        const paths = writes.map(write => write.path);
+        // Runs stage without this lock: until the mark is cleared, one that
+        // reads the new tokens may still copy the files they replace.
+        beginOperatorMutation(canonical, paths, lease);
+        try {
+            for (const write of writes) {
+                options.onBeforePublish?.(write.path);
+                publishWrite(canonical, write, lease);
             }
-            const owner = ownerOf(canonical, write.path);
-            fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-            const temporary = path.join(lease.publicationDir, `${randomBytes(6).toString('hex')}.tmp`);
-            let fd: number;
-            try { fd = fs.openSync(temporary, 'wx', 0o600); } catch (error) {
-                if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new CredentialStoreLeaseRevokedError(canonical, lease.epoch);
-                throw error;
-            }
-            try {
-                fs.writeSync(fd, write.content);
-                if (process.getuid?.() === 0 && owner) fs.fchownSync(fd, owner.uid, owner.gid);
-                fs.fchmodSync(fd, 0o600);
-                fs.fsyncSync(fd);
-            } catch (error) {
-                fs.closeSync(fd);
-                fs.rmSync(temporary, { force: true });
-                throw error;
-            }
-            fs.closeSync(fd);
-            try { fs.renameSync(temporary, target); }
-            catch (error) {
-                fs.rmSync(temporary, { force: true });
-                throw error;
-            }
+        } catch (error) {
+            // Nothing more is published, so the mark can go; if clearing it fails too, it stays and keeps fencing.
+            try { endOperatorMutation(canonical, paths, lease); } catch { /* the publication error is reported */ }
+            throw error;
         }
+        endOperatorMutation(canonical, paths, lease);
     });
 }

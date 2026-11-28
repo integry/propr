@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import {
-  closeConnection, CredentialBroker, credentialRunRoot, FlyMachinesRuntime, shutdownQueue, type AgentConfig,
+  closeConnection, CredentialBroker, credentialRunRoot, FlyMachinesRuntime, shutdownQueue, withCredentialStoreLock, type AgentConfig,
 } from '@propr/core';
 import { getManagedAgentConfigPath } from '@propr/shared';
 import {
@@ -162,6 +165,88 @@ describe('OpenCode interactive login on Fly Machines', () => {
       assert.equal(JSON.parse(fs.readFileSync(stored, 'utf8')).anthropic.refresh, 'r');
       assert.equal(readAgentCredentialStatus(opencode).credentials.find(item => item.kind === 'opencode-auth-json')?.set, true);
     } finally {
+      await manager.close();
+    }
+  });
+});
+
+function fakeLoginContainer(): ChildProcessWithoutNullStreams {
+  return Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true,
+  }) as unknown as ChildProcessWithoutNullStreams;
+}
+
+describe('Claude interactive login in a local Docker container after a pasted credential', () => {
+  const pastedKey = 'sk-ant-api03-pastedkeyvalue00001';
+
+  /** A Claude agent with a pasted API key beside unrelated settings, and a Docker-backed login manager. */
+  async function setup(id: string) {
+    const claude = agent('claude');
+    await setAgentPastedCredential(claude, 'anthropic-api-key', pastedKey);
+    const store = resolveAgentCredentialStores(claude).config;
+    const settingsPath = path.join(store, 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings, model: 'opus', env: { ...settings.env, DISABLE_TELEMETRY: '1' } }));
+    const container = fakeLoginContainer();
+    const manager = new AgentLoginSessionManager({ id: () => id, runDocker: async () => ({ stdout: '', stderr: '' }), spawnDocker: () => container });
+    const started = await manager.start(claude, 'alice');
+    assert.equal(started.status, 'running', started.error);
+    // The login CLI writes its credentials into the bind-mounted store, then the container exits.
+    const loginWritten = () => fs.writeFileSync(path.join(store, '.credentials.json'), '{"claudeAiOauth":{"refreshToken":"r-new-account"}}');
+    return { claude, store, settingsPath, container, manager, loginWritten };
+  }
+
+  test('a successful login drops the pasted key and keeps other settings, so runs use the new login', async () => {
+    const { claude, settingsPath, container, manager, loginWritten } = await setup('docker-ok');
+    try {
+      loginWritten();
+      container.emit('close', 0);
+      const done = await until(manager, 'docker-ok', session => session.status !== 'running');
+      assert.equal(done.status, 'succeeded', done.error);
+      assert.deepEqual(JSON.parse(fs.readFileSync(settingsPath, 'utf8')), { model: 'opus', env: { DISABLE_TELEMETRY: '1' } });
+      const status = readAgentCredentialStatus(claude);
+      assert.equal(status.credentials.some(item => item.set), false);
+      assert.equal(status.loginPresent, true);
+    } finally {
+      await manager.close();
+    }
+  });
+
+  test('a failed login leaves the pasted key in place', async () => {
+    const { settingsPath, container, manager } = await setup('docker-failed');
+    try {
+      container.emit('close', 1);
+      assert.equal(manager.get('docker-failed', 'alice').status, 'failed');
+      assert.equal(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).env.ANTHROPIC_API_KEY, pastedKey);
+    } finally {
+      await manager.close();
+    }
+  });
+
+  test('a login cancelled while its cleanup waits for the store lock leaves the pasted key in place', async () => {
+    const { store, settingsPath, container, manager, loginWritten } = await setup('docker-cancel');
+    const lock = { lockRoot: path.join(credentialRunRoot(), '.locks') };
+    let release!: () => void;
+    let entered!: () => void;
+    const inside = new Promise<void>(resolve => { entered = resolve; });
+    const held = withCredentialStoreLock(store, lock, () => {
+      entered();
+      return new Promise<void>(resolve => { release = resolve; });
+    });
+    try {
+      await inside;
+      loginWritten();
+      container.emit('close', 0);
+      assert.equal(manager.get('docker-cancel', 'alice').status, 'running', 'success waits for the cleanup');
+      assert.equal((await manager.cancel('docker-cancel', 'alice')).status, 'cancelled');
+      release();
+      await held;
+      // Queued behind the cleanup's attempt, so this returns once that attempt has released the lock.
+      await withCredentialStoreLock(store, lock, () => {});
+      assert.equal(manager.get('docker-cancel', 'alice').status, 'cancelled');
+      assert.equal(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).env.ANTHROPIC_API_KEY, pastedKey);
+    } finally {
+      release?.();
       await manager.close();
     }
   });
