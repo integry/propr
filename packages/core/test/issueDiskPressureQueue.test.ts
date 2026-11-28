@@ -163,3 +163,73 @@ test('re-enqueuing an issue after a failed attempt retained under its job ID run
   await until(async () => processed.filter(id => id === jobId(43)).length, count => count === 2, 'the re-enqueued job to run');
   await until(() => jobState(jobId(43)), value => value.state === 'absent', 'completion');
 });
+
+type IssueQueue = Awaited<ReturnType<typeof getIssueQueue>>;
+/** The real queue, with each job `getJob` returns passed through `wrap` first. */
+function queueWithJobs(queue: IssueQueue, wrap: (job: Job) => Job) {
+  return {
+    add: queue.add.bind(queue), client: queue.client, toKey: queue.toKey.bind(queue),
+    getJob: async (id: string) => { const job = await queue.getJob(id) as Job | undefined; return job ? wrap(job) : job; },
+  };
+}
+
+async function retainFailedJob(number: number): Promise<void> {
+  process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
+  failOnce.add(jobId(number));
+  await (await getIssueQueue()).add('processGitHubIssue', issueJob(number), { ...jobOptions(number), attempts: 1, removeOnFail: false });
+  await until(() => jobState(jobId(number)), value => value.state === 'failed', 'the failed attempt');
+}
+
+test('a job that disappears while its state is read does not swallow the new request', async t => {
+  if (!requireRedis(t)) return;
+  process.env.WORKTREE_ADMISSION_RESERVE_BYTES = '1';
+  const queue = await getIssueQueue();
+  // Waiting far in the future, then gone (as a worker completes and removes it) once its state is asked for.
+  await queue.add('processGitHubIssue', issueJob(44), { ...jobOptions(44), delay: 60_000 });
+  const vanishing = queueWithJobs(queue, job => Object.assign(job, {
+    getState: async () => { await queue.remove(String(job.id)); return Object.getPrototypeOf(job).getState.call(job); },
+  }));
+
+  const outcome = await enqueueIssueJobReplacingFinished(vanishing, { name: 'processGitHubIssue', data: issueJob(44), opts: jobOptions(44) });
+  assert.deepEqual(outcome, { status: 'added' });
+  await until(async () => processed.filter(id => id === jobId(44)).length, count => count === 1, 'the new job to run');
+});
+
+test('a failed removal of the retained finished job is not reported as an added job', async t => {
+  if (!requireRedis(t)) return;
+  await retainFailedJob(45);
+  const queue = await getIssueQueue();
+  let failRemoval = true;
+  const flaky = queueWithJobs(queue, job => Object.assign(job, {
+    remove: async () => {
+      if (failRemoval) { failRemoval = false; throw new Error('Connection is closed.'); }
+      return Object.getPrototypeOf(job).remove.call(job);
+    },
+  }));
+  const request = { name: 'processGitHubIssue', data: issueJob(45), opts: jobOptions(45) };
+
+  // The failure propagates, so the caller's retry runs again instead of trusting a deduplicated add.
+  await assert.rejects(enqueueIssueJobReplacingFinished(flaky, request), /Connection is closed/);
+  assert.equal((await jobState(jobId(45))).state, 'failed');
+  assert.deepEqual(await enqueueIssueJobReplacingFinished(flaky, request), { status: 'added', replaced: 'failed' });
+  await until(async () => processed.filter(id => id === jobId(45)).length, count => count === 2, 'the re-enqueued job to run');
+});
+
+test('two requests replacing one retained finished job keep the first accepted job and its payload', async t => {
+  if (!requireRedis(t)) return;
+  await retainFailedJob(46);
+  const queue = await getIssueQueue();
+  // Delayed, so no worker activation settles the race: the new jobs stay removable.
+  const request = (who: string) => enqueueIssueJobReplacingFinished(queue, {
+    name: 'processGitHubIssue', data: issueJob(46, { correlationId: `corr-46-${who}`, retryCommentId: who }), opts: { ...jobOptions(46), delay: 60_000 },
+  });
+  const outcomes = await Promise.all([request('a'), request('b')]);
+
+  const added = outcomes.findIndex(outcome => outcome.status === 'added');
+  assert.notEqual(added, -1);
+  assert.deepEqual(outcomes[added], { status: 'added', replaced: 'failed' });
+  assert.deepEqual(outcomes[1 - added], { status: 'already_queued', state: 'delayed' });
+  const { state, job } = await jobState(jobId(46));
+  assert.equal(state, 'delayed');
+  assert.equal(job?.data.retryCommentId, added === 0 ? 'a' : 'b', 'the accepted request\'s payload is the one stored');
+});

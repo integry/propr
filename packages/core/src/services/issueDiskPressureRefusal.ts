@@ -11,7 +11,8 @@ import type { Knex } from 'knex';
 import { db } from '../db/connection.js';
 import logger from '../utils/logger.js';
 import { worktreeDiskPressureDetails } from '../storage/lifecycle.js';
-import { PlanIssueStatus, findPlanIssueByRepoAndNumber, updatePlanIssueStatus } from '../config/planIssueManager.js';
+import { PlanIssueStatus, findPlanIssueByRepoAndNumber, publishPlanIssueActivity } from '../config/planIssueManager.js';
+import { notifyEpicQueue, updatePlanIssuesWithStatusJournal } from '../config/planIssueStatusJournal.js';
 import { diskPressureRefusedReason, markEpicQueueIssueDispatchRefused } from './taskPlanning/epicQueueBlockedHead.js';
 
 export interface DiskPressureRefusalOctokit {
@@ -65,7 +66,7 @@ export function diskPressureRefusalCommentBody(
 
 /** A plan issue refused before any task started: back to pending, unless something else moved it on meanwhile. */
 async function releasePlanIssue(
-    { database, now }: { database: Knex; now: () => number }, repository: string, issueNumber: number, log: { warn(obj: object, msg: string): void },
+    { database, now }: { database: Knex; now: () => number }, repository: string, issueNumber: number, log: { info(obj: object, msg: string): void; warn(obj: object, msg: string): void },
 ): Promise<{ draftId: string | null; released: boolean; queueBlocked: boolean }> {
     const planIssue = await findPlanIssueByRepoAndNumber(repository, issueNumber);
     if (!planIssue?.draft_id) return { draftId: null, released: false, queueBlocked: false };
@@ -74,12 +75,24 @@ async function releasePlanIssue(
     const queueBlocked = await markEpicQueueIssueDispatchRefused({ draftId, issueNumber, reason: diskPressureRefusedReason(issueNumber) }, { database, now })
         .catch(error => { log.warn({ draftId, issueNumber, error: (error as Error).message }, 'Could not block the epic execution queue issue'); return false; });
     if (planIssue.status !== PlanIssueStatus.PROCESSING) return { draftId, released: false, queueBlocked };
-    const stillApplies = async () => {
-        const current = await database('plan_issues').where({ id: planIssue.id }).first('status', 'task_id');
-        // A task started meanwhile (a later attempt was admitted) owns the status now.
-        return current?.status === PlanIssueStatus.PROCESSING && !current.task_id;
-    };
-    const released = await updatePlanIssueStatus(repository, issueNumber, PlanIssueStatus.PENDING, { stillApplies });
+    // Only this row, and only while no task owns it (a later attempt admitted meanwhile owns its status):
+    // the issue's older occurrences in historical drafts keep theirs.
+    const released = await updatePlanIssuesWithStatusJournal(
+        rows => rows.where({ id: planIssue.id, status: PlanIssueStatus.PROCESSING }).where(row => row.whereNull('task_id').orWhere('task_id', '')),
+        { status: PlanIssueStatus.PENDING, updated_at: db.fn.now() }, PlanIssueStatus.PENDING,
+    ) > 0;
+    if (!released) {
+        log.info({ draftId, issueNumber }, 'The refused plan issue moved on meanwhile; its status is left as is');
+        return { draftId, released, queueBlocked };
+    }
+    // Follow-on effects of the status change, for this row's draft only; best effort, the release stands.
+    try {
+        await notifyEpicQueue(draftId, issueNumber, PlanIssueStatus.PENDING);
+        await (await import('./taskPlanningService.js')).checkAndUpdateDraftStatus(draftId);
+        await publishPlanIssueActivity(repository, draftId, PlanIssueStatus.PENDING);
+    } catch (error) {
+        log.warn({ draftId, issueNumber, error: (error as Error).message }, 'Could not propagate the release of a refused plan issue');
+    }
     return { draftId, released, queueBlocked };
 }
 

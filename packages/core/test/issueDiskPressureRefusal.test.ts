@@ -103,6 +103,20 @@ test('a plan issue that a later attempt already started is left alone; the issue
   assert.equal(comments.length, 1);
 });
 
+test('only the refused occurrence is released; the issue\'s completed occurrence in an older draft keeps its status', async () => {
+  await database('task_drafts').insert({ draft_id: 'older', context_config: '{}' });
+  await database('plan_issues').where({ issue_number: 3 }).delete();
+  // The older draft's row first, so the lookup picks the newer draft's row.
+  const [oldId] = await database('plan_issues').insert({ draft_id: 'older', repository: 'acme/repo', issue_number: 3, status: 'merged', pr_number: 30 });
+  await database('plan_issues').insert({ draft_id: 'draft', repository: 'acme/repo', issue_number: 3, status: 'processing' });
+  const before = await database('plan_issues').where({ id: oldId }).first();
+
+  const outcome = await reportIssueDiskPressureRefusal(refusedJob(3), { octokit, database, now: () => NOW });
+  assert.equal(outcome.planIssueReleased, true);
+  assert.deepEqual(await database('plan_issues').where({ issue_number: 3 }).orderBy('id').pluck('status'), ['merged', 'pending']);
+  assert.deepEqual(await database('plan_issues').where({ id: oldId }).first(), before, 'the historical row is not touched at all');
+});
+
 test('an issue outside any plan gets the report without a plan retry hint', async () => {
   const outcome = await reportIssueDiskPressureRefusal({ data: { ...refusedJob(9).data, triggeringLabel: 'propr' } }, { octokit, database, now: () => NOW });
   assert.deepEqual(outcome, { commented: true, planIssueReleased: false, queueBlocked: false });
