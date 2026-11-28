@@ -7,6 +7,14 @@
 # from a run never reach the host. After the run, OAuth refreshes are written
 # back to the host auth.json by pi-credentials.py (per-entry compare-and-swap).
 # Diagnostic output goes to stderr to keep `pi --mode json` stdout parseable.
+#
+# Trust boundary: the task runs as node and can rewrite everything node owns,
+# including /home/node itself (so /home/node/bin wholesale), the disposable Pi
+# home and the workspace. The host Pi dir is mounted under /root (0700 root),
+# which node cannot traverse whatever the host dir's own owner and mode. Every
+# step after the task returns runs with POST_TASK_PATH, calls binaries by
+# absolute path, executes nothing from task-writable locations and reads
+# task-writable files only as size-limited, O_NOFOLLOW, validated JSON data.
 
 set -euo pipefail
 
@@ -28,11 +36,26 @@ case "$pi_source_auth" in
     *) pi_source_auth="$PWD/$pi_source_auth" ;;
 esac
 pi_runtime_home="${PROPR_PI_RUNTIME_HOME:-/tmp/propr-pi-home}"
+# Post-task steps run from /, so every path they use must be absolute.
+case "$pi_runtime_home" in
+    /*|"") ;;
+    *) pi_runtime_home="$PWD/$pi_runtime_home" ;;
+esac
 pi_agent_dir="$pi_runtime_home/agent"
-pi_credentials_helper="${PROPR_PI_CREDENTIALS_HELPER:-/opt/propr/pi-credentials.py}"
+# The privileged writer always comes from the image; an override (used by the
+# unprivileged tests) is honoured only when not running as root.
+if [ "$EUID" = "0" ]; then
+    pi_credentials_helper=/opt/propr/pi-credentials.py
+else
+    pi_credentials_helper="${PROPR_PI_CREDENTIALS_HELPER:-/opt/propr/pi-credentials.py}"
+fi
 # Goal runs only: the goal's persisted session store, mounted outside the
 # disposable home so its sessions survive the run and are resumed next time.
 pi_goal_session_dir="${PROPR_PI_GOAL_SESSION_DIR:-}"
+case "$pi_goal_session_dir" in
+    /*|"") ;;
+    *) pi_goal_session_dir="$PWD/$pi_goal_session_dir" ;;
+esac
 # Only these host files are imported. Host sessions/, extensions/ and mcp.json
 # are never copied: sessions and extensions stay on the host, and ProPR
 # generates mcp.json itself (PROPR_PI_MCP_CONFIG).
@@ -45,8 +68,8 @@ esac
 # host Pi dir in either direction: inside it would write into the host dir, and
 # containing it (e.g. PROPR_PI_RUNTIME_HOME=/home/node/.pi) would delete it.
 # Compare canonical paths so symlinks and `..` cannot hide an overlap.
-pi_runtime_home_real="$(realpath -m -- "$pi_runtime_home")"
-pi_source_dir_real="$(realpath -m -- "$pi_source_dir")"
+pi_runtime_home_real="$(/usr/bin/realpath -m -- "$pi_runtime_home")"
+pi_source_dir_real="$(/usr/bin/realpath -m -- "$pi_source_dir")"
 if [ "$pi_runtime_home_real" = "/" ]; then
     echo "Refusing to use $pi_runtime_home as the disposable Pi home" >&2
     exit 64
@@ -66,7 +89,7 @@ esac
 
 if [ -n "$pi_goal_session_dir" ]; then
     # The disposable home is deleted every run: the goal's sessions must not live in it.
-    pi_goal_session_dir_real="$(realpath -m -- "$pi_goal_session_dir")"
+    pi_goal_session_dir_real="$(/usr/bin/realpath -m -- "$pi_goal_session_dir")"
     case "$pi_goal_session_dir_real/" in
         "$pi_runtime_home_real/"*|"$pi_source_dir_real/"*)
             echo "The Pi goal session dir must be outside the disposable Pi home and the host Pi dir" >&2
@@ -109,14 +132,37 @@ exec_as_node() {
     fi
 }
 
+# Fixed PATH for everything after the task returns. It never contains the
+# task-time PATH (which starts with /home/node/bin) or any node-owned dir.
+POST_TASK_PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+# Post-task commands that only need node's rights (reading the disposable
+# auth.json, restricting goal sessions) drop to node with a clean environment
+# and the fixed PATH, so neither the task's PATH nor its environment applies.
+run_post_task_as_node() {
+    if is_root; then
+        /usr/local/bin/su-exec node /usr/bin/env -i HOME=/nonexistent PATH="$POST_TASK_PATH" "$@"
+    else
+        /usr/bin/env -i PATH="$POST_TASK_PATH" "$@"
+    fi
+}
+
 # Session files hold the whole goal conversation: owner-only (node), before Pi
-# writes and after it exits, whatever modes Pi created them with.
-restrict_goal_sessions() {
+# writes and after it exits, whatever modes Pi created them with. Before the
+# run root claims the store (an earlier run or the host may have left other
+# owners); afterwards everything in it was created by the node task, so node
+# itself restricts it and root never walks a tree the task just wrote.
+restrict_goal_sessions_before_task() {
     [ -n "$pi_goal_session_dir" ] || return 0
     if is_root; then
-        /usr/bin/env -i /usr/bin/chown -hR -- node:node "$pi_goal_session_dir" || return
+        /usr/bin/env -i /bin/chown -hR -- node:node "$pi_goal_session_dir" || return
     fi
-    /usr/bin/env -i /usr/bin/chmod -R -- u+rwX,go-rwx "$pi_goal_session_dir"
+    /usr/bin/env -i /bin/chmod -R -- u+rwX,go-rwx "$pi_goal_session_dir"
+}
+
+restrict_goal_sessions_after_task() {
+    [ -n "$pi_goal_session_dir" ] || return 0
+    run_post_task_as_node /bin/chmod -R -- u+rwX,go-rwx "$pi_goal_session_dir"
 }
 
 prepare_goal_sessions() {
@@ -125,7 +171,7 @@ prepare_goal_sessions() {
         echo "Pi goal session dir not mounted at $pi_goal_session_dir" >&2
         exit 64
     fi
-    restrict_goal_sessions
+    restrict_goal_sessions_before_task
     echo "Using persisted Pi goal sessions at $pi_goal_session_dir" >&2
 }
 
@@ -134,14 +180,14 @@ prepare_runtime_home() {
     # Repository setup may already have run as node. Claim the standard home
     # before copying anything so setup cannot redirect privileged writes.
     if is_root && [ "$pi_runtime_home" = /tmp/propr-pi-home ]; then
-        if ! mkdir -m 0700 -- "$pi_runtime_home"; then
+        if ! /bin/mkdir -m 0700 -- "$pi_runtime_home"; then
             echo "Could not create a private disposable Pi home at $pi_runtime_home" >&2
             exit 73
         fi
     fi
     # A fresh dir every run, created owner-only: auth.json holds tokens.
-    rm -rf -- "$pi_agent_dir" "$pi_runtime_home/propr-seeded-auth.json"
-    (umask 077 && mkdir -p "$pi_agent_dir/sessions")
+    /bin/rm -rf -- "$pi_agent_dir" "$pi_runtime_home/propr-seeded-auth.json"
+    (umask 077 && /bin/mkdir -p -- "$pi_agent_dir/sessions")
 
     if [ -d "$pi_source_dir" ]; then
         echo "Pi agent directory mounted at $pi_source_dir" >&2
@@ -151,20 +197,24 @@ prepare_runtime_home() {
             if [ "$file" = auth.json ]; then
                 # Pin the source directory before importing auth.json so the
                 # privileged writer can only access the original destination.
-                pi_host_auth="$(realpath -m -- "$pi_source_auth")"
+                # A symlinked auth.json is imported but never written back.
+                pi_host_auth="$(/usr/bin/realpath -m -- "$pi_source_auth")"
                 if [ "$pi_source_dir" = "$pi_protected_source" ] && [[ "$pi_host_auth" != "$pi_protected_source/"* ]]; then
                     pi_host_auth=""
                     echo "Warning: skipping Pi auth.json that resolves outside the credential source" >&2
                     continue
                 fi
-                if { exec 9<"${pi_host_auth%/*}/"; }; then
+                if [ -L "$pi_source_auth" ]; then
+                    echo "Warning: Pi auth.json is a symlink; refreshed credentials will not be written back" >&2
+                    pi_host_auth=""
+                elif { exec 9<"${pi_host_auth%/*}/"; }; then
                     import_path="/proc/self/fd/9/${pi_host_auth##*/}"
                 else
                     pi_host_auth=""
                     echo "Warning: could not open the Pi host credential directory for write-back" >&2
                 fi
             fi
-            (umask 077 && cp -L -- "$import_path" "$pi_agent_dir/$file") \
+            (umask 077 && /bin/cp -L -- "$import_path" "$pi_agent_dir/$file") \
                 || echo "Warning: could not import Pi $file" >&2
         done
     else
@@ -177,7 +227,7 @@ prepare_runtime_home() {
     fi
 
     if is_root; then
-        chown -R node:node "$pi_runtime_home"
+        /bin/chown -hR -- node:node "$pi_runtime_home"
     fi
     echo "Using disposable Pi agent directory at $pi_agent_dir" >&2
 }
@@ -195,8 +245,8 @@ if [ "${PROPR_PI_LOGIN:-}" = "1" ]; then
         if [ "${PROPR_MANAGED_CREDENTIALS:-}" = "1" ]; then
             # This directory belongs to this ProPR agent, so it is safe to
             # normalize ownership before dropping privileges to node.
-            chown -R node:node "$pi_source_dir" 2>/dev/null || true
-            chmod -R u+rwX "$pi_source_dir" 2>/dev/null || true
+            /bin/chown -hR -- node:node "$pi_source_dir" 2>/dev/null || true
+            /bin/chmod -R -- u+rwX "$pi_source_dir" 2>/dev/null || true
         else
             echo "Skipping Pi agent directory ownership changes to avoid mutating host bind mounts" >&2
         fi
@@ -229,7 +279,7 @@ pi_seeded_auth=""
 if [ -f "$pi_agent_dir/auth.json" ]; then
     # Keep the baseline in this shell, out of the disposable agent's reach.
     if [ -n "$pi_host_auth" ]; then
-        pi_seeded_auth="$(run_as_node /usr/bin/python3 -I "$pi_credentials_helper" seed "$pi_agent_dir/auth.json" - 9<&-)"
+        pi_seeded_auth="$(run_as_node /usr/bin/python3 -I -B "$pi_credentials_helper" seed "$pi_agent_dir/auth.json" - 9<&-)"
     fi
     echo "Pi credentials imported" >&2
 else
@@ -319,18 +369,28 @@ if [ -n "$pi_received_signal" ] && [ "$command_status" -eq 0 ]; then
     command_status=$((128 + $(kill -l "$pi_received_signal")))
 fi
 
+# ---- Post-task privileged steps -------------------------------------------
+# The task may have replaced anything node can write, including /home/node/bin
+# wholesale. From here on: the fixed PATH, absolute binaries, no task-writable
+# working directory, and task-written files are data only.
+export PATH="$POST_TASK_PATH"
+pi_node_path="$POST_TASK_PATH"
+cd /
+
 # Signals arriving during the sync are deferred until it finishes, so the
 # write-back completes once before the container exits.
 if [ -n "$pi_seeded_auth" ]; then
-    # Use the entrypoint's privileges only on the host side. Read the runtime
-    # as node and pass JSON through stdin to the writer, outside the task's PATH.
+    # Node reads the disposable auth.json (O_NOFOLLOW, size-limited, JSON) so
+    # root never follows a path through the task's directories. The root
+    # writer validates both records and writes only into the pinned source dir.
     {
         printf '%s\n' "$pi_seeded_auth"
-        run_as_node /usr/bin/python3 -I "$pi_credentials_helper" seed "$pi_agent_dir/auth.json" - 9<&-
-    } | /usr/bin/env -i /usr/bin/python3 -I "$pi_credentials_helper" sync-from-stdin "$pi_source_auth" "${pi_host_auth##*/}" \
+        run_post_task_as_node /usr/bin/python3 -I -B "$pi_credentials_helper" seed "$pi_agent_dir/auth.json" - 9<&-
+    } | /usr/bin/env -i PATH="$POST_TASK_PATH" /usr/bin/python3 -I -B "$pi_credentials_helper" sync-from-stdin "$pi_source_auth" "${pi_host_auth##*/}" \
         || echo "Warning: could not write refreshed Pi credentials back to the host" >&2
 fi
+exec 9<&-
 
-restrict_goal_sessions || echo "Warning: could not restrict Pi goal session permissions" >&2
+restrict_goal_sessions_after_task || echo "Warning: could not restrict Pi goal session permissions" >&2
 
 exit "$command_status"

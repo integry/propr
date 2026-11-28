@@ -7,6 +7,11 @@ entry and only while the host entry still equals what was seeded, so a host
 login or logout during the run wins. API-key entries are never rewritten, and
 nothing is written when no OAuth entry changed.
 
+Files are data only: every read is size-limited, opens with O_NOFOLLOW and
+accepts nothing but a JSON object. The write-back target must be a regular
+file (never a symlink); it is replaced through a temporary file in the same
+directory carrying the original owner, group and mode.
+
 Usage:
     pi-credentials.py seed <runtime auth.json> <snapshot>
     pi-credentials.py sync <host auth.json> <runtime auth.json> <snapshot>
@@ -29,21 +34,50 @@ from pathlib import Path
 LOCK_STALE_SECONDS = 30
 LOCK_WAIT_SECONDS = 30
 LOCK_RETRY_SECONDS = 0.1
+# auth.json holds a handful of provider entries; anything larger is not one.
+MAX_AUTH_BYTES = 1024 * 1024
 
 
-def read_json_with_metadata(path, *, follow_symlinks=True):
-    flags = os.O_RDONLY | os.O_NONBLOCK
-    if not follow_symlinks:
-        flags |= os.O_NOFOLLOW
+# A stdin record is one line of ASCII-escaped JSON: up to 6 bytes per byte.
+MAX_RECORD_BYTES = MAX_AUTH_BYTES * 6
+
+
+def parse_auth(raw, limit=MAX_AUTH_BYTES):
+    """A JSON object from at most `limit` bytes of UTF-8, else None."""
+    if len(raw) > limit:
+        return None
     try:
-        with os.fdopen(os.open(path, flags), encoding="utf-8-sig") as handle:
-            metadata = os.fstat(handle.fileno())
-            if stat.S_ISREG(metadata.st_mode):
-                # Pi strips a UTF-8 BOM before parsing; do the same.
-                return json.load(handle), metadata
-    except (FileNotFoundError, NotADirectoryError, ValueError):
-        pass
-    return None, None
+        # Pi strips a UTF-8 BOM before parsing; do the same.
+        value = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def read_json_with_metadata(path):
+    """Read a regular file as JSON data, never following a final symlink."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        # Missing, a symlink (ELOOP), or otherwise unreadable: no data.
+        return None, None
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            return None, None
+        chunks, remaining = [], MAX_AUTH_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    except OSError:
+        return None, None
+    finally:
+        os.close(fd)
+    auth = parse_auth(b"".join(chunks))
+    return (auth, metadata) if auth is not None else (None, None)
 
 
 def read_json(path):
@@ -120,7 +154,7 @@ def serialize(auth):
 
 def seed(runtime_auth, snapshot):
     """Record the auth.json copied into the runtime before Pi touches it."""
-    content = json.dumps(read_json(runtime_auth))
+    content = json.dumps(read_json(runtime_auth), ensure_ascii=True, separators=(",", ":"))
     if snapshot == "-":
         print(content)
         return
@@ -142,20 +176,27 @@ def refreshed_entries(seeded, runtime):
 
 def sync(host_auth, runtime_auth, snapshot):
     """Write OAuth refreshes back to the host; returns the providers written."""
-    return write_refreshes(Path(os.path.realpath(host_auth)), read_json(snapshot), read_json(runtime_auth))
+    return write_refreshes(Path(host_auth), read_json(snapshot), read_json(runtime_auth))
+
+
+def is_regular_file(path):
+    """True for a regular file that is not a symlink."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
 
 
 def write_refreshes(host_auth, seeded, runtime, source=None):
     changes = refreshed_entries(seeded, runtime)
-    if not changes or not host_auth.is_file():
+    # Refuse a symlinked (or otherwise non-regular) target outright.
+    if not changes or not is_regular_file(host_auth):
         return []
-    # Work on the resolved target so a symlinked auth.json keeps its link and
-    # shares the lock taken by host Pi. Recheck the binding after waiting.
     with AuthLock(host_auth):
-        # The source link may have changed while Pi ran or while we waited.
-        if source is not None and Path(os.path.realpath(source)) != host_auth.parent.resolve() / host_auth.name:
+        # The source may have been replaced while Pi ran or while we waited.
+        if source is not None and (not is_regular_file(source) or Path(os.path.realpath(source)) != host_auth.parent.resolve() / host_auth.name):
             return []
-        current, metadata = read_json_with_metadata(host_auth, follow_symlinks=False)
+        current, metadata = read_json_with_metadata(host_auth)
         if not isinstance(current, dict):
             return []
         # Compare-and-swap per entry: a host login, logout or its own refresh
@@ -180,8 +221,10 @@ def main(argv):
             else:
                 # The two JSON records are the trusted pre-run baseline and
                 # the disposable auth read by the unprivileged runtime user.
-                seeded = json.loads(sys.stdin.readline())
-                runtime = json.loads(sys.stdin.readline() or "null")
+                # Both are size-limited and must be JSON objects; anything
+                # else is treated as "nothing to write back".
+                seeded = parse_auth(sys.stdin.buffer.readline(MAX_RECORD_BYTES + 2).rstrip(b"\n"), MAX_RECORD_BYTES)
+                runtime = parse_auth(sys.stdin.buffer.readline(MAX_RECORD_BYTES + 2).rstrip(b"\n"), MAX_RECORD_BYTES)
                 host_auth = Path("/proc/self/fd/9") / Path(argv[2]).name
                 written = write_refreshes(host_auth, seeded, runtime, source=argv[1])
         except LockTimeout as error:

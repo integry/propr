@@ -403,11 +403,25 @@ for pi_source_uid in 1000 1001; do
       test ! -r /root/propr-pi-source/auth.json
       test ! -w /root/propr-pi-source/auth.json
       test ! -x /root/propr-pi-source
+      ! ls /root/propr-pi-source >/dev/null 2>&1
+      ! touch /root/propr-pi-source/planted 2>/dev/null
+      ! ls -d /root/propr-pi-source/* >/dev/null 2>&1
       test ! -e /proc/self/fd/9
       test \"\$(stat -c %a /tmp/goal-sessions)\" = 700
       (umask 022 && printf %s {} > /tmp/goal-sessions/session.jsonl)
       cat /tmp/propr-pi-refreshed.json > \"\$PI_CODING_AGENT_DIR/auth.json\"
+      # /home/node is node-owned: replace its bin dir wholesale with fakes
+      # (last, so the task itself still runs the real tools).
+      mv /home/node/bin /home/node/bin.task-moved 2>/dev/null || true
+      mkdir /home/node/bin
+      for tool in cp chown chmod python3 python3.11 env mkdir rm ln mv realpath stat su-exec cat find; do
+        printf \"%s\\n\" \"#!/bin/sh\" \"echo \\\$0 >> /tmp/propr-fake-bin-ran\" \"exit 0\" > /home/node/bin/\$tool
+        /bin/chmod +x /home/node/bin/\$tool
+      done
     "
+    test -x /home/node/bin/python3
+    test ! -e /tmp/propr-fake-bin-ran
+    test ! -e /root/propr-pi-source/planted
     test "$(stat -c "%u:%g:%a" /tmp/goal-sessions/session.jsonl)" = "1000:1000:600"
     grep -q "\"refresh\": \"new-r\"" /root/propr-pi-source/auth.json
     test "$(stat -c "%u:%g:%a" /root/propr-pi-source/auth.json)" = "$1:1002:600"
@@ -424,7 +438,7 @@ for pi_source_uid in 1000 1001; do
     exit 1
   fi
 done
-echo "✓ Pi isolates UID 1000 and UID 1001 credential sources, writes back refreshes, and restricts goal session permissions"
+echo "✓ Pi isolates UID 1000 and UID 1001 credential sources from the task, ignores a task-replaced /home/node/bin after the run, writes back refreshes keeping owner and mode, and restricts goal session permissions"
 
 # ProPR starts OpenCode task containers as root (--user 0:0) with disposable
 # state and a mounted host data directory. Everything the entrypoint runs
