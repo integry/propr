@@ -16,11 +16,10 @@ import { checkAgentRuntimePackagesBeforeInstall } from '../agentRuntimePackageIn
 import { installSpriteRuntimePackages, type SpritePackageSource } from './spritesPackageBase.js';
 import { agentRuntimePackagesDigest } from '../agentRuntimePackageProfile.js';
 
-export { startupStep, SpritePoolCapacityError };
+export { startupStep, SpritePoolCapacityError, type Slot };
 export { readSpritesCliPins, type SpritesCliPins } from './spritesCliPins.js';
 
 export type SpriteClient = Pick<SpritesClient, 'createSprite' | 'deleteSprite'> & Partial<Pick<SpritesClient, 'listAllSprites' | 'getSprite'>>;
-export type { Slot };
 
 const noPackages: SpritePackageSource = async () => [];
 
