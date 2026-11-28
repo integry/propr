@@ -22,7 +22,20 @@ export interface CredentialStoreWrite {
 
 export interface CredentialStoreWriterOptions {
     lock?: CredentialStoreLockOptions;
+    /**
+     * Ends the write: checked while holding the store lock, immediately before
+     * anything is published, so a writer cancelled while it waited for the lock
+     * changes nothing.
+     */
+    signal?: AbortSignal;
 }
+
+/**
+ * The files to write, or a function computing them. A function runs while
+ * holding the store lock, so a read-modify-write (for example merging a pasted
+ * credential into settings.json) sees every earlier writer's result.
+ */
+export type CredentialStoreWrites = readonly CredentialStoreWrite[] | (() => readonly CredentialStoreWrite[]);
 
 const defaultLock = (): CredentialStoreLockOptions => ({ lockRoot: path.join(credentialRunRoot(), '.locks') });
 
@@ -42,10 +55,7 @@ function ownerOf(root: string, relative: string): { uid: number; gid: number } |
     } catch { return undefined; }
 }
 
-export async function writeCredentialStoreFiles(
-    root: string, writes: readonly CredentialStoreWrite[], options: CredentialStoreWriterOptions = {},
-): Promise<void> {
-    const canonical = path.resolve(root);
+function checkWrites(canonical: string, writes: readonly CredentialStoreWrite[]): void {
     for (const write of writes) {
         if (lstatInside(canonical, write.path) === 'symlink') {
             throw new CredentialBrokerError(`Refusing to write a credential through a symlink: ${write.path}`);
@@ -54,7 +64,18 @@ export async function writeCredentialStoreFiles(
             throw new CredentialBrokerError(`Credential file is too large: ${write.path}`);
         }
     }
+}
+
+export async function writeCredentialStoreFiles(
+    root: string, input: CredentialStoreWrites, options: CredentialStoreWriterOptions = {},
+): Promise<void> {
+    const canonical = path.resolve(root);
+    options.signal?.throwIfAborted();
+    if (typeof input !== 'function') checkWrites(canonical, input);
     await withCredentialStoreLock(canonical, options.lock ?? defaultLock(), lease => {
+        const writes = typeof input === 'function' ? input() : input;
+        checkWrites(canonical, writes);
+        options.signal?.throwIfAborted();
         for (const write of writes) {
             const target = path.join(canonical, write.path);
             if (write.content === null) {

@@ -2,6 +2,7 @@ import type { AgentConfig } from '../types.js';
 import { redactSecrets } from '../../utils/secretRedaction.js';
 import { MachinesClient, MachinesHttpError, type MachinesApi } from './fly/api.js';
 import { flyConfig, type FlyConfig } from './fly/config.js';
+import { resolveFlyImage } from './fly/imageResolution.js';
 import { FLY_MACHINES_AGENT_RUNTIME, SPRITES_AGENT_RUNTIME } from './runtimeSelection.js';
 import { spritesCliVersionRefusal, spritesProvidedCliVersion } from './sprites/spritesCliVersions.js';
 
@@ -24,6 +25,8 @@ export interface RemoteRuntimeReadiness {
 export interface RemoteRuntimeReadinessDeps {
     listSprites?: (token: string) => Promise<unknown>;
     machines?: (config: FlyConfig) => Pick<MachinesApi, 'list'>;
+    /** Resolves PROPR_FLY_IMAGE in its registry; throws when it does not resolve. */
+    resolveFlyImage?: (config: FlyConfig) => Promise<void>;
 }
 
 const SPRITES_AGENT_TYPES = ['claude', 'codex', 'antigravity'];
@@ -39,6 +42,14 @@ function tokenFailure(service: string, variable: string, error: unknown): string
     const status = statusOf(error);
     if (status === 401 || status === 403) return `The ${service} API refused ${variable} (HTTP ${status}). Set a valid token on the worker and API, then check again.`;
     return `Could not reach the ${service} API: ${redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300)}`;
+}
+
+function imageFailure(image: string, error: unknown): string {
+    const status = statusOf(error);
+    const reason = redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 300);
+    if (status === 404) return `PROPR_FLY_IMAGE ${image} does not resolve: the registry has no such image or tag.`;
+    if (status === 401 || status === 403) return `The registry refused access to PROPR_FLY_IMAGE ${image} (HTTP ${status}). Check the image and the registry credentials, then check again.`;
+    return `Could not resolve PROPR_FLY_IMAGE ${image}: ${reason}`;
 }
 
 async function spritesReadiness(config: AgentConfig, environment: NodeJS.ProcessEnv, deps: RemoteRuntimeReadinessDeps): Promise<RemoteRuntimeReadiness> {
@@ -76,6 +87,9 @@ async function flyReadiness(config: AgentConfig, environment: NodeJS.ProcessEnv,
     const api = deps.machines?.(fly) ?? new MachinesClient(fly);
     try { await api.list?.(''); }
     catch (error) { return { runtime, ready: false, error: tokenFailure('Fly Machines', 'PROPR_FLY_API_TOKEN', error) }; }
+    const resolve = deps.resolveFlyImage ?? ((value: FlyConfig) => resolveFlyImage(value.image, value.token));
+    try { await resolve(fly); }
+    catch (error) { return { runtime, ready: false, error: imageFailure(fly.image, error) }; }
     return { runtime, ready: true, detail: `Fly Machines, image ${fly.image}` };
 }
 

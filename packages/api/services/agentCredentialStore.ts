@@ -103,14 +103,17 @@ async function rewrite(
   const stores = resolveAgentCredentialStores(agent);
   const root = storeRoot(stores, definition.store);
   prepareStore(agent, root);
-  let content: Buffer | null;
+  // Read and merge under the store lock that publishes the result, so a
+  // concurrent edit of the same file is never overwritten with a stale merge.
+  const read = reader(stores);
   try {
-    content = change(definition.kind, reader(stores)(definition.store, definition.path));
+    await writeCredentialStoreFiles(root, () => [
+      { path: definition.path, content: change(definition.kind, read(definition.store, definition.path)) },
+    ]);
   } catch (error) {
     if (error instanceof PastedCredentialError) throw new AgentCredentialInputError(error.message);
     throw error;
   }
-  await writeCredentialStoreFiles(root, [{ path: definition.path, content }]);
   return readAgentCredentialStatus(agent);
 }
 
@@ -136,8 +139,16 @@ export function loginCredentialPaths(agent: AgentConfig): { store: CredentialSto
     .map(entry => ({ store, path: entry.path })));
 }
 
-/** Store the files an interactive login on a remote runtime produced. Paths outside the manifest's login files are refused. */
-export async function storeReturnedLoginFiles(agent: AgentConfig, files: readonly ReturnedLoginFile[]): Promise<number> {
+/**
+ * Store the files an interactive login on a remote runtime produced. Paths
+ * outside the manifest's login files are refused. `signal` (the login
+ * session's cancellation) is checked under each store's lock immediately
+ * before publication, so a session cancelled or timed out while this waited
+ * for the lock stores nothing further.
+ */
+export async function storeReturnedLoginFiles(
+  agent: AgentConfig, files: readonly ReturnedLoginFile[], signal?: AbortSignal,
+): Promise<number> {
   const allowed = new Set(loginCredentialPaths(agent).map(entry => `${entry.store}:${entry.path}`));
   const stores = resolveAgentCredentialStores(agent);
   let written = 0;
@@ -149,7 +160,7 @@ export async function storeReturnedLoginFiles(agent: AgentConfig, files: readonl
     }
     const root = storeRoot(stores, store);
     prepareStore(agent, root);
-    await writeCredentialStoreFiles(root, writes.map(file => ({ path: file.path, content: file.content })));
+    await writeCredentialStoreFiles(root, writes.map(file => ({ path: file.path, content: file.content })), { signal });
     written += writes.length;
   }
   return written;
@@ -157,20 +168,25 @@ export async function storeReturnedLoginFiles(agent: AgentConfig, files: readonl
 
 /**
  * Why a remote run of the agent would have nothing to authenticate with, or
- * undefined when its store holds a pasted credential or a login (or its
- * configuration sets the provider's API key variable). Providers without
- * pasted credentials are not judged here.
+ * undefined when its store holds a pasted credential or a login file the
+ * provider manifest declares (or its configuration sets the provider's API key
+ * variable). Login files are checked for every provider, including those
+ * without pasted credentials (Antigravity); a provider whose manifest declares
+ * neither is not judged here.
  */
 export function remoteCredentialProblem(agent: AgentConfig): string | undefined {
-  if (!supportsPastedAgentCredentials(agent.type)) return undefined;
+  const pasted = supportsPastedAgentCredentials(agent.type);
+  if (!pasted && loginCredentialPaths(agent).length === 0) return undefined;
   const apiKeyEnv = providerCredentialManifest(agent.type, 'config')?.apiKeyEnv ?? [];
   if (apiKeyEnv.some(name => agent.envVars?.[name]?.trim())) return undefined;
-  let status: AgentCredentialStatusResponse;
   try {
-    status = readAgentCredentialStatus(agent);
+    const read = reader(resolveAgentCredentialStores(agent));
+    if (storedLoginPresent(agent.type, read)) return undefined;
+    if (pasted && describePastedCredentials(agent.type, read).some(credential => credential.set)) return undefined;
   } catch (error) {
     return (error as Error).message;
   }
-  if (status.loginPresent || status.credentials.some(credential => credential.set)) return undefined;
-  return 'No credentials are stored for this agent. Paste an API key or token under Edit agent → Credentials, or log in.';
+  return pasted
+    ? 'No credentials are stored for this agent. Paste an API key or token under Edit agent → Credentials, or log in.'
+    : 'No login is stored for this agent. Log in from Edit agent, then check again.';
 }

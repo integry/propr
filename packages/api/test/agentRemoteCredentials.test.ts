@@ -4,12 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, afterEach, beforeEach, describe, test } from 'node:test';
 import type { Response } from 'express';
-import { closeConnection, RemoteLoginCapacityError, shutdownQueue, type AgentConfig, type RemoteLoginProcess, type RemoteLoginRequest } from '@propr/core';
+import { closeConnection, credentialRunRoot, RemoteLoginCapacityError, shutdownQueue, withCredentialStoreLock, type AgentConfig, type RemoteLoginProcess, type RemoteLoginRequest } from '@propr/core';
 import { getManagedAgentConfigPath } from '@propr/shared';
 import type { FlatRequest } from '../requestTypes.js';
 import { createAgentLoginRoutes } from '../routes/agentLoginRoutes.js';
 import {
   AgentCredentialInputError,
+  clearAgentPastedCredential,
   readAgentCredentialStatus,
   remoteCredentialProblem,
   setAgentPastedCredential,
@@ -39,14 +40,26 @@ afterEach(() => {
   else process.env.PROPR_AGENT_CREDENTIAL_RUN_DIR = previousRunDir;
 });
 
-function agent(type: 'claude' | 'codex' | 'opencode' = 'claude', id = `${type}-1`): AgentConfig {
+function agent(type: 'claude' | 'codex' | 'opencode' | 'antigravity' = 'claude', id = `${type}-1`): AgentConfig {
   return {
     id, type, alias: type, enabled: true, dockerImage: 'propr/agent:test',
     configPath: getManagedAgentConfigPath(id, type), supportedModels: ['model'],
   };
 }
 
-const storeDir = (config: AgentConfig) => path.join(root, config.id, config.type === 'claude' ? '.claude' : config.type === 'codex' ? '.codex' : '.config/opencode');
+const STORE_DIRS: Record<string, string> = { claude: '.claude', codex: '.codex', antigravity: '.gemini', opencode: '.config/opencode' };
+const storeDir = (config: AgentConfig) => path.join(root, config.id, STORE_DIRS[config.type]);
+
+/** Holds the store lock of `dir` (as a run's write-back would) until `release` is called. */
+async function holdStoreLock(dir: string) {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const inside = new Promise<void>(resolve => { entered = resolve; });
+  const done = withCredentialStoreLock(dir, { lockRoot: path.join(credentialRunRoot(), '.locks') }, () => { entered(); return held; });
+  await inside;
+  return { release: async () => { release(); await done; } };
+}
 
 function recorder() {
   const record: { status: number; body?: unknown; headers: Record<string, string> } = { status: 200, headers: {} };
@@ -100,6 +113,31 @@ describe('pasted agent credentials', () => {
     const missing = recorder();
     await routes.getCredentials({ params: { agentId: 'other' } } as unknown as FlatRequest, missing.response);
     assert.equal(missing.record.status, 404);
+  });
+
+  test('overlapping replace and remove requests each merge into the current settings.json', async () => {
+    const claude = agent('claude');
+    await setAgentPastedCredential(claude, 'anthropic-api-key', 'sk-ant-api03-originalkeyvalue0001');
+    const settingsPath = path.join(storeDir(claude), 'settings.json');
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings, model: 'opus' }));
+    // Both requests are issued while the store is busy, so both read before either publishes unless the merge is under the lock.
+    const lock = await holdStoreLock(storeDir(claude));
+    const replace = setAgentPastedCredential(claude, 'claude-oauth-token', 'sk-ant-oat01-replacementtoken00Zz');
+    const remove = clearAgentPastedCredential(claude, 'anthropic-api-key');
+    await lock.release();
+    await Promise.all([replace, remove]);
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.equal(merged.model, 'opus');
+    assert.equal(merged.env.CLAUDE_CODE_OAUTH_TOKEN, 'sk-ant-oat01-replacementtoken00Zz');
+    assert.equal(merged.env.ANTHROPIC_API_KEY, undefined);
+  });
+
+  test('an Antigravity agent without its login file is not ready on a remote runtime', async () => {
+    const antigravity = agent('antigravity');
+    assert.match(remoteCredentialProblem(antigravity) ?? '', /No login is stored/);
+    await storeReturnedLoginFiles(antigravity, [{ store: 'config', path: 'antigravity-cli/antigravity-oauth-token', content: Buffer.from('{"refresh_token":"r"}') }]);
+    assert.equal(remoteCredentialProblem(antigravity), undefined);
   });
 
   test('returned login files are limited to the manifest login files', async () => {
@@ -211,6 +249,46 @@ describe('interactive login on a remote runtime (no Docker socket)', () => {
     assert.equal(calls.killed, 1);
     assert.equal(calls.closed, 1);
     await manager.close();
+  });
+
+  test('a session cancelled while its collection waits for the store lock stores nothing and does not succeed', async () => {
+    const claude = agent('claude');
+    const { backend, process: remote, calls } = fakeRemote(0, { '/home/node/.claude/.credentials.json': '{"claudeAiOauth":{"refreshToken":"r"}}' });
+    const reads: string[] = [];
+    const readFile = remote.readFile.bind(remote);
+    remote.readFile = async file => { reads.push(file); return readFile(file); };
+    fs.mkdirSync(storeDir(claude), { recursive: true });
+    const lock = await holdStoreLock(storeDir(claude));
+    const manager = new AgentLoginSessionManager({ resolveRemoteLogin: async () => backend, runDocker: async () => ({ stdout: '', stderr: '' }), id: () => 'remote-5' });
+    try {
+      await manager.start(claude, 'alice');
+      await until(manager, 'remote-5', session => session.status === 'running');
+      manager.write('remote-5', 'alice', 'code\r');
+      for (let attempt = 0; attempt < 200 && reads.length === 0; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
+      assert.ok(reads.length > 0, 'collection started after the CLI exited');
+      const cancelled = await manager.cancel('remote-5', 'alice');
+      assert.equal(cancelled.status, 'cancelled');
+    } finally {
+      await lock.release();
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const after = manager.get('remote-5', 'alice');
+    assert.equal(after.status, 'cancelled');
+    assert.doesNotMatch(after.output, /Saved \d+ credential file|Could not save the login/);
+    assert.equal(fs.existsSync(path.join(storeDir(claude), '.credentials.json')), false);
+    assert.equal(calls.closed, 1);
+    await manager.close();
+  });
+
+  test('collection after the session aborted reads and stores nothing', async () => {
+    const opencode = agent('opencode');
+    const descriptor = { type: 'opencode' as const, containerConfigPath: '/home/node/.config/opencode', command: ['opencode', 'auth', 'login'] };
+    const abort = new AbortController();
+    abort.abort();
+    let stores = 0;
+    await assert.rejects(collectRemoteLoginFiles(opencode, descriptor, { async readFile() { return Buffer.from('{}'); } },
+      { signal: abort.signal, store: async () => { stores++; return 1; } }), { name: 'AbortError' });
+    assert.equal(stores, 0);
   });
 
   test('OpenCode logins create and collect its data directory', async () => {

@@ -83,10 +83,16 @@ export function remoteLoginDirectories(agent: AgentConfig, descriptor: AgentLogi
 }
 
 /** {@link collectRemoteLoginFiles} with the agent type's login descriptor. */
-export function collectRemoteLoginForAgent(agent: AgentConfig, process: RemoteLoginProcess): Promise<number> {
+export function collectRemoteLoginForAgent(agent: AgentConfig, process: RemoteLoginProcess, signal?: AbortSignal): Promise<number> {
   const descriptor = getAgentLoginDescriptor(agent.type);
   if (!descriptor) return Promise.reject(new Error(`${agent.type} does not support interactive login`));
-  return collectRemoteLoginFiles(agent, descriptor, process);
+  return collectRemoteLoginFiles(agent, descriptor, process, { signal });
+}
+
+export interface CollectRemoteLoginOptions {
+  /** The session's cancellation: no file is stored once it aborts, even one already waiting for the store lock. */
+  signal?: AbortSignal;
+  store?: typeof storeReturnedLoginFiles;
 }
 
 /** Copy the login files the manifest declares from the runtime into the agent's credential store. */
@@ -94,15 +100,17 @@ export async function collectRemoteLoginFiles(
   agent: AgentConfig,
   descriptor: AgentLoginDescriptor,
   process: Pick<RemoteLoginProcess, 'readFile'>,
-  store: typeof storeReturnedLoginFiles = storeReturnedLoginFiles,
+  { signal, store = storeReturnedLoginFiles }: CollectRemoteLoginOptions = {},
 ): Promise<number> {
   const files: ReturnedLoginFile[] = [];
   for (const location of remoteLoginFileLocations(agent, descriptor)) {
+    signal?.throwIfAborted();
     const content = await process.readFile(location.remotePath);
     if (content && content.length > 0) files.push({ store: location.store, path: location.path, content });
   }
+  signal?.throwIfAborted();
   if (files.length === 0) return 0;
-  return store(agent, files);
+  return store(agent, files, signal);
 }
 
 type TerminalStatus = 'succeeded' | 'failed';
@@ -117,7 +125,8 @@ export interface RemoteLoginSessionHooks {
   terminal(): boolean;
   attach(process: RemoteLoginProcess): void;
   finish(status: TerminalStatus, exitCode?: number, error?: string): void;
-  collect(process: RemoteLoginProcess): Promise<number>;
+  /** Stores the login files; must store nothing once `signal` aborts. */
+  collect(process: RemoteLoginProcess, signal: AbortSignal): Promise<number>;
   /** Destroys the Sprite or Machine once attached. */
   cleanup(): Promise<void>;
 }
@@ -165,13 +174,15 @@ export async function runRemoteLoginSession(hooks: RemoteLoginSessionHooks): Pro
       hooks.finish('failed', code, `Agent login exited with code ${code}`);
       return;
     }
-    const stored = await hooks.collect(remote).catch((error: Error) => {
+    const stored = await hooks.collect(remote, hooks.signal).catch((error: Error) => {
+      // Cancelled or timed out while collecting: the session already reports that outcome.
+      if (hooks.terminal()) return undefined;
       const message = redactSecrets(error.message);
       hooks.output(`${message}\n`);
       hooks.finish('failed', 0, `Could not save the login: ${message}`);
       return undefined;
     });
-    if (stored === undefined) return;
+    if (stored === undefined || hooks.terminal()) return;
     if (stored === 0) {
       hooks.finish('failed', 0, 'Could not save the login: the login finished but wrote no credential files');
       return;

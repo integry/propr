@@ -12,10 +12,12 @@ import { startSpriteLogin } from '../packages/core/src/agents/runtime/sprites/sp
 import { SpritePoolCapacityError } from '../packages/core/src/agents/runtime/sprites/spritesProvisioning.js';
 import { RemoteLoginCapacityError, parseRemoteFileReply } from '../packages/core/src/agents/runtime/remoteLogin.js';
 import { checkRemoteRuntimeReadiness } from '../packages/core/src/agents/runtime/remoteRuntimeReadiness.js';
+import { FlyImageResolutionError, parseImageReference, resolveFlyImage } from '../packages/core/src/agents/runtime/fly/imageResolution.js';
 import {
     applyPastedCredential, describePastedCredentials, PastedCredentialError, removePastedCredential, storedLoginPresent,
 } from '../packages/core/src/agents/credentials/pastedCredentials.js';
 import { readCredentialStoreFile, writeCredentialStoreFiles } from '../packages/core/src/agents/credentials/credentialStoreWriter.js';
+import { withCredentialStoreLock } from '../packages/core/src/agents/credentials/credentialStoreLock.js';
 import type { AgentConfig } from '../packages/core/src/agents/types.js';
 
 const request = (overrides: Partial<Parameters<typeof startFlyLogin>[2]> = {}) => ({
@@ -243,6 +245,52 @@ describe('credential store writer', () => {
             fs.rmSync(lock.lockRoot, { recursive: true, force: true });
         }
     });
+
+    test('computed writes read the store under the lock, so overlapping merges keep each other\'s result', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-store-'));
+        const lock = { lockRoot: path.join(root, '..', `${path.basename(root)}-locks`) };
+        const merge = (key: string, value: string | undefined) => () => {
+            const current = JSON.parse(readCredentialStoreFile(root, 'settings.json')?.toString() ?? '{"env":{}}');
+            if (value === undefined) delete current.env[key];
+            else current.env[key] = value;
+            return [{ path: 'settings.json', content: Buffer.from(JSON.stringify(current)) }];
+        };
+        try {
+            await writeCredentialStoreFiles(root, merge('ANTHROPIC_API_KEY', 'old'), { lock });
+            // Both start before either holds the lock: each must merge into the other's result.
+            await Promise.all([
+                writeCredentialStoreFiles(root, merge('CLAUDE_CODE_OAUTH_TOKEN', 'new'), { lock }),
+                writeCredentialStoreFiles(root, merge('ANTHROPIC_API_KEY', undefined), { lock }),
+            ]);
+            assert.deepEqual(JSON.parse(readCredentialStoreFile(root, 'settings.json')!.toString()).env, { CLAUDE_CODE_OAUTH_TOKEN: 'new' });
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+            fs.rmSync(lock.lockRoot, { recursive: true, force: true });
+        }
+    });
+
+    test('a write aborted while it waits for the lock publishes nothing', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'propr-store-'));
+        const lock = { lockRoot: path.join(root, '..', `${path.basename(root)}-locks`) };
+        try {
+            const abort = new AbortController();
+            let release!: () => void;
+            const held = new Promise<void>(resolve => { release = resolve; });
+            let entered!: () => void;
+            const inside = new Promise<void>(resolve => { entered = resolve; });
+            const blocking = withCredentialStoreLock(path.resolve(root), lock, () => { entered(); return held; });
+            await inside;
+            const waiting = writeCredentialStoreFiles(root, [{ path: '.credentials.json', content: Buffer.from('{}') }], { lock, signal: abort.signal });
+            abort.abort();
+            release();
+            await blocking;
+            await assert.rejects(waiting, { name: 'AbortError' });
+            assert.equal(readCredentialStoreFile(root, '.credentials.json'), undefined);
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+            fs.rmSync(lock.lockRoot, { recursive: true, force: true });
+        }
+    });
 });
 
 describe('remote runtime readiness', () => {
@@ -264,13 +312,58 @@ describe('remote runtime readiness', () => {
 
     test('Fly Machines: configuration resolves and the token lists Machines; Docker is not judged', async () => {
         const env = { PROPR_FLY_API_TOKEN: 'tok', PROPR_FLY_APP: 'agents', PROPR_FLY_IMAGE: 'registry.fly.io/agents:1' };
-        const ready = await checkRemoteRuntimeReadiness(agent, 'fly-machines', env, { machines: () => ({ list: async () => [] }) });
+        const resolved: string[] = [];
+        const ready = await checkRemoteRuntimeReadiness(agent, 'fly-machines', env,
+            { machines: () => ({ list: async () => [] }), resolveFlyImage: async fly => { resolved.push(fly.image); } });
         assert.deepEqual(ready, { runtime: 'fly-machines', ready: true, detail: 'Fly Machines, image registry.fly.io/agents:1' });
+        assert.deepEqual(resolved, ['registry.fly.io/agents:1']);
         const unconfigured = await checkRemoteRuntimeReadiness(agent, 'fly-machines', {}, {});
         assert.match(unconfigured?.error ?? '', /PROPR_FLY_API_TOKEN/);
         const refused = await checkRemoteRuntimeReadiness(agent, 'fly-machines', env,
             { machines: () => ({ list: async () => { throw new MachinesHttpError('GET', 401); } }) });
         assert.match(refused?.error ?? '', /HTTP 401/);
         assert.equal(await checkRemoteRuntimeReadiness(agent, 'docker', env), undefined);
+    });
+
+    test('Fly Machines: an image that does not resolve is not ready', async () => {
+        const env = { PROPR_FLY_API_TOKEN: 'tok', PROPR_FLY_APP: 'agents', PROPR_FLY_IMAGE: 'registry.fly.io/agents:missing' };
+        const machines = () => ({ list: async () => [] });
+        const missing = await checkRemoteRuntimeReadiness(agent, 'fly-machines', env,
+            { machines, resolveFlyImage: async () => { throw new FlyImageResolutionError('HTTP 404', 404); } });
+        assert.equal(missing?.ready, false);
+        assert.match(missing?.error ?? '', /PROPR_FLY_IMAGE registry\.fly\.io\/agents:missing does not resolve/);
+        const refused = await checkRemoteRuntimeReadiness(agent, 'fly-machines', env,
+            { machines, resolveFlyImage: async () => { throw new FlyImageResolutionError('HTTP 403', 403); } });
+        assert.match(refused?.error ?? '', /refused access to PROPR_FLY_IMAGE .*HTTP 403/);
+    });
+
+    test('Fly image resolution: registry.fly.io with the Fly token, other registries anonymously', async () => {
+        assert.deepEqual(parseImageReference('registry.fly.io/agents:1'), { host: 'registry.fly.io', repository: 'agents', reference: '1' });
+        assert.deepEqual(parseImageReference('node'), { host: 'registry-1.docker.io', repository: 'library/node', reference: 'latest' });
+        assert.deepEqual(parseImageReference('ghcr.io/o/agent:2'), { host: 'ghcr.io', repository: 'o/agent', reference: '2' });
+        const calls: { url: string; method: string; authorization?: string }[] = [];
+        const registry = (status: Record<string, number>) => (async (input: string | URL | Request, init?: RequestInit) => {
+            const url = String(input);
+            const headers = new Headers(init?.headers);
+            calls.push({ url, method: init?.method ?? 'GET', authorization: headers.get('authorization') ?? undefined });
+            if (url.startsWith('https://auth.')) return Response.json({ token: 'anon' });
+            if (!headers.get('authorization')) {
+                return new Response(null, { status: 401, headers: { 'www-authenticate': 'Bearer realm="https://auth.example.test/token",service="r",scope="repository:o/agent:pull"' } });
+            }
+            const code = Object.entries(status).find(([suffix]) => url.endsWith(suffix))?.[1] ?? 404;
+            return new Response(code === 200 ? '{"schemaVersion":2,"config":{},"layers":[]}' : null, { status: code });
+        }) as typeof fetch;
+        await resolveFlyImage('ghcr.io/o/agent:2', 'fly-token', registry({ '/manifests/2': 200 }));
+        assert.equal(calls.at(-1)?.authorization, 'Bearer anon');
+        assert.ok(!calls.some(call => call.authorization?.includes(Buffer.from('x:fly-token').toString('base64'))), 'the Fly token stays on registry.fly.io');
+        await assert.rejects(resolveFlyImage('ghcr.io/o/agent:gone', 'fly-token', registry({})), (error: FlyImageResolutionError) => error.status === 404);
+        calls.length = 0;
+        await assert.rejects(resolveFlyImage('registry.fly.io/agents:gone', 'fly-token', (async (input: string | URL | Request, init?: RequestInit) => {
+            calls.push({ url: String(input), method: init?.method ?? 'GET', authorization: new Headers(init?.headers).get('authorization') ?? undefined });
+            return new Response(null, { status: 404 });
+        }) as typeof fetch), (error: FlyImageResolutionError) => error.status === 404);
+        assert.equal(calls[0].url, 'https://registry.fly.io/v2/agents/manifests/gone');
+        assert.match(calls[0].authorization ?? '', /^Basic /);
+        await assert.rejects(resolveFlyImage('Not An Image', 'fly-token', registry({})), /not a valid image reference/);
     });
 });

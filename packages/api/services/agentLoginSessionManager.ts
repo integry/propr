@@ -86,7 +86,7 @@ export interface AgentLoginSessionManagerDeps {
   /** Whether a local Docker daemon exists (login containers to sweep). */
   dockerAvailable?: () => boolean;
   /** Copies the login files from the remote runtime into the agent's store; returns how many were stored. */
-  collectRemoteLogin?: (agent: AgentConfig, process: RemoteLoginProcess) => Promise<number>;
+  collectRemoteLogin?: (agent: AgentConfig, process: RemoteLoginProcess, signal: AbortSignal) => Promise<number>;
 }
 
 export class AgentLoginConflictError extends Error {
@@ -417,7 +417,7 @@ export class AgentLoginSessionManager {
         this.touch(session);
       },
       finish: (status, exitCode, error) => this.finish(session, status, exitCode, error),
-      collect: remote => this.collectRemoteLogin(agent, remote),
+      collect: (remote, signal) => this.collectRemoteLogin(agent, remote, signal),
       cleanup: () => this.cleanupContainer(session),
     });
   }
